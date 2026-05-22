@@ -19,6 +19,7 @@ endforeach()
 add_executable(starling_tests
     test_smoke.cpp
     test_profile_capability.cpp
+    test_runtime_health.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

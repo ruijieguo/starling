@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 
 #include "starling/profile_capability.hpp"
+#include "starling/runtime_health.hpp"
 #include "starling/version.hpp"
 
 namespace py = pybind11;
@@ -83,4 +84,10 @@ PYBIND11_MODULE(_core, m) {
                        &starling::ProfileCapability::dimension_versions_supported)
         .def_readwrite("testing_helper_marker",
                        &starling::ProfileCapability::testing_helper_marker);
+
+    py::enum_<starling::RuntimeHealth>(m, "RuntimeHealth")
+        .value("UNREADY", starling::RuntimeHealth::UNREADY)
+        .value("READY", starling::RuntimeHealth::READY)
+        .value("DEGRADED", starling::RuntimeHealth::DEGRADED)
+        .value("DRAINING", starling::RuntimeHealth::DRAINING);
 }
