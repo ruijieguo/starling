@@ -8,7 +8,13 @@ Scans configured prod roots for forbidden tokens:
 Lines tagged with `NOLINT(starling-testing-isolation)` are skipped. The skip
 also covers contiguous non-blank lines around the NOLINT line (i.e. the
 "paragraph" containing the pragma), so a single NOLINT comment can suppress
-a docstring + import block in a `.pyi` stub.
+a docstring + import block in a `.pyi` stub. Paragraph (rather than per-line)
+semantics let one pragma cover a multi-line construct without the noise of
+tagging every continuation line.
+
+Paths in `--prod-roots` and `--allowed-roots` are resolved relative to the
+process cwd. CI invokes this from the repo root; running from elsewhere will
+silently scan zero files. Run from the repo root.
 
 Exit code 0 = clean. Exit code 1 = violations printed to stdout.
 """
