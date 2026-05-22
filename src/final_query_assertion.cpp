@@ -8,6 +8,8 @@
 namespace starling {
 namespace {
 
+// NOTE: only `--` line comments are stripped. Block `/* ... */` comments are
+// passed through unchanged — see header LIMITATIONS for rationale.
 std::string strip_line_comments(std::string_view sql) {
     std::string out;
     out.reserve(sql.size());
