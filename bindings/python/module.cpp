@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "starling/preflight.hpp"
 #include "starling/profile_capability.hpp"
 #include "starling/runtime_health.hpp"
 #include "starling/version.hpp"
@@ -90,4 +91,17 @@ PYBIND11_MODULE(_core, m) {
         .value("READY", starling::RuntimeHealth::READY)
         .value("DEGRADED", starling::RuntimeHealth::DEGRADED)
         .value("DRAINING", starling::RuntimeHealth::DRAINING);
+
+    py::enum_<starling::PreflightStatus>(m, "PreflightStatus")
+        .value("READY", starling::PreflightStatus::READY)
+        .value("UNREADY", starling::PreflightStatus::UNREADY);
+
+    py::class_<starling::PreflightResult>(m, "PreflightResult")
+        .def_readonly("status", &starling::PreflightResult::status)
+        .def_readonly("missing", &starling::PreflightResult::missing);
+
+    m.def("preflight", &starling::preflight,
+          py::arg("declared"), py::arg("required"),
+          "Validate a ProfileCapability against required capability names. "
+          "Unknown names are treated as missing (fail-closed).");
 }
