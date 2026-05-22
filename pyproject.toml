@@ -1,0 +1,22 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "starling-memory"
+version = "0.0.1"
+description = "Starling Memory — agent memory with multi-subject social mind"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-mock>=3.12"]
+
+[tool.scikit-build]
+cmake.version = ">=3.27"
+wheel.packages = ["python/starling"]
+cmake.args = ["-DSTARLING_BUILD_PYTHON=ON"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra -v"
