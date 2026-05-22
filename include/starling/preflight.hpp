@@ -29,15 +29,15 @@ struct PreflightResult {
 // Capability requirement names recognized by preflight (string-keyed for ease of
 // listing in config + future extensibility):
 //
-//   "transactional_outbox"                     -> ProfileCapability::transactional_outbox
-//   "consumer_checkpoint"                      -> ProfileCapability::consumer_checkpoint
-//   "engram_per_record_key"                    -> ProfileCapability::engram_per_record_key
 //   "c_plus_plus_core"                         -> ProfileCapability::c_plus_plus_core
 //   "cross_partition_transaction"              -> ProfileCapability::cross_partition_transaction
+//   "transactional_outbox"                     -> ProfileCapability::transactional_outbox
+//   "consumer_checkpoint"                      -> ProfileCapability::consumer_checkpoint
+//   "tenant_isolation_storage_enforced"        -> tenant_isolation == "storage_enforced"
+//   "engram_per_record_key"                    -> ProfileCapability::engram_per_record_key
 //   "engram_refcount"                          -> ProfileCapability::engram_refcount
 //   "projection_index_supported"               -> P2 only
 //   "dimension_versions_supported"             -> P3 only
-//   "tenant_isolation_storage_enforced"        -> tenant_isolation == "storage_enforced"
 //   "testing_helper_marker"                    -> testing_helper_marker
 //
 // Unknown capability names are treated as missing (fail-closed): a typo in a

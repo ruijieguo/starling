@@ -11,6 +11,8 @@ def _local_store(core):
         tenant_isolation="storage_enforced",
         engram_per_record_key=True,
         engram_refcount=True,
+        projection_index_supported=False,
+        dimension_versions_supported=False,
         testing_helper_marker=True,
     )
 

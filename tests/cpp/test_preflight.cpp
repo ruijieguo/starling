@@ -99,3 +99,11 @@ TEST(Preflight, MultipleMissingPreservesOrder) {
     EXPECT_EQ(result.missing[1], "consumer_checkpoint");
     EXPECT_EQ(result.missing[2], "engram_per_record_key");
 }
+
+TEST(Preflight, UnknownCapabilityTreatedAsMissing) {
+    auto cap = make_local_store();
+    PreflightResult result = preflight(cap, {"totally_made_up_capability"});
+    EXPECT_EQ(result.status, PreflightStatus::UNREADY);
+    ASSERT_EQ(result.missing.size(), 1u);
+    EXPECT_EQ(result.missing[0], "totally_made_up_capability");
+}
