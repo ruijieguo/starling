@@ -1,6 +1,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <string_view>
+
+#include "starling/final_query_assertion.hpp"
 #include "starling/preflight.hpp"
 #include "starling/profile_capability.hpp"
 #include "starling/runtime_health.hpp"
@@ -104,4 +107,18 @@ PYBIND11_MODULE(_core, m) {
           py::arg("declared"), py::arg("required"),
           "Validate a ProfileCapability against required capability names. "
           "Unknown names are treated as missing (fail-closed).");
+
+    py::register_exception<starling::FinalQueryAssertionError>(
+        m, "FinalQueryAssertionError", PyExc_ValueError);
+
+    m.def("assert_final_query_safe", &starling::assert_final_query_safe,
+          py::arg("sql"),
+          "Throws FinalQueryAssertionError if SQL lacks tenant_id + holder_scope "
+          "predicates (outside SQL line comments).");
+
+    m.def("is_final_query_safe",
+          [](std::string_view sql) { return ::starling::is_final_query_safe(sql); },
+          py::arg("sql"),
+          "Pure predicate: returns True iff SQL contains tenant_id + holder_scope "
+          "predicates outside line comments. Case-insensitive.");
 }
