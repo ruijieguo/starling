@@ -12,7 +12,13 @@ namespace starling {
 // (2) check_final_query gates every read/write SQL against tenant + holder predicates.
 class Adapter {
 public:
+    Adapter() = default;
     virtual ~Adapter() = default;
+
+    Adapter(const Adapter&) = delete;
+    Adapter& operator=(const Adapter&) = delete;
+    Adapter(Adapter&&) = delete;
+    Adapter& operator=(Adapter&&) = delete;
 
     virtual ProfileCapability declare_capability() const = 0;
 
