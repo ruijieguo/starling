@@ -22,6 +22,9 @@ pybind11_add_module(_core MODULE module.cpp)
 target_link_libraries(_core PRIVATE starling_core)
 target_compile_options(_core PRIVATE ${STARLING_WARNING_FLAGS})
 
+# The Python module is the dev/test entrypoint and is allowed to link the marker.
+target_link_libraries(_core PRIVATE starling_testing_marker)
+
 set_target_properties(_core PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/starling
 )

@@ -7,6 +7,7 @@
 #include "starling/preflight.hpp"
 #include "starling/profile_capability.hpp"
 #include "starling/runtime_health.hpp"
+#include "starling/testing_marker.hpp"
 #include "starling/version.hpp"
 
 namespace py = pybind11;
@@ -121,4 +122,9 @@ PYBIND11_MODULE(_core, m) {
           py::arg("sql"),
           "Pure predicate: returns True iff SQL contains tenant_id + holder_scope "
           "predicates outside line comments. Case-insensitive.");
+
+    auto testing_submodule = m.def_submodule("testing",
+        "Testing-only helpers. Prod profiles MUST NOT link this submodule.");  // NOLINT(starling-testing-isolation)
+    testing_submodule.def("marker_loaded", &starling::testing::testing_marker_loaded,
+                          "True iff the testing-only translation unit is linked.");  // NOLINT(starling-testing-isolation)
 }
