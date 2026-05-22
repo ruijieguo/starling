@@ -910,7 +910,8 @@ polarity 与 modality 正交，三值 `POS / NEG / UNKNOWN`。组合示例：
 | T4 | REPLAYING_CONSOLIDATING | VOLATILE | Replay 决策保留（证据不足） | Replay Scheduler |
 | T5 | CONSOLIDATED | REPLAYING_RECONSOLIDATING | Retrieval 召回 / ConflictProbe 标冲突 / 显式 API | 可塑窗口超时（默认 30min，自适应 5min-6h） |
 | T6 | REPLAYING_RECONSOLIDATING | CONSOLIDATED | reconsolidate confirm（支持/轻微反对） | 可塑窗口超时 |
-| T7 | REPLAYING_RECONSOLIDATING | ARCHIVED | reconsolidate contradict-severe（旧版作废，新版另立） | 可塑窗口超时 |
+| T7 | REPLAYING_RECONSOLIDATING | ARCHIVED | reconsolidate contradict-severe（旧版作废，新版另立） | 可塑窗口超时（P2+，Reconsolidation Engine） |
+| T7-P1 | CONSOLIDATED | ARCHIVED | ConflictProbe 同事务命中 `direct_contradiction` / `superseding`（P1 路径，旁路 REPLAYING_RECONSOLIDATING 中间态） | Bus.write 同事务（即时，无窗口） |
 | T8 | CONSOLIDATED | ARCHIVED | decay 公式判定（S(t)<0.05）且不在 active_grounded | Replay Scheduler 周期触发 |
 | T9 | ARCHIVED | REPLAYING_RECONSOLIDATING | 归档 stmt 被召回 + salience>θ_revive 或 audit | 可塑窗口超时 |
 | T10 | ARCHIVED | FORGOTTEN | 显式 purge（合规/法务） | 即时 |
@@ -1659,7 +1660,7 @@ statement.written × 3
 
 | 内容 | 验收方式 |
 |---|---|
-| Statement + Cognizer + 六态 ConsolidationState + StatementProvenance + ReviewStatus + EngramRetentionMode 核心 schema；C++20 核心对象 + Python/TypeScript 绑定层；local-store CRUD；outbox 表；ProfileCapability preflight（含 cross_partition_transaction）；最小 PipelineRun 账本 + ExtractionAttempt item 明细；SourceKind/IngestPolicy 与 source adapter metadata；chunk 级 SourceSpanRef（engram_ref/chunk_index/observed_at/source_hash）与序列化推导的 TemporalAnchor；一阶 Statement 抽取 prompt（XML strict + holder_perspective 规则）；basic_retrieve(holder=self, intent=FACT_LOOKUP) 主表直查 + 最小 RetrievalReceipt | 单元测试 + 50 条手工标注对话样本回归 + outbox 投递/幂等测试 + §14.1 最小变体 smoke test（Alice 宣布 Bob 不再负责 auth，testing helper 将 Statement 标为 CONSOLIDATED 后检索返回 Carol 接手，能查看 extraction attempt、pipeline run 与 retrieval receipt）；35 用例（12 CRITICAL） |
+| Statement + Cognizer + 六态 ConsolidationState + StatementProvenance + ReviewStatus + EngramRetentionMode 核心 schema；C++20 核心对象 + Python/TypeScript 绑定层；local-store CRUD；outbox 表；ProfileCapability preflight（含 cross_partition_transaction）；最小 PipelineRun 账本 + ExtractionAttempt item 明细；SourceKind/IngestPolicy 与 source adapter metadata；chunk 级 SourceSpanRef（engram_ref/chunk_index/observed_at/source_hash）与序列化推导的 TemporalAnchor；一阶 Statement 抽取 prompt（XML strict + holder_perspective 规则）；basic_retrieve(holder=self, intent=FACT_LOOKUP) 主表直查 + 最小 RetrievalReceipt | 单元测试 + 50 条手工标注对话样本回归 + outbox 投递/幂等测试 + §14.1 最小变体 smoke test（Alice 宣布 Bob 不再负责 auth，testing helper 将 Statement 标为 CONSOLIDATED 后检索返回 Carol 接手，能查看 extraction attempt、pipeline run 与 retrieval receipt）；13 P1 CRITICAL 用例（详见 §15.3.1） |
 
 **P2（14 周，小规模应用）**
 
@@ -1692,7 +1693,7 @@ statement.written × 3
 | M0.4 LLM Extractor | 7 天 | XML strict + existing_ref_map + extraction_span_key + retry/PARTIAL_SUCCESS + holder_perspective 规则 |
 | M0.5 ConflictProbe | 7 天 | canonicalize_object + normalize_interval + scope_of + hash version 双查协议 + 两个 idx |
 | M0.6 basic_retrieve | 3 天 | 主表查询 + RetrievalReceipt + sufficiency_status |
-| M0.7 验收 | 10-14 天 | 35 用例（12 CRITICAL）+ 50 条手工标注 + 2 E2E + 1 eval |
+| M0.7 验收 | 10-14 天 | 13 P1 CRITICAL（4 Extractor + 2 Provenance/ConflictProbe + 4 升格自负面用例 + 3 新增 PREFLIGHT/OUTBOX-IDEMP/CONFLICT-SEVERE，详见 §15.3.1）+ non-CRITICAL 默认值/事件表/Reconsolidation 占位/10 条保留负面用例（§15.3.2）+ 50 条手工标注 + 2 E2E + 1 EVAL（§15.3.3 阈值表） |
 
 **并行性**：M0.4 与 M0.5 共享 canonicalize_object，需先完成 M0.5 核心函数再启动 M0.4。M0.4 的 existing_ref_map 需要 M0.6 的 holder-aware 检索给 LLM 列已有候选；M0.4 第一版可用 stub 替代，M0.6 完成后回填。
 
@@ -1712,67 +1713,194 @@ statement.written × 3
 
 ### 15.3 P1 验收用例
 
-35 条用例（16 现有 + 19 新增），其中 12 CRITICAL：
+#### 15.3.0 CRITICAL 标签有效性条件（元规则）
 
-**状态机契约（5 CRITICAL）**
-- TC-A1-001 / TC-A1-002：振荡上限 + TTL
-- TC-A5-001：fallback timeout
-- TC-A6-001 / TC-A6-002：T5/T8 并发互斥（severe path 双路径）
+用例的 `[CRITICAL]` 标签**仅在以下三条件全部满足时**对当前 P 阶段生效：
 
-**Commitment 契约（3 CRITICAL）**
-- TC-A2-001 / TC-A2-002：BROKEN 计数 + 链长
-- TC-A9-001 / TC-A9-002：active_holding 保护
+1. **范围一致性**：用例 Given 所引用的子系统、原子操作、事件类型，必须全部出现在该 P 阶段 §15.5 / §16.5 的"已交付"侧，未出现在"非交付"侧。
+2. **可观测性**：When 描述的触发动作必须是该阶段对外暴露的 API、事件或配置开关；不得依赖仅存在于 `starling.testing.*` 命名空间的 helper 模拟动态语义（仅"状态翻转"类的 helper 例外，如 `testing.mark_consolidated`）。
+3. **可断言性**：Then 描述的输出必须能通过该阶段已交付的检索 / 事件 / 审计接口直接观察；不得依赖未交付的 Projection Index 或未交付子系统的内部状态。
 
-**Reconsolidation 契约（3 CRITICAL + 1）**
-- TC-A3-001：derived_from 防抖
-- TC-Q1-001：references_existing 闭环
-- TC-A8-001 / TC-A8-002：severe path 双路径
-- TC-Q3a-001：mild provenance 不变（非 CRITICAL）
+跨阶段引用 Given 的用例必须改标 `[Pn 准入]`（n=2/3），并归入 §16.3 P2 准入条件 或 §16.4 P3+ 演进。
+
+**历史漂移防护**：每次 P 阶段范围变动（§15.5 调整非交付项时）必须同步重新校验本节所有 `[CRITICAL]` 标签，diff 中如有标签变动须列入 §附录 H 历史变更记录。
+
+---
+
+#### 15.3.1 P1 出货门槛（13 CRITICAL）
+
+P1 阶段共 13 条 CRITICAL 用例，**全部由 P1 已交付的 Bus / Validator / ConflictProbe / EngramStore / basic_retrieve 直接验证**，不依赖 Replay Scheduler、Reconsolidation Engine、Prospective Loop 等 P2/P3 子系统。
 
 **Extractor 契约（4 CRITICAL）**
-- TC-Q2-001 / TC-Q2-002 / TC-Q2-003 / TC-Q2-004：holder_perspective 四种 perspective
+- TC-Q2-001：holder_perspective = FIRST_PERSON
+- TC-Q2-002：holder_perspective = QUOTED + source_speaker
+- TC-Q2-003：holder_perspective = HEARSAY
+- TC-Q2-004：holder_perspective = INFERRED（升格自原 non-CRITICAL）
 
-**ConflictProbe 契约（1）**
-- TC-Q3b-001：二阶 Statement object 区分
+**Provenance 与 ConflictProbe 契约（2 CRITICAL）**
+- TC-Q3a-001：mild correction 修改 confidence 但 provenance 不变（升格自原 non-CRITICAL）
+- TC-Q3b-001：二阶 Statement object 区分（不同 StatementRef 哈希不冲突；升格自原 non-CRITICAL）
 
-**默认值与事件表（3）**
-- TC-A4-001：system.runaway
-- TC-A7-001 / TC-A7-002：默认值 baseline
+**Schema 不变量与隔离（4 CRITICAL，全部由原 14 条负面用例升格）**
+- TC-NEG-TENANT [CRITICAL]：final query 缺 `tenant_id` / `holder_scope` assertion 时拒绝执行；生产 profile 模拟 `app_filter` 不得通过 `storage_enforced` preflight。
+- TC-NEG-CROSSTENANT [CRITICAL]：跨 tenant 派生（A.tenant=t1 派生 B.holder.tenant=t2）若无 org_default/system 前驱或显式协议 → Validator 拒绝；有显式协议 → REVIEW_REQUESTED，不得静默写入。
+- TC-NEG-TIMEANCHOR [CRITICAL]：导入历史 Engram 含"last week" → valid_from 落在原始观察周期；无 segment observed_at 必须低置信 / 待审；不得使用系统当前日期兜底。
+- TC-NEG-IMMUTABLE [CRITICAL]：写后原地 UPDATE holder / source_speaker / perceived_by / tenant_id / provenance 必须被 Validator 拒绝；正确路径是 `statement.corrected + supersedes`。
 
-12 CRITICAL 用例为 P1 出货门槛，缺一不可。详细列表见 [07_v16_eng_review_test_plan.md](07_v16_eng_review_test_plan.md)。
+**P1 真路径核心（3 CRITICAL，新增）**
 
-**新增 critical failure mode 测试**
+完整 Given / When / Then 见 §15.3.4。
 
-- TC-A5-002：fallback 任务自身失败（双层兜底）
-- TC-A9-003：dispatcher 启动 boot replay commitment.active_holding/released 事件，重建 in-memory set
+- TC-NEW-PREFLIGHT [CRITICAL]：ProfileCapability fail-closed 启动门槛——缺 `idx_statement_id_tenant` / `transactional_outbox` / 错位 `tenant_isolation` / 缺 `cross_partition_transaction` 任一条件时进入 UNREADY，所有写入接口返回 `PRECONDITION_FAILED`。覆盖 M0.0 / M0.2。
+- TC-NEW-OUTBOX-IDEMP [CRITICAL]：outbox dispatcher 重启续投 + `idempotency_key` 重复投递 ACK + dead-letter 收敛。覆盖 M0.2 与 §16.2-8。
+- TC-NEW-CONFLICT-SEVERE [CRITICAL]：`direct_contradiction` 命中时 Bus.write 同事务原子提交 4 项（新 Statement + SUPERSEDES 边 + 旧 Statement ARCHIVED + 3 条 outbox 事件）。覆盖 M0.5、§3.5 T7 P1 路径与 §14.1 端到端写入。
 
-**负面验收用例**
+#### 15.3.2 P1 non-CRITICAL 用例（必通过但非出货门槛）
+
+**默认值与事件表**
+- TC-A4-001：causation_chain 深度 ≥4 时 emit `system.runaway`，Ops 与 Audit 同时接收。
+- TC-A7-001：默认值 baseline（Online N=3 / Idle T=120s / inbox 保留 7 天 / window_bucket=24h）。
+- TC-A7-002：window_bucket 粒度——同 commitment_id 24h 内重复 fire 仅注入一次（schema 与幂等键一致性，不依赖 Prospective Loop 真实运行时）。
+
+**Reconsolidation 占位（schema 一致性，非运行时）**
+- TC-A3-001：5 条新 Statement 同时通过 derived_from 引用同一旧 Statement Y → P2 Reconsolidation Engine 上线后只开一个窗口；P1 阶段仅校验 `derived_from` 边写入幂等且共享 `aggregate_id`，不验证窗口聚合。
+- TC-Q1-001：新 Statement 写入 derived_from=[Y]，Y 状态 CONSOLIDATED → Bus.write 完成后 emit `statement.references_existing`。P1 校验事件正确产生，不验证 P2 Reconsolidation Engine 的接收处理。
+
+**P1 负面用例（保留为 non-CRITICAL）**
+以下 10 条原负面用例继续保留为 non-CRITICAL（4 条已升格上移至 §15.3.1）：
 
 - 隐私拒收：Engram 含隐私越界内容 → Validator 拒收 → emit `extraction.failed(privacy_violation)` → 不重试，进入 dead-letter / audit。
-- 冲突共存：注入两条不同 holder 的矛盾 Statement → 两条共存 → 检索/Context Pack 标 CONFLICT，不得静默挑边覆盖。
+- 冲突共存（partial_overlap / adjacent）：注入两条不同 holder 的矛盾 Statement → 两条共存 → 检索 / Context Pack 标 CONFLICT，不得静默挑边覆盖（区别于 TC-NEW-CONFLICT-SEVERE 的 direct_contradiction 路径）。
 - 证据擦除：触发 `crypto_erasure` 后 → `basic_retrieve` 仍可返回 Statement 元数据，但 evidence 标注"部分证据已擦除"且 verbatim 不可恢复。
 - 幂等写入：同一 Engram 重复抽取 → `extraction_span_key` 去重 → 不产生重复 Statement。
 - 运行回执：成功写入与 no-op 抽取都必须产生 ExtractionAttempt；basic_retrieve 必须返回最小 RetrievalReceipt。
-- Profile preflight：关闭 `transactional_outbox` 或 `tenant_isolation` → 系统进入 UNREADY，不得继续运行。
+- Profile preflight（其他能力）：关闭 `transactional_outbox` / `tenant_isolation` 之外的次要能力（如 `vector_index`）→ 系统进入 DEGRADED 而非 UNREADY，前台读写降级运行（与 TC-NEW-PREFLIGHT 测试的 fail-closed 路径互补）。
 - 自污染防护：RetrievalReceipt / PipelineRun trace 作为输入重放 → `source_kind=system_internal` 默认 NO_STORE，不得产生用户画像 Statement。
-- 归因不可变：写入后尝试原地修改 holder/source_speaker/perceived_by → Validator 拒绝；正确路径是 `statement.corrected + supersedes`。
-- `tenant_id` 不可变：尝试原地 UPDATE Statement.tenant_id → 拒绝，只能新建跨 tenant review 候选。
-- `provenance` 不可变：review 提升、confidence 调整、testing consolidate 不得修改原 Statement.provenance；fork/supersedes 新版本才可有新 provenance。
-- 跨 tenant 派生：Statement A(tenant=t1) 派生 Statement B(holder.tenant=t2) 时，若无 org_default/system 前驱或显式协议 → Validator 拒绝；若有显式协议 → REVIEW_REQUESTED。
 - chunk 级幂等：同一 chunk 内同 (predicate, canonical_object) 重复抽取，第一条接受，第二条标 REVIEW_REQUESTED，不自动覆盖。
-- 时间锚负例：导入历史 Engram 含"last week" → valid_from 落在原始观察周期，不得使用系统当前日期；若无 segment observed_at，必须低置信/待审。
-- 租户隔离 fail-closed：SQLite adapter 测试 final query 缺少 tenant_id/holder_scope assertion 时拒绝执行；生产 profile 模拟 app_filter 不得通过 storage_enforced preflight。
-- Source adapter metadata：同一内容分别以 byte_preserving 与 metadata_only 写入 → 后者不得让高影响 Statement 自动 APPROVED，receipt/context 必须标 evidence_kind。
+- Source adapter metadata：同一内容分别以 byte_preserving 与 metadata_only 写入 → 后者不得让高影响 Statement 自动 APPROVED，receipt / context 必须标 evidence_kind。
+- `provenance` 不可变（细分支）：review 提升、confidence 调整、testing consolidate 不得修改原 Statement.provenance；fork / supersedes 新版本才可有新 provenance（TC-NEG-IMMUTABLE 已覆盖核心断言，本条作为 review_status 升格场景的回归测试）。
 
-**P1 testing helper 约定**
+#### 15.3.3 P1 EVAL 阈值
 
-- `testing.mark_consolidated(stmt_id)`：VOLATILE → CONSOLIDATED，写审计记录，production profile 禁用。
+**TC-EVAL [P1 准入]**：50 条手工标注样本（中英混合，覆盖 holder / quoted / inferred / hearsay 四种 perspective + commitment + norm + 二阶嵌套）
+
+| 字段 | F1 阈值 |
+|---|---|
+| holder（cognizer 归因） | ≥ 0.85 |
+| holder_perspective（4 值分类） | ≥ 0.80 |
+| predicate（受控核心集映射） | ≥ 0.75 |
+| object 标准化值匹配（exact / canonical_object_hash） | ≥ 0.70 |
+| 二阶 ToM 嵌套抽出（nesting_depth=1 子集，约 10 条） | ≥ 0.60 |
+
+不达标即阻断 P1 出货；EVAL 须在 M0.7 期间至少跑 3 轮（不同 prompt 调整或抽取模型微调），取最后一轮成绩为准。
+
+**阈值依据**：本数据集仅 50 条，统计功效有限（参见 §16.2-10）；阈值为工程经验值非学术基准。P2 接入 ToMBench / FANToM 后取代本节为权威指标（见 §16.3-10）。
+
+#### 15.3.4 新增 P1 CRITICAL 用例（完整 Given / When / Then）
+
+##### TC-NEW-PREFLIGHT [CRITICAL] ProfileCapability fail-closed 启动门槛
+
+> **覆盖**：M0.0 / M0.2 / §16.3-1 / 原负面用例「Profile preflight」与「租户隔离 fail-closed」的运行时分支
+
+**Given**：local-store profile 启动期 ProfileCapability 读取 capability declaration
+
+**When**：以下任一条件成立：
+- (a) 主表缺 `idx_statement_id_tenant`，或
+- (b) `transactional_outbox` 能力为 false，或
+- (c) `tenant_isolation` 为 `app_filter` 而 profile 声明 `storage_enforced`，或
+- (d) `cross_partition_transaction` 为 false 但 profile 声明 `local_store_atomic`
+
+**Then**：
+- 进入 `RuntimeHealth = UNREADY`
+- 前台与后台 worker 均不启动
+- emit `runtime.health_changed(state=UNREADY, missing_capabilities=[...])`
+- 进程退出码 = 78（EX_CONFIG）
+- 不写任何 Engram 或 Statement
+- 任何对 `Bus.append_evidence` / `Bus.write` 的调用直接返回 `PRECONDITION_FAILED`
+
+##### TC-NEW-OUTBOX-IDEMP [CRITICAL] outbox 重启续投 + 幂等 + dead-letter
+
+> **覆盖**：M0.2 / §16.2-8 outbox 积压风险 / §3.10 idempotency_key
+
+**Given**：100 条 BusEvent 已写入 outbox 表但 dispatcher 尚未投递；其中：
+- 50 条事件已部分投递、subscriber inbox 已记录处理成功
+- 30 条事件首次投递
+- 20 条事件 subscriber 处理永久失败（模拟 subscriber 总是抛 `non_retryable_error`）
+
+模拟进程在投递中途 crash，然后重启 dispatcher。
+
+**When**：dispatcher 重启后扫描 outbox + consumer_checkpoint 续投。
+
+**Then**：
+- 50 条已成功事件：subscriber inbox 通过 `idempotency_key` 命中，直接 ACK，不重复执行业务副作用
+- 30 条首次事件：按 `outbox_sequence` 顺序投递；同一 `aggregate_id` 内严格单调
+- 20 条永久失败事件：达到 `max_retries`（默认 5）后转 dead-letter queue，emit `extraction.dead_lettered` 或对应 `system.delivery_failed`，不阻塞同 aggregate 后续事件
+- 重启前后 dispatcher metrics: `events_delivered`, `events_acked_idempotent`, `events_dead_lettered` 计数与预期一致
+- 总投递次数 ≤ 200（150 实际尝试 + 50 idempotent ACK）
+
+##### TC-NEW-CONFLICT-SEVERE [CRITICAL] direct_contradiction 同事务原子提交
+
+> **覆盖**：M0.5 / §3.5 T7 P1 路径 / §3.12 SUPERSEDES 边 / §14.1 写入路径
+> **关键解读**：P1 ConflictProbe 在 `Bus.write` 同事务直接开 SUPERSEDES，不依赖 P2 Reconsolidation Engine 的可塑窗口与异步仲裁。
+
+**Given**：
+- 已存在 Statement `S_old`：holder=self, subject=Bob, predicate=responsible_for, object="auth", modality=BELIEVES, polarity=POS, consolidation_state=CONSOLIDATED（通过 `testing.mark_consolidated` 翻转入态）
+- 新写入 Statement `S_new`：holder=self, subject=Bob, predicate=responsible_for, object="auth", modality=BELIEVES, polarity=NEG（同 holder/subject/predicate/object，polarity 反转）
+- ConflictProbe 配置 conflict_kind = `direct_contradiction`（机械可判：同 canonical_object_hash + 极性相反）
+
+**When**：`Bus.write(S_new)` 在单个 SQLite 事务内执行 Validator + ConflictProbe + 持久化。
+
+**Then**（事务原子提交 4 项 + 1 状态迁移）：
+1. `S_new` 写入 statements 表，consolidation_state = `VOLATILE`
+2. 写入 `statement_edges(source_id=S_new.id, target_id=S_old.id, edge_kind="supersedes")`
+3. `S_old` 的 `consolidation_state` 由 `CONSOLIDATED` → `ARCHIVED`，**不经过** `REPLAYING_RECONSOLIDATING` 中间态（P1 无 Reconsolidation Engine）
+4. 同事务 outbox 写入：
+   - `statement.written` (primary_id=S_new.id)
+   - `statement.archived` (primary_id=S_old.id, reason=`direct_contradiction`)
+   - `statement.superseded` (primary_id=S_new.id, aggregate_id=S_old.id 的 supersedes_root_id)
+5. 任一步失败 → 整个事务回滚：S_new 不存在，S_old 仍 CONSOLIDATED，无 outbox 事件，无 SUPERSEDES 边
+
+**额外验证**：
+- `basic_retrieve(holder=self, subject=Bob, predicate=responsible_for)` 只返回 `S_new`，不返回 `S_old`（默认过滤 ARCHIVED）
+- `S_new` 与 `S_old` 之间不写 `MAY_OVERLAP_WITH`（已是 SUPERSEDES）
+
+**P1 局限说明**：
+- P1 仅处理 `direct_contradiction` 与 `superseding` 两种机械可判 severe 冲突
+- `partial_overlap` 与 `adjacent` 在 P1 只标 `CONFLICTS_WITH` 边，不动旧 Statement
+- P1 无 pending_evidence 队列、无 30min 可塑窗口、不发 `belief.conflict + 仲裁` 异步事件
+- LLM 仲裁 / 多证据聚合 / mild correction provenance 不变路径，全部 P2.b 才上线
+
+#### 15.3.5 P1 testing helper 约定
+
+- `testing.mark_consolidated(stmt_id)`：VOLATILE → CONSOLIDATED，写审计记录，production profile 禁用。仅供 §15.3.4 中 TC-NEW-CONFLICT-SEVERE 与 §14.1 端到端 smoke test 构造前置条件使用，不用于模拟 Replay 采样动态语义。
 - `testing.mark_evidence_erased(engram_ref)`：标为 crypto_erasure，用于 basic_retrieve 擦除负例，不实现完整合规传播。
 - 所有 helper 文件级必须声明 `__starling_testing_only__ = True`，位于 `starling.testing.*` 命名空间。production 启动 preflight 发现该标记即 fail-closed；CI 静态扫描禁止 production entrypoint 引用 testing 命名空间。module marker 是运行时防线，不是唯一保证；不能通过 runtime flag 覆盖。
 
-**P1 非交付项（明确说明）**
+#### 15.3.6 用例迁移与历史标签
 
-P1 不交付：Projection Index（P2）；idx_entity_statement 实体投影（P2）；完整 Retrieval Planner（P3）；完整 RetrievalScopePlan runtime（P3）；ToM 推断（P2 一阶 schema，P3 二阶运行时）；Replay Scheduler（P2，P1 只用 testing helper 模拟）；完整 RuntimeHealth 仪表盘（P2）；完整 SourceAdapter 插件系统（P2）；细粒度 segment_map/span_start/span_end（P2）；Reconsolidation Engine（P2）；Prospective Loop（P3）；完整 ActionPolicyGraph（P3 高阶）；CommonGround pool（P2 基础，P3 完整）；Affect Buffer（P3，P1 写入 salience 字段但不参与采样）。
+由于 v17→v24 P1 范围反复收紧（Replay / Reconsolidation / Prospective 全部推到 P2/P3），原 v16 测试计划中的若干 CRITICAL 用例 Given 引用了 P1 不交付的子系统，本版按 §15.3.0 元规则重新分级：
+
+| 用例 ID | 原标签 | 现标签 | 迁入位置 | 依赖的非 P1 子系统 |
+|---|---|---|---|---|
+| TC-A1-001 | P1 CRITICAL | P2 准入 | §16.3-7 | Replay Scheduler |
+| TC-A1-002 | P1 CRITICAL | P2 准入 | §16.3-7 | Replay Scheduler / VOLATILE TTL 任务 |
+| TC-A5-001 | P1 CRITICAL | P2 准入 | §16.3-7 | Replay Scheduler |
+| TC-A6-001 | P1 CRITICAL | P2 准入 | §16.3-7 | Replay decay + Retrieval recall |
+| TC-A6-002 | P1 CRITICAL | P2 准入 | §16.3-7 | 同上 |
+| TC-A8-001 | P1 CRITICAL | P2 准入 | §16.3-7 | Reconsolidation Engine（异步仲裁路径） |
+| TC-A8-002 | P1 CRITICAL | P3 演进 | §16.4 | dist/cloud-store saga 补偿 |
+| TC-A2-001 | P1 CRITICAL | P2 准入 | §16.3-8 | Commitment 五态机 |
+| TC-A2-002 | P1 CRITICAL | P2 准入 | §16.3-8 | Commitment 五态机 |
+| TC-A9-001 | P1 CRITICAL | P2 准入 | §16.3-8 | active_holding 反向保护 |
+| TC-A9-002 | P1 CRITICAL | P2 准入 | §16.3-8 | commitment.released |
+| TC-A5-002 | P1 critical failure mode | P2 准入 | §16.3-7 | Replay Scheduler fallback |
+| TC-A9-003 | P1 critical failure mode | P2 准入 | §16.3-8 | Commitment dispatcher boot replay |
+
+§15.3.4 的 TC-NEW-CONFLICT-SEVERE 替代 TC-A8-001 在 P1 阶段的"severe path 同事务原子"职责（仅同步路径，无 Reconsolidation 仲裁语义）。TC-A8-001 在 P2.b 启用后回归为"异步仲裁版本"测试，与 TC-NEW-CONFLICT-SEVERE 互补存在，不冲突。
+
+#### 15.3.7 P1 非交付项（明确说明）
+
+P1 不交付：Projection Index（P2）；idx_entity_statement 实体投影（P2）；完整 Retrieval Planner（P3）；完整 RetrievalScopePlan runtime（P3）；ToM 推断（P2 一阶 schema，P3 二阶运行时）；Replay Scheduler（P2，P1 只用 testing helper 模拟）；完整 RuntimeHealth 仪表盘（P2）；完整 SourceAdapter 插件系统（P2）；细粒度 segment_map / span_start / span_end（P2）；Reconsolidation Engine（P2）；Prospective Loop（P3）；完整 ActionPolicyGraph（P3 高阶）；CommonGround pool（P2 基础，P3 完整）；Affect Buffer（P3，P1 写入 salience 字段但不参与采样）。
 
 ### 15.4 迁移路径
 
@@ -1859,7 +1987,7 @@ Starling 不要求替换现有系统。任何开源系统都可以作为 Substra
 
 9. **crypto_erasure 与可解释性张力**：verbatim 不可恢复后错误溯源能力下降。缓解：保留不可逆 content_hash、source metadata、redacted summary、decision trace；legal_hold/audit_retain 做最小权限访问和审计。
 
-10. **评测单薄**：50 条手工标注对 LLM 抽取统计无功效；FANToM/ToMBench 推到 P2；P1 阶段数据质量信号来源有限，12 CRITICAL 用例是唯一强门槛。
+10. **评测单薄**：50 条手工标注对 LLM 抽取统计无功效；FANToM/ToMBench 推到 P2；P1 阶段数据质量信号来源有限，13 P1 CRITICAL 用例（v24.1 重组后）+ §15.3.3 EVAL 阈值表是出货门槛。
 
 11. **embedding 策略真空**：P1 用主表 LIKE 查询，样本量 50→5000 条即失效；向量检索策略未定，P2 引入 Projection Index 前无法规模化。
 
@@ -1871,16 +1999,22 @@ Starling 不要求替换现有系统。任何开源系统都可以作为 Substra
 
 P2 开始前必须满足：
 
-1. P1 全部 12 CRITICAL 用例绿灯，无豁免。
+1. P1 全部 13 CRITICAL 用例绿灯（见 §15.3.1），无豁免。
 2. P2 ToMBench 一阶 ToM 基准跑通，FANToM 信息不对称对照集准备完毕。
 3. Replay Scheduler 启用前需通过 Projection repair safety 测试：构造 rebuild 抽取条数低于主表 ground truth 的场景，验证系统 emit `projection.rebuild_failed(truncation_suspected)` 且 active projection 不被替换。
 4. Reconsolidation Engine 上线前，再巩固窗口参数（默认 30 分钟，区间 5 min–6 h）必须有 per-modality 覆写配置，高频更新对象（≥ 3 次/小时）自动缩短至 5 min。
 5. P2 ConflictProbe 上线后，CONFLICTS_WITH 边写入必须通过 canonical_conflict_key 唯一性校验，防止同一冲突对多次记录。
 6. Projection Index 首次 rebuild 前，必须通过 repair guard（SQLite ground truth vs index count）验证，确认 truncation_suspected 告警机制可触发。
+7. **状态机契约（Replay 路径）**：P2.b Replay Scheduler 上线后必须通过以下用例（v24.1 修订前曾误标 P1 CRITICAL，按 §15.3.0 元规则迁入此处，详见 §15.3.6）：TC-A1-001（replay_count 上限强制 CONSOLIDATED）、TC-A1-002（VOLATILE TTL）、TC-A5-001（REPLAYING_CONSOLIDATING fallback timeout）、TC-A5-002（fallback 任务自身失败双层兜底）、TC-A6-001 / TC-A6-002（T5/T8 outbox 串行）、TC-A8-001（local-store severe path 异步仲裁版本，与 P1 同步路径 TC-NEW-CONFLICT-SEVERE 互补）。
+8. **Commitment 契约**：P2.c Prospective Loop 上线后必须通过：TC-A2-001（三次 BROKEN auto WITHDRAWN）、TC-A2-002（RENEGOTIATED 链长 = 3）、TC-A9-001 / TC-A9-002（active_holding 反向保护与 release 释放）、TC-A9-003（dispatcher boot replay 重建 in-memory set）。
+9. **Reconsolidation 兼容性**：P2.b Reconsolidation Engine 上线时不得修改 P1 ConflictProbe 同事务直接开 SUPERSEDES 的同步路径（仅在 partial_overlap / adjacent / mild correction 三类冲突上接管异步语义）。验收方式：P1 现有 TC-NEW-CONFLICT-SEVERE 在 P2 仍须通过；TC-A8-001 异步仲裁版本作为补集。
+10. **评测加载**：P2 准入前必须接入 ToMBench 一阶 ToM 子集 + FANToM 信息不对称对照集（§15.1 P2.a 已要求），并取代 §15.3.3 的 50 条手工标注 EVAL 作为权威质量指标，覆盖 P1 阶段无法形成统计功效的短板（§16.2-10）。
 
 ### 16.4 P3+ 持续演进（无硬性交付节点）
 
 P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 形式化 belief base（可选高阶）；神经-符号混合实验。P3+ 不设出货门槛，P3 结束后按研究进度迭代。
+
+**P3 准入用例（迁移自 §15.3）**：TC-A8-002（cloud-graphiti 跨 Postgres + Neo4j + Qdrant saga 补偿）须在 P3.b 多底座产品化中通过，作为 dist/cloud-store profile 的准入条件之一。其 Given 引用 cloud-store 三库底座，P1 不交付，按 §15.3.0 元规则归入此处。
 
 依赖：P3+ 的群聊 SharedGround 需要 P2 CommonGround pool 作为基础；PDDL 形式化 belief base 需要 P3 Context Pack Builder 稳定后才有足够结构化输入；Multi-agent 信任传播需要 P2 KnowledgeFrontier + P3 ToMDepthEstimator 联合驱动。
 
@@ -2029,6 +2163,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| v24 → v24.1 | P1 验收门槛重组：CRITICAL 标签元规则、9 用例迁出至 §16.3/§16.4、3 条新 CRITICAL、§3.5 T7 P1 路径明文化 |
 | v23 → v24 | 统一编码前主版本：子系统数量校正、P1 语言栈与存储栈统一、Projection Index 阶段纠偏、历史链接刷新 |
 | v17 → v18 | 结构拆分，单文件 → 主文档 + 12 子系统 |
 | v16 → v17 | 编码起点，14 项契约决定写入 |
@@ -2049,7 +2184,26 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 | v2 → v3 | Replay Scheduler + Prospective Loop |
 | v1 → v2 | AffectVector + trust_priors + polarity |
 
-### v23 → v24（本版）
+### v24 → v24.1（本版）
+
+P1 验收门槛重组。诊断起点：v17→v24 反复收紧 P1 范围（Replay / Reconsolidation / Prospective 全部推到 P2/P3），但 §15.3 的 35 用例与 12 CRITICAL 沿用 v16 测试计划，未同步重打标签——12 CRITICAL 中 9 条的 Given 部分引用 P1 不交付的子系统，"出货门槛"不可执行。
+
+主要修订：
+
+- **§15.3 重写**：分 §15.3.0 元规则、§15.3.1 P1 出货门槛（13 CRITICAL）、§15.3.2 non-CRITICAL、§15.3.3 EVAL 阈值、§15.3.4 新用例 Given/When/Then、§15.3.5 testing helper 约定、§15.3.6 用例迁移历史、§15.3.7 P1 非交付。
+- **§15.3.0 CRITICAL 标签有效性元规则**：新增。规定 CRITICAL 标签的范围一致性 / 可观测性 / 可断言性三条件，并要求每次 P 阶段范围调整时同步重新校验，防止漂移再次发生。
+- **CRITICAL 重选**：从原 12 条调整为 13 条。保留 6 条与 P1 实际交付一致的契约用例（TC-Q2-001/002/003/004 + TC-Q3a-001 + TC-Q3b-001）；从原 14 条负面用例升格 4 条（TC-NEG-TENANT / TC-NEG-CROSSTENANT / TC-NEG-TIMEANCHOR / TC-NEG-IMMUTABLE）；新增 3 条 P1 真路径核心（TC-NEW-PREFLIGHT / TC-NEW-OUTBOX-IDEMP / TC-NEW-CONFLICT-SEVERE）。
+- **§16.3 P2 准入条件追加 7-10 条**：从 §15.3 迁入 9 条原 CRITICAL（TC-A1-001/002, TC-A5-001/002, TC-A6-001/002, TC-A8-001, TC-A2-001/002, TC-A9-001/002/003）作为 P2.b/P2.c 准入门槛；新增 P2 Reconsolidation 兼容性硬约束（不得 break P1 同步路径）；新增 P2 评测加载条款。
+- **§16.4 P3+ 演进追加 TC-A8-002**：cloud-graphiti 跨 Postgres+Neo4j+Qdrant saga 补偿迁至 P3.b 多底座产品化准入条件。
+- **§3.5 状态机迁移表新增 T7-P1 行**：P1 阶段 ConflictProbe 同事务直接驱动 CONSOLIDATED→ARCHIVED（仅 `direct_contradiction` / `superseding`）；T7 原行保留为 P2+ 的 REPLAYING_RECONSOLIDATING→ARCHIVED 异步窗口路径，二者并存。
+- **subsystems_design/05_bus.md ConflictProbe 章**：补 P1 同步严重冲突路径小节，明示同事务 4 项原子提交契约。
+- **subsystems_design/11_reconsolidation.md**：补 P1/P2 兼容声明，承诺 P2.b 启用时不破坏 P1 同步路径。
+- **§15.2 M0.7**：验收口径从 "35 用例（12 CRITICAL）" 调整为 "13 P1 CRITICAL + non-CRITICAL + 50 条手工标注 + 2 E2E + 1 EVAL"。
+- **§15.3.3 EVAL 阈值**：新增 5 行阈值表（holder F1≥0.85, holder_perspective F1≥0.80, predicate F1≥0.75, object F1≥0.70, 二阶 ToM 嵌套 F1≥0.60）。
+
+不变项：架构、子系统职责、schema、状态机六态、事件枚举、§15.1 阶段交付主表、§16.1 设计选择、§16.2 风险与开放问题、§16.5 未交付项汇总均未修改。
+
+
 
 编码前事件语义进一步收口。`statement.consolidated` 明确为生命周期信号，表示 Statement 最终稳定在 `CONSOLIDATED`；Replay Scheduler 与 Reconsolidation Engine 都可作为 producer。`statement.derived` 明确为内容派生信号，仅表示 Replay 产出新的派生 Statement，不再承担生命周期含义。
 

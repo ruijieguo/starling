@@ -193,9 +193,9 @@ canonicalize 规则升级（新版本号如 "v2"）
 
 | 等级 | 判定 | 处理 |
 |---|---|---|
-| `direct_contradiction` | 同 holder / modality / subject / predicate / scope，时间区间等价或高度重叠，polarity 相反 | emit `belief.conflict`，进入 Reconsolidation |
+| `direct_contradiction` | 同 holder / modality / subject / predicate / scope，时间区间等价或高度重叠，polarity 相反 | **P1**：Bus.write 同事务直接开 SUPERSEDES，旧版 ARCHIVED，emit `statement.archived` + `statement.superseded`（详见下方 §3.5 P1 同步严重冲突路径）。**P2+**：emit `belief.conflict`，进入 Reconsolidation 异步窗口。 |
 | `partial_overlap` | canonical object 相同，时间区间有交集但不完全覆盖 | 建 `CONFLICTS_WITH` 边，降低自动仲裁置信度，Context Pack 标 CONFLICT |
-| `superseding` | 新 Statement valid interval 完全覆盖旧 Statement，且 evidence 更新 | 旧版 valid_to / expired_at 截断，建 `SUPERSEDES` 边，通常不进入冲突流程 |
+| `superseding` | 新 Statement valid interval 完全覆盖旧 Statement，且 evidence 更新 | 旧版 valid_to / expired_at 截断，建 `SUPERSEDES` 边；P1 同事务 emit `statement.superseded`，不进入冲突流程 |
 | `adjacent` | 时间区间相邻或存在小 gap，语义兼容 | 建 TEMPORAL / ADJACENT 边，作为补充而非冲突 |
 
 时间 overlap 使用闭开区间 `[valid_from, valid_to)`，缺失 valid_to 视作 open-ended。overlap 查询条件：`start <= query_end AND (end > query_start OR end IS NULL)`。
@@ -225,6 +225,38 @@ canonical_conflict_key(stmt) = hash_tuple(
 2. CommonGround Builder 消费 `statement.superseded`；只有新 Statement 已达到 `grounded` 条件时才执行 `SupersedeGround`。
 3. `Bus.rebuild_container(kind="common_ground")` 一致性校验可补漏。
 4. Replay Scheduler 只能通过 Bus 产生 `statement.derived / statement.corrected`，不得直接修改 CommonGround（绕过 outbox、CAS 与审计）。
+
+**P1 同步严重冲突路径（v24.1 新增）**：
+
+P1 阶段 Reconsolidation Engine 不上线（§15.5 P1 非交付项）。`direct_contradiction` 命中时，ConflictProbe 在 Bus.write 同事务内直接执行原子 4 项提交，**不开异步可塑窗口、不发 `belief.conflict` 仲裁事件**：
+
+```
+Bus.write(S_new) 同事务:
+  1. INSERT statements (S_new, consolidation_state=VOLATILE)
+  2. INSERT statement_edges (source=S_new.id, target=S_old.id, edge_kind=supersedes)
+  3. UPDATE statements SET consolidation_state=ARCHIVED WHERE id=S_old.id
+       (S_old 由 CONSOLIDATED 直接到 ARCHIVED，跳过 REPLAYING_RECONSOLIDATING)
+  4. INSERT bus_events (
+       statement.written       primary_id=S_new.id,
+       statement.archived      primary_id=S_old.id reason=direct_contradiction,
+       statement.superseded    primary_id=S_new.id aggregate_id=supersedes_root_id
+     )
+```
+
+任一步失败 → 整个事务回滚：S_new 不存在，S_old 仍 CONSOLIDATED，无 outbox 事件，无 SUPERSEDES 边。
+
+**P1 严重冲突的 ConflictProbe 判据（机械可判）**：
+
+| 子路径 | 触发条件 | 备注 |
+|---|---|---|
+| `direct_contradiction` | 同 canonical_object_hash + 极性相反，且双方 confidence ≥ θ_severe（默认 0.6） | 低置信 LLM 推断不进入此路径，仍走 `partial_overlap + REVIEW_REQUESTED` |
+| `superseding` | 新 Statement valid interval 完全覆盖旧 Statement，且 evidence 更新 | 同步开 SUPERSEDES，旧版 valid_to / expired_at 截断 |
+
+`partial_overlap` 与 `adjacent` 在 P1 仅写 `CONFLICTS_WITH` 边，不动旧 Statement 状态。LLM 仲裁、多证据聚合、mild correction provenance 不变路径，全部 P2.b 才上线。
+
+**P1/P2 兼容承诺**：P2.b Reconsolidation Engine 启用时**不修改本同步路径**——`direct_contradiction` 与 `superseding` 在 P2+ 仍由 ConflictProbe 同事务直接处理，Reconsolidation Engine 仅接管 `partial_overlap` / `adjacent` / mild correction 三类异步语义。该兼容承诺在 §16.3-9 P2 准入条件中作为硬约束验证。验收用例：P1 现有 TC-NEW-CONFLICT-SEVERE 在 P2 仍须通过；TC-A8-001 异步仲裁版本作为补集。
+
+**§3.5 状态机映射**：本路径对应 §3.5 状态机迁移表新增的 T7-P1 行（CONSOLIDATED → ARCHIVED，关闭者 = Bus.write 同事务）。原 T7 行（REPLAYING_RECONSOLIDATING → ARCHIVED）保留为 P2+ 异步窗口路径。
 
 ### 4. 防抖契约
 

@@ -4,6 +4,18 @@
 
 Reconsolidation Engine 实现"被回忆即可塑"机制：`CONSOLIDATED` Statement 被召回或被冲突触发后进入 `REPLAYING_RECONSOLIDATING` 可塑窗口期，期间收到的支持或反对证据决定回归 `CONSOLIDATED`（confidence 调整）或 fork 新版本（severe path）。它不删旧版，旧版进 supersedes 链；轻微反对路径仅修改原 Statement 的 confidence 字段，不产生新版本，provenance 保持不变。
 
+## P1/P2 阶段定位（v24.1 明示）
+
+**P1 阶段 Reconsolidation Engine 不上线**（§15.5 P1 非交付项）。P1 期间 `direct_contradiction` 与 `superseding` 两类机械可判的严重冲突由 [Statement Bus](v24_05_bus.md) §3 ConflictProbe 在 `Bus.write` 同事务内直接处理（同步路径，详见 05_bus.md "P1 同步严重冲突路径"小节）：旧 Statement 由 `CONSOLIDATED` 直接迁至 `ARCHIVED`，旁路 `REPLAYING_RECONSOLIDATING` 中间态，对应主文档 §3.5 状态机迁移表新增的 T7-P1 行。
+
+**P2.b 启用时的兼容承诺**：本 Engine 在 P2.b 上线时**不修改 P1 同步路径**。`direct_contradiction` 与 `superseding` 仍由 ConflictProbe 同事务处理。Reconsolidation Engine 仅接管以下三类异步语义：
+
+- `partial_overlap`：canonical object 相同但时间区间部分交集，需要多证据聚合仲裁
+- `adjacent`：时间相邻或语义相似的 `MAY_OVERLAP_WITH` 候选，需要模式分离判定
+- `mild correction`：轻微反对，仅调整 confidence + 追加 confidence_history，provenance 不变
+
+**P2 准入硬约束**：本兼容承诺在主文档 §16.3-9 中作为 P2 准入条件验证：P1 现有 `TC-NEW-CONFLICT-SEVERE` 在 P2 仍须通过；P2 新启用 `TC-A8-001`（异步仲裁版本）作为补集。两条用例并存不冲突。
+
 ---
 
 ## 输入
