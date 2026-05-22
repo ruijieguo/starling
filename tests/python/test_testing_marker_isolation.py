@@ -16,3 +16,9 @@ def test_testing_marker_loaded_in_dev_build(core):
 def test_testing_marker_via_python_helper():
     from starling.testing import marker_loaded
     assert marker_loaded() is True
+
+
+def test_testing_package_all_locks_surface():
+    """The testing helper subpackage exports exactly one symbol — locked surface."""
+    import starling.testing
+    assert starling.testing.__all__ == ["marker_loaded"]
