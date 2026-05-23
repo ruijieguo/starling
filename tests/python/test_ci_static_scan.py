@@ -68,3 +68,18 @@ def test_scanner_allows_pyi_stub_with_block_comment(tmp_path):
     )
     result = _run_scanner(["--prod-roots", "python"], cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_scanner_fails_when_prod_calls_append_event_unsafe(tmp_path):
+    # M0.2: append_event_unsafe is the OutboxWriter-without-domain-write
+    # shortcut on _core.SqliteAdapter. It is bound for TC-NEW-OUTBOX-IDEMP only;
+    # any prod entrypoint that calls it must fail the scan.
+    (tmp_path / "python").mkdir()
+    (tmp_path / "python" / "leaky.py").write_text(
+        "from starling import _core\n"
+        "def go(adapter, ev):\n"
+        "    adapter.append_event_unsafe(ev)\n"
+    )
+    result = _run_scanner(["--prod-roots", "python"], cwd=tmp_path)
+    assert result.returncode != 0
+    assert "append_event_unsafe" in result.stdout + result.stderr

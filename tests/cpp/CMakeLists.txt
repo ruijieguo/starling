@@ -23,6 +23,15 @@ add_executable(starling_tests
     test_preflight.cpp
     test_final_query_assertion.cpp
     test_canonicalize.cpp
+    test_sqlite_link.cpp
+    test_migration_runner.cpp
+    test_connection.cpp
+    test_idempotency_key.cpp
+    test_outbox_writer.cpp
+    test_consumer_state.cpp
+    test_outbox_dispatcher.cpp
+    test_pipeline_ledger.cpp
+    test_sqlite_adapter.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

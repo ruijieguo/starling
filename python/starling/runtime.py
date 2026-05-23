@@ -7,7 +7,8 @@ contract enforced here (PRECONDITION_FAILED on UNREADY, no worker start, exit co
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from starling import _core
 
@@ -61,6 +62,36 @@ class _StubEngramStore:
     appended_count: int = 0
 
 
+class _SqliteBackedBus:
+    """M0.2 SQLite-backed bus surface.
+
+    Mirrors `_StubBus`'s shape so existing callers keep working when an adapter
+    is supplied. The actual append-into-bus_events flow lands behind
+    OutboxWriter in M0.3 (engram) + M0.4 (statement); M0.2 only needs the
+    health gate and the adapter handle exposed to producers.
+    """
+
+    def __init__(self, adapter, *, health_getter: Callable[[], _core.RuntimeHealth]):
+        self._adapter = adapter
+        self._health_getter = health_getter
+        self.written_count = 0
+
+    def adapter(self):
+        return self._adapter
+
+    def append_evidence(self, _engram) -> str:
+        if self._health_getter() != _core.RuntimeHealth.READY:
+            return "PRECONDITION_FAILED"
+        self.written_count += 1
+        return "OK"
+
+    def write(self, _stmt) -> str:
+        if self._health_getter() != _core.RuntimeHealth.READY:
+            return "PRECONDITION_FAILED"
+        self.written_count += 1
+        return "OK"
+
+
 @dataclass
 class Runtime:
     capability: _core.ProfileCapability
@@ -68,17 +99,27 @@ class Runtime:
     idx_statement_id_tenant_present: Callable[[], bool] = field(
         default=lambda: True
     )
+    # M0.2: optional SqliteAdapter handle. When present, __post_init__ wires
+    # _SqliteBackedBus instead of _StubBus. Default None preserves M0.0
+    # call-site shape so TC-NEW-PREFLIGHT keeps passing unchanged.
+    adapter: Optional[Any] = None
 
     foreground_workers_started: bool = False
     background_workers_started: bool = False
     exit_code: Optional[int] = None
-    bus: _StubBus = field(init=False)
+    bus: Any = field(init=False)
     engram_store: _StubEngramStore = field(default_factory=_StubEngramStore)
 
     _state: _core.RuntimeHealth = field(default=_core.RuntimeHealth.UNREADY)
 
     def __post_init__(self):
-        self.bus = _StubBus(health_getter=lambda: self._state)
+        if self.adapter is None:
+            # M0.0 stub path stays byte-stable.
+            self.bus = _StubBus(health_getter=lambda: self._state)
+        else:
+            self.bus = _SqliteBackedBus(
+                self.adapter, health_getter=lambda: self._state
+            )
 
     def health(self) -> _core.RuntimeHealth:
         return self._state
@@ -127,4 +168,42 @@ class Runtime:
             })
 
 
-__all__ = ["Runtime", "RuntimeUnreadyError", "EX_CONFIG"]
+def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
+    """Construct a Runtime backed by a real SqliteAdapter at db_path.
+
+    The adapter's declare_capability() reports `engram_per_record_key=False`
+    and `testing_helper_marker=False` in M0.2 (KMS lands in M0.3, marker is
+    dev-only). Acceptance tests that need to reach READY must call the
+    M0.2-only relax_preflight_for_m0_2() helper from the testing subpackage
+    before invoking this.
+    """
+    adapter = _core.SqliteAdapter.open(str(db_path))
+    cap = adapter.declare_capability()
+
+    # idx_statement_id_tenant_present: real check against sqlite_master.
+    # Captures db_path (not the adapter handle) to avoid a second sqlite3
+    # connection contending for the WAL writer lock with the C++ side; the
+    # Python sqlite3 read is open-and-close, scoped to the call.
+    def _idx_present() -> bool:
+        import sqlite3
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='index' AND name='idx_statement_id_tenant'"
+            ).fetchone()
+            return row is not None
+
+    return Runtime(
+        capability=cap,
+        adapter=adapter,
+        idx_statement_id_tenant_present=_idx_present,
+    )
+
+
+__all__ = [
+    "Runtime",
+    "RuntimeUnreadyError",
+    "EX_CONFIG",
+    "LOCAL_STORE_REQUIRED",
+    "_build_local_store_sqlite_runtime",
+]

@@ -1,0 +1,41 @@
+#include "starling/bus/bus_event.hpp"
+#include "starling/crypto/sha256.hpp"
+
+#include <chrono>
+#include <string>
+
+namespace starling::bus {
+
+namespace {
+constexpr char kSep = '\x1f';
+}  // namespace
+
+std::string compute_idempotency_key(
+        std::string_view event_type,
+        std::string_view aggregate_id,
+        std::string_view canonical_key,
+        std::string_view causation_root,
+        std::string_view window_bucket) {
+    std::string buf;
+    buf.reserve(event_type.size() + aggregate_id.size() + canonical_key.size()
+                + causation_root.size() + window_bucket.size() + 4);
+    buf.append(event_type);    buf.push_back(kSep);
+    buf.append(aggregate_id);  buf.push_back(kSep);
+    buf.append(canonical_key); buf.push_back(kSep);
+    buf.append(causation_root);buf.push_back(kSep);
+    buf.append(window_bucket);
+    return starling::crypto::sha256_hex(buf);
+}
+
+std::string compute_window_bucket(
+        std::string_view event_type,
+        std::chrono::system_clock::time_point now) {
+    if (event_type == "pipeline_run.started") {
+        const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        return std::to_string(sec / 60);
+    }
+    return "";
+}
+
+}  // namespace starling::bus

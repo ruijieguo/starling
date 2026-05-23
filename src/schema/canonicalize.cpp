@@ -7,6 +7,7 @@
 // Foundation. The linux build will need ICU; not addressed in M0.1.
 
 #include "starling/schema/canonicalize.hpp"
+#include "starling/crypto/sha256.hpp"
 
 #include <array>
 #include <chrono>
@@ -19,8 +20,6 @@
 #include <variant>
 #include <vector>
 
-#include <openssl/evp.h>
-
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #else
@@ -31,33 +30,10 @@ namespace starling::schema {
 
 namespace {
 
-// Lowercase hex table — explicit so locale / formatter quirks cannot bite us.
+// Lowercase hex table for canonicalize_ref. Explicit so locale / formatter
+// quirks cannot bite us. (sha256_hex moved to starling::crypto::sha256_hex
+// in commit 14565c4 and uses its own function-local copy.)
 constexpr char kHexDigits[] = "0123456789abcdef";
-
-std::string sha256_hex(const std::string& canonical) {
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int digest_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (ctx == nullptr) {
-        throw std::runtime_error("schema_invalid: EVP_MD_CTX_new failed");
-    }
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1
-        || EVP_DigestUpdate(ctx, canonical.data(), canonical.size()) != 1
-        || EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1) {
-        EVP_MD_CTX_free(ctx);
-        throw std::runtime_error("schema_invalid: EVP_Digest failed");
-    }
-    EVP_MD_CTX_free(ctx);
-
-    std::string out;
-    out.resize(static_cast<std::size_t>(digest_len) * 2);
-    for (unsigned int i = 0; i < digest_len; ++i) {
-        const unsigned char byte = digest[i];
-        out[static_cast<std::size_t>(i) * 2]     = kHexDigits[byte >> 4];
-        out[static_cast<std::size_t>(i) * 2 + 1] = kHexDigits[byte & 0x0fU];
-    }
-    return out;
-}
 
 // Python's `\s+` matches [ \t\n\r\f\v]. Match the same set explicitly so we
 // never depend on locale-sensitive std::isspace.
@@ -203,7 +179,7 @@ CanonicalResult canonicalize_object(const CanonicalInput& v) {
 
     return CanonicalResult{
         .canonical = canonical,
-        .sha256_hex = sha256_hex(canonical),
+        .sha256_hex = starling::crypto::sha256_hex(canonical),
     };
 }
 
