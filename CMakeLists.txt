@@ -99,8 +99,13 @@ file(WRITE "${STARLING_MIGRATIONS_INC}"
 target_include_directories(starling_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 # Testing-only translation unit lives in its own target so prod can omit it.
+# Links starling_core because mark_consolidated drives the same OutboxWriter +
+# TransactionGuard primitives Bus uses — it just lives outside the prod link
+# graph (CI scanner + preflight enforce that prod profiles never pull this
+# target in).
 add_library(starling_testing_marker STATIC src/testing/testing_marker.cpp)
 target_include_directories(starling_testing_marker PUBLIC include)
+target_link_libraries(starling_testing_marker PUBLIC starling_core)
 
 option(STARLING_BUILD_PYTHON "Build pybind11 bindings" ON)
 if(STARLING_BUILD_PYTHON)

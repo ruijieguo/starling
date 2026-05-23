@@ -236,6 +236,16 @@ PYBIND11_MODULE(_core, m) {
         "Testing-only helpers. Prod profiles MUST NOT link this submodule.");  // NOLINT(starling-testing-isolation)
     testing_submodule.def("marker_loaded", &starling::testing::testing_marker_loaded,
                           "True iff the testing-only translation unit is linked.");  // NOLINT(starling-testing-isolation)
+    testing_submodule.def("mark_consolidated",  // NOLINT(starling-testing-isolation)
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& stmt_id,
+           const std::string& tenant_id) {
+            return starling::testing::mark_consolidated(adapter, stmt_id, tenant_id);  // NOLINT(starling-testing-isolation)
+        },
+        py::arg("adapter"), py::arg("stmt_id"), py::arg("tenant_id"),
+        "VOLATILE -> CONSOLIDATED dev-only transition. Returns True iff a row "
+        "was actually flipped (and an audit event written); False on missing "
+        "row, already-consolidated row, or any other non-volatile state.");  // NOLINT(starling-testing-isolation)
 
     m.def("canonicalize_object_cpp", &canonicalize_object_cpp,
           py::arg("value"),

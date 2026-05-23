@@ -29,6 +29,7 @@ def test_testing_package_all_locks_surface():
     import starling.testing
     assert starling.testing.__all__ == [
         "marker_loaded",
+        "mark_consolidated",
         "relax_preflight_for_m0_2",
         "relax_preflight_for_m0_3",
     ]

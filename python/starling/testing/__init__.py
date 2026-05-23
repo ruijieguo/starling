@@ -6,6 +6,24 @@ def marker_loaded() -> bool:
     return _core_testing.marker_loaded()
 
 
+def mark_consolidated(adapter, stmt_id: str, tenant_id: str) -> bool:
+    """VOLATILE -> CONSOLIDATED dev-only state transition.
+
+    Flips a Statement row's consolidation_state from 'volatile' to
+    'consolidated' and writes a 'testing.mark_consolidated' audit event in
+    the same transaction. Idempotent: returns False if the row was already
+    consolidated, missing, or in any non-volatile state (no audit row is
+    written in that case, so replays don't pollute bus_events).
+
+    Used by TC-NEW-CONFLICT-SEVERE (M0.5 Task 10) to seed S_old in the
+    CONSOLIDATED state before exercising Bus::write through the §15.3.4
+    atomic SUPERSEDES path. Production preflight + the CI static scan reject
+    any prod entrypoint that imports starling.testing — so this can never
+    leak into real ingest.
+    """
+    return _core_testing.mark_consolidated(adapter, stmt_id, tenant_id)
+
+
 def relax_preflight_for_m0_2() -> tuple[str, ...]:
     """Trim engram_per_record_key + testing_helper_marker from LOCAL_STORE_REQUIRED.
 
@@ -39,4 +57,9 @@ def relax_preflight_for_m0_3() -> tuple[str, ...]:
     return relax_preflight_for_m0_2()
 
 
-__all__ = ["marker_loaded", "relax_preflight_for_m0_2", "relax_preflight_for_m0_3"]
+__all__ = [
+    "marker_loaded",
+    "mark_consolidated",
+    "relax_preflight_for_m0_2",
+    "relax_preflight_for_m0_3",
+]

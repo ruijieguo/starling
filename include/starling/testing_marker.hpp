@@ -1,5 +1,8 @@
 #pragma once
 
+#include "starling/persistence/sqlite_adapter.hpp"
+#include <string_view>
+
 namespace starling::testing {
 
 // True iff the testing-only translation unit is linked into the current binary.
@@ -10,5 +13,20 @@ namespace starling::testing {
 // CI grep (defense-in-depth #1) further bans `starling::testing` references in prod
 // entrypoints — see scripts/ci_static_scan.py.
 bool testing_marker_loaded() noexcept;
+
+// VOLATILE -> CONSOLIDATED transition for test setup. Writes an audit event
+// 'testing.mark_consolidated' (atomic with the UPDATE under a single
+// TransactionGuard). Idempotent: returns false if the row was already
+// consolidated, missing, or in any non-volatile state.
+//
+// Used by TC-NEW-CONFLICT-SEVERE (M0.5 Task 10) to seed S_old in the
+// CONSOLIDATED state before driving Bus::write through the §15.3.4 atomic
+// SUPERSEDES path. Production preflight + the CI static scan reject any prod
+// entrypoint that imports starling::testing — so this can never leak into
+// real ingest.
+bool mark_consolidated(
+    starling::persistence::SqliteAdapter& adapter,
+    std::string_view stmt_id,
+    std::string_view tenant_id);
 
 }  // namespace starling::testing
