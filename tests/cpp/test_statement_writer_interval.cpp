@@ -98,10 +98,11 @@ TEST(StatementWriterInterval, FullIntervalRoundTrip) {
     auto& accepted = std::get<StatementWriteAccepted>(outcome);
 
     sqlite3_stmt* raw = nullptr;
-    sqlite3_prepare_v2(
+    int rc = sqlite3_prepare_v2(
         conn.raw(),
         "SELECT valid_from, valid_to, event_time_start FROM statements WHERE id = ?",
         -1, &raw, nullptr);
+    ASSERT_EQ(rc, SQLITE_OK);
     sqlite3_bind_text(raw, 1, accepted.stmt_id.c_str(), -1, SQLITE_STATIC);
     ASSERT_EQ(sqlite3_step(raw), SQLITE_ROW);
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(raw, 0)),
@@ -125,10 +126,11 @@ TEST(StatementWriterInterval, ValidFromOnlyRoundTrip) {
     auto& accepted = std::get<StatementWriteAccepted>(outcome);
 
     sqlite3_stmt* raw = nullptr;
-    sqlite3_prepare_v2(
+    int rc = sqlite3_prepare_v2(
         conn.raw(),
         "SELECT valid_from, valid_to, event_time_start FROM statements WHERE id = ?",
         -1, &raw, nullptr);
+    ASSERT_EQ(rc, SQLITE_OK);
     sqlite3_bind_text(raw, 1, accepted.stmt_id.c_str(), -1, SQLITE_STATIC);
     ASSERT_EQ(sqlite3_step(raw), SQLITE_ROW);
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(raw, 0)),
