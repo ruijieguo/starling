@@ -49,6 +49,7 @@ add_executable(starling_tests
     test_statement_writer_interval.cpp
     test_normalized_interval.cpp
     test_canonical_scope.cpp
+    test_conflict_key.cpp
     test_bus_statement_write.cpp
     test_extractor_orchestrator.cpp
 )

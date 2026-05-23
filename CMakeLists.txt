@@ -47,6 +47,7 @@ target_sources(starling_core PRIVATE
     src/bus/statement_writer.cpp
     src/bus/normalized_interval.cpp
     src/bus/canonical_scope.cpp
+    src/bus/conflict_key.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
