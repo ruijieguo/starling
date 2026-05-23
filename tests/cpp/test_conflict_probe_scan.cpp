@@ -145,6 +145,19 @@ TEST(ConflictProbeScan, BelowThetaDowngradesToPartial) {
     EXPECT_EQ(ConflictKind::PartialOverlap, m->kind);
 }
 
+TEST(ConflictProbeScan, UnknownPolarityDoesNotTriggerDirectContradiction) {
+    auto a = open_fresh();
+    insert_row(a->connection(), "s_old", "unknown", 0.85,
+               "2026-05-01T00:00:00Z", "2027-01-01T00:00:00Z");
+    ConflictProbe p(a->connection());
+    auto m = p.scan(
+        make_stmt("pos", 0.85, std::string("2026-06-01T00:00:00Z"),
+                  std::string("2026-12-31T00:00:00Z")),
+        iv(std::string("2026-06-01T00:00:00Z"), std::string("2026-12-31T00:00:00Z")));
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(ConflictKind::PartialOverlap, m->kind);
+}
+
 TEST(ConflictProbeScan, UnknownIntervalClampsToPartial) {
     auto a = open_fresh();
     insert_row(a->connection(), "s_old", "pos", 0.85);   // no interval

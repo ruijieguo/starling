@@ -80,6 +80,9 @@ std::vector<CandidateRow> fetch_candidates(
     starling::persistence::Connection& conn,
     const starling::extractor::ExtractedStatement& s) {
 
+    // hash_version intentionally omitted from the WHERE clause: cross-version
+    // rows are returned and clamped to PartialOverlap in classify(). Revisit
+    // when M0.5+1 ships a second canonical_object_hash version.
     const char* sql =
         "SELECT id, tenant_id, "
         "       COALESCE(supersedes_id, id) AS supersedes_root_id, "
@@ -157,11 +160,17 @@ ConflictKind classify(
     const std::string s_new_polarity{starling::schema::to_string(s_new.polarity)};
     const bool opposite_polarity = (s_new_polarity != cand.polarity);
 
+    // Polarity::UNKNOWN must not trigger Superseding or DirectContradiction —
+    // a statement of unknown polarity has no semantic conflict with anything.
+    const bool polarity_known =
+        s_new_polarity != "unknown" && cand.polarity != "unknown";
+
     if (intervals_overlap(iv_new, cand.interval)) {
-        if (opposite_polarity && both_above_theta) {
+        if (opposite_polarity && both_above_theta && polarity_known) {
             return ConflictKind::DirectContradiction;
         }
-        if (!opposite_polarity && both_above_theta && covers(iv_new, cand.interval)) {
+        if (!opposite_polarity && both_above_theta && polarity_known
+            && covers(iv_new, cand.interval)) {
             return ConflictKind::Superseding;
         }
         return ConflictKind::PartialOverlap;
