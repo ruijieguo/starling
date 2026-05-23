@@ -24,12 +24,14 @@ that lock down the M0.2 acceptance contract:
 from __future__ import annotations
 
 import json
-import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from starling import _core
@@ -52,7 +54,12 @@ WORKER_FIXTURE = (
 # (every event needs a fresh worker) finishes in well under 30s. CI budget
 # is generous to absorb cold-cache pyc compilation on first run.
 DRAIN_WALLCLOCK_BUDGET_S = 60.0
-MAX_WORKER_RUNS = NUM_EVENTS * 3  # absolute cap; should never come close
+# Hard ceiling on respawn count — independent of the wallclock budget so a
+# pathological "every run delivers 0 events" loop terminates with a useful
+# failure message instead of timing out. NUM_EVENTS * 3 is generous: the
+# worst plausible case is one accept-then-crash per worker (NUM_EVENTS runs)
+# plus poison-retry slop.
+MAX_WORKER_RUNS = NUM_EVENTS * 3
 
 
 class TcNewOutboxIdempTest(unittest.TestCase):
@@ -67,7 +74,6 @@ class TcNewOutboxIdempTest(unittest.TestCase):
 
         # tmp_path-equivalent for a unittest.TestCase; we manage cleanup
         # explicitly so subprocess workers can re-open the same file.
-        import tempfile
         self._tmpdir = tempfile.mkdtemp(prefix="tc_outbox_idemp_")
         self.db_path = Path(self._tmpdir) / "outbox.sqlite3"
         self.log_path = Path(self._tmpdir) / "deliveries.jsonl"
@@ -75,12 +81,15 @@ class TcNewOutboxIdempTest(unittest.TestCase):
     def tearDown(self) -> None:
         # Restore production capability tuple — relax_preflight_for_m0_2 mutates
         # the module-level global, so failure to restore would leak into other
-        # tests in this process.
+        # tests in this process. If relax_preflight_for_m0_2's mutation target
+        # ever changes, this restore is wrong — keep them in lockstep.
         from starling import runtime as _r
         _r.LOCAL_STORE_REQUIRED = self._original_required
 
-        import shutil
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        # No ignore_errors: subprocess.run is synchronous so all workers are
+        # reaped before tearDown; a real cleanup failure here is a leaked fd
+        # or stray child worth surfacing as a test error.
+        shutil.rmtree(self._tmpdir)
 
     # ------------------------------------------------------------------ helpers
 
@@ -91,8 +100,16 @@ class TcNewOutboxIdempTest(unittest.TestCase):
         """
         adapter = _core.SqliteAdapter.open(str(self.db_path))
         poison_idem = ""
-        # Use compute_window_bucket("") empty bucket so the key is purely a
-        # function of (event_type, aggregate_id, canonical_key, causation_root).
+        # Lock the test's key derivation to the canonical helper: derive the
+        # bucket via compute_window_bucket() so any future refactor of the
+        # bucket formula is exercised here, not silently bypassed by a
+        # hardcoded literal. For "statement.created" the helper returns "" by
+        # design (only "pipeline_run.started" emits a non-empty bucket), which
+        # is the property we rely on for purely (event_type, aggregate_id,
+        # canonical_key, causation_root)-derived keys.
+        empty_bucket = compute_window_bucket(
+            "statement.created", datetime.now(timezone.utc)
+        )
         for i in range(NUM_EVENTS):
             ev = _core.BusEvent()
             ev.tenant_id = TENANT
@@ -109,7 +126,7 @@ class TcNewOutboxIdempTest(unittest.TestCase):
                     aggregate_id=HOLDER_AGG,
                     canonical_key=f"statement_id=stmt-{i:03d}",
                     causation_root="",
-                    window_bucket="",
+                    window_bucket=empty_bucket,
                 )
             ev.payload_json = json.dumps({"i": i})
             ev.version = "v1"

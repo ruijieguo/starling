@@ -13,11 +13,9 @@ vice versa. The acceptance test (test_tc_new_outbox_idemp.py) is the parity
 contract — divergence shows up as a CRITICAL test failure.
 
 Notes on faithfulness:
-  - We use the live module-level _CLOCK so tests can freeze time without
-    monkey-patching `datetime.datetime.utcnow`. C++ uses
-    std::chrono::system_clock::now() — same calendar semantics, different
-    knob. The test harness does not currently freeze time; this hook exists
-    purely so future tests can.
+  - We call datetime.now(timezone.utc) inline at each timestamp site to match
+    C++ system_clock::now() — same calendar semantics, no module-level
+    indirection.
   - dispatch_attempts is incremented by +1 per attempt (C++ does
     `attempts[i] + 1`), not per crash; a crash that flips a row back from
     in_flight to pending leaves dispatch_attempts unchanged, matching C++.
@@ -30,20 +28,12 @@ Notes on faithfulness:
 from __future__ import annotations
 
 import enum
+import json
 import sqlite3
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-
-
-# Module-level clock hook so tests can freeze time. Defaults to UTC now.
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-_CLOCK: Callable[[], datetime] = _now_utc
 
 
 def _iso8601_utc(dt: datetime) -> str:
@@ -105,14 +95,6 @@ class DispatchStats:
 Consumer = Callable[[BusEventRow], ConsumerDecision]
 
 
-class _OutboxAlreadyAccepted(Exception):
-    """Raised when a row with the same idempotency_key was already accepted
-    by THIS consumer — caller commits the row as delivered without invoking
-    the consumer body again. Matches the C++ behavior where
-    IdempotencyInbox::record_if_new returns false but the row still flips
-    to delivered."""
-
-
 class OutboxDispatcherPy:
     """Pure-Python OutboxDispatcher.run_once for crash-recovery testing.
 
@@ -160,6 +142,10 @@ class OutboxDispatcherPy:
         )
 
         # Snapshot pending events by ascending outbox_sequence.
+        # NOTE: causation_chain_json is intentionally omitted from this SELECT
+        # (and from BusEventRow) — the dispatcher never reads it on the read
+        # path; downstream consumers re-query the row when they need the
+        # chain. Mirrors the C++ comment at src/bus/outbox_dispatcher.cpp:77-78.
         rows = c.execute(
             "SELECT event_id,tenant_id,event_type,primary_id,aggregate_id,"
             "outbox_sequence,idempotency_key,payload_json,created_at,"
@@ -233,7 +219,7 @@ class OutboxDispatcherPy:
 
     def _mark_in_flight(self, ev: BusEventRow) -> None:
         c = self._conn
-        ts = _iso8601_utc(_CLOCK())
+        ts = _iso8601_utc(datetime.now(timezone.utc))
         c.execute("BEGIN IMMEDIATE")
         try:
             c.execute(
@@ -248,7 +234,7 @@ class OutboxDispatcherPy:
 
     def _commit_delivered(self, ev: BusEventRow, new_attempts: int) -> None:
         c = self._conn
-        now = _CLOCK()
+        now = datetime.now(timezone.utc)
         ts = _iso8601_utc(now)
         c.execute("BEGIN IMMEDIATE")
         try:
@@ -292,7 +278,7 @@ class OutboxDispatcherPy:
         self, ev: BusEventRow, new_attempts: int, err: str
     ) -> None:
         c = self._conn
-        ts = _iso8601_utc(_CLOCK())
+        ts = _iso8601_utc(datetime.now(timezone.utc))
         error_text = err or "transient_error"
         c.execute("BEGIN IMMEDIATE")
         try:
@@ -311,7 +297,7 @@ class OutboxDispatcherPy:
         self, ev: BusEventRow, new_attempts: int, err: str
     ) -> None:
         c = self._conn
-        ts = _iso8601_utc(_CLOCK())
+        ts = _iso8601_utc(datetime.now(timezone.utc))
         error_text = err or "permanent_error"
         c.execute("BEGIN IMMEDIATE")
         try:
@@ -329,10 +315,11 @@ class OutboxDispatcherPy:
             failure_seq = self._claim_next_sequence()
             failure_event_id = str(uuid.uuid4())
             failure_idem = ev.idempotency_key + ":delivery_failed"
-            failure_payload = (
-                '{"failed_event_id":"' + ev.event_id + '"}'
-            )
-            failure_chain = '["' + ev.event_id + '"]'
+            # C++ has the "event_id is UUID-like, no escaping needed" excuse
+            # but random_event_id in this port admits it's not a real UUID and
+            # M0.4 will replace it — Python uses json.dumps defensively.
+            failure_payload = json.dumps({"failed_event_id": ev.event_id})
+            failure_chain = json.dumps([ev.event_id])
             c.execute(
                 "INSERT INTO bus_events("
                 "event_id,tenant_id,event_type,primary_id,aggregate_id,"

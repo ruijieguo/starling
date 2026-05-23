@@ -84,8 +84,10 @@ def _build_consumer(
         try:
             os.fsync(log_fp.fileno())
         except OSError:
-            # fsync can fail on some FS (e.g. /tmp on macOS under sandbox); the
-            # line-buffered write is still durable enough for our window.
+            # fsync is best-effort here: the prior flush() already pushed the
+            # bytes past the Python buffer, which is what invariant 2 needs to
+            # observe across a SIGKILL. We don't need fsync's full disk-cache
+            # guarantee in this test.
             pass
 
         accept_count["n"] += 1
