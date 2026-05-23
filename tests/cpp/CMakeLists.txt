@@ -43,6 +43,7 @@ add_executable(starling_tests
     test_extraction_span_key.cpp
     test_extracted_statement.cpp
     test_fake_llm_adapter.cpp
+    test_xml_parser.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
