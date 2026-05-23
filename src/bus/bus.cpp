@@ -20,6 +20,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <variant>
 
@@ -175,6 +176,91 @@ std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_i
     return os.str();
 }
 
+// Apply the §15.3.4 4-item atomic SUPERSEDES path. Caller MUST hold a
+// TransactionGuard; this function never opens its own transaction. On any
+// SQL error this throws and the caller's tx destructor rolls back.
+//
+// Step 1 (StatementWriter::write — INSERT S_new + emit statement.written) is
+// already done by Bus::write before the conflict-kind switch, so this helper
+// starts at step 2. The caller passes the freshly-written S_new id in
+// new_stmt_id.
+void apply_supersedes_atomic(
+    starling::persistence::Connection& conn,
+    const starling::extractor::ExtractedStatement& stmt,
+    const std::optional<std::string>& causation_parent_event_id,
+    const ConflictMatch& match,
+    std::string_view new_stmt_id) {
+
+    // Step 2: SUPERSEDES edge S_new -> S_old.
+    insert_statement_edge(
+        conn, new_stmt_id, match.matched_statement_id,
+        match.matched_tenant_id, "supersedes");
+
+    // Step 3: UPDATE S_old to archived. Bypasses replaying_reconsolidating
+    // per §3.5 T7-P1 — the consolidated -> archived transition is direct.
+    // The WHERE includes consolidation_state='consolidated' as a defensive
+    // guard against stale probe matches; if the row's state has changed
+    // between probe and apply, sqlite3_changes() will be 0 and we throw.
+    {
+        const char* sql =
+            "UPDATE statements SET consolidation_state='archived', updated_at=? "
+            "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old prepare");
+        starling::persistence::StmtHandle h(raw);
+        const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
+        detail::bind_sv(h.get(), 1, now_iso);
+        detail::bind_sv(h.get(), 2, match.matched_statement_id);
+        detail::bind_sv(h.get(), 3, match.matched_tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old step");
+        if (sqlite3_changes(conn.raw()) != 1) {
+            throw std::runtime_error(
+                "supersedes_path: S_old row missing or wrong state at archive time");
+        }
+    }
+
+    // Step 4a: emit statement.archived.
+    const char* archive_reason =
+        (match.kind == ConflictKind::DirectContradiction) ? "direct_contradiction"
+                                                          : "superseding";
+    OutboxWriter ow(conn);
+    {
+        std::ostringstream payload;
+        payload << "{"
+                << "\"reason\":"        << json_string(archive_reason) << ","
+                << "\"superseded_by\":" << json_string(new_stmt_id)
+                << "}";
+        BusEvent ev = make_event(
+            "statement.archived",
+            match.matched_statement_id,         // primary_id = S_old
+            match.matched_supersedes_root_id,   // aggregate_id = supersedes root
+            match.matched_tenant_id,
+            payload.str(),
+            causation_parent_event_id);
+        ow.append(ev);
+    }
+
+    // Step 4b: emit statement.superseded.
+    {
+        std::ostringstream payload;
+        payload << "{"
+                << "\"new_statement_id\":" << json_string(new_stmt_id) << ","
+                << "\"old_statement_id\":" << json_string(match.matched_statement_id) << ","
+                << "\"conflict_kind\":"    << json_string(to_string(match.kind))
+                << "}";
+        BusEvent ev = make_event(
+            "statement.superseded",
+            new_stmt_id,                        // primary_id = S_new
+            match.matched_supersedes_root_id,   // aggregate_id = supersedes root
+            stmt.holder_tenant_id,
+            payload.str(),
+            causation_parent_event_id);
+        ow.append(ev);
+    }
+}
+
 }  // namespace
 
 Bus::Bus(starling::persistence::SqliteAdapter& adapter) : adapter_(adapter) {}
@@ -265,13 +351,22 @@ StatementWriteOutcome Bus::write(
         switch (match->kind) {
             case ConflictKind::DirectContradiction:
             case ConflictKind::Superseding:
-                // KNOWN REGRESSION until M0.5 Task 8 lands apply_supersedes_atomic(...):
-                // the new statement is committed below WITHOUT a SUPERSEDES edge,
-                // WITHOUT archiving S_old, and WITHOUT a belief.superseded /
-                // statement.archived event. Direct-contradiction / superseding
-                // writes are therefore silently committed as plain statements in
-                // this intermediate state. Task 8 replaces this fall-through with
-                // the atomic three-write path required by TC-NEW-CONFLICT-SEVERE.
+                // M0.5 Task 8: §15.3.4 atomic SUPERSEDES path. The
+                // StatementWriter::write call above already executed step 1
+                // (INSERT S_new + emit statement.written). The helper now
+                // performs steps 2-4 inside the same TransactionGuard:
+                //   2. INSERT statement_edges (S_new -> S_old, supersedes)
+                //   3. UPDATE S_old.consolidation_state = 'archived'
+                //      (bypasses replaying_reconsolidating per §3.5 T7-P1;
+                //       defensive guard rolls the tx back if S_old changed
+                //       state between probe and apply)
+                //   4. INSERT bus_events: statement.archived (primary=S_old)
+                //                       + statement.superseded (primary=S_new)
+                // Any throw triggers TransactionGuard's destructor rollback —
+                // S_new is not persisted, S_old retains 'consolidated', no
+                // edge, no archive/superseded events.
+                apply_supersedes_atomic(
+                    conn, stmt, causation_parent_event_id, *match, new_stmt_id);
                 break;
 
             case ConflictKind::PartialOverlap: {
