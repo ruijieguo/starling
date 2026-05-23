@@ -37,6 +37,7 @@ from starling.testing import relax_preflight_for_m0_2  # NOLINT(starling-testing
 
 
 CONSUMER_ID = "default"
+SMOKE_IDEMPOTENCY_KEY = "k-smoke-acceptance"
 
 
 class M02AcceptanceSmokeTest(unittest.TestCase):
@@ -64,8 +65,7 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
         # module-level global, so failure to restore would leak into other
         # tests in this process.
         self.runtime = None  # type: ignore[assignment]
-        from starling import runtime as _r
-        _r.LOCAL_STORE_REQUIRED = self._original_required
+        runtime.LOCAL_STORE_REQUIRED = self._original_required
         self._tmpdir.cleanup()
 
     # ------------------------------------------------------------------ test
@@ -105,13 +105,16 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
         # contending with the C++ side's WAL writer lock. v1 = initial schema
         # (0001_initial_schema.sql), v2 = extraction_attempt unique span
         # (0002_extraction_attempt_unique.sql).
-        with sqlite3.connect(str(self.db_path)) as conn:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
             versions = {
                 int(r[0])
                 for r in conn.execute(
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             }
+        finally:
+            conn.close()
         self.assertIn(1, versions, f"missing migration v1; got {sorted(versions)}")
         self.assertIn(2, versions, f"missing migration v2; got {sorted(versions)}")
 
@@ -126,7 +129,7 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
         ev.event_type = "statement.created"
         ev.primary_id = "stmt-smoke-1"
         ev.aggregate_id = "agg-smoke"
-        ev.idempotency_key = "k-smoke-acceptance"
+        ev.idempotency_key = SMOKE_IDEMPOTENCY_KEY
         ev.payload_json = "{}"
         ev.version = "v1"
         adapter.append_event_unsafe(ev)  # NOLINT(starling-testing-isolation)
@@ -158,11 +161,12 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
         # Both rows are written in the same transaction as the
         # bus_events.dispatch_status='delivered' update inside _commit_delivered;
         # observing them committed proves the post-accept transaction landed.
-        with sqlite3.connect(str(self.db_path)) as conn:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
             inbox_row = conn.execute(
                 "SELECT idempotency_key FROM idempotency_inbox "
                 "WHERE consumer_id=? AND idempotency_key=?",
-                (CONSUMER_ID, "k-smoke-acceptance"),
+                (CONSUMER_ID, SMOKE_IDEMPOTENCY_KEY),
             ).fetchone()
             self.assertIsNotNone(
                 inbox_row,
@@ -175,9 +179,9 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
                 (CONSUMER_ID,),
             ).fetchone()
             self.assertIsNotNone(checkpoint_row, "consumer_checkpoint row missing")
-            self.assertGreater(
-                int(checkpoint_row[0]), 0,
-                "consumer_checkpoint.last_delivered_sequence did not advance",
+            self.assertEqual(
+                int(checkpoint_row[0]), ev.outbox_sequence,
+                f"checkpoint expected {ev.outbox_sequence}, got {checkpoint_row[0]}",
             )
 
             # Cross-check: bus_events row for our seeded event flipped to
@@ -185,9 +189,14 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
             # the inbox/checkpoint but forgets the bus_events status update.
             status_row = conn.execute(
                 "SELECT dispatch_status FROM bus_events WHERE idempotency_key=?",
-                ("k-smoke-acceptance",),
+                (SMOKE_IDEMPOTENCY_KEY,),
             ).fetchone()
-            self.assertEqual(status_row[0], "delivered")
+            self.assertEqual(
+                status_row, ("delivered",),
+                "bus_events.dispatch_status not flipped to delivered",
+            )
+        finally:
+            conn.close()
 
     # ---------------------------------------------- spec Step 1 assertions
 
