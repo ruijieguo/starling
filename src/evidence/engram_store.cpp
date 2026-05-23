@@ -82,6 +82,9 @@ Engram EngramStore::put(
     e.content_hash             = compute_engram_content_hash(
                                      input.payload_bytes,
                                      input.declared_transformations);
+    // key_ref stays std::nullopt in M0.3 (null_kms placeholder); the INSERT
+    // below hardcodes NULL for the column. M0.4 will replace both the
+    // generate_key_ref() call AND the literal NULL with a real bind.
     e.key_ref                  = starling::crypto::NullKms::generate_key_ref();
     e.content_ciphertext       = starling::crypto::NullKms::encrypt(
                                      input.payload_bytes, /*key_ref=*/"");

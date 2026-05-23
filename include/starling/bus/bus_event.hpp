@@ -40,7 +40,9 @@ std::string compute_idempotency_key(
 // Per-event-type bucket. P1 events:
 //   statement.created            -> ""               (already idempotent on canonical_key)
 //   statement.superseded         -> ""
-//   engram.appended              -> ""
+//   evidence.appended            -> ""               (canonical_key=engram.id, UUIDv4 unique)
+//   evidence.no_store_audit      -> floor(now / 60s) (audit-only; bucketed for replay)
+//   evidence.idempotent_hit      -> floor(now / 60s) (audit-only; bucketed for replay)
 //   pipeline_run.started         -> floor(now / 60s)
 //   pipeline_run.finished        -> ""
 //   extraction_attempt.recorded  -> ""
