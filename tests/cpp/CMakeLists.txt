@@ -29,6 +29,7 @@ add_executable(starling_tests
     test_idempotency_key.cpp
     test_outbox_writer.cpp
     test_consumer_state.cpp
+    test_outbox_dispatcher.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
