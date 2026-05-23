@@ -23,6 +23,7 @@ from starling.schema.container import (
     VALID_DIMENSIONS,
 )
 from starling.schema.edge import RelationEdge
+from starling.schema.jsonschema_export import schema_for, all_schemas
 from starling.schema.validators import (
     SchemaInvalid,
     validate_evidence_or_derivation,
@@ -63,4 +64,5 @@ __all__ = [
     "validate_canonical_object_hash",
     "validate_evidence_status",
     "validate_container_dimension",
+    "schema_for", "all_schemas",
 ]
