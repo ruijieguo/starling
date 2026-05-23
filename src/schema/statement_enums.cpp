@@ -1,5 +1,8 @@
 #include "starling/schema/statement_enums.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace starling::schema {
 
 std::string_view to_string(Perspective p) {
@@ -76,7 +79,7 @@ Perspective perspective_from_string(std::string_view s) {
     if (s == "quoted")       return Perspective::QUOTED;
     if (s == "inferred")     return Perspective::INFERRED;
     if (s == "hearsay")      return Perspective::HEARSAY;
-    throw std::invalid_argument(std::string("invalid Perspective: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown Perspective: ") + std::string(s));
 }
 
 Modality modality_from_string(std::string_view s) {
@@ -91,14 +94,14 @@ Modality modality_from_string(std::string_view s) {
     if (s == "norm_ought")  return Modality::NORM_OUGHT;
     if (s == "norm_forbid") return Modality::NORM_FORBID;
     if (s == "recanted")    return Modality::RECANTED;
-    throw std::invalid_argument(std::string("invalid Modality: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown Modality: ") + std::string(s));
 }
 
 Polarity polarity_from_string(std::string_view s) {
     if (s == "pos")     return Polarity::POS;
     if (s == "neg")     return Polarity::NEG;
     if (s == "unknown") return Polarity::UNKNOWN;
-    throw std::invalid_argument(std::string("invalid Polarity: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown Polarity: ") + std::string(s));
 }
 
 ConsolidationState consolidation_state_from_string(std::string_view s) {
@@ -108,7 +111,7 @@ ConsolidationState consolidation_state_from_string(std::string_view s) {
     if (s == "consolidated")              return ConsolidationState::CONSOLIDATED;
     if (s == "archived")                  return ConsolidationState::ARCHIVED;
     if (s == "forgotten")                 return ConsolidationState::FORGOTTEN;
-    throw std::invalid_argument(std::string("invalid ConsolidationState: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown ConsolidationState: ") + std::string(s));
 }
 
 ReviewStatus review_status_from_string(std::string_view s) {
@@ -117,7 +120,7 @@ ReviewStatus review_status_from_string(std::string_view s) {
     if (s == "inferred_unreviewed") return ReviewStatus::INFERRED_UNREVIEWED;
     if (s == "review_requested")    return ReviewStatus::REVIEW_REQUESTED;
     if (s == "rejected")            return ReviewStatus::REJECTED;
-    throw std::invalid_argument(std::string("invalid ReviewStatus: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown ReviewStatus: ") + std::string(s));
 }
 
 StatementProvenance provenance_from_string(std::string_view s) {
@@ -125,7 +128,7 @@ StatementProvenance provenance_from_string(std::string_view s) {
     if (s == "replay_derived")          return StatementProvenance::REPLAY_DERIVED;
     if (s == "tom_inferred")            return StatementProvenance::TOM_INFERRED;
     if (s == "reconsolidation_derived") return StatementProvenance::RECONSOLIDATION_DERIVED;
-    throw std::invalid_argument(std::string("invalid StatementProvenance: ") + std::string(s));
+    throw std::invalid_argument(std::string("unknown StatementProvenance: ") + std::string(s));
 }
 
 }  // namespace starling::schema

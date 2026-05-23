@@ -1,6 +1,6 @@
-#include "starling/schema/statement_enums.hpp"
-
 #include <gtest/gtest.h>
+
+#include "starling/schema/statement_enums.hpp"
 
 namespace starling::schema {
 
