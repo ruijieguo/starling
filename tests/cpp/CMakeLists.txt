@@ -22,6 +22,7 @@ add_executable(starling_tests
     test_runtime_health.cpp
     test_preflight.cpp
     test_final_query_assertion.cpp
+    test_extraction_span_key.cpp
     test_canonicalize.cpp
     test_schema_enums.cpp
     test_statement_enums.cpp

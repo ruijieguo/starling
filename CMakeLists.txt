@@ -34,6 +34,7 @@ target_sources(starling_core PRIVATE
     src/preflight.cpp
     src/final_query_assertion.cpp
     src/runtime_health.cpp
+    src/extractor/extraction_span_key.cpp
     src/schema/canonicalize.cpp
     src/schema/statement_enums.cpp
     src/schema/enums.cpp
