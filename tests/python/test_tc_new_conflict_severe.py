@@ -108,6 +108,11 @@ def _make_extracted(polarity: str, confidence: float,
     s.source_hash        = "fff"
     s.valid_from         = valid_from
     s.valid_to           = valid_to
+    # perceived_by mirrors what the M0.4 extractor populates from XML — at
+    # minimum the holder itself. Empty would still pass the writer (no NOT
+    # NULL constraint) but seeding it keeps the row shape representative of
+    # production extractor output.
+    s.perceived_by       = ["cog-self"]
     return s
 
 
