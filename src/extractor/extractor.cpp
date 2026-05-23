@@ -118,10 +118,13 @@ bool extraction_span_key_already_succeeded(
         std::string_view span_key) {
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
-    sqlite3_prepare_v2(db,
-        "SELECT 1 FROM extraction_attempt "
-        "WHERE extraction_span_key = ? AND status = 'success' LIMIT 1",
-        -1, &raw, nullptr);
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM extraction_attempt "
+            "WHERE extraction_span_key = ? AND status = 'success' LIMIT 1",
+            -1, &raw, nullptr) != SQLITE_OK) {
+        throw starling::bus::detail::make_sqlite_error(
+            db, "extraction_span_key_already_succeeded: prepare");
+    }
     starling::persistence::StmtHandle h(raw);
     starling::bus::detail::bind_sv(h.get(), 1, span_key);
     return sqlite3_step(h.get()) == SQLITE_ROW;
@@ -269,6 +272,8 @@ ExtractionRunResult Extractor::run(
                                   resp.raw_xml, /*error=*/{});
         }
         if (wrote_anything_this_attempt) any_accepted = true;
+        // Parse succeeded: this attempt is not a failure regardless of validate
+        // outcome. all_failed tracks adapter/parse failures only.
         all_failed = false;
         break;  // parse succeeded; no retry regardless of validate outcome
     }

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <stdexcept>
 
 namespace starling::extractor {
 
@@ -49,9 +50,11 @@ int row_count(persistence::Connection& conn, const std::string& table,
               const std::string& where = "1=1") {
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
-    sqlite3_prepare_v2(db,
-        ("SELECT COUNT(*) FROM " + table + " WHERE " + where).c_str(),
-        -1, &raw, nullptr);
+    if (sqlite3_prepare_v2(db,
+            ("SELECT COUNT(*) FROM " + table + " WHERE " + where).c_str(),
+            -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error(std::string("row_count prepare failed: ") + sqlite3_errmsg(db));
+    }
     persistence::StmtHandle h(raw);
     sqlite3_step(h.get());
     return sqlite3_column_int(h.get(), 0);
