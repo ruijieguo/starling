@@ -30,6 +30,11 @@ namespace starling::schema {
 
 namespace {
 
+// Lowercase hex table for canonicalize_ref. Explicit so locale / formatter
+// quirks cannot bite us. (sha256_hex moved to starling::crypto::sha256_hex
+// in commit 14565c4 and uses its own function-local copy.)
+constexpr char kHexDigits[] = "0123456789abcdef";
+
 // Python's `\s+` matches [ \t\n\r\f\v]. Match the same set explicitly so we
 // never depend on locale-sensitive std::isspace.
 bool is_python_whitespace(char32_t c) {
