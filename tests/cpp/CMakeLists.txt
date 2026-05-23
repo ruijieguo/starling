@@ -36,6 +36,7 @@ add_executable(starling_tests
     test_sqlite_adapter.cpp
     test_engram_content_hash.cpp
     test_ingest_policy_resolver.cpp
+    test_evidence_validator.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
