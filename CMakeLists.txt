@@ -38,6 +38,7 @@ target_sources(starling_core PRIVATE
     src/persistence/migration_runner.cpp
     src/persistence/connection.cpp
     src/bus/bus_event.cpp
+    src/bus/outbox_writer.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
