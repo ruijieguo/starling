@@ -172,10 +172,18 @@ def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
     """Construct a Runtime backed by a real SqliteAdapter at db_path.
 
     The adapter's declare_capability() reports `engram_per_record_key=False`
-    and `testing_helper_marker=False` in M0.2 (KMS lands in M0.3, marker is
-    dev-only). Acceptance tests that need to reach READY must call the
-    M0.2-only relax_preflight_for_m0_2() helper from the testing subpackage
-    before invoking this.
+    and `testing_helper_marker=False` in M0.3 (real per-record AES-256-GCM
+    + KMS lands in M0.4 — M0.3 ships a `null_kms` identity-cipher placeholder
+    with `key_ref=NULL`; marker is dev-only). Acceptance tests that need to
+    reach READY must call `relax_preflight_for_m0_3()` from the testing
+    subpackage before invoking this.
+
+    M0.3: after construction, swap `rt.bus` to a real BusFacade so producers
+    get the four-outcome `append_evidence(EngramInput)` contract instead of
+    the M0.2 `_SqliteBackedBus` stub-shape ("OK"/"PRECONDITION_FAILED").
+    Runtime(capability=cap) constructed directly (no adapter) keeps the
+    `_StubBus` path — TC-NEW-PREFLIGHT [CRITICAL] still asserts the
+    "PRECONDITION_FAILED" string contract via that path.
     """
     adapter = _core.SqliteAdapter.open(str(db_path))
     cap = adapter.declare_capability()
@@ -193,11 +201,17 @@ def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
             ).fetchone()
             return row is not None
 
-    return Runtime(
+    rt = Runtime(
         capability=cap,
         adapter=adapter,
         idx_statement_id_tenant_present=_idx_present,
     )
+    # M0.3 bus surface: replace the M0.2 `_SqliteBackedBus` stub-shape with
+    # the real C++ Bus through BusFacade. Lazy-import to avoid a circular
+    # dependency between starling.runtime and starling.bus.append_evidence.
+    from starling.bus.append_evidence import BusFacade
+    rt.bus = BusFacade(adapter)
+    return rt
 
 
 __all__ = [
