@@ -24,4 +24,16 @@ def relax_preflight_for_m0_2() -> tuple[str, ...]:
     return original
 
 
-__all__ = ["marker_loaded", "relax_preflight_for_m0_2"]
+def relax_preflight_for_m0_3() -> tuple[str, ...]:
+    """M0.3 acceptance helper. Same surgery as relax_preflight_for_m0_2 (the
+    `engram_per_record_key` capability is still deferred to M0.4 + KMS). Kept
+    as a separate function so the M0.3 acceptance test names what it's
+    relaxing. Delete both helpers when M0.4 lands the real capability.
+
+    Returns the original LOCAL_STORE_REQUIRED tuple so the caller can restore
+    it in tearDown.
+    """
+    return relax_preflight_for_m0_2()
+
+
+__all__ = ["marker_loaded", "relax_preflight_for_m0_2", "relax_preflight_for_m0_3"]
