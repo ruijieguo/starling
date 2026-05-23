@@ -10,6 +10,9 @@ from starling.schema.refs import (
     CognizerRef, EntityRef, StatementRef, EngramRef,
     PersonaRef, KnowledgeFrontierRef,
 )
+from starling.schema.temporal import TemporalAnchor, ConfidenceEvent
+from starling.schema.source import SourceSpanRef
+from starling.schema.affect import AffectVector
 
 __all__ = [
     "Perspective", "Modality", "Polarity", "ConsolidationState",
@@ -19,4 +22,7 @@ __all__ = [
     "CONSOLIDATION_TRANSITIONS",
     "CognizerRef", "EntityRef", "StatementRef", "EngramRef",
     "PersonaRef", "KnowledgeFrontierRef",
+    "TemporalAnchor", "ConfidenceEvent",
+    "SourceSpanRef",
+    "AffectVector",
 ]
