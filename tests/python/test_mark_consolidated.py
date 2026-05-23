@@ -54,6 +54,7 @@ def _seed_volatile_statement(
     """
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute(
             _INSERT_SQL,
             (
@@ -187,7 +188,8 @@ class MarkConsolidatedTest(unittest.TestCase):
         self.assertEqual(primary_id, "s3")
         self.assertEqual(aggregate_id, "s3")
         self.assertEqual(tenant_id, "t-audit")
-        self.assertGreater(int(seq), 0, "outbox_sequence must be claimed")
+        self.assertIsNotNone(seq, "outbox_sequence must be set, not NULL")
+        self.assertGreater(seq, 0, "outbox_sequence must be claimed")
         # Payload contains stmt_id + helper marker. Substring assertions
         # (rather than parsed JSON equality) tolerate future field additions.
         self.assertIn('"stmt_id":"s3"', payload)
