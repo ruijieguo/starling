@@ -40,6 +40,17 @@ std::string compute_window_bucket(
             now.time_since_epoch()).count();
         return std::to_string(sec / 60);
     }
+    if (event_type == "extraction.failed"
+        || event_type == "extraction.retry_scheduled"
+        || event_type == "extraction.dead_lettered"
+        || event_type == "extraction.noop"
+        || event_type == "pipeline.run_started"
+        || event_type == "pipeline.run_completed"
+        || event_type == "pipeline.run_failed") {
+        const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        return std::to_string(sec / 60);
+    }
     return "";
 }
 

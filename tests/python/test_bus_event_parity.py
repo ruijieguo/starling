@@ -56,3 +56,25 @@ def test_window_bucket_converts_aware_datetimes_instead_of_replacing_tz():
 def _offset_hours(h: int) -> "timedelta":
     from datetime import timedelta
     return timedelta(hours=h)
+
+
+def test_window_bucket_extraction_and_pipeline_event_families():
+    # Pin the new bucket branches added in M0.4. floor(now/60s) for all 7;
+    # statement.written returns "" (canonical_key=extraction_span_key path).
+    instant = datetime(2026, 5, 23, 12, 0, 0, tzinfo=timezone.utc)
+    expected = str(int(instant.timestamp()) // 60)
+    bucketed = (
+        "evidence.no_store_audit",
+        "evidence.idempotent_hit",
+        "extraction.failed",
+        "extraction.retry_scheduled",
+        "extraction.dead_lettered",
+        "extraction.noop",
+        "pipeline.run_started",
+        "pipeline.run_completed",
+        "pipeline.run_failed",
+    )
+    for et in bucketed:
+        assert compute_window_bucket(et, instant) == expected, et
+
+    assert compute_window_bucket("statement.written", instant) == ""

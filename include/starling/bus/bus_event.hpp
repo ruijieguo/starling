@@ -48,6 +48,14 @@ std::string compute_idempotency_key(
 //   extraction_attempt.recorded  -> ""
 //   conflict_probe.flagged       -> ""
 //   system.delivery_failed       -> ""
+//   extraction.failed             -> floor(now / 60s)
+//   extraction.retry_scheduled    -> floor(now / 60s)
+//   extraction.dead_lettered      -> floor(now / 60s)
+//   extraction.noop               -> floor(now / 60s)
+//   pipeline.run_started          -> floor(now / 60s)
+//   pipeline.run_completed        -> floor(now / 60s)
+//   pipeline.run_failed           -> floor(now / 60s)
+//   statement.written             -> ""               (canonical_key=extraction_span_key)
 std::string compute_window_bucket(
     std::string_view event_type,
     std::chrono::system_clock::time_point now);

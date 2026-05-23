@@ -35,6 +35,7 @@ target_sources(starling_core PRIVATE
     src/final_query_assertion.cpp
     src/runtime_health.cpp
     src/schema/canonicalize.cpp
+    src/schema/statement_enums.cpp
     src/schema/enums.cpp
     src/persistence/migration_runner.cpp
     src/persistence/connection.cpp
@@ -43,12 +44,18 @@ target_sources(starling_core PRIVATE
     src/bus/consumer_state.cpp
     src/bus/outbox_dispatcher.cpp
     src/bus/pipeline_ledger.cpp
+    src/bus/statement_writer.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
     src/evidence/evidence_validator.cpp
     src/evidence/engram_store.cpp
     src/bus/bus.cpp
+    src/extractor/extraction_span_key.cpp
+    src/extractor/fake_llm_adapter.cpp
+    src/extractor/xml_parser.cpp
+    src/extractor/statement_validator.cpp
+    src/extractor/extractor.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)

@@ -24,6 +24,7 @@ add_executable(starling_tests
     test_final_query_assertion.cpp
     test_canonicalize.cpp
     test_schema_enums.cpp
+    test_statement_enums.cpp
     test_sqlite_link.cpp
     test_migration_runner.cpp
     test_migration_0003.cpp
@@ -39,6 +40,14 @@ add_executable(starling_tests
     test_evidence_validator.cpp
     test_engram_store.cpp
     test_bus_append_evidence.cpp
+    test_extraction_span_key.cpp
+    test_extracted_statement.cpp
+    test_fake_llm_adapter.cpp
+    test_xml_parser.cpp
+    test_statement_validator.cpp
+    test_statement_writer.cpp
+    test_bus_statement_write.cpp
+    test_extractor_orchestrator.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
