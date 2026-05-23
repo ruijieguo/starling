@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <set>
 #include <string>
@@ -33,6 +34,14 @@ const std::set<std::string> kKnownPerspectives = {
 const std::set<std::string> kKnownSubjectKinds = {
     "cognizer", "entity",
 };
+
+// Maximum tokenizer nesting depth. Element owns std::vector<Element> children,
+// so destroying a deeply-nested tree recurses through ~Element → ~vector →
+// ~Element ... A pathologically nested LLM response could blow the C++ call
+// stack on parse_extractor_xml return even though tokenization is iterative.
+// 64 gives generous headroom (real schema nests ~3-4 deep) while protecting
+// the stack from DoS-style malformed input.
+constexpr std::size_t kMaxNestingDepth = 64;
 
 struct Element {
     std::string                                  name;
@@ -73,7 +82,15 @@ std::vector<Element> tokenize(std::string_view xml,
     std::vector<Element*> stack;  // pointers into the tree we're building
     std::string text_buf;          // accumulated text for the current element
 
-    auto flush_text = [&](Element* container) {
+    // Mixed-content detection: a single element should be either text-only
+    // (e.g. <predicate>foo</predicate>) or container-only (e.g. <statement>
+    // with element children). If non-empty trimmed text accumulates into a
+    // container that already has element children, the LLM has produced
+    // something like <predicate>foo<bar/>baz</predicate>, where naive merging
+    // would yield "foobaz" with no separator. We surface this as a
+    // "mixed_content" error so the validator/triage layer can reject the
+    // fragment instead of silently losing structure.
+    auto flush_text = [&](Element* container, std::size_t pos) {
         if (!container) {
             text_buf.clear();
             return;
@@ -81,6 +98,12 @@ std::vector<Element> tokenize(std::string_view xml,
         std::string trimmed = trim(text_buf);
         if (!trimmed.empty()) {
             container->text += trimmed;
+            if (!container->children.empty()) {
+                errors.push_back({"mixed_content",
+                                  "<" + container->name +
+                                      "> has both text and child elements",
+                                  pos});
+            }
         }
         text_buf.clear();
     };
@@ -107,7 +130,7 @@ std::vector<Element> tokenize(std::string_view xml,
 
         // Encountered '<'. Flush text into current container.
         Element* current = stack.empty() ? nullptr : stack.back();
-        flush_text(current);
+        flush_text(current, i);
 
         // Comment <!-- ... -->
         if (i + 3 < n && xml.compare(i, 4, "<!--") == 0) {
@@ -260,6 +283,15 @@ std::vector<Element> tokenize(std::string_view xml,
         if (self_closing) {
             append_child(std::move(el));
         } else {
+            // Cap nesting depth: Element's recursive destructor would otherwise
+            // stack-overflow on pathologically nested LLM output. The schema
+            // only nests ~3-4 deep in practice, so 64 is generous headroom.
+            if (stack.size() >= kMaxNestingDepth) {
+                errors.push_back({"nesting_too_deep",
+                                  "exceeded max nesting depth (64)",
+                                  i});
+                return roots;
+            }
             Element* added = append_child(std::move(el));
             stack.push_back(added);
         }
@@ -268,7 +300,7 @@ std::vector<Element> tokenize(std::string_view xml,
 
     // EOF: any trailing text in current container is harmless (and trimmed).
     Element* current = stack.empty() ? nullptr : stack.back();
-    flush_text(current);
+    flush_text(current, xml.size());
 
     if (!stack.empty()) {
         errors.push_back({"unbalanced_tag",
@@ -340,7 +372,7 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
     if (const Element* persp = find_child(stmt_elem, "perspective")) {
         const std::string& v = persp->text;
         if (kKnownPerspectives.find(v) == kKnownPerspectives.end()) {
-            errors.push_back({"missing_required_attribute",
+            errors.push_back({"invalid_enum_value",
                               "<perspective> has invalid value: " + v,
                               persp->offset});
         } else {
@@ -361,7 +393,7 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
                               "<subject> missing 'kind'",
                               subj->offset});
         } else if (kKnownSubjectKinds.find(*kind) == kKnownSubjectKinds.end()) {
-            errors.push_back({"missing_required_attribute",
+            errors.push_back({"invalid_enum_value",
                               "<subject kind=...> invalid value: " + *kind,
                               subj->offset});
         } else {
@@ -421,7 +453,17 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
         }
         if (kind_ok) {
             if (out.object_kind == "statement") {
-                // Look for <statement_ref id="..."/> child.
+                // Look for <statement_ref id="..."/> child. Any non-
+                // <statement_ref> child is a strict-mode error.
+                for (const auto& c : obj->children) {
+                    if (c.name != "statement_ref") {
+                        errors.push_back({"unknown_tag",
+                                          "<object kind=\"statement\"> may only "
+                                          "contain <statement_ref/>, got: " +
+                                              c.name,
+                                          c.offset});
+                    }
+                }
                 const Element* sref = find_child(*obj, "statement_ref");
                 if (!sref) {
                     errors.push_back({"missing_required_attribute",
@@ -446,6 +488,14 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
                 }
             } else {
                 // Primitive / cognizer / entity: text content is the value.
+                // No element children are allowed; anything else is a strict-
+                // mode error so an LLM cannot smuggle structure into a value.
+                if (!obj->children.empty()) {
+                    errors.push_back({"unknown_tag",
+                                      "<object kind=\"" + out.object_kind +
+                                          "\"> may not contain element children",
+                                      obj->offset});
+                }
                 out.object_value = obj->text;
             }
         }
@@ -465,7 +515,7 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
             try {
                 out.modality = schema::modality_from_string(mod->text);
             } catch (const std::invalid_argument&) {
-                errors.push_back({"missing_required_attribute",
+                errors.push_back({"invalid_enum_value",
                                   "<modality> invalid value: " + mod->text,
                                   mod->offset});
             }
@@ -486,7 +536,7 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
             try {
                 out.polarity = schema::polarity_from_string(pol->text);
             } catch (const std::invalid_argument&) {
-                errors.push_back({"missing_required_attribute",
+                errors.push_back({"invalid_enum_value",
                                   "<polarity> invalid value: " + pol->text,
                                   pol->offset});
             }
@@ -504,13 +554,33 @@ ExtractedStatement extract_statement(const Element& stmt_elem,
                               "<confidence> empty",
                               conf->offset});
         } else {
+            // The element's text is already trimmed by flush_text, so a clean
+            // numeric like "0.5" must consume the entire string. Anything else
+            // ("0.5xyz", "NaN", "Inf", out-of-range) is rejected here so the
+            // strict-mode parser surfaces it as invalid_number rather than
+            // silently rounding/truncating it for the validator.
+            const std::string& s = conf->text;
             try {
                 std::size_t pos = 0;
-                double v = std::stod(conf->text, &pos);
-                out.confidence = v;
+                double v = std::stod(s, &pos);
+                if (pos != s.size()) {
+                    errors.push_back({"invalid_number",
+                                      "<confidence> trailing garbage: " + s,
+                                      conf->offset});
+                } else if (std::isnan(v) || std::isinf(v)) {
+                    errors.push_back({"invalid_number",
+                                      "<confidence> not finite: " + s,
+                                      conf->offset});
+                } else if (v < 0.0 || v > 1.0) {
+                    errors.push_back({"invalid_number",
+                                      "<confidence> out of range [0,1]: " + s,
+                                      conf->offset});
+                } else {
+                    out.confidence = v;
+                }
             } catch (const std::exception&) {
-                errors.push_back({"missing_required_attribute",
-                                  "<confidence> not a number: " + conf->text,
+                errors.push_back({"invalid_number",
+                                  "<confidence> not a number: " + s,
                                   conf->offset});
             }
         }

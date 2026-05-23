@@ -248,4 +248,132 @@ TEST(XmlParser, ResolvedShortIdSucceeds) {
     EXPECT_EQ(r.statements[0].object_value, "stmt-uuid-aaa");
 }
 
+TEST(XmlParser, RejectsInvalidPerspective) {
+    ExistingRefMap m;
+    constexpr const char* bad = R"XML(
+        <extraction>
+          <statement>
+            <holder ref="cog-self"/>
+            <perspective>third_person</perspective>
+            <subject kind="cognizer" id="cog-self"/>
+            <predicate>p</predicate>
+            <object kind="str" canonical_hash="h">v</object>
+            <modality>believes</modality>
+            <polarity>pos</polarity>
+            <confidence>0.5</confidence>
+            <observed_at>2026-05-23T10:00:00Z</observed_at>
+            <perceived_by ref="cog-self"/>
+          </statement>
+        </extraction>)XML";
+    auto r = parse_extractor_xml(bad, m);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().kind, "invalid_enum_value");
+}
+
+TEST(XmlParser, RejectsInvalidModality) {
+    ExistingRefMap m;
+    constexpr const char* bad = R"XML(
+        <extraction>
+          <statement>
+            <holder ref="cog-self"/>
+            <perspective>first_person</perspective>
+            <subject kind="cognizer" id="cog-self"/>
+            <predicate>p</predicate>
+            <object kind="str" canonical_hash="h">v</object>
+            <modality>believees</modality>
+            <polarity>pos</polarity>
+            <confidence>0.5</confidence>
+            <observed_at>2026-05-23T10:00:00Z</observed_at>
+            <perceived_by ref="cog-self"/>
+          </statement>
+        </extraction>)XML";
+    auto r = parse_extractor_xml(bad, m);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().kind, "invalid_enum_value");
+}
+
+TEST(XmlParser, RejectsInvalidConfidence) {
+    ExistingRefMap m;
+    constexpr const char* bad = R"XML(
+        <extraction>
+          <statement>
+            <holder ref="cog-self"/>
+            <perspective>first_person</perspective>
+            <subject kind="cognizer" id="cog-self"/>
+            <predicate>p</predicate>
+            <object kind="str" canonical_hash="h">v</object>
+            <modality>believes</modality>
+            <polarity>pos</polarity>
+            <confidence>not_a_number</confidence>
+            <observed_at>2026-05-23T10:00:00Z</observed_at>
+            <perceived_by ref="cog-self"/>
+          </statement>
+        </extraction>)XML";
+    auto r = parse_extractor_xml(bad, m);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().kind, "invalid_number");
+}
+
+TEST(XmlParser, RejectsConfidenceTrailingGarbage) {
+    ExistingRefMap m;
+    constexpr const char* bad = R"XML(
+        <extraction>
+          <statement>
+            <holder ref="cog-self"/>
+            <perspective>first_person</perspective>
+            <subject kind="cognizer" id="cog-self"/>
+            <predicate>p</predicate>
+            <object kind="str" canonical_hash="h">v</object>
+            <modality>believes</modality>
+            <polarity>pos</polarity>
+            <confidence>0.5xyz</confidence>
+            <observed_at>2026-05-23T10:00:00Z</observed_at>
+            <perceived_by ref="cog-self"/>
+          </statement>
+        </extraction>)XML";
+    auto r = parse_extractor_xml(bad, m);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().kind, "invalid_number");
+}
+
+TEST(XmlParser, RejectsObjectStrayChildElement) {
+    ExistingRefMap m;
+    constexpr const char* bad = R"XML(
+        <extraction>
+          <statement>
+            <holder ref="cog-self"/>
+            <perspective>first_person</perspective>
+            <subject kind="cognizer" id="cog-self"/>
+            <predicate>p</predicate>
+            <object kind="str" canonical_hash="h"><stray/>auth</object>
+            <modality>believes</modality>
+            <polarity>pos</polarity>
+            <confidence>0.5</confidence>
+            <observed_at>2026-05-23T10:00:00Z</observed_at>
+            <perceived_by ref="cog-self"/>
+          </statement>
+        </extraction>)XML";
+    auto r = parse_extractor_xml(bad, m);
+    ASSERT_FALSE(r.errors.empty());
+    // Either unknown_tag (preferred — a stray element where none allowed)
+    // or mixed_content (if our flush_text trips first). Accept either.
+    const auto& kind = r.errors.front().kind;
+    EXPECT_TRUE(kind == "unknown_tag" || kind == "mixed_content")
+        << "got: " << kind;
+}
+
+TEST(XmlParser, RejectsExcessiveNestingDepth) {
+    ExistingRefMap m;
+    // Build "<extraction>" + N "<x>" + "</x>" * N + "</extraction>" for N=200 (>>64).
+    // The cap of 64 must trigger nesting_too_deep.
+    std::string xml = "<extraction>";
+    constexpr int N = 200;
+    for (int i = 0; i < N; ++i) xml += "<x>";
+    for (int i = 0; i < N; ++i) xml += "</x>";
+    xml += "</extraction>";
+    auto r = parse_extractor_xml(xml, m);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().kind, "nesting_too_deep");
+}
+
 }  // namespace starling::extractor
