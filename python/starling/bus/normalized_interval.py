@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# Invariant: an empty `to` is treated as open-ended regardless of `to_is_open`.
 @dataclass(frozen=True)
 class NormalizedInterval:
     is_unknown: bool = False

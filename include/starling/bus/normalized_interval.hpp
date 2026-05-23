@@ -11,6 +11,7 @@ namespace starling::bus {
 // it MUST NOT trigger direct_contradiction.
 //
 // canonical_bytes() format: "UNKNOWN" | "<from>/OPEN" | "<from>/<to>"
+// Invariant: an empty `to` is treated as open-ended regardless of `to_is_open`.
 struct NormalizedInterval {
     bool        is_unknown = false;
     std::string from;       // ISO-8601 UTC; empty iff is_unknown

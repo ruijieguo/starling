@@ -47,6 +47,7 @@ TEST(NormalizedInterval, ValidFromTakesPriorityOverEventTime) {
 TEST(NormalizedInterval, ValidToIgnoredWhenValidFromAbsent) {
     auto ni = normalize_interval(std::nullopt, "2026-06-01T00:00:00Z", std::nullopt);
     EXPECT_TRUE(ni.is_unknown);
+    EXPECT_EQ(ni.canonical_bytes(), "UNKNOWN");
 }
 
 TEST(NormalizedInterval, ParityFixtureCanonicalBytes) {

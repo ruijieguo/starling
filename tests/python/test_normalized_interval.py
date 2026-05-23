@@ -46,6 +46,7 @@ def test_valid_from_takes_priority_over_event_time():
 def test_valid_to_ignored_when_valid_from_absent():
     ni = normalize_interval(None, "2026-06-01T00:00:00Z", None)
     assert ni.is_unknown
+    assert ni.canonical_bytes() == "UNKNOWN"
 
 
 def test_parity_canonical_bytes():
