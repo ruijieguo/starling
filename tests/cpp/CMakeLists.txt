@@ -23,6 +23,7 @@ add_executable(starling_tests
     test_preflight.cpp
     test_final_query_assertion.cpp
     test_canonicalize.cpp
+    test_sqlite_link.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

@@ -18,6 +18,16 @@ if(APPLE AND NOT DEFINED OPENSSL_ROOT_DIR)
 endif()
 find_package(OpenSSL REQUIRED)
 
+# SQLite3 — Homebrew on Apple Silicon installs at /opt/homebrew/opt/sqlite.
+# The system framework on macOS is older than 3.46; prefer Homebrew when present.
+if(APPLE AND NOT DEFINED SQLite3_ROOT)
+    if(EXISTS "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib")
+        set(SQLite3_ROOT "/opt/homebrew/opt/sqlite")
+        list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/sqlite")
+    endif()
+endif()
+find_package(SQLite3 3.46 REQUIRED)
+
 add_library(starling_core STATIC)
 target_include_directories(starling_core PUBLIC include)
 target_sources(starling_core PRIVATE
@@ -27,7 +37,7 @@ target_sources(starling_core PRIVATE
     src/schema/canonicalize.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
-target_link_libraries(starling_core PUBLIC OpenSSL::Crypto)
+target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
 if(APPLE)
     target_link_libraries(starling_core PUBLIC "-framework CoreFoundation")
 endif()
