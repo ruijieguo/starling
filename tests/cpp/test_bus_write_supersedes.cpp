@@ -176,6 +176,13 @@ TEST(BusWriteSupersedes, DirectContradictionAtomicCommit) {
     const std::string payload = read_string(a->connection(),
         "SELECT payload_json FROM bus_events WHERE event_type='statement.archived'");
     EXPECT_NE(std::string::npos, payload.find("direct_contradiction"));
+
+    // Invariant 6: superseded event payload carries S_old as old_statement_id —
+    // traceability anchor for downstream consumers.
+    const std::string sup_payload = read_string(a->connection(),
+        "SELECT payload_json FROM bus_events WHERE event_type='statement.superseded'");
+    EXPECT_NE(std::string::npos, sup_payload.find("\"old_statement_id\""));
+    EXPECT_NE(std::string::npos, sup_payload.find("s_old"));
 }
 
 TEST(BusWriteSupersedes, SupersedingAtomicCommit) {
@@ -225,12 +232,15 @@ TEST(BusWriteSupersedes, RollbackOnSOldUpdateFailure) {
                "2026-06-01T00:00:00Z", "2026-12-31T00:00:00Z",
                "v1", "consolidated");
 
-    // Race simulator: when something tries to archive s_old, RAISE(IGNORE)
-    // causes SQLite to silently skip the row update without raising an
-    // error. The UPDATE statement returns SQLITE_DONE but sqlite3_changes()
-    // is 0 — exactly what would happen if the row's state had changed
-    // between probe and apply. The helper's defensive guard then throws
-    // std::runtime_error.
+    // Race simulator: a BEFORE UPDATE trigger that fires RAISE(IGNORE)
+    // aborts the triggering UPDATE statement before any row is touched.
+    // sqlite3_step() still returns SQLITE_DONE and sqlite3_changes() is 0
+    // — the same observable outcome as the helper's
+    // `WHERE consolidation_state='consolidated'` guard matching zero rows
+    // when S_old's state changed between probe and apply. The simulation
+    // is not byte-identical to the race (the WHERE never evaluates), but
+    // the helper's defensive `sqlite3_changes() != 1` check sees the same
+    // signal and throws std::runtime_error.
     char* err = nullptr;
     ASSERT_EQ(SQLITE_OK, sqlite3_exec(a->connection().raw(),
         "CREATE TRIGGER race_simulator BEFORE UPDATE OF consolidation_state "
