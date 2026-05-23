@@ -26,6 +26,7 @@ add_executable(starling_tests
     test_sqlite_link.cpp
     test_migration_runner.cpp
     test_connection.cpp
+    test_idempotency_key.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
