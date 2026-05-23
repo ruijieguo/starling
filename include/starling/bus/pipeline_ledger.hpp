@@ -12,8 +12,11 @@ enum class PipelineStatus   { Started, Finished, Failed };
 
 // extraction_attempt.status. M0.4's LLM extractor will write one row per
 // (span_key, attempt_number) tuple per pipeline_run; the uniqueness is enforced
-// by migration 0002's idx_extraction_attempt_unique.
-enum class ExtractionStatus { Success, PartialSuccess, Failed };
+// by migration 0002's idx_extraction_attempt_unique. The Noop variant is the
+// "extraction_span_key already produced an APPROVED Statement" short-circuit
+// — no new Statement is written, but the attempt is still ledger-recorded
+// for audit. See docs/design/subsystems_design/05_bus.md § extraction_attempt.
+enum class ExtractionStatus { Success, PartialSuccess, Failed, Noop };
 
 // Sole sanctioned write path into pipeline_run / extraction_attempt for M0.4's
 // LLM extractor. Sealing the API here, before the extractor exists, prevents

@@ -9,17 +9,24 @@ void FakeLLMAdapter::set_response(std::string prompt_input_hash,
     responses_[std::move(prompt_input_hash)] = std::move(response);
 }
 
+void FakeLLMAdapter::set_default_response(LLMResponse response) {
+    default_response_ = std::move(response);
+}
+
 LLMResponse FakeLLMAdapter::extract(std::string_view /*prompt*/,
                                     std::string_view prompt_input_hash) {
     const auto it = responses_.find(std::string(prompt_input_hash));
-    if (it == responses_.end()) {
-        return LLMResponse{
-            .raw_xml = "",
-            .ok = false,
-            .error = "fake_adapter_no_response_for_hash",
-        };
+    if (it != responses_.end()) {
+        return it->second;
     }
-    return it->second;
+    if (default_response_.has_value()) {
+        return *default_response_;
+    }
+    return LLMResponse{
+        .raw_xml = "",
+        .ok = false,
+        .error = "fake_adapter_no_response_for_hash",
+    };
 }
 
 }  // namespace starling::extractor

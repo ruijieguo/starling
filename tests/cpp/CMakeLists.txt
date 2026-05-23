@@ -47,6 +47,7 @@ add_executable(starling_tests
     test_statement_validator.cpp
     test_statement_writer.cpp
     test_bus_statement_write.cpp
+    test_extractor_orchestrator.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

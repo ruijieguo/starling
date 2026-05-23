@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS extraction_attempt (
     pipeline_run_id TEXT NOT NULL REFERENCES pipeline_run(id),
     extraction_span_key TEXT NOT NULL,
     attempt_number INTEGER NOT NULL,
-    status TEXT NOT NULL,                   -- success|partial_success|failed
+    status TEXT NOT NULL,                   -- success|partial_success|failed|noop
     raw_output TEXT,
     error TEXT,
     created_at TEXT NOT NULL
