@@ -181,6 +181,25 @@ TEST(ConflictProbeScan, CrossVersionDowngradesToPartial) {
     EXPECT_EQ(ConflictKind::PartialOverlap, m->kind);
 }
 
+TEST(ConflictProbeScan, VolatileSOldClampsSevereToPartial) {
+    // §3.5 T7-P1 only authorizes the SUPERSEDES atomic path against a
+    // CONSOLIDATED S_old. A VOLATILE S_old that would otherwise classify as
+    // DirectContradiction (opposite polarity, both above theta, intervals
+    // overlap) must clamp to PartialOverlap so Bus::write does not invoke
+    // apply_supersedes_atomic against a row whose state forbids the bypass.
+    auto a = open_fresh();
+    insert_row(a->connection(), "s_old", "pos", 0.85,
+               "2026-05-01T00:00:00Z", "2027-01-01T00:00:00Z",
+               "v1", "volatile");
+    ConflictProbe p(a->connection());
+    auto m = p.scan(
+        make_stmt("neg", 0.85, std::string("2026-06-01T00:00:00Z"),
+                  std::string("2026-12-31T00:00:00Z")),
+        iv(std::string("2026-06-01T00:00:00Z"), std::string("2026-12-31T00:00:00Z")));
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(ConflictKind::PartialOverlap, m->kind);
+}
+
 TEST(ConflictProbeScan, SupersedingWhenNewCoversOldSamePolarity) {
     auto a = open_fresh();
     insert_row(a->connection(), "s_old", "pos", 0.85,

@@ -35,6 +35,7 @@ struct CandidateRow {
     std::string        supersedes_root_id;             // COALESCE(supersedes_id, id)
     std::string        canonical_object_hash_version;
     std::string        polarity;                       // "pos" | "neg" | "unknown"
+    std::string        consolidation_state;            // "volatile" | "consolidated"
     NormalizedInterval interval;                       // built from valid_from/valid_to/event_time_start
     double             confidence = 0.0;
 };
@@ -83,10 +84,20 @@ std::vector<CandidateRow> fetch_candidates(
     // hash_version intentionally omitted from the WHERE clause: cross-version
     // rows are returned and clamped to PartialOverlap in classify(). Revisit
     // when M0.5+1 ships a second canonical_object_hash version.
+    //
+    // KNOWN GAP: 05_bus.md canonical_object_hash_version §"双查协议" specifies
+    // that during a hash-version upgrade the probe MUST query both the current
+    // and previous version hashes (so a v1 row with the post-rename hash and a
+    // v2 row with the pre-rename hash can both be examined). M0.5 ships v1
+    // only, so the post-fetch clamp at classify():"cross-version → PartialOverlap"
+    // is sufficient. When the second canonical version ships, replace this
+    // single-version SELECT with the two-hash double query and add a parity
+    // test that seeds a v1 + v2 collision under the same logical object.
     const char* sql =
         "SELECT id, tenant_id, "
         "       COALESCE(supersedes_id, id) AS supersedes_root_id, "
         "       canonical_object_hash_version, polarity, "
+        "       consolidation_state, "
         "       COALESCE(valid_from, ''), COALESCE(valid_to, ''), "
         "       COALESCE(event_time_start, ''), confidence "
         "FROM statements "
@@ -126,10 +137,11 @@ std::vector<CandidateRow> fetch_candidates(
         r.supersedes_root_id            = col(2);
         r.canonical_object_hash_version = col(3);
         r.polarity                      = col(4);
-        const std::string vf  = col(5);
-        const std::string vt  = col(6);
-        const std::string ets = col(7);
-        r.confidence                    = sqlite3_column_double(h.get(), 8);
+        r.consolidation_state           = col(5);
+        const std::string vf  = col(6);
+        const std::string vt  = col(7);
+        const std::string ets = col(8);
+        r.confidence                    = sqlite3_column_double(h.get(), 9);
         r.interval                      = interval_from_columns(vf, vt, ets);
         rows.push_back(std::move(r));
     }
@@ -146,6 +158,17 @@ ConflictKind classify(
     // S_new's version explicitly here.)
     constexpr std::string_view kSNewVersion = "v1";
     if (cand.canonical_object_hash_version != kSNewVersion) {
+        return ConflictKind::PartialOverlap;
+    }
+
+    // §3.5 T7-P1 only authorizes the SUPERSEDES atomic path against a
+    // CONSOLIDATED S_old (the bypass goes consolidated → archived directly,
+    // skipping replaying_reconsolidating). A VOLATILE S_old has not been
+    // consolidated yet; archiving it via the severe path would violate the
+    // lifecycle and apply_supersedes_atomic would silently rollback because
+    // its `WHERE consolidation_state='consolidated'` guard matches 0 rows.
+    // Clamp severe classifications to PartialOverlap when S_old is volatile.
+    if (cand.consolidation_state != "consolidated") {
         return ConflictKind::PartialOverlap;
     }
 
