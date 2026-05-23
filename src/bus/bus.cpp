@@ -265,8 +265,13 @@ StatementWriteOutcome Bus::write(
         switch (match->kind) {
             case ConflictKind::DirectContradiction:
             case ConflictKind::Superseding:
-                // TODO(M0.5 Task 8): replace fall-through with apply_supersedes_atomic(...).
-                // For now, leave the new statement written without superseding S_old.
+                // KNOWN REGRESSION until M0.5 Task 8 lands apply_supersedes_atomic(...):
+                // the new statement is committed below WITHOUT a SUPERSEDES edge,
+                // WITHOUT archiving S_old, and WITHOUT a belief.superseded /
+                // statement.archived event. Direct-contradiction / superseding
+                // writes are therefore silently committed as plain statements in
+                // this intermediate state. Task 8 replaces this fall-through with
+                // the atomic three-write path required by TC-NEW-CONFLICT-SEVERE.
                 break;
 
             case ConflictKind::PartialOverlap: {
