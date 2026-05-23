@@ -23,6 +23,17 @@ from starling.schema.container import (
     VALID_DIMENSIONS,
 )
 from starling.schema.edge import RelationEdge
+from starling.schema.validators import (
+    SchemaInvalid,
+    validate_evidence_or_derivation,
+    validate_subject_not_statement,
+    validate_derived_depth,
+    validate_tenant_derived,
+    validate_perspective_provenance,
+    validate_canonical_object_hash,
+    validate_evidence_status,
+    validate_container_dimension,
+)
 
 __all__ = [
     "Perspective", "Modality", "Polarity", "ConsolidationState",
@@ -43,4 +54,13 @@ __all__ = [
     "PERSONA_DIMENSIONS", "COMMON_GROUND_DIMENSIONS", "KNOWLEDGE_FRONTIER_DIMENSIONS",
     "VALID_DIMENSIONS",
     "RelationEdge",
+    "SchemaInvalid",
+    "validate_evidence_or_derivation",
+    "validate_subject_not_statement",
+    "validate_derived_depth",
+    "validate_tenant_derived",
+    "validate_perspective_provenance",
+    "validate_canonical_object_hash",
+    "validate_evidence_status",
+    "validate_container_dimension",
 ]
