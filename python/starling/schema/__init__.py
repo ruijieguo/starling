@@ -17,6 +17,12 @@ from starling.schema.cognizer import Cognizer, AccessPolicy
 from starling.schema.entity import Entity
 from starling.schema.engram import Engram, SourceRef, KeyRef
 from starling.schema.statement import Statement, EvidenceRef, TimeRange
+from starling.schema.container import (
+    Container, Persona, CommonGround, KnowledgeFrontier,
+    PERSONA_DIMENSIONS, COMMON_GROUND_DIMENSIONS, KNOWLEDGE_FRONTIER_DIMENSIONS,
+    VALID_DIMENSIONS,
+)
+from starling.schema.edge import RelationEdge
 
 __all__ = [
     "Perspective", "Modality", "Polarity", "ConsolidationState",
@@ -33,4 +39,8 @@ __all__ = [
     "Entity",
     "Engram", "SourceRef", "KeyRef",
     "Statement", "EvidenceRef", "TimeRange",
+    "Container", "Persona", "CommonGround", "KnowledgeFrontier",
+    "PERSONA_DIMENSIONS", "COMMON_GROUND_DIMENSIONS", "KNOWLEDGE_FRONTIER_DIMENSIONS",
+    "VALID_DIMENSIONS",
+    "RelationEdge",
 ]
