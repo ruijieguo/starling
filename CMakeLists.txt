@@ -42,6 +42,7 @@ target_sources(starling_core PRIVATE
     src/bus/consumer_state.cpp
     src/bus/outbox_dispatcher.cpp
     src/bus/pipeline_ledger.cpp
+    src/persistence/sqlite_adapter.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)

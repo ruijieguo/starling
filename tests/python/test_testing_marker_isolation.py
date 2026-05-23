@@ -19,6 +19,12 @@ def test_testing_marker_via_python_helper():
 
 
 def test_testing_package_all_locks_surface():
-    """The testing helper subpackage exports exactly one symbol — locked surface."""
+    """The testing helper subpackage exports a small, locked surface.
+
+    Both symbols are testing-only: prod entrypoints are blocked from importing
+    `starling.testing` by the CI static scan (scripts/ci_static_scan.py).
+    Adding a new symbol here requires extending this list AND verifying the
+    scanner still rejects prod imports.
+    """
     import starling.testing
-    assert starling.testing.__all__ == ["marker_loaded"]
+    assert starling.testing.__all__ == ["marker_loaded", "relax_preflight_for_m0_2"]

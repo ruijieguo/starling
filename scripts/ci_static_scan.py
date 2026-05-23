@@ -30,6 +30,13 @@ FORBIDDEN_PATTERNS = (
     re.compile(r"\bstarling::testing\b"),
     re.compile(r"\bstarling\.testing\b"),
     re.compile(r"\bstarling_testing_marker\b"),
+    # M0.2: append_event_unsafe is the test-only OutboxWriter shortcut bound on
+    # _core.SqliteAdapter — see bindings/python/module.cpp. Real producers must
+    # share their own TransactionGuard with OutboxWriter; the unsafe shortcut
+    # exists solely so TC-NEW-OUTBOX-IDEMP can seed events. Banning the bare
+    # symbol catches both `adapter.append_event_unsafe(…)` and direct attribute
+    # access on the C++ class binding.
+    re.compile(r"\bappend_event_unsafe\b"),
 )
 NOLINT_TAG = "NOLINT(starling-testing-isolation)"
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h", ".py", ".pyi", ".js", ".ts"}
