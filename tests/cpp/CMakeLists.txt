@@ -34,6 +34,7 @@ add_executable(starling_tests
     test_outbox_dispatcher.cpp
     test_pipeline_ledger.cpp
     test_sqlite_adapter.cpp
+    test_engram_content_hash.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
