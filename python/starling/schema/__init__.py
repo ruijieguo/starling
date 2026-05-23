@@ -6,6 +6,10 @@ from starling.schema.enums import (
     ContainerKind, EdgeKind, AnchorKind, BuildPolicy,
     CONSOLIDATION_TRANSITIONS,
 )
+from starling.schema.refs import (
+    CognizerRef, EntityRef, StatementRef, EngramRef,
+    PersonaRef, KnowledgeFrontierRef,
+)
 
 __all__ = [
     "Perspective", "Modality", "Polarity", "ConsolidationState",
@@ -13,4 +17,6 @@ __all__ = [
     "PrivacyClass", "StatementProvenance", "ReviewStatus", "EvidenceStatus",
     "ContainerKind", "EdgeKind", "AnchorKind", "BuildPolicy",
     "CONSOLIDATION_TRANSITIONS",
+    "CognizerRef", "EntityRef", "StatementRef", "EngramRef",
+    "PersonaRef", "KnowledgeFrontierRef",
 ]
