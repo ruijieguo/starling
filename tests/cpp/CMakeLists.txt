@@ -52,6 +52,7 @@ add_executable(starling_tests
     test_conflict_key.cpp
     test_bus_statement_write.cpp
     test_extractor_orchestrator.cpp
+    test_conflict_probe_indices.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
