@@ -81,3 +81,4 @@ def test_partial_success(rt):
 
     assert attempt_status == "partial_success"
     assert run_status == "finished"
+    assert r.status == "partial_success"

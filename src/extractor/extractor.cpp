@@ -163,8 +163,9 @@ ExtractionRunResult Extractor::run(
     const std::string chunk_span_key = compute_extraction_span_key(
         engram_ref_id, chunk_index, "__chunk__", "__chunk__");
 
-    bool any_accepted = false;
-    bool all_failed   = true;
+    bool any_accepted  = false;
+    bool all_failed    = true;
+    bool result_partial = false;
 
     const std::string prompt_body = Extractor::build_prompt_body_for_tests(
         holder_id, payload_bytes, existing_ref_map);
@@ -284,6 +285,7 @@ ExtractionRunResult Extractor::run(
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::PartialSuccess,
                                   resp.raw_xml, /*error=*/{});
+            result_partial = true;
         }
         if (wrote_anything_this_attempt) any_accepted = true;
         // Parse succeeded: this attempt is not a failure regardless of validate
@@ -293,7 +295,9 @@ ExtractionRunResult Extractor::run(
     }
 
     if (any_accepted) {
-        result.status = ExtractionRunResult::Status::SUCCESS;
+        result.status = result_partial
+            ? ExtractionRunResult::Status::PARTIAL_SUCCESS
+            : ExtractionRunResult::Status::SUCCESS;
         ledger.finish_run(run_id, PipelineStatus::Finished);
         emit_pipeline_event(conn_, "pipeline.run_completed",
                             holder_tenant_id, run_id, run_started_event_id);
