@@ -47,6 +47,7 @@ target_sources(starling_core PRIVATE
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
     src/evidence/evidence_validator.cpp
+    src/evidence/engram_store.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
