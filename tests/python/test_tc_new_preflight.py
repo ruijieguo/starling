@@ -42,6 +42,7 @@ def test_unready_when_idx_statement_id_tenant_missing():
     with pytest.raises(RuntimeUnreadyError) as exc:
         rt.start()
     assert rt.health() == _core.RuntimeHealth.UNREADY
+    assert isinstance(exc.value.missing_capabilities, list)
     assert "idx_statement_id_tenant" in exc.value.missing_capabilities
     assert rt.exit_code == EX_CONFIG
 
@@ -52,6 +53,7 @@ def test_unready_when_transactional_outbox_false():
     rt = Runtime(capability=cap)
     with pytest.raises(RuntimeUnreadyError) as exc:
         rt.start()
+    assert isinstance(exc.value.missing_capabilities, list)
     assert "transactional_outbox" in exc.value.missing_capabilities
     assert rt.exit_code == EX_CONFIG
 
@@ -62,6 +64,7 @@ def test_unready_when_app_filter_violates_storage_enforced():
     rt = Runtime(capability=cap)
     with pytest.raises(RuntimeUnreadyError) as exc:
         rt.start()
+    assert isinstance(exc.value.missing_capabilities, list)
     assert "tenant_isolation_storage_enforced" in exc.value.missing_capabilities
     assert rt.exit_code == EX_CONFIG
 
@@ -72,6 +75,7 @@ def test_unready_when_cross_partition_false_for_local_store_atomic():
     rt = Runtime(capability=cap)
     with pytest.raises(RuntimeUnreadyError) as exc:
         rt.start()
+    assert isinstance(exc.value.missing_capabilities, list)
     assert "cross_partition_transaction" in exc.value.missing_capabilities
     assert rt.exit_code == EX_CONFIG
 
@@ -87,6 +91,7 @@ def test_unready_emits_runtime_health_changed_event():
     evt = events[0]
     assert evt["event"] == "runtime.health_changed"
     assert evt["state"] == "UNREADY"
+    assert isinstance(evt["missing_capabilities"], list)
     assert "transactional_outbox" in evt["missing_capabilities"]
 
 

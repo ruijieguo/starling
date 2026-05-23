@@ -28,10 +28,14 @@ LOCAL_STORE_REQUIRED = (
 
 class RuntimeUnreadyError(RuntimeError):
     def __init__(self, missing_capabilities: list[str]):
-        super().__init__(
-            "preflight failed: " + ", ".join(missing_capabilities)
-        )
-        self.missing_capabilities = missing_capabilities
+        # Store the list as args[0] so copy / cross-process round-trips
+        # reconstruct the error correctly via the default __reduce__ path.
+        # __str__ formats lazily so str(e) stays human-readable.
+        super().__init__(list(missing_capabilities))
+        self.missing_capabilities = list(missing_capabilities)
+
+    def __str__(self) -> str:
+        return "preflight failed: " + ", ".join(self.missing_capabilities)
 
 
 @dataclass
@@ -97,6 +101,8 @@ class Runtime:
 
     def _set_unready(self, missing: list[str]) -> None:
         self._state = _core.RuntimeHealth.UNREADY
+        # exit_code is fail-closed-only; never cleared on a later transition
+        # back to READY (process-exit signal, not transient state).
         self.exit_code = EX_CONFIG
         self.foreground_workers_started = False
         self.background_workers_started = False
@@ -108,6 +114,8 @@ class Runtime:
             })
 
     def _set_ready(self) -> None:
+        # Only safe to call after start()'s preflight has passed. Future
+        # degraded→ready transitions must re-run preflight before calling this.
         self._state = _core.RuntimeHealth.READY
         self.foreground_workers_started = True
         self.background_workers_started = True
