@@ -46,6 +46,7 @@ add_executable(starling_tests
     test_xml_parser.cpp
     test_statement_validator.cpp
     test_statement_writer.cpp
+    test_statement_writer_interval.cpp
     test_bus_statement_write.cpp
     test_extractor_orchestrator.cpp
 )
