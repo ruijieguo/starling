@@ -189,6 +189,32 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual(status_row[0], "delivered")
 
+    # ---------------------------------------------- spec Step 1 assertions
+
+    def test_idx_statement_id_tenant_present(self) -> None:
+        # idx_statement_id_tenant_present is a Callable[[], bool] field, not a
+        # method. The field is wired in _build_local_store_sqlite_runtime to a
+        # closure that probes sqlite_master for the idx_statement_id_tenant
+        # index created by migration 0001_initial_schema.sql; if 0001 ran the
+        # callable returns True. No start() needed — the migration runs at
+        # construction time, well before preflight.
+        self.assertTrue(self.runtime.idx_statement_id_tenant_present())
+
+    def test_final_query_predicate_blocks_unguarded_select(self) -> None:
+        # SqliteAdapter::check_final_query is the bool predicate variant;
+        # returns False if guard predicates are missing, True if both
+        # tenant_id and holder_scope appear in the SQL. Mirrors the C++
+        # tests/cpp/test_sqlite_adapter.cpp expectations and the underlying
+        # is_final_query_safe assertions in test_final_query_assertion.cpp.
+        self.assertFalse(
+            self.runtime.adapter.check_final_query("SELECT * FROM statements")
+        )
+        self.assertTrue(
+            self.runtime.adapter.check_final_query(
+                "SELECT * FROM statements WHERE tenant_id=? AND holder_scope=?"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
