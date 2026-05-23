@@ -35,6 +35,7 @@ target_sources(starling_core PRIVATE
     src/final_query_assertion.cpp
     src/runtime_health.cpp
     src/schema/canonicalize.cpp
+    src/schema/enums.cpp
     src/persistence/migration_runner.cpp
     src/persistence/connection.cpp
     src/bus/bus_event.cpp

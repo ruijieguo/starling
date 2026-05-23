@@ -23,6 +23,7 @@ add_executable(starling_tests
     test_preflight.cpp
     test_final_query_assertion.cpp
     test_canonicalize.cpp
+    test_schema_enums.cpp
     test_sqlite_link.cpp
     test_migration_runner.cpp
     test_connection.cpp
