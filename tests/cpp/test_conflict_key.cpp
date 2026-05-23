@@ -31,6 +31,7 @@ TEST(ConflictKey, ParityFixtureHex) {
     auto hex = canonical_conflict_key_hex(stmt);
     std::cout << "PARITY_HEX=" << hex << std::endl;
     EXPECT_EQ(hex.size(), 64u);
+    EXPECT_EQ(hex, "128e262474462a27c39126dbfc4c3876cac63f6d11f53a0161a8b6c8b66f8790");
 }
 
 TEST(ConflictKey, DifferentHolderProducesDifferentKey) {
