@@ -82,6 +82,7 @@ def test_observer_agent_payload_is_also_no_store(runtime):
     outcome = runtime.bus.append_evidence(inp)
     assert outcome["kind"] == "no_store"
     assert _count(runtime, "engrams") == 0
+    assert _bus_event_rows(runtime) == [("evidence.no_store_audit", "delivered")]
 
 
 def test_replay_output_payload_is_also_no_store(runtime):
@@ -99,3 +100,4 @@ def test_replay_output_payload_is_also_no_store(runtime):
     outcome = runtime.bus.append_evidence(inp)
     assert outcome["kind"] == "no_store"
     assert _count(runtime, "engrams") == 0
+    assert _bus_event_rows(runtime) == [("evidence.no_store_audit", "delivered")]
