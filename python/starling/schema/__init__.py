@@ -16,6 +16,7 @@ from starling.schema.affect import AffectVector
 from starling.schema.cognizer import Cognizer, AccessPolicy
 from starling.schema.entity import Entity
 from starling.schema.engram import Engram, SourceRef, KeyRef
+from starling.schema.statement import Statement, EvidenceRef, TimeRange
 
 __all__ = [
     "Perspective", "Modality", "Polarity", "ConsolidationState",
@@ -31,4 +32,5 @@ __all__ = [
     "Cognizer", "AccessPolicy",
     "Entity",
     "Engram", "SourceRef", "KeyRef",
+    "Statement", "EvidenceRef", "TimeRange",
 ]
