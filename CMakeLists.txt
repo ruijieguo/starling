@@ -51,6 +51,7 @@ target_sources(starling_core PRIVATE
     src/evidence/engram_store.cpp
     src/bus/bus.cpp
     src/extractor/extraction_span_key.cpp
+    src/extractor/fake_llm_adapter.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
