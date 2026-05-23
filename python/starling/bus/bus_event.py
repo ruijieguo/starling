@@ -44,7 +44,16 @@ def compute_window_bucket(event_type: str, now: datetime) -> str:
     # Naive datetimes are treated as UTC (matching C++ system_clock semantics on
     # macOS/Linux); aware datetimes are converted to UTC, NOT tz-stamped — that
     # would silently shift the bucket for non-UTC inputs.
-    if event_type == "pipeline_run.started":
+    if event_type in (
+        "pipeline_run.started",
+        "extraction.failed",
+        "extraction.retry_scheduled",
+        "extraction.dead_lettered",
+        "extraction.noop",
+        "pipeline.run_started",
+        "pipeline.run_completed",
+        "pipeline.run_failed",
+    ):
         utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
         return str(int(utc.timestamp()) // 60)
     return ""

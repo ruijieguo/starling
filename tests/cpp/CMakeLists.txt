@@ -45,6 +45,7 @@ add_executable(starling_tests
     test_fake_llm_adapter.cpp
     test_xml_parser.cpp
     test_statement_validator.cpp
+    test_statement_writer.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

@@ -44,6 +44,7 @@ target_sources(starling_core PRIVATE
     src/bus/consumer_state.cpp
     src/bus/outbox_dispatcher.cpp
     src/bus/pipeline_ledger.cpp
+    src/bus/statement_writer.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
