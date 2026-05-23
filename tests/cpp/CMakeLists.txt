@@ -26,6 +26,7 @@ add_executable(starling_tests
     test_schema_enums.cpp
     test_sqlite_link.cpp
     test_migration_runner.cpp
+    test_migration_0003.cpp
     test_connection.cpp
     test_idempotency_key.cpp
     test_outbox_writer.cpp
