@@ -22,6 +22,7 @@ add_executable(starling_tests
     test_runtime_health.cpp
     test_preflight.cpp
     test_final_query_assertion.cpp
+    test_canonicalize.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
