@@ -53,6 +53,7 @@ target_sources(starling_core PRIVATE
     src/extractor/extraction_span_key.cpp
     src/extractor/fake_llm_adapter.cpp
     src/extractor/xml_parser.cpp
+    src/extractor/statement_validator.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
