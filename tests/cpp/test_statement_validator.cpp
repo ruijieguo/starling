@@ -154,4 +154,15 @@ TEST(StatementValidator, RejectsEmptyTenant) {
     EXPECT_TRUE(outcome.detail.find("holder_tenant_id") != std::string::npos);
 }
 
+TEST(StatementValidator, AcceptsConfidenceAtMaximum) {
+    // Boundary: confidence == 1.0 is in-range, well above threshold,
+    // and (with FIRST_PERSON + USER_INPUT) is not weak. Pin so a
+    // future range check using > / >= can't quietly drop the boundary.
+    auto s = valid_first_person();
+    s.confidence = 1.0;
+    auto outcome = validate_extracted_statement(s);
+    EXPECT_TRUE(outcome.ok());
+    EXPECT_EQ(outcome.review_status_override, std::nullopt);
+}
+
 }  // namespace starling::extractor

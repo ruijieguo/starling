@@ -7,7 +7,7 @@ namespace starling::extractor {
 
 namespace {
 
-const std::set<std::string> kAllowedObjectKinds = {
+const std::set<std::string> kKnownObjectKinds = {
     "bool", "int", "float", "str", "datetime", "cognizer", "entity", "statement",
 };
 
@@ -39,7 +39,7 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
     if (s.observed_at.empty())           { missing("observed_at");           return out; }
     if (s.source_hash.empty())           { missing("source_hash");           return out; }
 
-    if (kAllowedObjectKinds.find(s.object_kind) == kAllowedObjectKinds.end()) {
+    if (kKnownObjectKinds.find(s.object_kind) == kKnownObjectKinds.end()) {
         out.accepted = false;
         out.error_kind = "value_type_unsupported";
         out.detail = "object_kind not in {bool,int,float,str,datetime,cognizer,entity,statement}: " + s.object_kind;
