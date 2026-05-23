@@ -25,6 +25,7 @@ add_executable(starling_tests
     test_canonicalize.cpp
     test_sqlite_link.cpp
     test_migration_runner.cpp
+    test_connection.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
