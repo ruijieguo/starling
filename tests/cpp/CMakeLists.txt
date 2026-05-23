@@ -38,6 +38,7 @@ add_executable(starling_tests
     test_ingest_policy_resolver.cpp
     test_evidence_validator.cpp
     test_engram_store.cpp
+    test_bus_append_evidence.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
