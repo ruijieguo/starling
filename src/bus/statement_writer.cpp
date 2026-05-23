@@ -239,9 +239,11 @@ StatementWriteOutcome StatementWriter::write(
     std::string content_hash;
     {
         sqlite3_stmt* raw = nullptr;
-        sqlite3_prepare_v2(db,
-            "SELECT content_hash FROM engrams WHERE id = ? AND tenant_id = ?",
-            -1, &raw, nullptr);
+        if (sqlite3_prepare_v2(db,
+                "SELECT content_hash FROM engrams WHERE id = ? AND tenant_id = ?",
+                -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(db, "StatementWriter::write: prepare engrams content_hash");
+        }
         StmtHandle h(raw);
         bind_sv(h.get(), 1, evidence_engram_id);
         bind_sv(h.get(), 2, s.holder_tenant_id);

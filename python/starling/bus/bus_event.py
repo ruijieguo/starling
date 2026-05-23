@@ -46,6 +46,8 @@ def compute_window_bucket(event_type: str, now: datetime) -> str:
     # would silently shift the bucket for non-UTC inputs.
     if event_type in (
         "pipeline_run.started",
+        "evidence.no_store_audit",
+        "evidence.idempotent_hit",
         "extraction.failed",
         "extraction.retry_scheduled",
         "extraction.dead_lettered",

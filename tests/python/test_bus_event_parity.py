@@ -64,6 +64,8 @@ def test_window_bucket_extraction_and_pipeline_event_families():
     instant = datetime(2026, 5, 23, 12, 0, 0, tzinfo=timezone.utc)
     expected = str(int(instant.timestamp()) // 60)
     bucketed = (
+        "evidence.no_store_audit",
+        "evidence.idempotent_hit",
         "extraction.failed",
         "extraction.retry_scheduled",
         "extraction.dead_lettered",
