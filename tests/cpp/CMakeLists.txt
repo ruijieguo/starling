@@ -22,7 +22,6 @@ add_executable(starling_tests
     test_runtime_health.cpp
     test_preflight.cpp
     test_final_query_assertion.cpp
-    test_extraction_span_key.cpp
     test_canonicalize.cpp
     test_schema_enums.cpp
     test_statement_enums.cpp
@@ -41,6 +40,7 @@ add_executable(starling_tests
     test_evidence_validator.cpp
     test_engram_store.cpp
     test_bus_append_evidence.cpp
+    test_extraction_span_key.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

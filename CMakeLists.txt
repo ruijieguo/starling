@@ -34,7 +34,6 @@ target_sources(starling_core PRIVATE
     src/preflight.cpp
     src/final_query_assertion.cpp
     src/runtime_health.cpp
-    src/extractor/extraction_span_key.cpp
     src/schema/canonicalize.cpp
     src/schema/statement_enums.cpp
     src/schema/enums.cpp
@@ -51,6 +50,7 @@ target_sources(starling_core PRIVATE
     src/evidence/evidence_validator.cpp
     src/evidence/engram_store.cpp
     src/bus/bus.cpp
+    src/extractor/extraction_span_key.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
