@@ -38,6 +38,14 @@ public:
     // Public so tests can use the same hash as the adapter's keying.
     static std::string compute_prompt_input_hash(std::string_view prompt_body);
 
+    // Public for test seeding only — production callers use run() which
+    // builds the same body internally. Tests need the same byte string the
+    // orchestrator will hash so set_response can key on the matching hash.
+    static std::string build_prompt_body_for_tests(
+        std::string_view holder_id,
+        const std::vector<std::uint8_t>& payload_bytes,
+        const std::map<std::string, std::string>& existing_ref_map);
+
     // Visible constants.
     static constexpr int kMaxRetries        = 3;
     static constexpr const char* kPromptVersion    = "v1.0";

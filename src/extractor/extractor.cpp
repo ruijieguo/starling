@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <optional>
+#include <set>
 #include <string>
 #include <variant>
 
@@ -30,24 +31,6 @@ using starling::bus::StatementWriteChunkDuplicate;
 using starling::bus::StatementWriter;
 
 namespace {
-
-std::string build_prompt_body(
-        std::string_view holder_id,
-        const std::vector<std::uint8_t>& payload_bytes,
-        const ExistingRefMap& refs) {
-    // M0.4 prompt body format. Real prompt construction lives in
-    // python/starling/extractor/prompts.py (Task 9); here we keep the C++
-    // builder minimal so the LLM-side tests can drive the adapter through
-    // compute_prompt_input_hash(). The body is opaque to the adapter.
-    std::string body = "[M0.4 extractor prompt v1.0]\n";
-    body += "holder_id=";
-    body += std::string(holder_id);
-    body += "\npayload_size=";
-    body += std::to_string(payload_bytes.size());
-    body += "\nexisting_refs=";
-    body += std::to_string(refs.size());
-    return body;
-}
 
 std::string emit_pipeline_event(
         starling::persistence::Connection& conn,
@@ -136,6 +119,24 @@ std::string Extractor::compute_prompt_input_hash(std::string_view prompt_body) {
     return starling::crypto::sha256_hex(prompt_body);
 }
 
+std::string Extractor::build_prompt_body_for_tests(
+        std::string_view holder_id,
+        const std::vector<std::uint8_t>& payload_bytes,
+        const ExistingRefMap& refs) {
+    // M0.4 prompt body format. Real prompt construction lives in
+    // python/starling/extractor/prompts.py (Task 9); here we keep the C++
+    // builder minimal so the LLM-side tests can drive the adapter through
+    // compute_prompt_input_hash(). The body is opaque to the adapter.
+    std::string body = "[M0.4 extractor prompt v1.0]\n";
+    body += "holder_id=";
+    body += std::string(holder_id);
+    body += "\npayload_size=";
+    body += std::to_string(payload_bytes.size());
+    body += "\nexisting_refs=";
+    body += std::to_string(refs.size());
+    return body;
+}
+
 ExtractionRunResult Extractor::run(
         std::string_view                  engram_ref_id,
         const std::vector<std::uint8_t>&  payload_bytes,
@@ -165,7 +166,7 @@ ExtractionRunResult Extractor::run(
     bool any_accepted = false;
     bool all_failed   = true;
 
-    const std::string prompt_body = build_prompt_body(
+    const std::string prompt_body = Extractor::build_prompt_body_for_tests(
         holder_id, payload_bytes, existing_ref_map);
     const std::string prompt_input_hash = compute_prompt_input_hash(prompt_body);
 
@@ -210,6 +211,7 @@ ExtractionRunResult Extractor::run(
         bool any_rejected_this_attempt = false;
         bool wrote_anything_this_attempt = false;
         bool noop_short_circuited = false;
+        std::set<std::string> written_span_keys;  // tracks intra-run writes
         for (auto& stmt : parsed.statements) {
             stmt.holder_id        = std::string(holder_id);
             stmt.holder_tenant_id = std::string(holder_tenant_id);
@@ -228,7 +230,13 @@ ExtractionRunResult Extractor::run(
 
             const std::string span_key = compute_extraction_span_key(
                 engram_ref_id, chunk_index, stmt.predicate, stmt.canonical_object_hash);
-            if (extraction_span_key_already_succeeded(conn_, span_key)) {
+            // Cross-run idempotency: if a prior run already succeeded for this
+            // span_key, emit noop. Intra-run duplicates (same span_key written
+            // earlier in this loop) are handled by StatementWriter as
+            // ChunkDuplicate — don't noop them here or we'd hit a UNIQUE
+            // constraint on the attempt row.
+            if (written_span_keys.find(span_key) == written_span_keys.end()
+                    && extraction_span_key_already_succeeded(conn_, span_key)) {
                 ledger.record_attempt(run_id, span_key, attempt,
                                       ExtractionStatus::Noop,
                                       /*raw_output=*/{},
@@ -241,34 +249,40 @@ ExtractionRunResult Extractor::run(
             }
 
             const auto outcome = writer.write(stmt, engram_ref_id, span_key, run_started_event_id);
-            std::string accepted_id =
-                std::holds_alternative<StatementWriteAccepted>(outcome)
-                    ? std::get<StatementWriteAccepted>(outcome).stmt_id
-                    : std::get<StatementWriteChunkDuplicate>(outcome).stmt_id;
-            result.accepted_statement_ids.push_back(accepted_id);
+            if (std::holds_alternative<StatementWriteAccepted>(outcome)) {
+                result.accepted_statement_ids.push_back(
+                    std::get<StatementWriteAccepted>(outcome).stmt_id);
+                // Record per-statement success so future runs can noop-short-circuit.
+                ledger.record_attempt(run_id, span_key, attempt,
+                                      ExtractionStatus::Success,
+                                      /*raw_output=*/{},
+                                      /*error=*/{});
+                written_span_keys.insert(span_key);
+            } else {
+                // StatementWriteChunkDuplicate: statement written (review_requested),
+                // but span_key already has a success row from the first duplicate —
+                // skip record_attempt to avoid UNIQUE constraint violation.
+                result.accepted_statement_ids.push_back(
+                    std::get<StatementWriteChunkDuplicate>(outcome).stmt_id);
+            }
             wrote_anything_this_attempt = true;
-            // Record per-statement success at the per-statement span_key so a
-            // future run with the same content can detect prior success and
-            // short-circuit into Noop. The per-attempt aggregate row is only
-            // emitted for outcomes that don't already have per-statement rows
-            // (validator-rejected or empty-parse).
-            ledger.record_attempt(run_id, span_key, attempt,
-                                  ExtractionStatus::Success,
-                                  /*raw_output=*/{},
-                                  /*error=*/{});
         }
 
-        // Only emit a chunk-level aggregate attempt row when we have nothing
-        // to point at per-statement -- i.e. validator rejected every candidate
-        // or the parse produced zero statements. When statements were written
-        // or noop-short-circuited, the per-statement rows above already
-        // accounted for the work and an extra aggregate row would skew counts.
+        // Emit a chunk-level aggregate attempt row for cases not covered by
+        // per-statement rows:
+        // - Nothing written and nothing noop'd: all-rejected or empty parse.
+        // - Something written but some were also rejected: partial_success.
         if (!wrote_anything_this_attempt && !noop_short_circuited) {
             const auto attempt_status =
                 any_rejected_this_attempt ? ExtractionStatus::Failed
                                           : ExtractionStatus::Success;
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   attempt_status,
+                                  resp.raw_xml, /*error=*/{});
+        } else if (wrote_anything_this_attempt && any_rejected_this_attempt) {
+            // Partial success: at least one statement written, at least one rejected.
+            ledger.record_attempt(run_id, chunk_span_key, attempt,
+                                  ExtractionStatus::PartialSuccess,
                                   resp.raw_xml, /*error=*/{});
         }
         if (wrote_anything_this_attempt) any_accepted = true;
