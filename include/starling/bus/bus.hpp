@@ -2,7 +2,9 @@
 
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/bus/statement_writer.hpp"
 #include "starling/evidence/engram.hpp"
+#include "starling/extractor/extracted_statement.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 
 #include <optional>
@@ -40,12 +42,19 @@ using AppendEvidenceOutcome = std::variant<
 // for idempotency_key uniqueness; within-window replays throw SqliteError
 // from the underlying UNIQUE(idempotency_key) constraint and the caller
 // is expected to treat that as a benign duplicate.
+// write runs StatementWriter::write under the same single-transaction discipline.
 class Bus {
 public:
     explicit Bus(starling::persistence::SqliteAdapter& adapter);
 
     AppendEvidenceOutcome append_evidence(
         const starling::evidence::EngramInput& input,
+        std::optional<std::string> causation_parent_event_id);
+
+    StatementWriteOutcome write(
+        const starling::extractor::ExtractedStatement& stmt,
+        std::string_view evidence_engram_id,
+        std::string_view extraction_span_key,
         std::optional<std::string> causation_parent_event_id);
 
 private:

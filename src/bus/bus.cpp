@@ -1,6 +1,7 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/bus/statement_writer.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/evidence/engram_store.hpp"
 #include "starling/evidence/evidence_validator.hpp"
@@ -177,6 +178,21 @@ AppendEvidenceOutcome Bus::append_evidence(
         starling::evidence::EngramRef{engram.id, engram.content_hash, engram.retention_mode},
         ev.event_id,
         ev.outbox_sequence};
+}
+
+StatementWriteOutcome Bus::write(
+    const starling::extractor::ExtractedStatement& stmt,
+    std::string_view evidence_engram_id,
+    std::string_view extraction_span_key,
+    std::optional<std::string> causation_parent_event_id) {
+
+    auto& conn = adapter_.connection();
+    starling::persistence::TransactionGuard tx(conn);
+    StatementWriter writer(conn);
+    auto outcome = writer.write(
+        stmt, evidence_engram_id, extraction_span_key, std::move(causation_parent_event_id));
+    tx.commit();
+    return outcome;
 }
 
 }  // namespace starling::bus
