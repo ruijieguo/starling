@@ -1,5 +1,7 @@
 #include "starling/extractor/fake_llm_adapter.hpp"
 
+#include <utility>
+
 namespace starling::extractor {
 
 void FakeLLMAdapter::set_response(std::string prompt_input_hash,
