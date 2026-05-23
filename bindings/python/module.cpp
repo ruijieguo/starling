@@ -421,7 +421,39 @@ PYBIND11_MODULE(_core, m) {
                      }
                  }, outcome);
              },
-             py::arg("input"), py::arg("causation_parent") = std::nullopt);
+             py::arg("input"), py::arg("causation_parent") = std::nullopt)
+        // M0.5: Bus::write — exposed for the TC-NEW-CONFLICT-SEVERE
+        // acceptance smoke (system_design.md §15.3.4). Returns a dict whose
+        // shape mirrors StatementWriteOutcome's variant arms; the test only
+        // needs `stmt_id` but `kind` + `original_stmt_id` are surfaced for
+        // completeness so future P1 acceptance tests don't need re-binding.
+        .def("write",
+             [](starling::bus::Bus& self,
+                const starling::extractor::ExtractedStatement& stmt,
+                const std::string& evidence_engram_id,
+                const std::string& extraction_span_key,
+                std::optional<std::string> causation_parent) -> py::object {
+                 auto outcome = self.write(stmt, evidence_engram_id,
+                                           extraction_span_key, causation_parent);
+                 return std::visit([](auto&& v) -> py::object {
+                     using T = std::decay_t<decltype(v)>;
+                     if constexpr (std::is_same_v<T, starling::bus::StatementWriteAccepted>) {
+                         return py::dict("kind"_a="accepted",
+                                         "stmt_id"_a=v.stmt_id,
+                                         "event_id"_a=v.event_id,
+                                         "outbox_sequence"_a=v.outbox_sequence);
+                     } else {
+                         return py::dict("kind"_a="chunk_duplicate",
+                                         "stmt_id"_a=v.stmt_id,
+                                         "original_stmt_id"_a=v.original_stmt_id,
+                                         "event_id"_a=v.event_id);
+                     }
+                 }, outcome);
+             },
+             py::arg("stmt"),
+             py::arg("evidence_engram_id"),
+             py::arg("extraction_span_key"),
+             py::arg("causation_parent") = std::nullopt);
 
     // ----- M0.4: enums -----
     py::enum_<starling::schema::Perspective>(m, "Perspective")
@@ -465,6 +497,38 @@ PYBIND11_MODULE(_core, m) {
         .value("TOM_INFERRED",            starling::schema::StatementProvenance::TOM_INFERRED)
         .value("RECONSOLIDATION_DERIVED", starling::schema::StatementProvenance::RECONSOLIDATION_DERIVED)
         .export_values();
+
+    // ----- M0.5: ExtractedStatement DTO -----
+    // Bound for the TC-NEW-CONFLICT-SEVERE acceptance test (§15.3.4): the test
+    // constructs S_old / S_new in Python and feeds them to Bus::write to
+    // exercise the atomic SUPERSEDES path. M0.4 extractor pipelines build
+    // these structs in C++ from XML and never round-trip through Python; this
+    // binding is purely for tests that need to construct an ExtractedStatement
+    // outside the XML parser (the M0.5 XML schema doesn't yet carry
+    // valid_from/valid_to, so the conflict-probe test must bypass it).
+    py::class_<starling::extractor::ExtractedStatement>(m, "ExtractedStatement")
+        .def(py::init<>())
+        .def_readwrite("holder_id",             &starling::extractor::ExtractedStatement::holder_id)
+        .def_readwrite("holder_tenant_id",      &starling::extractor::ExtractedStatement::holder_tenant_id)
+        .def_readwrite("holder_perspective",    &starling::extractor::ExtractedStatement::holder_perspective)
+        .def_readwrite("subject_kind",          &starling::extractor::ExtractedStatement::subject_kind)
+        .def_readwrite("subject_id",            &starling::extractor::ExtractedStatement::subject_id)
+        .def_readwrite("predicate",             &starling::extractor::ExtractedStatement::predicate)
+        .def_readwrite("object_kind",           &starling::extractor::ExtractedStatement::object_kind)
+        .def_readwrite("object_value",          &starling::extractor::ExtractedStatement::object_value)
+        .def_readwrite("canonical_object_hash", &starling::extractor::ExtractedStatement::canonical_object_hash)
+        .def_readwrite("modality",              &starling::extractor::ExtractedStatement::modality)
+        .def_readwrite("polarity",              &starling::extractor::ExtractedStatement::polarity)
+        .def_readwrite("confidence",            &starling::extractor::ExtractedStatement::confidence)
+        .def_readwrite("observed_at",           &starling::extractor::ExtractedStatement::observed_at)
+        .def_readwrite("valid_from",            &starling::extractor::ExtractedStatement::valid_from)
+        .def_readwrite("valid_to",              &starling::extractor::ExtractedStatement::valid_to)
+        .def_readwrite("event_time_start",      &starling::extractor::ExtractedStatement::event_time_start)
+        .def_readwrite("chunk_index",           &starling::extractor::ExtractedStatement::chunk_index)
+        .def_readwrite("source_hash",           &starling::extractor::ExtractedStatement::source_hash)
+        .def_readwrite("perceived_by",          &starling::extractor::ExtractedStatement::perceived_by)
+        .def_readwrite("provenance",            &starling::extractor::ExtractedStatement::provenance)
+        .def_readwrite("review_status",         &starling::extractor::ExtractedStatement::review_status);
 
     // ----- M0.4: Connection (opaque) -----
     py::class_<starling::persistence::Connection>(m, "Connection");
