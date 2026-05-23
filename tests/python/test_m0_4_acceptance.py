@@ -9,7 +9,12 @@ Per system_design.md §14.1, the §14.1 scenario produces 4 Statements where
 S3 nests S2 (nesting_depth=1). M0.4 ships flat-only (no nesting); S3 is
 deferred to M0.5. The TC-Q2 holder_perspective contracts are covered
 across S1 (FIRST_PERSON via Alice's announcement seen by self),
-S2 (QUOTED with source_speaker=Alice), S4 (HEARSAY: holder=Alice).
+S2 (QUOTED with source_speaker=Alice), S4 (HEARSAY: cog-self holds the
+belief based on hearing it; the hearsay label records the indirect
+provenance — system_design.md §line 2096-2099). Per-statement holder
+variation (e.g. recording Alice as the holder) requires the multi-
+cognizer extractor and is deferred to M0.5+ — the M0.4 orchestrator
+unconditionally stamps the run() caller's holder_id.
 """
 from __future__ import annotations
 
@@ -25,9 +30,9 @@ from starling.testing import relax_preflight_for_m0_3
 # §14.1 flat-3 scenario: Alice announces in a group that Carol now owns auth
 # (so Bob no longer does). Self perceives the group message; the extractor
 # emits three Statements:
-#   S1 holder=self, subject=Bob, predicate=responsible_for, obj=auth, pol=NEG, FIRST_PERSON
+#   S1 holder=self, subject=Bob,   predicate=responsible_for, obj=auth, pol=NEG, FIRST_PERSON
 #   S2 holder=self, subject=Carol, predicate=responsible_for, obj=auth, pol=POS, QUOTED (Alice said it)
-#   S4 holder=Alice, subject=Bob, predicate=responsible_for, obj=auth, pol=NEG, HEARSAY (we record what Alice believes)
+#   S4 holder=self, subject=Bob,   predicate=responsible_for, obj=auth, pol=NEG, HEARSAY (heard from Alice)
 SCENARIO_XML = textwrap.dedent("""
     <extraction>
       <statement>
@@ -58,7 +63,7 @@ SCENARIO_XML = textwrap.dedent("""
         <perceived_by ref="cog-alice"/>
       </statement>
       <statement>
-        <holder ref="cog-alice"/>
+        <holder ref="cog-self"/>
         <perspective>hearsay</perspective>
         <subject kind="cognizer" id="cog-bob"/>
         <predicate>responsible_for</predicate>
@@ -67,7 +72,7 @@ SCENARIO_XML = textwrap.dedent("""
         <polarity>neg</polarity>
         <confidence>0.65</confidence>
         <observed_at>2026-05-23T10:00:00Z</observed_at>
-        <perceived_by ref="cog-alice"/>
+        <perceived_by ref="cog-self"/>
       </statement>
     </extraction>
 """).strip()
