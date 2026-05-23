@@ -30,7 +30,12 @@ std::string compute_idempotency_key(
 std::string compute_window_bucket(
         std::string_view event_type,
         std::chrono::system_clock::time_point now) {
-    if (event_type == "pipeline_run.started") {
+    // Per-event-type 60s bucket. Used by audit-only and rate-naturally-bursty
+    // events to make repeated emissions within a window idempotent on the
+    // bus_events UNIQUE(idempotency_key) constraint.
+    if (event_type == "pipeline_run.started"
+        || event_type == "evidence.no_store_audit"
+        || event_type == "evidence.idempotent_hit") {
         const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
             now.time_since_epoch()).count();
         return std::to_string(sec / 60);

@@ -2,6 +2,7 @@
 
 #include "starling/bus/bus.hpp"
 #include "starling/evidence/engram.hpp"
+#include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/enums.hpp"
@@ -76,6 +77,7 @@ TEST(BusAppendEvidence, AcceptedPathWritesOneEngramAndOnePendingEvent) {
 
     ASSERT_NE(std::get_if<AppendEvidenceAccepted>(&outcome), nullptr);
     EXPECT_EQ(row_count(*a, "SELECT count(*) FROM engrams"), 1);
+    EXPECT_EQ(row_count(*a, "SELECT count(*) FROM bus_events"), 1);
 
     sqlite3_stmt* raw = nullptr;
     ASSERT_EQ(sqlite3_prepare_v2(a->connection().raw(),
@@ -160,4 +162,60 @@ TEST(BusAppendEvidence, CausationParentBecomesFirstChainElement) {
     StmtHandle s(raw);
     ASSERT_EQ(sqlite3_step(s.get()), SQLITE_ROW);
     EXPECT_EQ(col_text(s.get(), 0), "[\"parent-evt-abc\"]");
+}
+
+TEST(BusAppendEvidence, NoStoreReplayWithinWindowDoesNotCrash) {
+    auto a = make_adapter();
+    auto inp = user_input();
+    inp.source_kind = SourceKind::SYSTEM_INTERNAL;
+
+    Bus bus(*a);
+    auto out1 = bus.append_evidence(inp, std::nullopt);
+    ASSERT_NE(std::get_if<AppendEvidenceNoStore>(&out1), nullptr);
+
+    // Second call with the same source identity within the same 60s window:
+    // the audit event's idempotency_key is identical to the first call.
+    // The UNIQUE(idempotency_key) on bus_events means the second insert
+    // is silently deduped at the storage layer. This SHOULD propagate the
+    // SqliteError up; the caller treats it as a benign "audit row already
+    // recorded for this source within the window" and retries are safe.
+    //
+    // Concretely: the second append_evidence call throws SqliteError from
+    // OutboxWriter::append_already_delivered. The TransactionGuard rolls
+    // back. No second audit row is written. This is acceptable behavior
+    // for an at-least-once audit signal.
+    EXPECT_THROW(bus.append_evidence(inp, std::nullopt),
+                 starling::persistence::SqliteError);
+
+    // Exactly one audit row exists.
+    EXPECT_EQ(row_count(*a, "SELECT count(*) FROM bus_events"), 1);
+    EXPECT_EQ(row_count(*a,
+        "SELECT count(*) FROM bus_events WHERE event_type='evidence.no_store_audit'"),
+        1);
+}
+
+TEST(BusAppendEvidence, IdempotentHitReplayWithinWindowDoesNotCrash) {
+    auto a = make_adapter();
+    Bus bus(*a);
+
+    // First call: accepted.
+    auto out1 = bus.append_evidence(user_input(), std::nullopt);
+    ASSERT_NE(std::get_if<AppendEvidenceAccepted>(&out1), nullptr);
+
+    // Second call: idempotent_hit (audit row written).
+    auto out2 = bus.append_evidence(user_input(), std::nullopt);
+    ASSERT_NE(std::get_if<AppendEvidenceIdempotent>(&out2), nullptr);
+
+    // Third call within the same 60s window: idempotency_key for the
+    // evidence.idempotent_hit row collides with the second call. The
+    // UNIQUE(idempotency_key) deduplicates at the storage layer.
+    EXPECT_THROW(bus.append_evidence(user_input(), std::nullopt),
+                 starling::persistence::SqliteError);
+
+    // Exactly two events: one accepted, one idempotent_hit. The third
+    // attempt did not add a row.
+    EXPECT_EQ(row_count(*a, "SELECT count(*) FROM bus_events"), 2);
+    EXPECT_EQ(row_count(*a,
+        "SELECT count(*) FROM bus_events WHERE event_type='evidence.idempotent_hit'"),
+        1);
 }

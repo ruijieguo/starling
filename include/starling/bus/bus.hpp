@@ -33,6 +33,13 @@ using AppendEvidenceOutcome = std::variant<
     AppendEvidenceNoStore,
     AppendEvidenceRejected>;
 
+// Bus is the only sanctioned writer to engrams + bus_events. append_evidence
+// runs validator -> EngramStore::put -> OutboxWriter::append in a single
+// BEGIN IMMEDIATE / COMMIT transaction. Audit events
+// (evidence.no_store_audit, evidence.idempotent_hit) bucket to a 60s window
+// for idempotency_key uniqueness; within-window replays throw SqliteError
+// from the underlying UNIQUE(idempotency_key) constraint and the caller
+// is expected to treat that as a benign duplicate.
 class Bus {
 public:
     explicit Bus(starling::persistence::SqliteAdapter& adapter);
