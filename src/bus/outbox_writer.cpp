@@ -1,8 +1,8 @@
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/bus/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <chrono>
-#include <ctime>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -11,17 +11,11 @@
 
 namespace starling::bus {
 
-namespace {
+using detail::bind_sv;
+using detail::iso8601_utc;
+using detail::make_sqlite_error;
 
-// Helper: build a SqliteError from the connection's last extended error code
-// + a context-specific prefix. Centralises the prepare/step error format.
-[[nodiscard]] starling::persistence::SqliteError make_sqlite_error(
-    sqlite3* db, const char* what)
-{
-    return starling::persistence::SqliteError(
-        std::string(what) + ": " + sqlite3_errmsg(db),
-        sqlite3_extended_errcode(db));
-}
+namespace {
 
 // 128 random bits formatted with UUID dashes — NOT a valid UUID of any version
 // (version/variant nibbles are not set). Sufficient for M0.2 because event_id
@@ -38,17 +32,6 @@ std::string random_event_id() {
         << std::setw(4) << static_cast<std::uint16_t>(a) << '-'
         << std::setw(4) << static_cast<std::uint16_t>(b >> 48) << '-'
         << std::setw(12) << (b & 0xFFFFFFFFFFFFULL);
-    return oss.str();
-}
-
-std::string now_iso8601_utc() {
-    using namespace std::chrono;
-    const std::time_t t = system_clock::to_time_t(system_clock::now());
-    std::tm tm{};
-    // gmtime_r is POSIX; macOS Apple Clang has it. Stays threadsafe.
-    gmtime_r(&t, &tm);
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
 }
 
@@ -120,7 +103,7 @@ void OutboxWriter::append_impl(BusEvent& ev, const char* dispatch_status) {
         throw std::invalid_argument("OutboxWriter::append: causation_chain length > 3");
     }
     if (ev.event_id.empty())   ev.event_id = random_event_id();
-    if (ev.created_at.empty()) ev.created_at = now_iso8601_utc();
+    if (ev.created_at.empty()) ev.created_at = iso8601_utc(std::chrono::system_clock::now());
     ev.outbox_sequence = claim_next_sequence();
 
     sqlite3* const db = conn_.raw();
@@ -136,18 +119,18 @@ void OutboxWriter::append_impl(BusEvent& ev, const char* dispatch_status) {
     starling::persistence::StmtHandle s(ins_raw);
     const std::string chain_json = causation_chain_json(ev.causation_chain);
 
-    sqlite3_bind_text (s.get(),  1, ev.event_id.c_str(),        -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  2, ev.tenant_id.c_str(),       -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  3, ev.event_type.c_str(),      -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  4, ev.primary_id.c_str(),      -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  5, ev.aggregate_id.c_str(),    -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(s.get(),  6, ev.outbox_sequence);
-    sqlite3_bind_text (s.get(),  7, chain_json.c_str(),         -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  8, ev.idempotency_key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(),  9, ev.payload_json.c_str(),    -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(), 10, ev.created_at.c_str(),      -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(), 11, ev.version.c_str(),         -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (s.get(), 12, dispatch_status,            -1, SQLITE_STATIC);
+    bind_sv(s.get(),  1, ev.event_id);
+    bind_sv(s.get(),  2, ev.tenant_id);
+    bind_sv(s.get(),  3, ev.event_type);
+    bind_sv(s.get(),  4, ev.primary_id);
+    bind_sv(s.get(),  5, ev.aggregate_id);
+    sqlite3_bind_int64(s.get(), 6, ev.outbox_sequence);
+    bind_sv(s.get(),  7, chain_json);
+    bind_sv(s.get(),  8, ev.idempotency_key);
+    bind_sv(s.get(),  9, ev.payload_json);
+    bind_sv(s.get(), 10, ev.created_at);
+    bind_sv(s.get(), 11, ev.version);
+    sqlite3_bind_text(s.get(), 12, dispatch_status, -1, SQLITE_STATIC);
 
     if (sqlite3_step(s.get()) != SQLITE_DONE) {
         throw make_sqlite_error(db, "OutboxWriter::append: bus_events INSERT failed");

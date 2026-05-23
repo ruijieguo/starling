@@ -1,7 +1,7 @@
 #include "starling/persistence/migration_runner.hpp"
+#include "starling/crypto/sha256.hpp"
 #include "starling/migrations.inc"
 
-#include <openssl/evp.h>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -33,19 +33,7 @@ void exec_or_throw(sqlite3* db, const char* sql) {
 }  // namespace
 
 std::string MigrationRunner::checksum_of(std::string_view sql) {
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int digest_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, sql.data(), sql.size());
-    EVP_DigestFinal_ex(ctx, digest, &digest_len);
-    EVP_MD_CTX_free(ctx);
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (unsigned int i = 0; i < digest_len; ++i) {
-        oss << std::setw(2) << static_cast<int>(digest[i]);
-    }
-    return oss.str();
+    return starling::crypto::sha256_hex(sql);
 }
 
 MigrationRunner::MigrationRunner(sqlite3* db) : db_(db) {}

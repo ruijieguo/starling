@@ -1,29 +1,13 @@
 #include "starling/bus/bus_event.hpp"
+#include "starling/crypto/sha256.hpp"
 
-#include <openssl/evp.h>
-#include <iomanip>
-#include <sstream>
+#include <chrono>
+#include <string>
 
 namespace starling::bus {
 
 namespace {
 constexpr char kSep = '\x1f';
-
-std::string sha256_hex(std::string_view data) {
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int digest_len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data.data(), data.size());
-    EVP_DigestFinal_ex(ctx, digest, &digest_len);
-    EVP_MD_CTX_free(ctx);
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (unsigned int i = 0; i < digest_len; ++i) {
-        oss << std::setw(2) << static_cast<int>(digest[i]);
-    }
-    return oss.str();
-}
 }  // namespace
 
 std::string compute_idempotency_key(
@@ -40,7 +24,7 @@ std::string compute_idempotency_key(
     buf.append(canonical_key); buf.push_back(kSep);
     buf.append(causation_root);buf.push_back(kSep);
     buf.append(window_bucket);
-    return sha256_hex(buf);
+    return starling::crypto::sha256_hex(buf);
 }
 
 std::string compute_window_bucket(

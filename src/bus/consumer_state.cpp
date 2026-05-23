@@ -1,46 +1,16 @@
 #include "starling/bus/consumer_state.hpp"
+#include "starling/bus/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <chrono>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
 #include <string>
 #include <string_view>
 
 namespace starling::bus {
 
-namespace {
-
-// Helper: build a SqliteError from the connection's last extended error code
-// + a context-specific prefix. Mirrors the pattern from outbox_writer.cpp; not
-// extracted into a shared header in this task to keep the change scoped.
-[[nodiscard]] starling::persistence::SqliteError make_sqlite_error(
-    sqlite3* db, const char* what)
-{
-    return starling::persistence::SqliteError(
-        std::string(what) + ": " + sqlite3_errmsg(db),
-        sqlite3_extended_errcode(db));
-}
-
-// Bind a std::string_view as TEXT with explicit length. SQLITE_TRANSIENT
-// causes SQLite to copy the bytes during the call, so the view's storage
-// only needs to outlive the bind itself. Using .data()+.size() avoids
-// allocating a temporary std::string and is null-safe.
-void bind_sv(sqlite3_stmt* s, int idx, std::string_view v) {
-    sqlite3_bind_text(s, idx, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
-}
-
-std::string iso8601_utc(std::chrono::system_clock::time_point t) {
-    const auto secs = std::chrono::system_clock::to_time_t(t);
-    std::tm tm{};
-    gmtime_r(&secs, &tm);
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
-}
-
-}  // namespace
+using detail::bind_sv;
+using detail::iso8601_utc;
+using detail::make_sqlite_error;
 
 int64_t ConsumerCheckpoint::last_delivered(std::string_view consumer_id) {
     sqlite3* const db = conn_.raw();
