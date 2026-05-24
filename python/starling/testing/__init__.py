@@ -24,6 +24,23 @@ def mark_consolidated(adapter, stmt_id: str, tenant_id: str) -> bool:
     return _core_testing.mark_consolidated(adapter, stmt_id, tenant_id)
 
 
+def mark_evidence_erased(adapter, engram_id: str, tenant_id: str,
+                         erased_at_iso8601: str) -> bool:
+    """Flip engrams.erased_at from NULL to ISO8601 timestamp.
+
+    Used by the M0.6 13_retrieval.md evidence-erased negative test
+    (the BasicRetriever filter must drop engrams with non-NULL erased_at).
+    Writes a 'testing.mark_evidence_erased' audit event in the same
+    transaction. Idempotent: returns False on missing row or already-erased
+    row (no audit row written in those cases, so replays don't pollute
+    bus_events). Production preflight + the CI static scan reject any prod
+    entrypoint that imports starling.testing — so this can never leak into
+    real ingest.
+    """
+    return _core_testing.mark_evidence_erased(
+        adapter, engram_id, tenant_id, erased_at_iso8601)
+
+
 def relax_preflight_for_m0_2() -> tuple[str, ...]:
     """Trim engram_per_record_key + testing_helper_marker from LOCAL_STORE_REQUIRED.
 
@@ -60,6 +77,7 @@ def relax_preflight_for_m0_3() -> tuple[str, ...]:
 __all__ = [
     "marker_loaded",
     "mark_consolidated",
+    "mark_evidence_erased",
     "relax_preflight_for_m0_2",
     "relax_preflight_for_m0_3",
 ]

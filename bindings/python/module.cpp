@@ -247,6 +247,21 @@ PYBIND11_MODULE(_core, m) {
         "was actually flipped (and an audit event written); False on missing "
         "row, already-consolidated row, or any other non-volatile state.");  // NOLINT(starling-testing-isolation)
 
+    testing_submodule.def("mark_evidence_erased",  // NOLINT(starling-testing-isolation)
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& engram_id,
+           const std::string& tenant_id,
+           const std::string& erased_at_iso8601) {
+            return starling::testing::mark_evidence_erased(  // NOLINT(starling-testing-isolation)
+                adapter, engram_id, tenant_id, erased_at_iso8601);
+        },
+        py::arg("adapter"), py::arg("engram_id"),
+        py::arg("tenant_id"), py::arg("erased_at_iso8601"),
+        "Flip engrams(id=engram_id, tenant_id=tenant_id).erased_at from NULL "
+        "to erased_at_iso8601. Writes a testing.mark_evidence_erased audit "
+        "event. Returns True iff a row was actually flipped (False on missing "
+        "row or already-erased row; no audit row written in those cases).");  // NOLINT(starling-testing-isolation)
+
     m.def("canonicalize_object_cpp", &canonicalize_object_cpp,
           py::arg("value"),
           "Canonicalize a value to (canonical_string, sha256_hex). MUST produce "
