@@ -165,7 +165,7 @@ class MarkEvidenceErasedTest(unittest.TestCase):
         try:
             rows = conn.execute(
                 "SELECT event_type, primary_id, aggregate_id, tenant_id, "
-                "       outbox_sequence, payload_json "
+                "       outbox_sequence, payload_json, created_at "
                 "FROM bus_events WHERE primary_id=?",
                 ("e3",),
             ).fetchall()
@@ -173,13 +173,19 @@ class MarkEvidenceErasedTest(unittest.TestCase):
             conn.close()
 
         self.assertEqual(len(rows), 1, f"expected 1 audit row, got {rows!r}")
-        event_type, primary_id, aggregate_id, tenant_id, seq, payload = rows[0]
+        event_type, primary_id, aggregate_id, tenant_id, seq, payload, created_at = rows[0]
         self.assertEqual(event_type, "testing.mark_evidence_erased")
         self.assertEqual(primary_id, "e3")
         self.assertEqual(aggregate_id, "e3")
         self.assertEqual(tenant_id, "t-audit")
         self.assertIsNotNone(seq, "outbox_sequence must be set, not NULL")
         self.assertGreater(seq, 0, "outbox_sequence must be claimed")
+        # created_at is propagated from the caller-supplied erased_at so audit
+        # consumers can correlate the event with the row's erased_at without
+        # parsing payload_json. A regression that drops the assignment in
+        # mark_evidence_erased would surface here as OutboxWriter::append's
+        # wall-clock fallback (a different ISO timestamp).
+        self.assertEqual(created_at, "2026-05-24T09:00:00Z")
         # Substring assertions tolerate future field additions.
         self.assertIn('"engram_id":"e3"', payload)
         self.assertIn('"tenant_id":"t-audit"', payload)

@@ -191,6 +191,12 @@ bool mark_evidence_erased(
         ev.event_type   = "testing.mark_evidence_erased";
         ev.primary_id   = std::string(engram_id);
         ev.aggregate_id = std::string(engram_id);
+        // Propagate the caller-supplied erased_at into the audit envelope's
+        // created_at so consumers can correlate the event with the row's
+        // erased_at without parsing payload_json. Without this, OutboxWriter::
+        // append fills created_at with the wall-clock time at write — losing
+        // the correlation with the semantically meaningful erasure timestamp.
+        ev.created_at   = std::string(erased_at_iso8601);
         ev.idempotency_key = starling::bus::compute_idempotency_key(
             ev.event_type, ev.aggregate_id, ev.primary_id,
             /*causation_root=*/std::string_view{},

@@ -91,6 +91,34 @@ int audit_event_count(persistence::SqliteAdapter& a,
     return sqlite3_column_int(raw, 0);
 }
 
+// Returns the bus_events.created_at for the (single) audit row of type
+// `testing.mark_evidence_erased` under the given tenant. The audit helper
+// propagates the caller-supplied erased_at into created_at so consumers can
+// correlate the event with the row's erased_at without parsing payload_json.
+// Returns "" if no row matches; assumes at most one row per tenant in tests.
+std::string audit_event_created_at(persistence::SqliteAdapter& a,
+                                   const std::string& tenant_id) {
+    static constexpr const char* kSql =
+        "SELECT created_at FROM bus_events "
+        "WHERE event_type='testing.mark_evidence_erased' AND tenant_id=?";
+    sqlite3_stmt* raw = nullptr;
+    sqlite3* db = a.connection().raw();
+    EXPECT_EQ(sqlite3_prepare_v2(db, kSql, -1, &raw, nullptr), SQLITE_OK)
+        << sqlite3_errmsg(db);
+    persistence::StmtHandle h{raw};
+    sqlite3_bind_text(raw, 1, tenant_id.c_str(), -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(raw);
+    if (rc == SQLITE_DONE) {
+        return std::string{};
+    }
+    EXPECT_EQ(rc, SQLITE_ROW) << sqlite3_errmsg(db);
+    const auto* text = sqlite3_column_text(raw, 0);
+    if (text == nullptr) {
+        return std::string{};
+    }
+    return std::string(reinterpret_cast<const char*>(text));
+}
+
 class MarkEvidenceErasedTest : public ::testing::Test {
  protected:
     void SetUp() override {
@@ -112,6 +140,11 @@ TEST_F(MarkEvidenceErasedTest, FlipsAndAudits) {
 
     EXPECT_EQ(erased_at_is_set(*adapter_, "e-flip", "t1"), 1);
     EXPECT_EQ(audit_event_count(*adapter_, "t1"), 1);
+    // The audit envelope's created_at must reflect the caller-supplied
+    // erased_at (not OutboxWriter::append's wall-clock fallback) so consumers
+    // can correlate the event with the row's erased_at directly.
+    EXPECT_EQ(audit_event_created_at(*adapter_, "t1"),
+              "2026-05-24T09:00:00Z");
 }
 
 // ---------------------------------------------------------------- idempotency
