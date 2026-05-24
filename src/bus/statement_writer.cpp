@@ -127,7 +127,9 @@ void insert_statement_row(
         const starling::extractor::ExtractedStatement& s,
         std::string_view evidence_engram_id,
         std::string_view evidence_content_hash,
-        schema::ReviewStatus effective_review_status) {
+        schema::ReviewStatus effective_review_status,
+        const std::string& derived_from_json,
+        int derived_depth) {
     sqlite3* db = conn.raw();
     const std::string ts = iso8601_utc(std::chrono::system_clock::now());
     const std::string spans = source_spans_json(s, evidence_engram_id);
@@ -145,6 +147,7 @@ void insert_statement_row(
         "  salience, affect_json, activation, last_accessed,"
         "  provenance, evidence_json, source_spans_json, perceived_by_json,"
         "  consolidation_state, review_status,"
+        "  derived_from_json, derived_depth,"
         "  created_at, updated_at"
         ") VALUES ("
         "  ?, ?, ?, ?,"
@@ -155,6 +158,7 @@ void insert_statement_row(
         "  0.0, '{}', 0.0, ?,"
         "  ?, ?, ?, ?,"
         "  'volatile', ?,"
+        "  ?, ?,"
         "  ?, ?"
         ")",
         -1, &raw, nullptr) != SQLITE_OK) {
@@ -197,6 +201,8 @@ void insert_statement_row(
     bind_sv(h.get(), i++, spans);
     bind_sv(h.get(), i++, perc);
     bind_sv(h.get(), i++, schema::to_string(effective_review_status));
+    bind_sv(h.get(), i++, derived_from_json);
+    sqlite3_bind_int(h.get(), i++, derived_depth);
     bind_sv(h.get(), i++, ts);  // created_at
     bind_sv(h.get(), i++, ts);  // updated_at
 
@@ -269,7 +275,41 @@ StatementWriteOutcome StatementWriter::write(
         }
     }
 
-    insert_statement_row(conn_, stmt_id, s, evidence_engram_id, content_hash, effective);
+    // Compute derived_from_json and derived_depth.
+    int derived_depth = 0;
+    std::string derived_from_json = "[]";
+    if (!s.derived_from.empty()) {
+        std::ostringstream oss;
+        oss << "[";
+        for (size_t k = 0; k < s.derived_from.size(); ++k) {
+            if (k) oss << ",";
+            oss << '"' << s.derived_from[k] << '"';
+        }
+        oss << "]";
+        derived_from_json = oss.str();
+
+        // Look up max(derived_depth) among parent rows.
+        std::string in_clause;
+        for (size_t k = 0; k < s.derived_from.size(); ++k) {
+            if (k) in_clause += ",";
+            in_clause += "?";
+        }
+        const std::string depth_sql =
+            "SELECT MAX(derived_depth) FROM statements WHERE id IN (" + in_clause + ")";
+        sqlite3_stmt* q = nullptr;
+        sqlite3_prepare_v2(conn_.raw(), depth_sql.c_str(), -1, &q, nullptr);
+        for (size_t k = 0; k < s.derived_from.size(); ++k)
+            sqlite3_bind_text(q, static_cast<int>(k + 1),
+                              s.derived_from[k].c_str(), -1, SQLITE_TRANSIENT);
+        int max_parent_depth = 0;
+        if (sqlite3_step(q) == SQLITE_ROW)
+            max_parent_depth = sqlite3_column_int(q, 0);
+        sqlite3_finalize(q);
+        derived_depth = max_parent_depth + 1;
+    }
+
+    insert_statement_row(conn_, stmt_id, s, evidence_engram_id, content_hash, effective,
+                         derived_from_json, derived_depth);
 
     // Build and append the bus_events row.
     const std::string canonical_key = std::string(extraction_span_key);

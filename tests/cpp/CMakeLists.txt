@@ -63,6 +63,7 @@ add_executable(starling_tests
     test_basic_retriever_recalled_emit.cpp
     test_mark_evidence_erased.cpp
     test_openai_adapter.cpp
+    test_statement_writer_derived_from.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
