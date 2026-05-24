@@ -126,12 +126,8 @@ def test_cross_tenant_derived_from_rejected(rt):
     )
     bus = _core.Bus(rt.adapter)
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(RuntimeError, match="cross_tenant_derivation_forbidden"):
         bus.write(child, child_engram_id, "span-child", None)
-
-    err = str(exc_info.value).lower()
-    assert "cross_tenant_derivation" in err or "derived_tenant_mismatch" in err, \
-        f"Expected cross_tenant_derivation error, got: {exc_info.value!r}"
 
 
 def test_cross_tenant_with_protocol_id_marks_review_requested(rt):
