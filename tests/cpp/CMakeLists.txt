@@ -56,6 +56,7 @@ add_executable(starling_tests
     test_conflict_probe_scan.cpp
     test_bus_write_conflict.cpp
     test_bus_write_supersedes.cpp
+    test_basic_retrieve_index.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
