@@ -13,6 +13,7 @@ namespace starling::bus {
 enum class ConflictKind {
     DirectContradiction,
     Superseding,
+    MildCorrection,  // §15.3.1: same polarity, same object, non-severe — bump confidence + history
     PartialOverlap,
     Adjacent,
 };

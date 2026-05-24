@@ -177,6 +177,79 @@ std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_i
     return os.str();
 }
 
+// Apply the §15.3.1 mild-correction path. Caller MUST hold a TransactionGuard.
+// Updates S_old's confidence (to new_confidence if higher) and appends a
+// ConfidenceEvent to confidence_history_json.  provenance is intentionally
+// NOT touched — that is the invariant being verified by TC-Q3a-001.
+void apply_mild_correction(
+    starling::persistence::Connection& conn,
+    const ConflictMatch& match,
+    double new_confidence,
+    std::string_view new_evidence_engram_id) {
+
+    // Read current confidence + confidence_history_json from S_old.
+    double   old_confidence   = 0.0;
+    std::string history_json  = "[]";
+    {
+        const char* sql =
+            "SELECT confidence, confidence_history_json FROM statements "
+            "WHERE id = ? AND tenant_id = ?";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "mild_correction: fetch s_old prepare");
+        starling::persistence::StmtHandle h(raw);
+        detail::bind_sv(h.get(), 1, match.matched_statement_id);
+        detail::bind_sv(h.get(), 2, match.matched_tenant_id);
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
+            old_confidence = sqlite3_column_double(h.get(), 0);
+            const auto* txt = sqlite3_column_text(h.get(), 1);
+            if (txt) history_json = reinterpret_cast<const char*>(txt);
+        }
+    }
+
+    // Build the appended confidence_history_json.
+    // Append {"old_confidence":<v>,"ts":"<iso>","evidence_engram_ref":<eid>} to array.
+    const std::string ts = detail::iso8601_utc(std::chrono::system_clock::now());
+    // Strip trailing ']', append new entry, re-close.
+    if (!history_json.empty() && history_json.back() == ']') {
+        history_json.pop_back();
+    }
+    if (history_json.size() > 1) {
+        // Non-empty array — add comma before new entry.
+        history_json.push_back(',');
+    }
+    // Format old_confidence as a 6-decimal fixed-point string (matches Python repr).
+    char conf_buf[32];
+    std::snprintf(conf_buf, sizeof(conf_buf), "%.6g", old_confidence);
+    history_json += "{\"old_confidence\":" + std::string(conf_buf);
+    history_json += ",\"ts\":" + json_string(ts);
+    history_json += ",\"evidence_engram_ref\":" + json_string(new_evidence_engram_id);
+    history_json += "}]";
+
+    // Only raise confidence; never lower it in a mild-correction path.
+    const double updated_confidence = (new_confidence > old_confidence)
+        ? new_confidence : old_confidence;
+
+    // UPDATE S_old: bump confidence + append to history.  provenance NOT updated.
+    {
+        const char* sql =
+            "UPDATE statements "
+            "SET confidence = ?, confidence_history_json = ?, updated_at = ? "
+            "WHERE id = ? AND tenant_id = ?";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old prepare");
+        starling::persistence::StmtHandle h(raw);
+        sqlite3_bind_double(h.get(), 1, updated_confidence);
+        detail::bind_sv(h.get(), 2, history_json);
+        detail::bind_sv(h.get(), 3, ts);
+        detail::bind_sv(h.get(), 4, match.matched_statement_id);
+        detail::bind_sv(h.get(), 5, match.matched_tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old step");
+    }
+}
+
 // Apply the §15.3.4 4-item atomic SUPERSEDES path. Caller MUST hold a
 // TransactionGuard; this function never opens its own transaction. On any
 // SQL error this throws and the caller's tx destructor rolls back.
@@ -447,6 +520,15 @@ StatementWriteOutcome Bus::write(
                 }
                 break;
             }
+
+            case ConflictKind::MildCorrection:
+                // §15.3.1: same polarity, non-severe conflict — bump S_old's
+                // confidence (if S_new is higher) and append the prior value to
+                // S_old.confidence_history_json.  provenance is NOT touched —
+                // that invariant is verified by TC-Q3a-001.
+                apply_mild_correction(
+                    conn, *match, effective.confidence, evidence_engram_id);
+                break;
 
             case ConflictKind::Adjacent:
                 insert_statement_edge(

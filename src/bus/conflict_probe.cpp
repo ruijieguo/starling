@@ -20,6 +20,7 @@ std::string_view to_string(ConflictKind k) {
     switch (k) {
         case ConflictKind::DirectContradiction: return "direct_contradiction";
         case ConflictKind::Superseding:         return "superseding";
+        case ConflictKind::MildCorrection:      return "mild_correction";
         case ConflictKind::PartialOverlap:      return "partial_overlap";
         case ConflictKind::Adjacent:            return "adjacent";
     }
@@ -173,6 +174,16 @@ ConflictKind classify(
     }
 
     if (iv_new.is_unknown || cand.interval.is_unknown) {
+        // Unknown interval: if same polarity (mild correction candidate), classify
+        // as MildCorrection so Bus::write can bump confidence + confidence_history.
+        // Opposite polarity with unknown interval stays at PartialOverlap (no atomic
+        // SUPERSEDES without a known interval, but not a mild correction either).
+        const std::string s_new_pol{starling::schema::to_string(s_new.polarity)};
+        const bool same_polarity  = (s_new_pol == cand.polarity);
+        const bool polarity_known = (s_new_pol != "unknown" && cand.polarity != "unknown");
+        if (same_polarity && polarity_known) {
+            return ConflictKind::MildCorrection;
+        }
         return ConflictKind::PartialOverlap;
     }
 
@@ -196,6 +207,11 @@ ConflictKind classify(
             && covers(iv_new, cand.interval)) {
             return ConflictKind::Superseding;
         }
+        // Same polarity, overlapping intervals, but not superseding →
+        // mild correction: bump S_old's confidence + append confidence_history.
+        if (!opposite_polarity && polarity_known) {
+            return ConflictKind::MildCorrection;
+        }
         return ConflictKind::PartialOverlap;
     }
 
@@ -210,12 +226,13 @@ ConflictKind classify(
 
 int severity_rank(ConflictKind k) {
     switch (k) {
-        case ConflictKind::DirectContradiction: return 4;
-        case ConflictKind::Superseding:         return 3;
+        case ConflictKind::DirectContradiction: return 5;
+        case ConflictKind::Superseding:         return 4;
+        case ConflictKind::MildCorrection:      return 3;
         case ConflictKind::PartialOverlap:      return 2;
         case ConflictKind::Adjacent:            return 1;
     }
-    return 0;
+    return -1;
 }
 
 }  // namespace
