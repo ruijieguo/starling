@@ -28,6 +28,7 @@
 #include "starling/evidence/ingest_policy_resolver.hpp"
 #include "starling/extractor/extractor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
+#include "starling/extractor/openai_adapter.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/retrieval/basic_retriever.hpp"
@@ -658,6 +659,20 @@ PYBIND11_MODULE(_core, m) {
         .def("extract",
              &starling::extractor::FakeLLMAdapter::extract,
              py::arg("prompt"), py::arg("prompt_input_hash"));
+
+    // ----- M0.7: OpenAIAdapter (real LLM, P2 pull-forward) -----
+    {
+        using starling::extractor::OpenAIAdapter;
+        py::class_<OpenAIAdapter::Config>(m, "OpenAIAdapterConfig")
+            .def(py::init<>())
+            .def_readwrite("base_url",     &OpenAIAdapter::Config::base_url)
+            .def_readwrite("model",        &OpenAIAdapter::Config::model)
+            .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
+            .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
+            .def_static("from_env",        &OpenAIAdapter::Config::from_env);
+        py::class_<OpenAIAdapter>(m, "OpenAIAdapter")
+            .def(py::init<OpenAIAdapter::Config>());
+    }
 
     // ----- M0.4: ExtractionRunResult -----
     py::class_<starling::extractor::ExtractionRunResult>(m, "ExtractionRunResult")

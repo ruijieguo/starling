@@ -1,4 +1,11 @@
-"""Starling extractor package (M0.4)."""
+"""Starling extractor package (M0.4+).
+
+Extractor-related Python helpers (LLM adapter constructors).
+
+C++ binding lives in starling._core; this package wraps env-var-aware
+convenience constructors that should not bypass the controller's
+secret-handling rules (no key ever printed or returned).
+"""
 from starling import _core
 from starling.extractor._keys import compute_extraction_span_key
 
@@ -13,6 +20,10 @@ Polarity              = _core.Polarity
 ReviewStatus          = _core.ReviewStatus
 StatementProvenance   = _core.StatementProvenance
 
+# M0.7: OpenAIAdapter binding
+OpenAIAdapterConfig   = _core.OpenAIAdapterConfig
+OpenAIAdapter         = _core.OpenAIAdapter
+
 __all__ = [
     "compute_extraction_span_key",
     "Extractor",
@@ -24,4 +35,6 @@ __all__ = [
     "Polarity",
     "ReviewStatus",
     "StatementProvenance",
+    "OpenAIAdapterConfig",
+    "OpenAIAdapter",
 ]
