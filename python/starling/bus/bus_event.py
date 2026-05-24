@@ -58,4 +58,12 @@ def compute_window_bucket(event_type: str, now: datetime) -> str:
     ):
         utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
         return str(int(utc.timestamp()) // 60)
+    if event_type == "belief.conflict":
+        # 10-second debounce window per 05_bus.md §4.
+        utc = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+        return str(int(utc.timestamp()) // 10)
+    if event_type in ("statement.archived", "statement.superseded"):
+        # Per-primary_id is unique on archive/supersede; empty bucket prevents
+        # accidental coalescence with a re-emit window.
+        return ""
     return ""

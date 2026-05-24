@@ -141,6 +141,7 @@ void insert_statement_row(
         "  subject_kind, subject_id, predicate, object_kind, object_value,"
         "  canonical_object_hash, canonical_object_hash_version,"
         "  modality, polarity, confidence, observed_at,"
+        "  valid_from, valid_to, event_time_start,"
         "  salience, affect_json, activation, last_accessed,"
         "  provenance, evidence_json, source_spans_json, perceived_by_json,"
         "  consolidation_state, review_status,"
@@ -150,6 +151,7 @@ void insert_statement_row(
         "  ?, ?, ?, ?, ?,"
         "  ?, 'v1',"
         "  ?, ?, ?, ?,"
+        "  ?, ?, ?,"
         "  0.0, '{}', 0.0, ?,"
         "  ?, ?, ?, ?,"
         "  'volatile', ?,"
@@ -174,6 +176,21 @@ void insert_statement_row(
     bind_sv(h.get(), i++, schema::to_string(s.polarity));
     sqlite3_bind_double(h.get(), i++, s.confidence);
     bind_sv(h.get(), i++, s.observed_at);
+    if (s.valid_from.has_value()) {
+        bind_sv(h.get(), i++, *s.valid_from);
+    } else {
+        sqlite3_bind_null(h.get(), i++);
+    }
+    if (s.valid_to.has_value()) {
+        bind_sv(h.get(), i++, *s.valid_to);
+    } else {
+        sqlite3_bind_null(h.get(), i++);
+    }
+    if (s.event_time_start.has_value()) {
+        bind_sv(h.get(), i++, *s.event_time_start);
+    } else {
+        sqlite3_bind_null(h.get(), i++);
+    }
     bind_sv(h.get(), i++, ts);  // last_accessed
     bind_sv(h.get(), i++, schema::to_string(s.provenance));
     bind_sv(h.get(), i++, evid);

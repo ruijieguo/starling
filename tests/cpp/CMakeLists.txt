@@ -46,8 +46,16 @@ add_executable(starling_tests
     test_xml_parser.cpp
     test_statement_validator.cpp
     test_statement_writer.cpp
+    test_statement_writer_interval.cpp
+    test_normalized_interval.cpp
+    test_canonical_scope.cpp
+    test_conflict_key.cpp
     test_bus_statement_write.cpp
     test_extractor_orchestrator.cpp
+    test_conflict_probe_indices.cpp
+    test_conflict_probe_scan.cpp
+    test_bus_write_conflict.cpp
+    test_bus_write_supersedes.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 

@@ -51,6 +51,18 @@ std::string compute_window_bucket(
             now.time_since_epoch()).count();
         return std::to_string(sec / 60);
     }
+    if (event_type == "belief.conflict") {
+        // 10-second debounce window per 05_bus.md §4.
+        const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        return std::to_string(sec / 10);
+    }
+    if (event_type == "statement.archived" || event_type == "statement.superseded") {
+        // Per-primary_id is unique on archive/supersede (one event per
+        // statement-state-change). No window needed; empty bucket prevents
+        // accidental coalescence with a re-emit window.
+        return "";
+    }
     return "";
 }
 

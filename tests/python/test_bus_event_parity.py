@@ -78,3 +78,24 @@ def test_window_bucket_extraction_and_pipeline_event_families():
         assert compute_window_bucket(et, instant) == expected, et
 
     assert compute_window_bucket("statement.written", instant) == ""
+
+
+def test_belief_conflict_uses_10_second_bucket():
+    instant = datetime(2026, 5, 24, 10, 0, 5, tzinfo=timezone.utc)
+    bucket = compute_window_bucket("belief.conflict", instant)
+    expected = str(int(instant.timestamp()) // 10)
+    assert bucket == expected
+
+    # Same 10s window collapses
+    instant_b = datetime(2026, 5, 24, 10, 0, 9, tzinfo=timezone.utc)
+    assert compute_window_bucket("belief.conflict", instant_b) == bucket
+
+    # Next 10s window differs
+    instant_c = datetime(2026, 5, 24, 10, 0, 10, tzinfo=timezone.utc)
+    assert compute_window_bucket("belief.conflict", instant_c) != bucket
+
+
+def test_statement_lifecycle_events_have_empty_bucket():
+    instant = datetime(2026, 5, 24, 10, 0, 0, tzinfo=timezone.utc)
+    assert compute_window_bucket("statement.archived", instant) == ""
+    assert compute_window_bucket("statement.superseded", instant) == ""

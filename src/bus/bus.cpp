@@ -1,17 +1,26 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
+#include "starling/bus/conflict_probe.hpp"
+#include "starling/bus/normalized_interval.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/bus/sqlite_helpers.hpp"
 #include "starling/bus/statement_writer.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/evidence/engram_store.hpp"
 #include "starling/evidence/evidence_validator.hpp"
 #include "starling/persistence/connection.hpp"
+#include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/enums.hpp"
 
+#include <sqlite3.h>
+
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <optional>
+#include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <variant>
 
@@ -118,6 +127,140 @@ BusEvent make_event(
     return e;
 }
 
+// 32 random hex chars for statement_edges.id. Per-edge primary key only —
+// not stored in user-facing protocols, so no UUID-v4/v7 nibble bits required.
+std::string random_edge_id() {
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    const std::uint64_t a = rng();
+    const std::uint64_t b = rng();
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(a),
+                  static_cast<unsigned long long>(b));
+    return std::string(buf, 32);
+}
+
+void insert_statement_edge(
+    starling::persistence::Connection& conn,
+    std::string_view src_id,
+    std::string_view dst_id,
+    std::string_view tenant_id,
+    std::string_view edge_kind) {
+    const char* sql =
+        "INSERT INTO statement_edges(id, tenant_id, src_id, dst_id, edge_kind, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge prepare");
+    starling::persistence::StmtHandle h(raw);
+    const std::string edge_id = random_edge_id();
+    const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
+    detail::bind_sv(h.get(), 1, edge_id);
+    detail::bind_sv(h.get(), 2, tenant_id);
+    detail::bind_sv(h.get(), 3, src_id);
+    detail::bind_sv(h.get(), 4, dst_id);
+    detail::bind_sv(h.get(), 5, edge_kind);
+    detail::bind_sv(h.get(), 6, now_iso);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
+}
+
+std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_id) {
+    std::ostringstream os;
+    os << "{"
+       << "\"new_statement_id\":"  << json_string(new_stmt_id) << ","
+       << "\"old_statement_id\":"  << json_string(m.matched_statement_id) << ","
+       << "\"conflict_kind\":"     << json_string(to_string(m.kind)) << ","
+       << "\"conflict_key\":"      << json_string(m.conflict_key_hex)
+       << "}";
+    return os.str();
+}
+
+// Apply the §15.3.4 4-item atomic SUPERSEDES path. Caller MUST hold a
+// TransactionGuard; this function never opens its own transaction. On any
+// SQL error this throws and the caller's tx destructor rolls back.
+//
+// Step 1 (StatementWriter::write — INSERT S_new + emit statement.written) is
+// already done by Bus::write before the conflict-kind switch, so this helper
+// starts at step 2. The caller passes the freshly-written S_new id in
+// new_stmt_id.
+void apply_supersedes_atomic(
+    starling::persistence::Connection& conn,
+    const starling::extractor::ExtractedStatement& stmt,
+    const std::optional<std::string>& causation_parent_event_id,
+    const ConflictMatch& match,
+    std::string_view new_stmt_id) {
+
+    // Step 2: SUPERSEDES edge S_new -> S_old.
+    insert_statement_edge(
+        conn, new_stmt_id, match.matched_statement_id,
+        match.matched_tenant_id, "supersedes");
+
+    // Step 3: UPDATE S_old to archived. Bypasses replaying_reconsolidating
+    // per §3.5 T7-P1 — the consolidated -> archived transition is direct.
+    // The WHERE includes consolidation_state='consolidated' as a defensive
+    // guard against stale probe matches; if the row's state has changed
+    // between probe and apply, sqlite3_changes() will be 0 and we throw.
+    {
+        const char* sql =
+            "UPDATE statements SET consolidation_state='archived', updated_at=? "
+            "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old prepare");
+        starling::persistence::StmtHandle h(raw);
+        const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
+        detail::bind_sv(h.get(), 1, now_iso);
+        detail::bind_sv(h.get(), 2, match.matched_statement_id);
+        detail::bind_sv(h.get(), 3, match.matched_tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old step");
+        if (sqlite3_changes(conn.raw()) != 1) {
+            throw std::runtime_error(
+                "supersedes_path: S_old row missing or wrong state at archive time");
+        }
+    }
+
+    // Step 4a: emit statement.archived.
+    const char* archive_reason =
+        (match.kind == ConflictKind::DirectContradiction) ? "direct_contradiction"
+                                                          : "superseding";
+    OutboxWriter ow(conn);
+    {
+        std::ostringstream payload;
+        payload << "{"
+                << "\"reason\":"        << json_string(archive_reason) << ","
+                << "\"superseded_by\":" << json_string(new_stmt_id)
+                << "}";
+        BusEvent ev = make_event(
+            "statement.archived",
+            match.matched_statement_id,         // primary_id = S_old
+            match.matched_supersedes_root_id,   // aggregate_id = supersedes root
+            match.matched_tenant_id,
+            payload.str(),
+            causation_parent_event_id);
+        ow.append(ev);
+    }
+
+    // Step 4b: emit statement.superseded.
+    {
+        std::ostringstream payload;
+        payload << "{"
+                << "\"new_statement_id\":" << json_string(new_stmt_id) << ","
+                << "\"old_statement_id\":" << json_string(match.matched_statement_id) << ","
+                << "\"conflict_kind\":"    << json_string(to_string(match.kind))
+                << "}";
+        BusEvent ev = make_event(
+            "statement.superseded",
+            new_stmt_id,                        // primary_id = S_new
+            match.matched_supersedes_root_id,   // aggregate_id = supersedes root
+            stmt.holder_tenant_id,
+            payload.str(),
+            causation_parent_event_id);
+        ow.append(ev);
+    }
+}
+
 }  // namespace
 
 Bus::Bus(starling::persistence::SqliteAdapter& adapter) : adapter_(adapter) {}
@@ -188,9 +331,97 @@ StatementWriteOutcome Bus::write(
 
     auto& conn = adapter_.connection();
     starling::persistence::TransactionGuard tx(conn);
+
+    // M0.5: detect conflicts BEFORE writing so the partial_overlap / adjacent
+    // edge writes (and direct_contradiction / superseding atomic SUPERSEDES in
+    // Task 8) all happen in one transaction.
+    const NormalizedInterval iv_new = normalize_interval(
+        stmt.valid_from, stmt.valid_to, stmt.event_time_start);
+    ConflictProbe probe(conn);
+    const auto match = probe.scan(stmt, iv_new);
+
     StatementWriter writer(conn);
     auto outcome = writer.write(
-        stmt, evidence_engram_id, extraction_span_key, std::move(causation_parent_event_id));
+        stmt, evidence_engram_id, extraction_span_key, causation_parent_event_id);
+
+    if (match.has_value()) {
+        const std::string new_stmt_id =
+            std::visit([](auto&& v) -> std::string { return v.stmt_id; }, outcome);
+
+        switch (match->kind) {
+            case ConflictKind::DirectContradiction:
+            case ConflictKind::Superseding:
+                // M0.5 Task 8: §15.3.4 atomic SUPERSEDES path. The
+                // StatementWriter::write call above already executed step 1
+                // (INSERT S_new + emit statement.written). The helper now
+                // performs steps 2-4 inside the same TransactionGuard:
+                //   2. INSERT statement_edges (S_new -> S_old, supersedes)
+                //   3. UPDATE S_old.consolidation_state = 'archived'
+                //      (bypasses replaying_reconsolidating per §3.5 T7-P1;
+                //       defensive guard rolls the tx back if S_old changed
+                //       state between probe and apply)
+                //   4. INSERT bus_events: statement.archived (primary=S_old)
+                //                       + statement.superseded (primary=S_new)
+                // Any throw triggers TransactionGuard's destructor rollback —
+                // S_new is not persisted, S_old retains 'consolidated', no
+                // edge, no archive/superseded events.
+                apply_supersedes_atomic(
+                    conn, stmt, causation_parent_event_id, *match, new_stmt_id);
+                break;
+
+            case ConflictKind::PartialOverlap: {
+                insert_statement_edge(
+                    conn, new_stmt_id, match->matched_statement_id,
+                    stmt.holder_tenant_id, "conflicts_with");
+
+                // Build the belief.conflict event manually rather than via
+                // make_event() because debounce semantics require the
+                // canonical_key in the idempotency hash to be the
+                // canonical_conflict_key (not primary_id). This pins
+                // idempotency to (event_type, conflict_key, causation_root,
+                // 10s window) so repeated belief.conflict emissions in the
+                // same window collide on UNIQUE(idempotency_key) and the
+                // catch below drops the dupes. primary_id stays = new_stmt_id
+                // so the event row carries traceability back to S_new.
+                BusEvent ev;
+                ev.tenant_id    = stmt.holder_tenant_id;
+                ev.event_type   = "belief.conflict";
+                ev.primary_id   = new_stmt_id;
+                ev.aggregate_id = match->conflict_key_hex;
+                if (causation_parent_event_id) {
+                    ev.causation_chain = { *causation_parent_event_id };
+                }
+                const std::string causation_root =
+                    ev.causation_chain.empty() ? std::string{} : ev.causation_chain.front();
+                const std::string window_bucket = compute_window_bucket(
+                    "belief.conflict", std::chrono::system_clock::now());
+                ev.idempotency_key = compute_idempotency_key(
+                    "belief.conflict",
+                    match->conflict_key_hex,   // aggregate_id
+                    match->conflict_key_hex,   // canonical_key (debounce on conflict_key, not primary_id)
+                    causation_root,
+                    window_bucket);
+                ev.payload_json = conflict_payload(*match, new_stmt_id);
+
+                OutboxWriter ow(conn);
+                try {
+                    ow.append(ev);
+                } catch (const starling::persistence::SqliteError& e) {
+                    if (e.code() != SQLITE_CONSTRAINT_UNIQUE) throw;
+                    // Debounced: another belief.conflict with the same
+                    // canonical_conflict_key already landed in this 10s window.
+                }
+                break;
+            }
+
+            case ConflictKind::Adjacent:
+                insert_statement_edge(
+                    conn, new_stmt_id, match->matched_statement_id,
+                    stmt.holder_tenant_id, "adjacent");
+                break;
+        }
+    }
+
     tx.commit();
     return outcome;
 }

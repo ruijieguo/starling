@@ -3,6 +3,7 @@
 #include "starling/schema/statement_enums.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,11 @@ struct ExtractedStatement {
     schema::Polarity             polarity       = schema::Polarity::POS;
     double                       confidence     = 0.0;
     std::string                  observed_at;          // ISO-8601 UTC
+
+    // M0.5: time-interval fields (nullable; schema columns exist since M0.1)
+    std::optional<std::string>   valid_from;           // ISO-8601 UTC, closed bound
+    std::optional<std::string>   valid_to;             // ISO-8601 UTC, open bound (exclusive)
+    std::optional<std::string>   event_time_start;     // ISO-8601 UTC, single-point (M0.5); end added M0.5+
 
     std::int32_t                 chunk_index    = 0;
     std::string                  source_hash;          // chunk content hash; persisted to source_spans_json

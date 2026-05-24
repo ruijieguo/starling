@@ -45,6 +45,10 @@ target_sources(starling_core PRIVATE
     src/bus/outbox_dispatcher.cpp
     src/bus/pipeline_ledger.cpp
     src/bus/statement_writer.cpp
+    src/bus/normalized_interval.cpp
+    src/bus/canonical_scope.cpp
+    src/bus/conflict_key.cpp
+    src/bus/conflict_probe.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
@@ -95,8 +99,13 @@ file(WRITE "${STARLING_MIGRATIONS_INC}"
 target_include_directories(starling_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 # Testing-only translation unit lives in its own target so prod can omit it.
+# Links starling_core because mark_consolidated drives the same OutboxWriter +
+# TransactionGuard primitives Bus uses — it just lives outside the prod link
+# graph (CI scanner + preflight enforce that prod profiles never pull this
+# target in).
 add_library(starling_testing_marker STATIC src/testing/testing_marker.cpp)
 target_include_directories(starling_testing_marker PUBLIC include)
+target_link_libraries(starling_testing_marker PUBLIC starling_core)
 
 option(STARLING_BUILD_PYTHON "Build pybind11 bindings" ON)
 if(STARLING_BUILD_PYTHON)
