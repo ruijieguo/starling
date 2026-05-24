@@ -283,7 +283,7 @@ StatementWriteOutcome StatementWriter::write(
         oss << "[";
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
             if (k) oss << ",";
-            oss << '"' << s.derived_from[k] << '"';
+            oss << json_string(s.derived_from[k]);
         }
         oss << "]";
         derived_from_json = oss.str();
@@ -296,15 +296,20 @@ StatementWriteOutcome StatementWriter::write(
         }
         const std::string depth_sql =
             "SELECT MAX(derived_depth) FROM statements WHERE id IN (" + in_clause + ")";
-        sqlite3_stmt* q = nullptr;
-        sqlite3_prepare_v2(conn_.raw(), depth_sql.c_str(), -1, &q, nullptr);
+        sqlite3_stmt* q_raw = nullptr;
+        if (sqlite3_prepare_v2(conn_.raw(), depth_sql.c_str(), -1, &q_raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(conn_.raw(), "StatementWriter::write: prepare MAX(derived_depth)");
+        }
+        StmtHandle q(q_raw);
         for (size_t k = 0; k < s.derived_from.size(); ++k)
-            sqlite3_bind_text(q, static_cast<int>(k + 1),
+            sqlite3_bind_text(q.get(), static_cast<int>(k + 1),
                               s.derived_from[k].c_str(), -1, SQLITE_TRANSIENT);
         int max_parent_depth = 0;
-        if (sqlite3_step(q) == SQLITE_ROW)
-            max_parent_depth = sqlite3_column_int(q, 0);
-        sqlite3_finalize(q);
+        // MAX() returns SQL NULL when no matching parent rows exist; sqlite3_column_int
+        // reports NULL as 0, so the child gets depth=1. Orphan parents are tolerated
+        // by design — they are not an error condition.
+        if (sqlite3_step(q.get()) == SQLITE_ROW)
+            max_parent_depth = sqlite3_column_int(q.get(), 0);
         derived_depth = max_parent_depth + 1;
     }
 
