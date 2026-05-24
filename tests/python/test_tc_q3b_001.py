@@ -35,8 +35,8 @@ from starling.testing import relax_preflight_for_m0_3
 # from the referenced Statement rows (object_kind="statement", object_value
 # == the referenced Statement.id).  In this direct-DTO test we supply them
 # verbatim so the test is self-contained without a second-level Bus::write.
-_HASH_CALCULUS = "2f5b0dcc9995464554c3b01c514a19b3cec8783493ed516dc20993f1e05a3e9c"
-_HASH_PHYSICS  = "e9e6da200174a675a397be1cd1ba9ec9126973bc5c723a30c69ac06fe76c9bca"
+_HASH_CALCULUS = "94bb35d05a4d22800fc4dffb9df03ae8a281ecb3a0f9cfbe9e288f326c1cc834"
+_HASH_PHYSICS  = "ac40a9f5028f5e04b3f12aa6ebeea6d855bf9abfcce6b55a3b80267337ac2535"
 
 # Synthetic Statement IDs for the two "inner" statements that alice believes.
 _INNER_ID_CALCULUS = "inner-stmt-bob-knows-calculus"
