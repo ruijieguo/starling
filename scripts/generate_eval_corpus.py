@@ -69,7 +69,10 @@ def build_slots() -> list[Slot]:
 def slot_prompt(slot: Slot) -> str:
     """Render a per-slot GPT-5.5 prompt for one corpus record."""
     nesting_clause = (
-        "Include exactly one 2nd-order ToM Statement (Alice believes Bob believes X)."
+        "Include exactly one 2nd-order ToM Statement: holder believes that "
+        "another agent believes Z. Encode it as ONE Statement with "
+        "predicate='believes', object=Z (the innermost clause as a plain "
+        "string), nesting_depth=2."
         if slot.has_nesting else "")
     commitment_clause = (
         "Include exactly one COMMITMENT Statement (someone promises something)."
@@ -87,6 +90,7 @@ Constraints:
 - language: {slot.language} ({"English" if slot.language == "en" else "Chinese (Mandarin)"})
 - The conversation should contain 2-4 turns between 2-3 speakers.
 - holder_perspective for the primary Statement: {slot.perspective}
+  ({slot.perspective} MUST appear verbatim — do NOT substitute "DIRECT"/"SELF"/"EXPLICIT".)
 - {nesting_clause}
 - {commitment_clause}
 - {norm_clause}
@@ -116,11 +120,80 @@ Schema:
   "tags": ["{slot.perspective.lower()}", "{slot.language}"]
 }}
 
+holder_perspective MUST be one of: FIRST_PERSON, QUOTED, HEARSAY, INFERRED.
 predicate must be one of: responsible_for, knows, prefers, promises, forbids, requires, located_at, member_of, believes, doubts.
 modality must be one of: BELIEVES, DESIRES, INTENDS, COMMITS, ENFORCES, OBSERVES.
 polarity must be one of: POS, NEG, UNKNOWN.
+nesting_depth must be 0, 1, or 2 (use 2 only for "A believes B believes Z" pattern).
+object must be a plain STRING — never a JSON object/dict/array.
+For "promises" statements, object is the full action phrase including any temporal qualifier (e.g., "send the report before Friday"), not a noun summary.
+For non-"promises" statements with controlled predicates, object is the minimal canonical noun phrase (e.g., "auth" not "auth service").
 
 Now produce the JSON object."""
+
+
+_ALLOWED_PERSPECTIVES = {"FIRST_PERSON", "QUOTED", "HEARSAY", "INFERRED"}
+_ALLOWED_PREDICATES = {
+    "responsible_for", "knows", "prefers", "promises", "forbids",
+    "requires", "located_at", "member_of", "believes", "doubts",
+}
+_ALLOWED_MODALITIES = {
+    "BELIEVES", "DESIRES", "INTENDS", "COMMITS", "ENFORCES", "OBSERVES",
+}
+_ALLOWED_POLARITIES = {"POS", "NEG", "UNKNOWN"}
+
+
+def validate_record(rec: dict, slot: Slot) -> list[str]:
+    """Return a list of validation errors for one record. Empty list = valid."""
+    errors: list[str] = []
+    if not isinstance(rec, dict):
+        return ["record is not a JSON object"]
+    if rec.get("id") != slot.record_id:
+        errors.append(f"id mismatch: got {rec.get('id')!r}, want {slot.record_id!r}")
+    convo = rec.get("conversation")
+    if not isinstance(convo, list) or not convo:
+        errors.append("conversation must be a non-empty list")
+    truths = rec.get("ground_truth_statements")
+    if not isinstance(truths, list) or not truths:
+        return errors + ["ground_truth_statements must be a non-empty list"]
+    has_depth_2 = False
+    for i, s in enumerate(truths):
+        prefix = f"truth[{i}]"
+        if not isinstance(s, dict):
+            errors.append(f"{prefix}: not a JSON object")
+            continue
+        for field in ("holder", "subject"):
+            v = s.get(field)
+            if not isinstance(v, str) or not v.strip():
+                errors.append(f"{prefix}.{field} must be a non-empty string, got {v!r}")
+        obj = s.get("object")
+        if not isinstance(obj, str) or not obj.strip():
+            errors.append(f"{prefix}.object must be a non-empty STRING (not dict/list), got {type(obj).__name__}={obj!r}")
+        persp = s.get("holder_perspective")
+        if persp not in _ALLOWED_PERSPECTIVES:
+            errors.append(f"{prefix}.holder_perspective {persp!r} not in {sorted(_ALLOWED_PERSPECTIVES)}")
+        pred = s.get("predicate")
+        if pred not in _ALLOWED_PREDICATES:
+            errors.append(f"{prefix}.predicate {pred!r} not in {sorted(_ALLOWED_PREDICATES)}")
+        mod = s.get("modality")
+        if mod not in _ALLOWED_MODALITIES:
+            errors.append(f"{prefix}.modality {mod!r} not in {sorted(_ALLOWED_MODALITIES)}")
+        pol = s.get("polarity")
+        if pol not in _ALLOWED_POLARITIES:
+            errors.append(f"{prefix}.polarity {pol!r} not in {sorted(_ALLOWED_POLARITIES)}")
+        depth = s.get("nesting_depth")
+        if depth not in (0, 1, 2):
+            errors.append(f"{prefix}.nesting_depth {depth!r} must be 0/1/2")
+        if depth == 2:
+            has_depth_2 = True
+    if slot.has_nesting and not has_depth_2:
+        errors.append("has_nesting slot but no truth with nesting_depth=2")
+    primary = truths[0]
+    if primary.get("holder_perspective") != slot.perspective:
+        errors.append(
+            f"primary truth holder_perspective {primary.get('holder_perspective')!r} "
+            f"does not match slot {slot.perspective!r}")
+    return errors
 
 
 def call_gpt(prompt: str, base_url: str, api_key: str, max_attempts: int = 3) -> str:
@@ -195,16 +268,35 @@ def main(argv: list[str]) -> int:
     with args.out.open("w") as f:
         for slot in slots:
             prompt = slot_prompt(slot)
-            raw = call_gpt(prompt, base_url, api_key)
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`")
-                if raw.startswith("json\n"):
-                    raw = raw[len("json\n"):]
-            rec = json.loads(raw)
-            if rec.get("id") != slot.record_id:
-                print(f"WARN: slot {slot.record_id} returned id={rec.get('id')}; fixing", file=sys.stderr)
-                rec["id"] = slot.record_id
+            rec = None
+            last_errors: list[str] = []
+            for schema_attempt in range(3):
+                raw = call_gpt(prompt, base_url, api_key)
+                raw = raw.strip()
+                if raw.startswith("```"):
+                    raw = raw.strip("`")
+                    if raw.startswith("json\n"):
+                        raw = raw[len("json\n"):]
+                try:
+                    candidate = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    last_errors = [f"JSON parse failure: {e}"]
+                    print(f"  schema-attempt {schema_attempt+1}/3 for {slot.record_id}: JSON parse failed", file=sys.stderr)
+                    continue
+                if candidate.get("id") != slot.record_id:
+                    candidate["id"] = slot.record_id
+                last_errors = validate_record(candidate, slot)
+                if not last_errors:
+                    rec = candidate
+                    break
+                print(f"  schema-attempt {schema_attempt+1}/3 for {slot.record_id}: {len(last_errors)} validation errors", file=sys.stderr)
+                for err in last_errors[:3]:
+                    print(f"    - {err}", file=sys.stderr)
+            if rec is None:
+                print(f"FATAL: slot {slot.record_id} failed schema validation 3 times", file=sys.stderr)
+                for err in last_errors:
+                    print(f"  - {err}", file=sys.stderr)
+                return 1
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
