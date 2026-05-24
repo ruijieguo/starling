@@ -8,6 +8,7 @@
 #include "starling/crypto/sha256.hpp"
 #include "starling/evidence/engram_store.hpp"
 #include "starling/evidence/evidence_validator.hpp"
+#include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/enums.hpp"
@@ -332,17 +333,50 @@ StatementWriteOutcome Bus::write(
     auto& conn = adapter_.connection();
     starling::persistence::TransactionGuard tx(conn);
 
+    // M0.7: cross-tenant derived_from gate (§15.3.1 TC-NEG-CROSSTENANT).
+    // Build the resolver closure: queries tenant_id of a parent statement by id.
+    // Uses StmtHandle RAII; checks prepare_v2 return code per Task 7 quality bar.
+    auto resolve_parent_tenant = [&conn](const std::string& parent_id) -> std::string {
+        const char* sql =
+            "SELECT tenant_id FROM statements WHERE id = ? LIMIT 1";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant prepare");
+        starling::persistence::StmtHandle h(raw);
+        detail::bind_sv(h.get(), 1, parent_id);
+        std::string out;
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
+            if (const char* txt = reinterpret_cast<const char*>(
+                    sqlite3_column_text(h.get(), 0))) {
+                out = txt;
+            }
+        }
+        return out;
+    };
+
+    const auto v = starling::extractor::validate_for_write(stmt, resolve_parent_tenant);
+    if (!v.ok()) {
+        throw std::runtime_error(
+            "validate_for_write rejected: " + v.error_kind + " — " + v.detail);
+    }
+
+    // Apply review_status override (cross-tenant protocol path sets REVIEW_REQUESTED).
+    starling::extractor::ExtractedStatement effective = stmt;
+    if (v.review_status_override) {
+        effective.review_status = *v.review_status_override;
+    }
+
     // M0.5: detect conflicts BEFORE writing so the partial_overlap / adjacent
     // edge writes (and direct_contradiction / superseding atomic SUPERSEDES in
     // Task 8) all happen in one transaction.
     const NormalizedInterval iv_new = normalize_interval(
-        stmt.valid_from, stmt.valid_to, stmt.event_time_start);
+        effective.valid_from, effective.valid_to, effective.event_time_start);
     ConflictProbe probe(conn);
-    const auto match = probe.scan(stmt, iv_new);
+    const auto match = probe.scan(effective, iv_new);
 
     StatementWriter writer(conn);
     auto outcome = writer.write(
-        stmt, evidence_engram_id, extraction_span_key, causation_parent_event_id);
+        effective, evidence_engram_id, extraction_span_key, causation_parent_event_id);
 
     if (match.has_value()) {
         const std::string new_stmt_id =
@@ -366,13 +400,13 @@ StatementWriteOutcome Bus::write(
                 // S_new is not persisted, S_old retains 'consolidated', no
                 // edge, no archive/superseded events.
                 apply_supersedes_atomic(
-                    conn, stmt, causation_parent_event_id, *match, new_stmt_id);
+                    conn, effective, causation_parent_event_id, *match, new_stmt_id);
                 break;
 
             case ConflictKind::PartialOverlap: {
                 insert_statement_edge(
                     conn, new_stmt_id, match->matched_statement_id,
-                    stmt.holder_tenant_id, "conflicts_with");
+                    effective.holder_tenant_id, "conflicts_with");
 
                 // Build the belief.conflict event manually rather than via
                 // make_event() because debounce semantics require the
@@ -384,7 +418,7 @@ StatementWriteOutcome Bus::write(
                 // catch below drops the dupes. primary_id stays = new_stmt_id
                 // so the event row carries traceability back to S_new.
                 BusEvent ev;
-                ev.tenant_id    = stmt.holder_tenant_id;
+                ev.tenant_id    = effective.holder_tenant_id;
                 ev.event_type   = "belief.conflict";
                 ev.primary_id   = new_stmt_id;
                 ev.aggregate_id = match->conflict_key_hex;
@@ -417,7 +451,7 @@ StatementWriteOutcome Bus::write(
             case ConflictKind::Adjacent:
                 insert_statement_edge(
                     conn, new_stmt_id, match->matched_statement_id,
-                    stmt.holder_tenant_id, "adjacent");
+                    effective.holder_tenant_id, "adjacent");
                 break;
         }
     }

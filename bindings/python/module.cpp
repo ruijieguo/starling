@@ -627,7 +627,8 @@ PYBIND11_MODULE(_core, m) {
         .def_readwrite("perceived_by",          &starling::extractor::ExtractedStatement::perceived_by)
         .def_readwrite("provenance",            &starling::extractor::ExtractedStatement::provenance)
         .def_readwrite("review_status",         &starling::extractor::ExtractedStatement::review_status)
-        .def_readwrite("derived_from",          &starling::extractor::ExtractedStatement::derived_from);
+        .def_readwrite("derived_from",          &starling::extractor::ExtractedStatement::derived_from)
+        .def_readwrite("provenance_protocol_id", &starling::extractor::ExtractedStatement::provenance_protocol_id);
 
     // ----- M0.4: Connection (opaque) -----
     py::class_<starling::persistence::Connection>(m, "Connection");

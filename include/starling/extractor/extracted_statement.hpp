@@ -43,6 +43,7 @@ struct ExtractedStatement {
     schema::ReviewStatus         review_status  = schema::ReviewStatus::APPROVED;
 
     std::vector<std::string>     derived_from;         // parent Statement.id list; empty for ingestion-root
+    std::string                  provenance_protocol_id; // cross-tenant protocol key; empty = absent (§15.3.1)
 };
 
 }  // namespace starling::extractor
