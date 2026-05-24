@@ -57,6 +57,7 @@ add_executable(starling_tests
     test_bus_write_conflict.cpp
     test_bus_write_supersedes.cpp
     test_basic_retrieve_index.cpp
+    test_recalled_window_bucket.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
