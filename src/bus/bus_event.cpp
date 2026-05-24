@@ -57,6 +57,13 @@ std::string compute_window_bucket(
             now.time_since_epoch()).count();
         return std::to_string(sec / 10);
     }
+    if (event_type == "statement.recalled") {
+        // 2-second debounce window per docs/design/subsystems_design/13_retrieval.md
+        // §"statement.recalled emit 契约". Same-key recall within 2s coalesces.
+        const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        return std::to_string(sec / 2);
+    }
     if (event_type == "statement.archived" || event_type == "statement.superseded") {
         // Per-primary_id is unique on archive/supersede (one event per
         // statement-state-change). No window needed; empty bucket prevents

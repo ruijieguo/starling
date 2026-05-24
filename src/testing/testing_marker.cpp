@@ -133,4 +133,90 @@ bool mark_consolidated(
     return true;
 }
 
+bool mark_evidence_erased(
+    starling::persistence::SqliteAdapter& adapter,
+    std::string_view engram_id,
+    std::string_view tenant_id,
+    std::string_view erased_at_iso8601) {
+
+    auto& conn = adapter.connection();
+
+    // Single transaction wraps the UPDATE + audit append: both land or neither
+    // does. The TransactionGuard rolls back on throw via its destructor.
+    starling::persistence::TransactionGuard tx(conn);
+
+    // Atomic NULL -> ISO8601 gate. The WHERE includes erased_at IS NULL so a
+    // re-call after the row has already been erased updates 0 rows and we
+    // return false. A missing row also yields 0 changes.
+    bool changed = false;
+    {
+        const char* sql =
+            "UPDATE engrams SET erased_at=?1 "
+            "WHERE id=?2 AND tenant_id=?3 AND erased_at IS NULL";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw starling::bus::detail::make_sqlite_error(
+                conn.raw(), "mark_evidence_erased: update prepare");
+        }
+        starling::persistence::StmtHandle h(raw);
+        starling::bus::detail::bind_sv(h.get(), 1, erased_at_iso8601);
+        starling::bus::detail::bind_sv(h.get(), 2, engram_id);
+        starling::bus::detail::bind_sv(h.get(), 3, tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE) {
+            throw starling::bus::detail::make_sqlite_error(
+                conn.raw(), "mark_evidence_erased: update step");
+        }
+        changed = (sqlite3_changes(conn.raw()) == 1);
+    }
+
+    if (!changed) {
+        // Idempotent re-call OR row missing OR row already erased: commit the
+        // (empty) transaction and report no transition. We don't emit an audit
+        // event in this branch — replaying tests only see audit rows for
+        // actual transitions. The UNIQUE(idempotency_key) constraint on
+        // bus_events therefore never trips for this helper.
+        tx.commit();
+        return false;
+    }
+
+    // Audit event. aggregate_id == primary_id == engram_id makes the
+    // idempotency-key (formula §3.10) a pure function of engram_id, so a
+    // hypothetical replay against the same row would collide on UNIQUE if it
+    // ever got past the WHERE-state guard above (which it can't). Empty
+    // causation_root + empty window_bucket per the §3.10 rules for
+    // setup-only audit events.
+    {
+        starling::bus::BusEvent ev;
+        ev.tenant_id    = std::string(tenant_id);
+        ev.event_type   = "testing.mark_evidence_erased";
+        ev.primary_id   = std::string(engram_id);
+        ev.aggregate_id = std::string(engram_id);
+        // Propagate the caller-supplied erased_at into the audit envelope's
+        // created_at so consumers can correlate the event with the row's
+        // erased_at without parsing payload_json. Without this, OutboxWriter::
+        // append fills created_at with the wall-clock time at write — losing
+        // the correlation with the semantically meaningful erasure timestamp.
+        ev.created_at   = std::string(erased_at_iso8601);
+        ev.idempotency_key = starling::bus::compute_idempotency_key(
+            ev.event_type, ev.aggregate_id, ev.primary_id,
+            /*causation_root=*/std::string_view{},
+            /*window_bucket=*/std::string_view{});
+
+        std::ostringstream payload;
+        payload << "{"
+                << "\"engram_id\":"  << json_string(engram_id)         << ","
+                << "\"tenant_id\":"  << json_string(tenant_id)         << ","
+                << "\"erased_at\":"  << json_string(erased_at_iso8601) << ","
+                << "\"helper\":\"starling.testing.mark_evidence_erased\""
+                << "}";
+        ev.payload_json = payload.str();
+
+        starling::bus::OutboxWriter writer(conn);
+        writer.append(ev);
+    }
+
+    tx.commit();
+    return true;
+}
+
 }  // namespace starling::testing

@@ -60,6 +60,7 @@ target_sources(starling_core PRIVATE
     src/extractor/xml_parser.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
+    src/retrieval/basic_retriever.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
