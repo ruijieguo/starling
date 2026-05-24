@@ -9,8 +9,13 @@ Case  Status          Reason / test
                       throws on chain>3 instead — deferred per roadmap
 2     SKIP/deferred   TC-A7-001: RuntimeDefaults not Python-accessible;
                       OutboxDispatcher defaults are C++ struct constants — deferred
-3     PASS            TC-A7-002: window_bucket dedup — compute_window_bucket tested
-4     PASS            TC-A3-001: derived_from idempotent edges + depth propagation
+3     SKIP/deferred   TC-A7-002: commitment.fire 24h window bucket not implemented;
+                      compute_window_bucket("commitment.fire", ...) returns "".
+                      Adjacent statement.recalled coverage retained under its own name.
+4a    PASS            TC-A3-001 (partial): derived_from idempotent edges + depth
+                      propagation — edge-idempotency assertion only
+4b    SKIP/deferred   TC-A3-001 (partial): shared aggregate_id property not
+                      implemented; ev.aggregate_id = stmt_id per child at M0.7
 5     SKIP/deferred   TC-Q1-001: statement.references_existing not emitted by
                       StatementWriter at M0.7 — deferred per roadmap
 6     SKIP/covered    privacy reject → covered by
@@ -138,22 +143,52 @@ def test_tc_a7_001_runtime_defaults_deferred():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Case 3 — TC-A7-002 window_bucket dedup
+# Case 3 — TC-A7-002 commitment.fire 24h window dedup (DEFERRED)
+#           Adjacent: statement.recalled 2s window bucket (PASS, separate name)
 # ─────────────────────────────────────────────────────────────────────────────
 
 from datetime import datetime, timezone as tz
 
 
-def test_tc_a7_002_window_bucket_same_id_emits_once():
-    """TC-A7-002: same commitment_id within one window_bucket shares the key.
+def test_tc_a7_002_commitment_fire_24h_deferred():
+    """TC-A7-002 deferred: commitment.fire 24h window-bucket not implemented at M0.7.
 
-    The spec dedup mechanism for statement.recalled uses compute_window_bucket
-    to collapse repeated emissions within a 2-second window into one
-    idempotency key.  Two timestamps within the same 2s floor must produce
-    the same bucket string; timestamps crossing a 2s boundary must differ.
+    The spec (§15.3.2 TC-A7-002) requires that a repeated commitment.fire with
+    the same commitment_id within a 24-hour window shares an idempotency_key
+    (emits only once).  This requires:
 
-    This is the Python parity side of the locked C++ window-bucket tests in
-    test_bus_write_conflict.cpp and test_recalled_window_bucket.py.
+      1. A 'commitment.fire' event type in the bus layer.
+      2. compute_window_bucket("commitment.fire", ...) returning a 24h floor bucket.
+
+    Neither is implemented: compute_window_bucket falls through to the default
+    ``return ""`` branch for "commitment.fire" (no 24h case in bus_event.py),
+    and there is no commitment.fire event emitter in statement_writer.cpp or
+    any other M0.7 component.
+
+    Confirmed via bus_event.py: compute_window_bucket("commitment.fire", t)
+    returns "" for any timestamp t.
+
+    Deferred to post-M0.7 commitment-related work.
+    """
+    pytest.skip(
+        "deferred: commitment.fire event type and its 24h window-bucket are not "
+        "implemented at M0.7. compute_window_bucket('commitment.fire', ...) "
+        "returns '' (no dedup window; falls through default branch in bus_event.py). "
+        "No commitment.fire emitter exists in statement_writer.cpp. "
+        "Tracked for post-M0.7 commitment-related work."
+    )
+
+
+def test_window_bucket_statement_recalled_dedup():
+    """Adjacent coverage: compute_window_bucket for the implemented statement.recalled type.
+
+    This is NOT TC-A7-002 (which concerns commitment.fire / 24h window).
+    It is standalone coverage of the 2-second debounce window for
+    statement.recalled, the only currently-implemented short-window event type.
+
+    Two timestamps within the same 2s floor must produce the same bucket string;
+    timestamps crossing a 2s boundary must differ.  This is the Python parity
+    side of the C++ window-bucket logic in bus_event.cpp.
     """
     # Two instants within the same 2-second window.
     t0 = datetime.fromtimestamp(1_000_000_000, tz=tz.utc)  # exactly at boundary
@@ -181,18 +216,26 @@ def test_tc_a7_002_window_bucket_same_id_emits_once():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Case 4 — TC-A3-001 derived_from idempotent edges + shared aggregate
+# Case 4 — TC-A3-001 derived_from idempotent edges + shared aggregate_id
+#           4a: edge idempotency + depth (PASS)
+#           4b: shared aggregate_id (SKIP/deferred)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_tc_a3_001_derived_from_depth_propagation(rt):
-    """TC-A3-001: five Statements derived_from the same parent Statement.
+def test_tc_a3_001_derived_from_idempotent_edges_only(rt):
+    """TC-A3-001 (partial): derived_from edge idempotency and depth propagation.
 
-    Spec invariants:
+    Spec invariants exercised here (P1 phase, idempotency portion only):
       1. All five child writes are accepted.
       2. Each child row has derived_from_json == '[parent_id]'.
       3. Each child row has derived_depth == 1 (parent is at depth 0).
       4. All five derived_from references to the same parent are idempotent —
          no constraint violation, no duplicate parent rows created.
+
+    NOTE: The spec also requires that derived_from edges "share aggregate_id"
+    (system_design.md line 1766). That property is NOT asserted here because
+    production code assigns ev.aggregate_id = stmt_id per child
+    (statement_writer.cpp line 329), not the parent's id. The shared-aggregate_id
+    portion is deferred; see test_tc_a3_001_shared_aggregate_id_deferred below.
 
     This exercises the StatementWriter derived_from_json and derived_depth
     computation path (statement_writer.cpp lines 278-317).
@@ -257,6 +300,37 @@ def test_tc_a3_001_derived_from_depth_propagation(rt):
                 f"child {cid} derived_from_json must be [{parent_id!r}], "
                 f"got {dfj!r}"
             )
+
+
+def test_tc_a3_001_shared_aggregate_id_deferred():
+    """TC-A3-001 (partial) deferred: shared aggregate_id not implemented at M0.7.
+
+    The spec (system_design.md line 1766) states P1 verifies that derived_from
+    edges are written idempotently AND share aggregate_id.  The idempotency /
+    depth portion is covered by test_tc_a3_001_derived_from_idempotent_edges_only.
+
+    This test records the gap in the shared-aggregate_id portion:
+
+    Production code (statement_writer.cpp line 329) sets:
+        ev.aggregate_id = stmt_id   (each child's own id)
+
+    rather than:
+        ev.aggregate_id = derived_from[0]   (the shared parent id)
+
+    As a result, five children sharing a parent each emit a bus_event with a
+    distinct aggregate_id, not a common shared value.  Changing this would alter
+    the bus_event aggregation contract and could affect audit / retrieval
+    consumers — it is not appropriate as a fix-up commit during P1 closure.
+
+    Deferred to post-M0.7 commitment/aggregation work.
+    """
+    pytest.skip(
+        "deferred: shared aggregate_id across derived_from children is not "
+        "implemented at M0.7. statement_writer.cpp line 329 sets "
+        "ev.aggregate_id = stmt_id (per-child), not derived_from[0] (shared parent). "
+        "Changing the aggregation contract is deferred to post-M0.7. "
+        "Edge-idempotency coverage is in test_tc_a3_001_derived_from_idempotent_edges_only."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
