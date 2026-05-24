@@ -2,10 +2,14 @@
 
 #include <sqlite3.h>
 
+#include <chrono>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "starling/bus/bus_event.hpp"
+#include "starling/bus/outbox_writer.hpp"
 #include "starling/final_query_assertion.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
@@ -224,6 +228,55 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     result.receipt.sufficiency_status =
         result.rows.empty() ? Sufficiency::MISSING_INFO
                             : Sufficiency::SUFFICIENT;
+
+    // ---- fire-and-forget recalled emit ----
+    // Per 13_retrieval.md §"statement.recalled emit 契约": this is NOT in the
+    // read transaction; it is a follow-up best-effort write whose failure
+    // must not corrupt the caller's view of the read. The 2s window bucket
+    // from compute_window_bucket dedups same-key recalls within 2 seconds
+    // via the bus_events UNIQUE(idempotency_key) constraint.
+    try {
+        starling::persistence::TransactionGuard tx(conn);
+        starling::bus::OutboxWriter w(conn);
+        const auto now = std::chrono::system_clock::now();
+        const std::string window_bucket = starling::bus::compute_window_bucket(
+            "statement.recalled", now);
+
+        for (const auto& row : result.rows) {
+            starling::bus::BusEvent ev;
+            ev.tenant_id    = row.tenant_id;
+            ev.event_type   = "statement.recalled";
+            ev.primary_id   = row.id;
+            ev.aggregate_id = row.id;
+            ev.payload_json =
+                std::string("{\"statement_id\":\"") + row.id
+              + "\",\"querier\":\""    + params.holder_id
+              + "\",\"perspective\":\"" + params.holder_id
+              + "\",\"intent\":\"FACT_LOOKUP\""
+              + ",\"query_id\":\""     + params.query_id + "\"}";
+            ev.version    = "v1";
+            ev.idempotency_key = starling::bus::compute_idempotency_key(
+                "statement.recalled",
+                row.id,
+                row.id,
+                params.query_id,    // causation_root
+                window_bucket);
+
+            try {
+                w.append(ev);
+            } catch (const starling::persistence::SqliteError& e) {
+                if (e.code() != SQLITE_CONSTRAINT_UNIQUE) throw;
+                // 2s window deduped — expected.
+            }
+        }
+        tx.commit();
+    } catch (const std::exception& e) {
+        // Best-effort. Do not propagate. stderr is the conventional logging
+        // side-channel in this codebase.
+        std::fprintf(stderr,
+            "basic_retrieve: recalled emit failed for query_id=%s: %s\n",
+            params.query_id.c_str(), e.what());
+    }
 
     return result;
 }

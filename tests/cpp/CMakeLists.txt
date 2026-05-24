@@ -60,6 +60,7 @@ add_executable(starling_tests
     test_recalled_window_bucket.cpp
     test_basic_retriever_filter_predicates.cpp
     test_basic_retriever_multi_holder_reject.cpp
+    test_basic_retriever_recalled_emit.cpp
     test_mark_evidence_erased.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
