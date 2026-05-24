@@ -58,6 +58,8 @@ add_executable(starling_tests
     test_bus_write_supersedes.cpp
     test_basic_retrieve_index.cpp
     test_recalled_window_bucket.cpp
+    test_basic_retriever_filter_predicates.cpp
+    test_basic_retriever_multi_holder_reject.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core GTest::gtest_main)
 
