@@ -210,15 +210,17 @@ void apply_mild_correction(
     // Build the appended confidence_history_json.
     // Append {"old_confidence":<v>,"ts":"<iso>","evidence_engram_ref":<eid>} to array.
     const std::string ts = detail::iso8601_utc(std::chrono::system_clock::now());
-    // Strip trailing ']', append new entry, re-close.
+    // Strip trailing ']'; we'll re-close after appending. We only emit this column
+    // ourselves (compact, no whitespace), so the last non-']' char is either '['
+    // for an empty array or the closing '}' of the previous entry.
     if (!history_json.empty() && history_json.back() == ']') {
         history_json.pop_back();
     }
-    if (history_json.size() > 1) {
-        // Non-empty array — add comma before new entry.
+    if (!history_json.empty() && history_json.back() != '[') {
+        // Previous entry exists — separate with comma.
         history_json.push_back(',');
     }
-    // Format old_confidence as a 6-decimal fixed-point string (matches Python repr).
+    // Format old_confidence with %.6g (6 significant digits, shortest representation).
     char conf_buf[32];
     std::snprintf(conf_buf, sizeof(conf_buf), "%.6g", old_confidence);
     history_json += "{\"old_confidence\":" + std::string(conf_buf);
