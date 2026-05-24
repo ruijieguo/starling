@@ -62,6 +62,8 @@ TEST(MigrationBasicRetrieveIndex, PriorIndicesNotRegressed) {
     auto idx = indices_on_table(adapter->connection().raw(), "statements");
 
     // 0001
+    EXPECT_TRUE(idx.count("idx_statement_id_tenant") > 0)
+        << "missing idx_statement_id_tenant from 0001";
     EXPECT_TRUE(idx.count("idx_statements_holder_predicate") > 0)
         << "missing idx_statements_holder_predicate from 0001";
     EXPECT_TRUE(idx.count("idx_statements_subject") > 0)
