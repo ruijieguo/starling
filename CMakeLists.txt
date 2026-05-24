@@ -67,6 +67,7 @@ target_sources(starling_core PRIVATE
     src/bus/bus.cpp
     src/extractor/extraction_span_key.cpp
     src/extractor/fake_llm_adapter.cpp
+    src/extractor/openai_adapter.cpp
     src/extractor/xml_parser.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
