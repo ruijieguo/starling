@@ -299,7 +299,7 @@ Conversation:
 JSON array:"""
 
 
-def extract_via_gpt(conversation: list[dict], base_url: str, api_key: str, model: str) -> list[dict]:
+def _extract_via_gpt_once(conversation: list[dict], base_url: str, api_key: str, model: str) -> list[dict]:
     convo_str = "\n".join(f'{t["speaker"]}: {t["text"]}' for t in conversation)
     payload = json.dumps({
         "model": model,
@@ -322,6 +322,20 @@ def extract_via_gpt(conversation: list[dict], base_url: str, api_key: str, model
         if content.startswith("json\n"):
             content = content[len("json\n"):]
     return json.loads(content)
+
+
+def extract_via_gpt(conversation: list[dict], base_url: str, api_key: str, model: str) -> list[dict]:
+    # Robustness retry for transient LLM noise (empty responses, read timeouts).
+    # Two extra attempts with exponential backoff. Prompt/corpus unchanged.
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return _extract_via_gpt_once(conversation, base_url, api_key, model)
+        except Exception as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise last_exc  # type: ignore[misc]
 
 
 def run_one_round(corpus: list[dict], base_url: str, api_key: str, model: str) -> dict[str, float]:
