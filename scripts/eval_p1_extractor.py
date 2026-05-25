@@ -78,12 +78,15 @@ def evaluate_record(record: dict, predicted: list[dict]) -> dict[str, tuple[int,
             else:
                 counts[fld][1] += 1
                 counts[fld][2] += 1
-        if t.get("nesting_depth", 0) >= 1:
-            if p.get("nesting_depth", 0) >= 1:
+        # `or 0` defends against records that carry an explicit
+        # "nesting_depth": null (vs the key being absent); dict.get's default
+        # only fires when the key is missing, not when the value is None.
+        if (t.get("nesting_depth") or 0) >= 1:
+            if (p.get("nesting_depth") or 0) >= 1:
                 counts["nesting_depth_1"][0] += 1
             else:
                 counts["nesting_depth_1"][2] += 1
-        elif p.get("nesting_depth", 0) >= 1:
+        elif (p.get("nesting_depth") or 0) >= 1:
             counts["nesting_depth_1"][1] += 1
 
     for i, p in enumerate(predicted):

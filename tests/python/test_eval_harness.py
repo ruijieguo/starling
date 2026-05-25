@@ -62,6 +62,31 @@ def test_evaluate_record_misses_holder():
     assert per_field["holder"] == (0, 1, 1)  # fp on Bob, fn on Alice
 
 
+def test_evaluate_record_handles_explicit_null_nesting_depth():
+    """Records carrying "nesting_depth": null must not crash the comparator.
+
+    `t.get("nesting_depth", 0)` returns None (not 0) when the key is present
+    with a null value, which would TypeError on the >= 1 comparison. The
+    `or 0` defense in evaluate_record collapses both missing and explicit-null
+    to 0.
+    """
+    record = {
+        "id": "eval-null",
+        "ground_truth_statements": [
+            {"holder": "Alice", "holder_perspective": "FIRST_PERSON",
+             "predicate": "knows", "object": "calculus", "nesting_depth": None},
+        ],
+    }
+    predicted = [
+        {"holder": "Alice", "holder_perspective": "FIRST_PERSON",
+         "predicate": "knows", "object": "calculus", "nesting_depth": None},
+    ]
+    per_field = evaluate_record(record, predicted)
+    # Should not raise; null collapses to 0, contributes nothing to the
+    # nesting bucket (same shape as nesting_depth=0).
+    assert per_field["nesting_depth_1"] == (0, 0, 0)
+
+
 def test_thresholds_match_spec():
     assert P1_THRESHOLDS == {
         "holder": 0.85,

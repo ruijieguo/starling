@@ -23,6 +23,28 @@ bool is_retryable_status(long http_code) {
     return http_code == 429 || (http_code >= 500 && http_code < 600);
 }
 
+// Retry only on transport errors where the request demonstrably did NOT
+// complete server-side. CURLE_OPERATION_TIMEDOUT / COULDNT_CONNECT /
+// COULDNT_RESOLVE_HOST / SEND_ERROR cover network-side failures; GOT_NOTHING
+// and PARTIAL_FILE cover dropped/torn responses. Everything else (TLS errors,
+// abort callbacks, etc.) is treated as permanent so we don't double-charge
+// chat/completions when the server may have processed the prompt.
+bool is_retryable_curl_code(CURLcode rc) {
+    switch (rc) {
+        case CURLE_OPERATION_TIMEDOUT:
+        case CURLE_COULDNT_CONNECT:
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_RESOLVE_PROXY:
+        case CURLE_SEND_ERROR:
+        case CURLE_RECV_ERROR:
+        case CURLE_GOT_NOTHING:
+        case CURLE_PARTIAL_FILE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 OpenAIAdapter::Config OpenAIAdapter::Config::from_env() {
@@ -77,7 +99,7 @@ LLMResponse OpenAIAdapter::extract(std::string_view prompt,
         curl_easy_cleanup(curl);
 
         if (rc != CURLE_OK) {
-            if (attempt < cfg_.max_retries) {
+            if (is_retryable_curl_code(rc) && attempt < cfg_.max_retries) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
                 delay_ms *= 2;
                 continue;
