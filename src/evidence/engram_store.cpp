@@ -86,8 +86,14 @@ Engram EngramStore::put(
     // below hardcodes NULL for the column. M0.4 will replace both the
     // generate_key_ref() call AND the literal NULL with a real bind.
     e.key_ref                  = starling::crypto::NullKms::generate_key_ref();
-    e.content_ciphertext       = starling::crypto::NullKms::encrypt(
+    // STORE_METADATA_ONLY (§3.7 line 1090): write metadata, never verbatim.
+    // Skip ciphertext production entirely so raw bytes never enter the encrypt
+    // path, and bind NULL for payload_inline below.
+    const bool store_payload   = (resolved_policy != schema::IngestPolicy::STORE_METADATA_ONLY);
+    if (store_payload) {
+        e.content_ciphertext   = starling::crypto::NullKms::encrypt(
                                      input.payload_bytes, /*key_ref=*/"");
+    }
     e.redacted_content         = input.redacted_content;
     e.refcount                 = 0;
     e.created_at_iso8601       = input.created_at_iso8601;
@@ -132,7 +138,13 @@ Engram EngramStore::put(
     sqlite3_bind_blob(ins.get(), i++,
         e.content_ciphertext.data(),
         static_cast<int>(e.content_ciphertext.size()),
-        SQLITE_TRANSIENT);  // payload_inline
+        SQLITE_TRANSIENT);  // payload_inline; empty when store_payload==false → bound as zero-length blob
+    if (!store_payload) {
+        // Re-bind as SQL NULL. content_ciphertext is empty in this branch, so
+        // the prior bind would land an empty blob; SQL NULL is what callers
+        // and the schema expect for "no verbatim retained".
+        sqlite3_bind_null(ins.get(), i - 1);
+    }
     bind_sv(ins.get(), i++, e.created_at_iso8601);
     bind_sv(ins.get(), i++, e.source.adapter_name);
     bind_sv(ins.get(), i++, e.source.adapter_version);
