@@ -3,8 +3,9 @@
 Pins the §"RetrievalReceipt（P1 最小字段加粗）" contract: trace_id and
 query_id round-trip from the caller, candidate_counts populate from the
 SELECT, evidence_erased_count starts at 0, sufficiency_status is one of
-the four enum names, and filters_applied lists the nine entries that
-mirror the SQL filter shape.
+the four enum names, and filters_applied lists the ten entries that
+mirror the SQL filter shape (the tenth is `holder_perspective`, recorded
+as "any" when unconstrained per 13_retrieval.md:291).
 
 Uses `:memory:` SQLite throughout. Statements are seeded via the same
 public path production extractors will use: append_evidence -> Bus.write
@@ -123,8 +124,8 @@ def test_minimum_p1_fields_present(adapter):
       - candidate_counts.fetched == 1, returned == 1
       - evidence_erased_count == 0
       - sufficiency_status == 'SUFFICIENT'
-      - filters_applied lists all nine SQL filter entries with their
-        bound values
+      - filters_applied lists all ten SQL filter entries with their
+        bound values (including holder_perspective="any" when unconstrained)
 
     The filter-name strings are pinned because retrieval auditors use
     them to verify that what the SQL claimed to filter is what was
@@ -158,12 +159,13 @@ def test_minimum_p1_fields_present(adapter):
     assert result.receipt.evidence_erased_count == 0
     assert result.receipt.sufficiency_status == "SUFFICIENT"
 
-    # filters_applied: nine entries with stable names + bound values.
-    # Names match basic_retriever.cpp:149-159; if either side drifts the
+    # filters_applied: ten entries with stable names + bound values.
+    # Names match basic_retriever.cpp; if either side drifts the
     # auditor-readable trace stops corresponding to the SQL.
     filters = {f.name: f.value for f in result.receipt.filters_applied}
     assert filters["tenant_id"]              == "default"
     assert filters["holder_id"]              == "alice"
+    assert filters["holder_perspective"]     == "any"
     assert filters["subject_kind"]           == "cognizer"
     assert filters["subject_id"]             == "bob"
     assert filters["predicate"]              == "responsible_for"

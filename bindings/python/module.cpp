@@ -535,14 +535,15 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())
-        .def_readwrite("tenant_id",     &starling::retrieval::BasicRetrieverParams::tenant_id)
-        .def_readwrite("holder_id",     &starling::retrieval::BasicRetrieverParams::holder_id)
-        .def_readwrite("intent",        &starling::retrieval::BasicRetrieverParams::intent)
-        .def_readwrite("subject_id",    &starling::retrieval::BasicRetrieverParams::subject_id)
-        .def_readwrite("predicate",     &starling::retrieval::BasicRetrieverParams::predicate)
-        .def_readwrite("as_of_iso8601", &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
-        .def_readwrite("trace_id",      &starling::retrieval::BasicRetrieverParams::trace_id)
-        .def_readwrite("query_id",      &starling::retrieval::BasicRetrieverParams::query_id);
+        .def_readwrite("tenant_id",          &starling::retrieval::BasicRetrieverParams::tenant_id)
+        .def_readwrite("holder_id",          &starling::retrieval::BasicRetrieverParams::holder_id)
+        .def_readwrite("holder_perspective", &starling::retrieval::BasicRetrieverParams::holder_perspective)
+        .def_readwrite("intent",             &starling::retrieval::BasicRetrieverParams::intent)
+        .def_readwrite("subject_id",         &starling::retrieval::BasicRetrieverParams::subject_id)
+        .def_readwrite("predicate",          &starling::retrieval::BasicRetrieverParams::predicate)
+        .def_readwrite("as_of_iso8601",      &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
+        .def_readwrite("trace_id",           &starling::retrieval::BasicRetrieverParams::trace_id)
+        .def_readwrite("query_id",           &starling::retrieval::BasicRetrieverParams::query_id);
 
     py::class_<starling::retrieval::BasicRetrieveResult>(m, "BasicRetrieveResult")
         .def_readonly("rows",    &starling::retrieval::BasicRetrieveResult::rows)

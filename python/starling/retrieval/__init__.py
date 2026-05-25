@@ -36,6 +36,7 @@ def basic_retrieve(
     *,
     tenant_id: str,
     holder: Union[str, list, tuple],     # accept list/tuple only to reject
+    holder_perspective: Optional[str] = None,
     intent: str = "FACT_LOOKUP",
     subject: str,
     predicate: str,
@@ -51,6 +52,11 @@ def basic_retrieve(
       - review_status not in {rejected, pending_review}
       - evidence not crypto-erased
       - valid_from <= as_of < valid_to
+      - holder_perspective = <given> when supplied; otherwise unconstrained
+
+    The receipt's `filters_applied` always records `holder_perspective`
+    ("any" when unconstrained, the bound value otherwise) per
+    13_retrieval.md:291.
 
     Multi-holder calls raise ValueError; intent other than FACT_LOOKUP raises
     ValueError. See 13_retrieval.md §"P1 basic_retrieve 闭环".
@@ -79,14 +85,15 @@ def basic_retrieve(
     as_of_iso = as_of_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params = _core.BasicRetrieverParams()
-    params.tenant_id     = tenant_id
-    params.holder_id     = holder
-    params.intent        = _core.QueryIntent.FACT_LOOKUP
-    params.subject_id    = subject
-    params.predicate     = predicate
-    params.as_of_iso8601 = as_of_iso
-    params.trace_id      = trace_id or str(uuid.uuid4())
-    params.query_id      = query_id or str(uuid.uuid4())
+    params.tenant_id          = tenant_id
+    params.holder_id          = holder
+    params.holder_perspective = holder_perspective or ""
+    params.intent             = _core.QueryIntent.FACT_LOOKUP
+    params.subject_id         = subject
+    params.predicate          = predicate
+    params.as_of_iso8601      = as_of_iso
+    params.trace_id           = trace_id or str(uuid.uuid4())
+    params.query_id           = query_id or str(uuid.uuid4())
 
     r = _core.BasicRetriever(adapter)
     raw = r.run(params)

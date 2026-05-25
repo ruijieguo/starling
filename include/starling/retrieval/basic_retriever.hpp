@@ -21,6 +21,10 @@ enum class QueryIntent {
 struct BasicRetrieverParams {
     std::string  tenant_id;
     std::string  holder_id;             // single holder only; empty → reject
+    std::string  holder_perspective;    // optional; empty → "any" (no SQL predicate),
+                                        // non-empty → exact-match predicate AND recorded
+                                        // verbatim in receipt.filters_applied per
+                                        // 13_retrieval.md:291 (P1-required entry).
     QueryIntent  intent{QueryIntent::FACT_LOOKUP};
     std::string  subject_id;
     std::string  predicate;

@@ -43,7 +43,23 @@ namespace {
 // Evidence-erasure cannot be expressed as a column predicate (it requires a
 // per-row JSON scan + secondary SELECT against engrams), so it is applied as
 // a post-filter in C++. The receipt counts the drops separately.
-constexpr const char* kSelectSql =
+// SQL filter shape (also recorded in receipt.filters_applied):
+//   tenant_id    = ?1        — multi-tenant guard
+//   holder_id    = ?2        — single-holder scope (P1)
+//   subject_kind = 'cognizer'
+//   subject_id   = ?3
+//   predicate    = ?4
+//   as_of bounds (?5 against valid_from/valid_to)
+//   holder_perspective = ?6  — appended ONLY when params.holder_perspective is
+//                              non-empty (13_retrieval.md:291 lists perspective
+//                              as a P1-required filters_applied entry; when the
+//                              caller doesn't constrain it, the receipt records
+//                              "any" and no SQL predicate is added).
+// The annotation comment `holder_scope` below is what
+// `FinalQueryAssertion::check_final_query` looks for to confirm a holder-scope
+// guard exists in the final SQL — substring match against the constructed
+// string, not the static template.
+constexpr const char* kSelectSqlBase =
     "/* holder_scope: holder_id (P1 single-holder) */ "
     "SELECT id, tenant_id, holder_id, holder_perspective, "
     "       subject_kind, subject_id, predicate, "
@@ -61,6 +77,9 @@ constexpr const char* kSelectSql =
     "   AND review_status NOT IN ('rejected','pending_review') "
     "   AND (valid_from IS NULL OR valid_from <= ?5) "
     "   AND (valid_to   IS NULL OR valid_to   >  ?5) ";
+
+constexpr const char* kPerspectivePredicate =
+    "   AND holder_perspective = ?6 ";
 
 // Returns true iff `evidence_json` references at least one engram whose
 // engrams.erased_at is non-NULL for the same tenant. Pulled out so the
@@ -133,9 +152,12 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
 
     // TC-NEG-TENANT: validate that the final SQL contains tenant_id +
     // holder_scope predicates. Belt-and-suspenders on top of the hardcoded
-    // kSelectSql — if anyone later changes the constant in a way that
+    // kSelectSqlBase — if anyone later changes the constants in a way that
     // removes either guard, this throws before the query runs.
-    if (!adapter_.check_final_query(kSelectSql)) {
+    const std::string final_sql = params.holder_perspective.empty()
+        ? std::string(kSelectSqlBase)
+        : std::string(kSelectSqlBase) + kPerspectivePredicate;
+    if (!adapter_.check_final_query(final_sql)) {
         throw FinalQueryAssertionError(
             "basic_retrieve: final SQL missing tenant_id or holder_scope guard");
     }
@@ -146,9 +168,14 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     // The filters_applied entries mirror the SQL filter shape per
     // 13_retrieval.md §"RetrievalReceipt（P1 最小字段加粗）". Auditors verify
     // this list against the SQL to confirm what was actually applied.
+    // holder_perspective is always recorded ("any" when unconstrained) per
+    // 13_retrieval.md:291 — P1-required entry, never optional.
     result.receipt.filters_applied = {
         {"tenant_id",             params.tenant_id},
         {"holder_id",             params.holder_id},
+        {"holder_perspective",    params.holder_perspective.empty()
+                                      ? std::string("any")
+                                      : params.holder_perspective},
         {"subject_kind",          "cognizer"},
         {"subject_id",            params.subject_id},
         {"predicate",             params.predicate},
@@ -161,7 +188,7 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     auto& conn = adapter_.connection();
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, kSelectSql, -1, &raw, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, final_sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         throw std::runtime_error(
             std::string("basic_retrieve prepare failed: ")
             + sqlite3_errmsg(db));
@@ -173,6 +200,10 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     sqlite3_bind_text(raw, 3, params.subject_id.c_str(),    -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(raw, 4, params.predicate.c_str(),     -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(raw, 5, params.as_of_iso8601.c_str(), -1, SQLITE_TRANSIENT);
+    if (!params.holder_perspective.empty()) {
+        sqlite3_bind_text(raw, 6, params.holder_perspective.c_str(),
+                          -1, SQLITE_TRANSIENT);
+    }
 
     auto col_text = [raw](int i) {
         const unsigned char* t = sqlite3_column_text(raw, i);
