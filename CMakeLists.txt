@@ -28,6 +28,16 @@ if(APPLE AND NOT DEFINED SQLite3_ROOT)
 endif()
 find_package(SQLite3 3.46 REQUIRED)
 
+find_package(CURL REQUIRED)
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3)
+    FetchContent_MakeAvailable(json)
+endif()
+
 add_library(starling_core STATIC)
 target_include_directories(starling_core PUBLIC include)
 target_sources(starling_core PRIVATE
@@ -57,13 +67,16 @@ target_sources(starling_core PRIVATE
     src/bus/bus.cpp
     src/extractor/extraction_span_key.cpp
     src/extractor/fake_llm_adapter.cpp
+    src/extractor/openai_adapter.cpp
     src/extractor/xml_parser.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
     src/retrieval/basic_retriever.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
-target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3)
+target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
+    CURL::libcurl
+    nlohmann_json::nlohmann_json)
 if(APPLE)
     target_link_libraries(starling_core PUBLIC "-framework CoreFoundation")
 endif()

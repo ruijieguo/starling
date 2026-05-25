@@ -1,5 +1,6 @@
 #include "starling/extractor/statement_validator.hpp"
 
+#include <functional>
 #include <set>
 #include <string>
 
@@ -64,6 +65,38 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
         out.review_status_override = schema::ReviewStatus::INFERRED_UNREVIEWED;
     }
     return out;
+}
+
+// M0.7: cross-tenant derivation gate (§15.3.1 TC-NEG-CROSSTENANT).
+ValidationOutcome validate_for_write(
+    const ExtractedStatement& s,
+    const std::function<std::string(const std::string&)>& resolve_parent_tenant)
+{
+    // Run base field + confidence rules first.
+    auto base = validate_extracted_statement(s);
+    if (!base.ok()) return base;
+
+    bool any_cross_tenant_with_protocol = false;
+    for (const auto& parent_id : s.derived_from) {
+        const std::string parent_tenant = resolve_parent_tenant(parent_id);
+        if (parent_tenant.empty()) {
+            return {false, "derived_parent_not_found", parent_id, std::nullopt};
+        }
+        if (parent_tenant != s.holder_tenant_id) {
+            if (s.provenance_protocol_id.empty()) {
+                return {false, "cross_tenant_derivation_forbidden",
+                        "parent_tenant=" + parent_tenant + " new_tenant=" + s.holder_tenant_id,
+                        std::nullopt};
+            }
+            any_cross_tenant_with_protocol = true;
+        }
+    }
+    if (any_cross_tenant_with_protocol) {
+        // REVIEW_REQUESTED takes precedence over any base override (e.g. INFERRED_UNREVIEWED):
+        // a human-action signal outranks an inference flag.
+        base.review_status_override = schema::ReviewStatus::REVIEW_REQUESTED;
+    }
+    return base;
 }
 
 }  // namespace starling::extractor
