@@ -111,16 +111,20 @@ def _make_base_stmt() -> _core.ExtractedStatement:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_tc_a4_001_causation_chain_runaway_deferred():
-    """TC-A4-001 deferred: system.runaway event not emitted at M0.7.
+    """TC-A4-001 covered by: tests/python/test_causation_chain_inheritance.py
 
-    OutboxWriter::append guards chain length ≤ 3 by throwing
-    std::invalid_argument, but there is no 'system.runaway' bus event.
-    The runaway detection / event emission is a post-M0.7 roadmap item.
+    The post-M0.7 FOLLOWUP-3 commit adds:
+      - causation_chain accumulation per 05_bus.md:273
+        (N.causation_chain = parent.causation_chain + [parent.event_id])
+      - depth>3 rejection + system.runaway event emission per 05_bus.md:274
+    Both behaviors are covered by test_causation_chain_inheritance.py
+    (test_grandchild_inherits_parent_chain_plus_parent_id and
+    test_chain_overflow_rejects_and_emits_system_runaway).
     """
     pytest.skip(
-        "deferred: system.runaway event not implemented at M0.7; "
-        "OutboxWriter rejects chain>3 with std::invalid_argument (guard only, "
-        "no event emitted). Tracked for post-M0.7."
+        "covered_by: tests/python/test_causation_chain_inheritance.py — "
+        "FOLLOWUP-3 (post-M0.7) added chain accumulation + system.runaway "
+        "emission per 05_bus.md:273-274."
     )
 
 

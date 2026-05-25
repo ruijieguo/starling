@@ -103,6 +103,7 @@ std::string idempotent_payload(const starling::evidence::Engram& existing) {
 }
 
 BusEvent make_event(
+    starling::persistence::Connection& conn,
     std::string_view event_type,
     std::string_view primary_id,
     std::string_view aggregate_id,
@@ -115,8 +116,12 @@ BusEvent make_event(
     e.event_type   = std::string(event_type);
     e.primary_id   = std::string(primary_id);
     e.aggregate_id = std::string(aggregate_id);
+    // 05_bus.md:273: N.causation_chain = parent.causation_chain + [parent.event_id].
+    // compute_child_chain pulls parent's chain from bus_events and appends
+    // parent.event_id; throws CausationOverflow when the resulting chain
+    // exceeds the depth-3 cap (caught by Bus::write to emit system.runaway).
     if (causation_parent) {
-        e.causation_chain = { *causation_parent };
+        e.causation_chain = compute_child_chain(conn, *causation_parent);
     }
     const std::string causation_root =
         e.causation_chain.empty() ? std::string{} : e.causation_chain.front();
@@ -309,6 +314,7 @@ void apply_supersedes_atomic(
                 << "\"superseded_by\":" << json_string(new_stmt_id)
                 << "}";
         BusEvent ev = make_event(
+            conn,
             "statement.archived",
             match.matched_statement_id,         // primary_id = S_old
             match.matched_supersedes_root_id,   // aggregate_id = supersedes root
@@ -327,6 +333,7 @@ void apply_supersedes_atomic(
                 << "\"conflict_kind\":"    << json_string(to_string(match.kind))
                 << "}";
         BusEvent ev = make_event(
+            conn,
             "statement.superseded",
             new_stmt_id,                        // primary_id = S_new
             match.matched_supersedes_root_id,   // aggregate_id = supersedes root
@@ -358,6 +365,7 @@ AppendEvidenceOutcome Bus::append_evidence(
     if (std::holds_alternative<starling::evidence::ValidationNoStore>(outcome)) {
         const std::string sid_hash = source_identity_hash(input.source);
         BusEvent ev = make_event(
+            conn,
             "evidence.no_store_audit",
             sid_hash, sid_hash,
             input.tenant_id,
@@ -371,6 +379,7 @@ AppendEvidenceOutcome Bus::append_evidence(
     if (auto* hit = std::get_if<starling::evidence::ValidationIdempotentHit>(&outcome)) {
         const auto& existing = hit->existing;
         BusEvent ev = make_event(
+            conn,
             "evidence.idempotent_hit",
             existing.id, existing.id,
             input.tenant_id,
@@ -386,6 +395,7 @@ AppendEvidenceOutcome Bus::append_evidence(
     auto& proceed = std::get<starling::evidence::ValidationProceed>(outcome);
     auto engram = starling::evidence::EngramStore::put(input, proceed.resolved_policy, conn);
     BusEvent ev = make_event(
+        conn,
         "evidence.appended",
         engram.id, engram.id,
         input.tenant_id,
@@ -400,6 +410,47 @@ AppendEvidenceOutcome Bus::append_evidence(
 }
 
 StatementWriteOutcome Bus::write(
+    const starling::extractor::ExtractedStatement& stmt,
+    std::string_view evidence_engram_id,
+    std::string_view extraction_span_key,
+    std::optional<std::string> causation_parent_event_id) {
+
+    auto& conn = adapter_.connection();
+    try {
+        return write_impl(stmt, evidence_engram_id, extraction_span_key,
+                          causation_parent_event_id);
+    } catch (const CausationOverflow& ovf) {
+        // Spec 05_bus.md:274: "len(causation_chain) > 3 → 拒绝派生事件，
+        // emit system.runaway(chain_root, depth, source_event_id)".
+        // The TransactionGuard inside write_impl already rolled back the
+        // would-be derived write when the exception propagated. We now emit
+        // the system.runaway event in its own transaction so the storm is
+        // observable even though the derived write is rejected.
+        starling::persistence::TransactionGuard runaway_tx(conn);
+        std::ostringstream payload;
+        payload << "{"
+                << "\"chain_root\":"      << json_string(ovf.chain_root)      << ","
+                << "\"source_event_id\":" << json_string(ovf.source_event_id) << ","
+                << "\"depth\":"           << ovf.depth
+                << "}";
+        BusEvent runaway = make_event(
+            conn,
+            "system.runaway",
+            ovf.source_event_id,         // primary_id = the parent that triggered overflow
+            ovf.chain_root,              // aggregate_id = chain root (storm key)
+            stmt.holder_tenant_id,
+            payload.str(),
+            std::nullopt);               // runaway is itself a root event — no parent
+        OutboxWriter ow(conn);
+        ow.append(runaway);
+        runaway_tx.commit();
+        // Re-throw so callers (Python binding, tests) see the rejection.
+        throw std::runtime_error(
+            "Bus::write rejected: causation_chain depth > 3, system.runaway emitted");
+    }
+}
+
+StatementWriteOutcome Bus::write_impl(
     const starling::extractor::ExtractedStatement& stmt,
     std::string_view evidence_engram_id,
     std::string_view extraction_span_key,
@@ -498,7 +549,8 @@ StatementWriteOutcome Bus::write(
                 ev.primary_id   = new_stmt_id;
                 ev.aggregate_id = match->conflict_key_hex;
                 if (causation_parent_event_id) {
-                    ev.causation_chain = { *causation_parent_event_id };
+                    ev.causation_chain = compute_child_chain(
+                        conn, *causation_parent_event_id);
                 }
                 const std::string causation_root =
                     ev.causation_chain.empty() ? std::string{} : ev.causation_chain.front();

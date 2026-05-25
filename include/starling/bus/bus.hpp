@@ -59,6 +59,16 @@ public:
 
 private:
     starling::persistence::SqliteAdapter& adapter_;
+
+    // Implementation of Bus::write that may throw CausationOverflow. The
+    // public write() catches the overflow, rolls back via TransactionGuard,
+    // emits a system.runaway event in a fresh transaction, and re-throws as
+    // a runtime_error so callers see the rejection.
+    StatementWriteOutcome write_impl(
+        const starling::extractor::ExtractedStatement& stmt,
+        std::string_view evidence_engram_id,
+        std::string_view extraction_span_key,
+        std::optional<std::string> causation_parent_event_id);
 };
 
 }  // namespace starling::bus

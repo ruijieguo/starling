@@ -318,7 +318,6 @@ StatementWriteOutcome StatementWriter::write(
 
     // Build and append the bus_events row.
     const std::string canonical_key = std::string(extraction_span_key);
-    const std::string causation_root = causation_parent_event_id.value_or("");
     const std::string window_bucket  = compute_window_bucket(
         "statement.written", std::chrono::system_clock::now());
 
@@ -327,9 +326,13 @@ StatementWriteOutcome StatementWriter::write(
     ev.event_type       = "statement.written";
     ev.primary_id       = stmt_id;
     ev.aggregate_id     = stmt_id;
+    // 05_bus.md:273: accumulate parent chain + parent.event_id.
     if (causation_parent_event_id.has_value()) {
-        ev.causation_chain.push_back(*causation_parent_event_id);
+        ev.causation_chain = compute_child_chain(
+            conn_, *causation_parent_event_id);
     }
+    const std::string causation_root =
+        ev.causation_chain.empty() ? std::string{} : ev.causation_chain.front();
     ev.idempotency_key  = compute_idempotency_key(
         "statement.written", stmt_id, canonical_key, causation_root, window_bucket);
     ev.payload_json     = statement_written_payload(

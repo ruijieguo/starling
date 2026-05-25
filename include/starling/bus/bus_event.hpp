@@ -1,9 +1,12 @@
 #pragma once
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace starling::persistence { class Connection; }
 
 namespace starling::bus {
 
@@ -20,6 +23,32 @@ struct BusEvent {
     std::string created_at;        // ISO-8601 UTC
     std::string version = "v1";
 };
+
+// Thrown by apply_causation when the new event's would-be chain exceeds
+// docs/design/subsystems_design/05_bus.md §4 depth cap of 3. Carries enough
+// detail for the caller to emit a system.runaway event before re-throwing or
+// converting to a write rejection.
+struct CausationOverflow : std::runtime_error {
+    std::string chain_root;       // first entry of the parent chain (or parent_event_id when parent had empty chain)
+    std::string source_event_id;  // the parent event_id that triggered the would-be derived event
+    int         depth = 0;        // resulting chain length (always >3)
+    CausationOverflow(std::string root, std::string source, int d)
+        : std::runtime_error("causation_chain depth > 3"),
+          chain_root(std::move(root)),
+          source_event_id(std::move(source)),
+          depth(d) {}
+};
+
+// Compute the new event's causation_chain per 05_bus.md:273:
+//   N.causation_chain = parent.causation_chain + [parent.event_id]
+// when parent_event_id is non-empty; empty vector when there is no parent.
+//
+// Throws CausationOverflow when the resulting length would exceed 3. The
+// caller is expected to emit a system.runaway event and convert the throw
+// into a write rejection.
+std::vector<std::string> compute_child_chain(
+    starling::persistence::Connection& conn,
+    const std::string& parent_event_id);
 
 // idempotency_key = sha256_hex(
 //   event_type      ⊕ \x1f ⊕
@@ -48,6 +77,7 @@ std::string compute_idempotency_key(
 //   extraction_attempt.recorded  -> ""
 //   conflict_probe.flagged       -> ""
 //   system.delivery_failed       -> ""
+//   system.runaway               -> floor(now / 60s) (debounced; many overflows in a storm should coalesce)
 //   extraction.failed             -> floor(now / 60s)
 //   extraction.retry_scheduled    -> floor(now / 60s)
 //   extraction.dead_lettered      -> floor(now / 60s)
