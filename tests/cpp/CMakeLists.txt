@@ -74,6 +74,7 @@ add_executable(starling_tests
     test_conflict_key_unique.cpp
     test_conflict_key_backfill.cpp
     test_tom_engine_perspective.cpp
+    test_nesting_depth_writer.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

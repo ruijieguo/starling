@@ -5,6 +5,7 @@
 #include "starling/bus/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/statement_enums.hpp"
+#include "starling/tom/nesting_depth_writer.hpp"
 
 #include <chrono>
 #include <iomanip>
@@ -129,7 +130,8 @@ void insert_statement_row(
         std::string_view evidence_content_hash,
         schema::ReviewStatus effective_review_status,
         const std::string& derived_from_json,
-        int derived_depth) {
+        int derived_depth,
+        int nesting_depth) {
     sqlite3* db = conn.raw();
     const std::string ts = iso8601_utc(std::chrono::system_clock::now());
     const std::string spans = source_spans_json(s, evidence_engram_id);
@@ -148,6 +150,7 @@ void insert_statement_row(
         "  provenance, evidence_json, source_spans_json, perceived_by_json,"
         "  consolidation_state, review_status,"
         "  derived_from_json, derived_depth,"
+        "  nesting_depth,"
         "  created_at, updated_at"
         ") VALUES ("
         "  ?, ?, ?, ?,"
@@ -159,6 +162,7 @@ void insert_statement_row(
         "  ?, ?, ?, ?,"
         "  'volatile', ?,"
         "  ?, ?,"
+        "  ?,"
         "  ?, ?"
         ")",
         -1, &raw, nullptr) != SQLITE_OK) {
@@ -203,6 +207,7 @@ void insert_statement_row(
     bind_sv(h.get(), i++, schema::to_string(effective_review_status));
     bind_sv(h.get(), i++, derived_from_json);
     sqlite3_bind_int(h.get(), i++, derived_depth);
+    sqlite3_bind_int(h.get(), i++, nesting_depth);
     bind_sv(h.get(), i++, ts);  // created_at
     bind_sv(h.get(), i++, ts);  // updated_at
 
@@ -313,8 +318,12 @@ StatementWriteOutcome StatementWriter::write(
         derived_depth = max_parent_depth + 1;
     }
 
+    // Compute nesting_depth: 0 for non-statement objects; parent.nesting_depth+1
+    // for object_kind=="statement". Throws NestingDepthOverflow if result > 2.
+    const int nesting_depth = tom::nesting_depth_writer::compute_nesting_depth(conn_, s);
+
     insert_statement_row(conn_, stmt_id, s, evidence_engram_id, content_hash, effective,
-                         derived_from_json, derived_depth);
+                         derived_from_json, derived_depth, nesting_depth);
 
     // Build and append the bus_events row.
     const std::string canonical_key = std::string(extraction_span_key);

@@ -79,6 +79,7 @@ target_sources(starling_core PRIVATE
     src/cognizer/knowledge_frontier.cpp
     src/tom/tom_engine.cpp
     src/tom/common_ground.cpp
+    src/tom/nesting_depth_writer.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
