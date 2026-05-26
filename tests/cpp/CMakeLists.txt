@@ -71,6 +71,7 @@ add_executable(starling_tests
     test_cognizer_relations.cpp
     test_knowledge_frontier_record.cpp
     test_knowledge_frontier_visible.cpp
+    test_conflict_key_unique.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

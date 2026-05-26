@@ -151,10 +151,12 @@ void insert_statement_edge(
     std::string_view src_id,
     std::string_view dst_id,
     std::string_view tenant_id,
-    std::string_view edge_kind) {
+    std::string_view edge_kind,
+    std::optional<std::string> canonical_conflict_key = std::nullopt) {
     const char* sql =
-        "INSERT INTO statement_edges(id, tenant_id, src_id, dst_id, edge_kind, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)";
+        "INSERT INTO statement_edges"
+        "(id, tenant_id, src_id, dst_id, edge_kind, canonical_conflict_key, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge prepare");
@@ -166,9 +168,27 @@ void insert_statement_edge(
     detail::bind_sv(h.get(), 3, src_id);
     detail::bind_sv(h.get(), 4, dst_id);
     detail::bind_sv(h.get(), 5, edge_kind);
-    detail::bind_sv(h.get(), 6, now_iso);
-    if (sqlite3_step(h.get()) != SQLITE_DONE)
-        throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
+    if (canonical_conflict_key.has_value()) {
+        sqlite3_bind_text(h.get(), 6,
+                          canonical_conflict_key->c_str(), -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(h.get(), 6);
+    }
+    detail::bind_sv(h.get(), 7, now_iso);
+    const int rc = sqlite3_step(h.get());
+    if (rc == SQLITE_DONE) return;
+    if (rc == SQLITE_CONSTRAINT && canonical_conflict_key.has_value()) {
+        // UNIQUE partial index violation: a conflicts_with edge with this
+        // canonical_conflict_key already exists. Silently drop the duplicate
+        // and emit a WARN to stderr — per spec §8.4.
+        std::fprintf(stderr,
+            "[bus.conflict_key] WARN dedup hit on canonical_conflict_key=%s "
+            "(edge_kind=conflicts_with, tenant=%s); existing edge retained.\n",
+            canonical_conflict_key->c_str(),
+            std::string(tenant_id).c_str());
+        return;
+    }
+    throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
 }
 
 std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_id) {
@@ -275,7 +295,7 @@ void apply_supersedes_atomic(
     // Step 2: SUPERSEDES edge S_new -> S_old.
     insert_statement_edge(
         conn, new_stmt_id, match.matched_statement_id,
-        match.matched_tenant_id, "supersedes");
+        match.matched_tenant_id, "supersedes", std::nullopt);
 
     // Step 3: UPDATE S_old to archived. Bypasses replaying_reconsolidating
     // per §3.5 T7-P1 — the consolidated -> archived transition is direct.
@@ -532,7 +552,8 @@ StatementWriteOutcome Bus::write_impl(
             case ConflictKind::PartialOverlap: {
                 insert_statement_edge(
                     conn, new_stmt_id, match->matched_statement_id,
-                    effective.holder_tenant_id, "conflicts_with");
+                    effective.holder_tenant_id, "conflicts_with",
+                    match->conflict_key_hex);
 
                 // Build the belief.conflict event manually rather than via
                 // make_event() because debounce semantics require the
@@ -587,7 +608,8 @@ StatementWriteOutcome Bus::write_impl(
             case ConflictKind::Adjacent:
                 insert_statement_edge(
                     conn, new_stmt_id, match->matched_statement_id,
-                    effective.holder_tenant_id, "adjacent");
+                    effective.holder_tenant_id, "adjacent",
+                    match->conflict_key_hex);
                 break;
         }
     }

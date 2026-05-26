@@ -155,9 +155,12 @@ TEST(BusWriteConflict, BeliefConflictDebouncedWithinWindow) {
     // partial_overlap against s_old (both below theta clamps to partial); the
     // second S_new also classifies as partial_overlap against the first S_new
     // (same polarity, but both-below-theta clamps the Superseding path to
-    // partial_overlap as well). Both writes therefore land conflicts_with
-    // edges, while their belief.conflict events share canonical_conflict_key
-    // and collide on the 10s idempotency_key.
+    // partial_overlap as well). All pairs share the same canonical_conflict_key
+    // (same 7-tuple), so:
+    //   - First write: insert_statement_edge succeeds → 1 conflicts_with edge.
+    //   - Second write: insert_statement_edge deduped by partial UNIQUE index →
+    //     noop (WARN to stderr), no second edge row.
+    // belief.conflict events also debounce: only ONE survives the 10s window.
     bus.write(
         make_stmt("neg", 0.50, std::string("2026-06-01T00:00:00Z"),
                   std::string("2026-12-31T00:00:00Z")),
@@ -166,9 +169,8 @@ TEST(BusWriteConflict, BeliefConflictDebouncedWithinWindow) {
         make_stmt("neg", 0.50, std::string("2026-06-01T00:00:00Z"),
                   std::string("2026-12-31T00:00:00Z")),
         "engram-2", "span-2", std::nullopt);
-    // Two CONFLICTS_WITH edges (one per S_new), but only ONE belief.conflict
-    // event survives the debounce window.
-    EXPECT_EQ(2, count_rows(a->connection(),
+    // Only ONE conflicts_with edge (second write is deduped by UNIQUE index).
+    EXPECT_EQ(1, count_rows(a->connection(),
         "SELECT COUNT(*) FROM statement_edges WHERE edge_kind='conflicts_with'"));
     EXPECT_EQ(1, count_rows(a->connection(),
         "SELECT COUNT(*) FROM bus_events WHERE event_type='belief.conflict'"));
