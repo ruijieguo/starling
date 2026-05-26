@@ -168,12 +168,46 @@ void KnowledgeFrontier::record_explicit_negation(
         observed_at, "{}");
 }
 
-// visible_engrams_at lands in Task 9.
 std::unordered_set<std::string> KnowledgeFrontier::visible_engrams_at(
-    std::string_view /*tenant_id*/,
-    std::string_view /*cognizer_id*/,
-    std::string_view /*as_of_iso8601*/) const {
-    throw std::runtime_error("KnowledgeFrontier::visible_engrams_at: not implemented (lands in Task 9)");
+    std::string_view tenant_id,
+    std::string_view cognizer_id,
+    std::string_view as_of_iso8601) const {
+    // Spec §6.5: 五路并集 - explicit_not_told 减集
+    //   visible = presence_log ∪ explicit_told ∪ accessible_source ∪ membership
+    //             − explicit_not_told
+    auto& conn = adapter_.connection();
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    const char* sql =
+        "SELECT engram_id FROM cognizer_presence_log "
+        " WHERE tenant_id = ?1 AND cognizer_id = ?2 AND observed_at <= ?3 "
+        "UNION "
+        "SELECT source_engram_id FROM cognizer_frontier_facts "
+        " WHERE tenant_id = ?1 AND cognizer_id = ?2 "
+        "   AND fact_kind IN ('explicit_told','accessible_source','membership') "
+        "   AND asserted_at <= ?3 "
+        "   AND source_engram_id IS NOT NULL "
+        "EXCEPT "
+        "SELECT source_engram_id FROM cognizer_frontier_facts "
+        " WHERE tenant_id = ?1 AND cognizer_id = ?2 "
+        "   AND fact_kind = 'explicit_not_told' "
+        "   AND asserted_at <= ?3 "
+        "   AND source_engram_id IS NOT NULL";
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(db, "visible_engrams_at: prepare");
+    }
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, tenant_id);
+    bind_sv(h.get(), 2, cognizer_id);
+    bind_sv(h.get(), 3, as_of_iso8601);
+
+    std::unordered_set<std::string> out;
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        if (sqlite3_column_type(h.get(), 0) != SQLITE_NULL) {
+            out.insert(reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0)));
+        }
+    }
+    return out;
 }
 
 }  // namespace starling::cognizer
