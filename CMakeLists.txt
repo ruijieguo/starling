@@ -59,6 +59,7 @@ target_sources(starling_core PRIVATE
     src/bus/canonical_scope.cpp
     src/bus/conflict_key.cpp
     src/bus/conflict_probe.cpp
+    src/bus/conflict_key_backfill.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp

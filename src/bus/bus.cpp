@@ -1,5 +1,6 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
+#include "starling/bus/conflict_key_backfill.hpp"
 #include "starling/bus/conflict_probe.hpp"
 #include "starling/bus/normalized_interval.hpp"
 #include "starling/bus/outbox_writer.hpp"
@@ -615,6 +616,12 @@ StatementWriteOutcome Bus::write_impl(
     }
 
     tx.commit();
+
+    // Best-effort backfill: process one batch of pre-P2.a conflicts_with edges
+    // that lack canonical_conflict_key. Runs in its own SAVEPOINT inside
+    // tick_one_batch so failures here cannot affect the committed write above.
+    conflict_key_backfill::tick_one_batch(conn);
+
     return outcome;
 }
 
