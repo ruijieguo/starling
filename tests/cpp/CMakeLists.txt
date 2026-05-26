@@ -66,6 +66,7 @@ add_executable(starling_tests
     test_statement_writer_derived_from.cpp
     test_uuid5.cpp
     test_alias_normalizer.cpp
+    test_cognizer_types.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
