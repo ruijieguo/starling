@@ -73,6 +73,7 @@ add_executable(starling_tests
     test_knowledge_frontier_visible.cpp
     test_conflict_key_unique.cpp
     test_conflict_key_backfill.cpp
+    test_tom_engine_perspective.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
