@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <ctime>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -47,6 +49,76 @@ std::string json_array_of_strings(const std::vector<std::string>& items) {
     }
     oss << ']';
     return oss.str();
+}
+
+// ── Relation helpers ────────────────────────────────────────────────────────
+
+std::string random_hex_32() {
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    const std::uint64_t a = rng();
+    const std::uint64_t b = rng();
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(a),
+                  static_cast<unsigned long long>(b));
+    return std::string(buf, 32);
+}
+
+std::string fiske_weights_to_json(const std::unordered_map<FiskeMode, double>& w) {
+    std::ostringstream oss;
+    oss << '{';
+    bool first = true;
+    for (auto m : {FiskeMode::Communal, FiskeMode::Authority,
+                    FiskeMode::Equality, FiskeMode::Market}) {
+        auto it = w.find(m);
+        if (it == w.end()) continue;
+        if (!first) oss << ',';
+        oss << '"' << to_string(m) << "\":" << it->second;
+        first = false;
+    }
+    oss << '}';
+    return oss.str();
+}
+
+std::unordered_map<FiskeMode, double> parse_fiske_weights(std::string_view j) {
+    std::unordered_map<FiskeMode, double> out;
+    for (auto m : {FiskeMode::Communal, FiskeMode::Authority,
+                    FiskeMode::Equality, FiskeMode::Market}) {
+        const std::string key = std::string("\"") + std::string(to_string(m)) + "\":";
+        auto pos = j.find(key);
+        if (pos == std::string_view::npos) continue;
+        pos += key.size();
+        std::size_t end = pos;
+        while (end < j.size() && (j[end] != ',' && j[end] != '}')) ++end;
+        try {
+            out[m] = std::stod(std::string(j.substr(pos, end - pos)));
+        } catch (...) {}
+    }
+    return out;
+}
+
+std::string trust_map_to_json(const std::unordered_map<std::string, double>& t) {
+    std::ostringstream oss;
+    oss << '{';
+    bool first = true;
+    for (const auto& [k, v] : t) {
+        if (!first) oss << ',';
+        oss << '"';
+        for (char c : k) {
+            if (c == '"' || c == '\\') oss << '\\';
+            oss << c;
+        }
+        oss << "\":" << v;
+        first = false;
+    }
+    oss << '}';
+    return oss.str();
+}
+
+bool fiske_weights_valid(const std::unordered_map<FiskeMode, double>& w) {
+    double sum = 0.0;
+    for (const auto& [_, v] : w) sum += v;
+    return std::abs(sum - 1.0) <= 1e-6;
 }
 
 // Parse JSON array of strings — minimal, no nested escapes beyond \" and \\.
@@ -321,14 +393,167 @@ void CognizerHub::update_last_seen_at(
     // No-op if no rows affected — Hub is best-effort observer per spec §6.2.
 }
 
-// upsert_relation / relations_of implemented in Task 7.
-RelationEdge CognizerHub::upsert_relation(const RelationEdgeInput& /*req*/) {
-    throw std::runtime_error("CognizerHub::upsert_relation: not implemented (lands in Task 7)");
+// upsert_relation / relations_of — Task 7.
+RelationEdge CognizerHub::upsert_relation(const RelationEdgeInput& req) {
+    if (!fiske_weights_valid(req.fiske_weights)) {
+        throw FiskeWeightsInvalid();
+    }
+    if (req.affinity < 0.0 || req.affinity > 1.0) {
+        throw std::invalid_argument("RelationEdge.affinity must be in [0,1]");
+    }
+
+    auto& conn = adapter_.connection();
+    sqlite3* db = conn.raw();
+    const std::string now_iso = iso8601_utc(std::chrono::system_clock::now());
+
+    // ── Check for existing edge on (tenant, a, b, valid_from) ──
+    std::optional<std::string> existing_id;
+    {
+        sqlite3_stmt* raw = nullptr;
+        const char* sql =
+            "SELECT id FROM cognizer_relations "
+            " WHERE tenant_id = ?1 AND a_id = ?2 AND b_id = ?3 "
+            "   AND ((valid_from IS NULL AND ?4 IS NULL) OR valid_from = ?4)"
+            " LIMIT 1";
+        if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(db, "upsert_relation: prepare SELECT");
+        }
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, req.tenant_id);
+        bind_sv(h.get(), 2, req.a_id);
+        bind_sv(h.get(), 3, req.b_id);
+        if (req.valid_from) bind_sv(h.get(), 4, *req.valid_from);
+        else                sqlite3_bind_null(h.get(), 4);
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
+            existing_id = std::string(reinterpret_cast<const char*>(
+                sqlite3_column_text(h.get(), 0)));
+        }
+    }
+
+    const std::string id = existing_id.value_or(random_hex_32());
+    const std::string fiske_json = fiske_weights_to_json(req.fiske_weights);
+    const std::string trust_json = trust_map_to_json(req.trust);
+
+    if (existing_id.has_value()) {
+        sqlite3_stmt* raw = nullptr;
+        const char* sql =
+            "UPDATE cognizer_relations "
+            "   SET fiske_weights_json = ?1, affinity = ?2, trust_json = ?3, "
+            "       power_asymmetry = ?4, interaction_history_ref = ?5, "
+            "       valid_to = ?6, updated_at = ?7 "
+            " WHERE id = ?8";
+        if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(db, "upsert_relation: prepare UPDATE");
+        }
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, fiske_json);
+        sqlite3_bind_double(h.get(), 2, req.affinity);
+        bind_sv(h.get(), 3, trust_json);
+        sqlite3_bind_double(h.get(), 4, req.power_asymmetry);
+        if (req.interaction_history_ref) bind_sv(h.get(), 5, *req.interaction_history_ref);
+        else                              sqlite3_bind_null(h.get(), 5);
+        if (req.valid_to) bind_sv(h.get(), 6, *req.valid_to);
+        else              sqlite3_bind_null(h.get(), 6);
+        bind_sv(h.get(), 7, now_iso);
+        bind_sv(h.get(), 8, id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE) {
+            throw make_sqlite_error(db, "upsert_relation: UPDATE step");
+        }
+    } else {
+        sqlite3_stmt* raw = nullptr;
+        const char* sql =
+            "INSERT INTO cognizer_relations ("
+            "  id, tenant_id, a_id, b_id, fiske_weights_json, affinity, "
+            "  trust_json, power_asymmetry, interaction_history_ref, "
+            "  valid_from, valid_to, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(db, "upsert_relation: prepare INSERT");
+        }
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, id);
+        bind_sv(h.get(), 2, req.tenant_id);
+        bind_sv(h.get(), 3, req.a_id);
+        bind_sv(h.get(), 4, req.b_id);
+        bind_sv(h.get(), 5, fiske_json);
+        sqlite3_bind_double(h.get(), 6, req.affinity);
+        bind_sv(h.get(), 7, trust_json);
+        sqlite3_bind_double(h.get(), 8, req.power_asymmetry);
+        if (req.interaction_history_ref) bind_sv(h.get(), 9, *req.interaction_history_ref);
+        else                              sqlite3_bind_null(h.get(), 9);
+        if (req.valid_from) bind_sv(h.get(), 10, *req.valid_from);
+        else                sqlite3_bind_null(h.get(), 10);
+        if (req.valid_to)   bind_sv(h.get(), 11, *req.valid_to);
+        else                sqlite3_bind_null(h.get(), 11);
+        bind_sv(h.get(), 12, now_iso);
+        bind_sv(h.get(), 13, now_iso);
+        if (sqlite3_step(h.get()) != SQLITE_DONE) {
+            throw make_sqlite_error(db, "upsert_relation: INSERT step");
+        }
+    }
+
+    RelationEdge edge;
+    edge.id = id;
+    edge.tenant_id = req.tenant_id;
+    edge.a_id = req.a_id;
+    edge.b_id = req.b_id;
+    edge.fiske_weights = req.fiske_weights;
+    edge.affinity = req.affinity;
+    edge.trust = req.trust;
+    edge.power_asymmetry = req.power_asymmetry;
+    edge.interaction_history_ref = req.interaction_history_ref;
+    edge.valid_from = req.valid_from;
+    edge.valid_to = req.valid_to;
+    edge.created_at = now_iso;
+    edge.updated_at = now_iso;
+    return edge;
 }
 
 std::vector<RelationEdge> CognizerHub::relations_of(
-    std::string_view /*cognizer_id*/, std::string_view /*tenant_id*/) const {
-    throw std::runtime_error("CognizerHub::relations_of: not implemented (lands in Task 7)");
+    std::string_view cognizer_id, std::string_view tenant_id) const {
+    auto& conn = adapter_.connection();
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    const char* sql =
+        "SELECT id, a_id, b_id, fiske_weights_json, affinity, "
+        "       trust_json, power_asymmetry, interaction_history_ref, "
+        "       valid_from, valid_to, created_at, updated_at "
+        "  FROM cognizer_relations "
+        " WHERE tenant_id = ?1 AND a_id = ?2";
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(db, "relations_of: prepare");
+    }
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, tenant_id);
+    bind_sv(h.get(), 2, cognizer_id);
+
+    std::vector<RelationEdge> out;
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        RelationEdge e;
+        e.id              = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
+        e.tenant_id       = std::string(tenant_id);
+        e.a_id            = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));
+        e.b_id            = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 2));
+        e.fiske_weights   = parse_fiske_weights(
+            reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 3)));
+        e.affinity        = sqlite3_column_double(h.get(), 4);
+        // trust_json kept opaque for P2.a (consumers can re-parse if needed)
+        e.power_asymmetry = sqlite3_column_double(h.get(), 6);
+        if (sqlite3_column_type(h.get(), 7) != SQLITE_NULL) {
+            e.interaction_history_ref =
+                reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 7));
+        }
+        if (sqlite3_column_type(h.get(), 8) != SQLITE_NULL) {
+            e.valid_from = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 8));
+        }
+        if (sqlite3_column_type(h.get(), 9) != SQLITE_NULL) {
+            e.valid_to = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 9));
+        }
+        e.created_at = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 10));
+        e.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 11));
+        out.push_back(std::move(e));
+    }
+    return out;
 }
 
 }  // namespace starling::cognizer
