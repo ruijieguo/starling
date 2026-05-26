@@ -81,6 +81,35 @@ constexpr const char* kSelectSqlBase =
 constexpr const char* kPerspectivePredicate =
     "   AND holder_perspective = ?6 ";
 
+// P2.a: EXISTS subquery for KnowledgeFrontier visibility filter.
+// Filters out statements whose evidence engrams are not visible to
+// the holder at as_of. Parameters: ?1=tenant_id, ?2=holder_id, ?5=as_of.
+// Note: this uses a LIKE-based engram_id scan against evidence_json (same
+// idiom as any_evidence_erased above). The subquery computes the visible
+// set at query time from cognizer_presence_log + cognizer_frontier_facts.
+constexpr const char* kFrontierExistsPredicate =
+    "   AND EXISTS ( "
+    "         SELECT 1 "
+    "           FROM ( "
+    "             SELECT engram_id FROM cognizer_presence_log "
+    "              WHERE tenant_id=?1 AND cognizer_id=?2 "
+    "                AND observed_at <= ?5 "
+    "             UNION "
+    "             SELECT source_engram_id FROM cognizer_frontier_facts "
+    "              WHERE tenant_id=?1 AND cognizer_id=?2 "
+    "                AND fact_kind IN ('explicit_told','accessible_source','membership') "
+    "                AND asserted_at <= ?5 "
+    "                AND source_engram_id IS NOT NULL "
+    "             EXCEPT "
+    "             SELECT source_engram_id FROM cognizer_frontier_facts "
+    "              WHERE tenant_id=?1 AND cognizer_id=?2 "
+    "                AND fact_kind = 'explicit_not_told' "
+    "                AND asserted_at <= ?5 "
+    "                AND source_engram_id IS NOT NULL "
+    "           ) AS visible "
+    "          WHERE statements.evidence_json LIKE '%' || visible.engram_id || '%' "
+    "       ) ";
+
 // Returns true iff `evidence_json` references at least one engram whose
 // engrams.erased_at is non-NULL for the same tenant. Pulled out so the
 // caller can count erasures for the receipt.
@@ -154,9 +183,12 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     // holder_scope predicates. Belt-and-suspenders on top of the hardcoded
     // kSelectSqlBase — if anyone later changes the constants in a way that
     // removes either guard, this throws before the query runs.
-    const std::string final_sql = params.holder_perspective.empty()
+    std::string final_sql = params.holder_perspective.empty()
         ? std::string(kSelectSqlBase)
         : std::string(kSelectSqlBase) + kPerspectivePredicate;
+    if (params.apply_frontier_filter) {
+        final_sql += kFrontierExistsPredicate;
+    }
     if (!adapter_.check_final_query(final_sql)) {
         throw FinalQueryAssertionError(
             "basic_retrieve: final SQL missing tenant_id or holder_scope guard");
@@ -170,6 +202,8 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     // this list against the SQL to confirm what was actually applied.
     // holder_perspective is always recorded ("any" when unconstrained) per
     // 13_retrieval.md:291 — P1-required entry, never optional.
+    // P2.a adds frontier_applied + frontier_masked_count (always present;
+    // frontier_masked_count is 0 when apply_frontier_filter==false).
     result.receipt.filters_applied = {
         {"tenant_id",             params.tenant_id},
         {"holder_id",             params.holder_id},
@@ -183,10 +217,54 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
         {"review_status_exclude", "rejected|pending_review"},
         {"as_of",                 params.as_of_iso8601},
         {"evidence_erased",       "exclude"},
+        {"frontier_applied",      params.apply_frontier_filter ? "true" : "false"},
+        // frontier_masked_count placeholder — updated after the query runs.
+        {"frontier_masked_count", "0"},
     };
 
     auto& conn = adapter_.connection();
     sqlite3* db = conn.raw();
+
+    // P2.a: When apply_frontier_filter is true, compute the pre-filter count
+    // (same query but WITHOUT the frontier EXISTS predicate) so we can derive
+    // frontier_masked_count = pre_filter_count - post_filter_count.
+    std::int64_t pre_frontier_count = 0;
+    if (params.apply_frontier_filter) {
+        // Build the no-frontier SQL (base + optional perspective, no EXISTS).
+        const std::string no_frontier_sql =
+            params.holder_perspective.empty()
+                ? std::string(kSelectSqlBase)
+                : std::string(kSelectSqlBase) + kPerspectivePredicate;
+        // Wrap it as a COUNT(*) query.
+        const std::string count_sql =
+            "SELECT COUNT(*) FROM (" + no_frontier_sql + ") AS _sub";
+        sqlite3_stmt* cnt_raw = nullptr;
+        if (sqlite3_prepare_v2(db, count_sql.c_str(), -1, &cnt_raw, nullptr)
+                != SQLITE_OK) {
+            throw std::runtime_error(
+                std::string("basic_retrieve pre-frontier count prepare failed: ")
+                + sqlite3_errmsg(db));
+        }
+        starling::persistence::StmtHandle cnt_h{cnt_raw};
+        sqlite3_bind_text(cnt_raw, 1, params.tenant_id.c_str(),     -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(cnt_raw, 2, params.holder_id.c_str(),     -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(cnt_raw, 3, params.subject_id.c_str(),    -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(cnt_raw, 4, params.predicate.c_str(),     -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(cnt_raw, 5, params.as_of_iso8601.c_str(), -1, SQLITE_TRANSIENT);
+        if (!params.holder_perspective.empty()) {
+            sqlite3_bind_text(cnt_raw, 6, params.holder_perspective.c_str(),
+                              -1, SQLITE_TRANSIENT);
+        }
+        const int crc = sqlite3_step(cnt_raw);
+        if (crc == SQLITE_ROW) {
+            pre_frontier_count = sqlite3_column_int64(cnt_raw, 0);
+        } else if (crc != SQLITE_DONE) {
+            throw std::runtime_error(
+                std::string("basic_retrieve pre-frontier count step failed: ")
+                + sqlite3_errmsg(db));
+        }
+    }
+
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, final_sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         throw std::runtime_error(
@@ -259,6 +337,24 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
     result.receipt.sufficiency_status =
         result.rows.empty() ? Sufficiency::MISSING_INFO
                             : Sufficiency::SUFFICIENT;
+
+    // P2.a: compute frontier_masked_count = pre_filter rows - post_filter rows.
+    // pre_frontier_count was computed above (0 when apply_frontier_filter==false).
+    // Post-filter row count = fetched (after evidence-erasure drops) + evidence
+    // erasure drops. We compare pre_frontier_count against fetched to get the
+    // count of rows the frontier filter removed.
+    if (params.apply_frontier_filter) {
+        const std::int64_t post_count = result.receipt.candidate_counts.fetched;
+        result.receipt.frontier_masked_count =
+            pre_frontier_count > post_count ? pre_frontier_count - post_count : 0;
+        // Back-fill the placeholder in filters_applied (index 11).
+        for (auto& fa : result.receipt.filters_applied) {
+            if (fa.name == "frontier_masked_count") {
+                fa.value = std::to_string(result.receipt.frontier_masked_count);
+                break;
+            }
+        }
+    }
 
     // ---- fire-and-forget recalled emit ----
     // Per 13_retrieval.md §"statement.recalled emit 契约": this is NOT in the

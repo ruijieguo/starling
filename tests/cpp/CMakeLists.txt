@@ -61,6 +61,7 @@ add_executable(starling_tests
     test_basic_retriever_filter_predicates.cpp
     test_basic_retriever_multi_holder_reject.cpp
     test_basic_retriever_recalled_emit.cpp
+    test_basic_retriever_frontier_filter.cpp
     test_mark_evidence_erased.cpp
     test_openai_adapter.cpp
     test_statement_writer_derived_from.cpp

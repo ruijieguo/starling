@@ -518,6 +518,7 @@ PYBIND11_MODULE(_core, m) {
         .def_readonly("filters_applied",       &starling::retrieval::RetrievalReceipt::filters_applied)
         .def_readonly("candidate_counts",      &starling::retrieval::RetrievalReceipt::candidate_counts)
         .def_readonly("evidence_erased_count", &starling::retrieval::RetrievalReceipt::evidence_erased_count)
+        .def_readonly("frontier_masked_count", &starling::retrieval::RetrievalReceipt::frontier_masked_count)
         .def_readonly("sufficiency_status",    &starling::retrieval::RetrievalReceipt::sufficiency_status);
 
     py::class_<starling::retrieval::StatementRow>(m, "StatementRow")
@@ -543,15 +544,16 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())
-        .def_readwrite("tenant_id",          &starling::retrieval::BasicRetrieverParams::tenant_id)
-        .def_readwrite("holder_id",          &starling::retrieval::BasicRetrieverParams::holder_id)
-        .def_readwrite("holder_perspective", &starling::retrieval::BasicRetrieverParams::holder_perspective)
-        .def_readwrite("intent",             &starling::retrieval::BasicRetrieverParams::intent)
-        .def_readwrite("subject_id",         &starling::retrieval::BasicRetrieverParams::subject_id)
-        .def_readwrite("predicate",          &starling::retrieval::BasicRetrieverParams::predicate)
-        .def_readwrite("as_of_iso8601",      &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
-        .def_readwrite("trace_id",           &starling::retrieval::BasicRetrieverParams::trace_id)
-        .def_readwrite("query_id",           &starling::retrieval::BasicRetrieverParams::query_id);
+        .def_readwrite("tenant_id",              &starling::retrieval::BasicRetrieverParams::tenant_id)
+        .def_readwrite("holder_id",              &starling::retrieval::BasicRetrieverParams::holder_id)
+        .def_readwrite("holder_perspective",     &starling::retrieval::BasicRetrieverParams::holder_perspective)
+        .def_readwrite("intent",                 &starling::retrieval::BasicRetrieverParams::intent)
+        .def_readwrite("subject_id",             &starling::retrieval::BasicRetrieverParams::subject_id)
+        .def_readwrite("predicate",              &starling::retrieval::BasicRetrieverParams::predicate)
+        .def_readwrite("as_of_iso8601",          &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
+        .def_readwrite("trace_id",               &starling::retrieval::BasicRetrieverParams::trace_id)
+        .def_readwrite("query_id",               &starling::retrieval::BasicRetrieverParams::query_id)
+        .def_readwrite("apply_frontier_filter",  &starling::retrieval::BasicRetrieverParams::apply_frontier_filter);
 
     py::class_<starling::retrieval::BasicRetrieveResult>(m, "BasicRetrieveResult")
         .def_readonly("rows",    &starling::retrieval::BasicRetrieveResult::rows)

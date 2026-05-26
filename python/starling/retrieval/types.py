@@ -32,6 +32,7 @@ class RetrievalReceipt:
     filters_applied: List[FilterApplied]
     candidate_counts: CandidateCounts
     evidence_erased_count: int
+    frontier_masked_count: int  # P2.a: rows filtered by apply_frontier_filter
     sufficiency_status: str  # SUFFICIENT | MISSING_INFO | NEEDS_RAW | ABSTAINED
 
 
