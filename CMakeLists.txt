@@ -86,6 +86,8 @@ target_sources(starling_core PRIVATE
     src/tom/mentalizing_know.cpp
     src/tom/mentalizing_misalign.cpp
     src/tom/mentalizing_shared.cpp
+    src/tom/belief_tracker.cpp
+    src/tom/belief_tracker_handlers.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3

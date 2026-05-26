@@ -1,6 +1,7 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/conflict_key_backfill.hpp"
+#include "starling/tom/belief_tracker.hpp"
 #include "starling/bus/conflict_probe.hpp"
 #include "starling/bus/normalized_interval.hpp"
 #include "starling/bus/outbox_writer.hpp"
@@ -621,6 +622,10 @@ StatementWriteOutcome Bus::write_impl(
     // that lack canonical_conflict_key. Runs in its own SAVEPOINT inside
     // tick_one_batch so failures here cannot affect the committed write above.
     conflict_key_backfill::tick_one_batch(conn);
+
+    // Best-effort BeliefTracker tick -- same position as conflict_key_backfill,
+    // failures don't propagate.
+    try { starling::tom::belief_tracker::tick_one_batch(adapter_); } catch (...) {}
 
     return outcome;
 }

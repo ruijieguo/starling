@@ -78,6 +78,7 @@ add_executable(starling_tests
     test_rate_limiter_tom.cpp
     test_depth_estimator_cache.cpp
     test_mentalizing.cpp
+    test_belief_tracker.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
