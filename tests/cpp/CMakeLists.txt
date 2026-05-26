@@ -69,6 +69,7 @@ add_executable(starling_tests
     test_cognizer_types.cpp
     test_cognizer_hub_register.cpp
     test_cognizer_relations.cpp
+    test_knowledge_frontier_record.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

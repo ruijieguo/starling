@@ -75,6 +75,7 @@ target_sources(starling_core PRIVATE
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
     src/cognizer/cognizer_hub.cpp
+    src/cognizer/knowledge_frontier.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
