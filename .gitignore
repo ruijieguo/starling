@@ -14,3 +14,7 @@ node_modules/
 venv/
 .pytest_cache/
 compile_commands.json
+
+# ToMBench / FANToM corpus directories — fetched separately, not redistributed
+tests/data/eval_tom_bench/
+tests/data/eval_fantom/
