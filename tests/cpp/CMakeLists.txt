@@ -76,6 +76,7 @@ add_executable(starling_tests
     test_tom_engine_perspective.cpp
     test_nesting_depth_writer.cpp
     test_rate_limiter_tom.cpp
+    test_depth_estimator_cache.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
