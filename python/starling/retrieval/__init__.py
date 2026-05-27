@@ -43,6 +43,7 @@ def basic_retrieve(
     as_of: datetime,
     trace_id: Optional[str] = None,
     query_id: Optional[str] = None,
+    apply_frontier_filter: bool = False,
 ) -> BasicRetrieveResult:
     """The P1 retrieval entrypoint.
 
@@ -53,10 +54,13 @@ def basic_retrieve(
       - evidence not crypto-erased
       - valid_from <= as_of < valid_to
       - holder_perspective = <given> when supplied; otherwise unconstrained
+      - (P2.a) when apply_frontier_filter=True: only statements whose
+        evidence engrams are visible to holder per KnowledgeFrontier
 
     The receipt's `filters_applied` always records `holder_perspective`
     ("any" when unconstrained, the bound value otherwise) per
-    13_retrieval.md:291.
+    13_retrieval.md:291.  Also records `frontier_applied` and
+    `frontier_masked_count` (added in P2.a; always present).
 
     Multi-holder calls raise ValueError; intent other than FACT_LOOKUP raises
     ValueError. See 13_retrieval.md §"P1 basic_retrieve 闭环".
@@ -85,15 +89,16 @@ def basic_retrieve(
     as_of_iso = as_of_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params = _core.BasicRetrieverParams()
-    params.tenant_id          = tenant_id
-    params.holder_id          = holder
-    params.holder_perspective = holder_perspective or ""
-    params.intent             = _core.QueryIntent.FACT_LOOKUP
-    params.subject_id         = subject
-    params.predicate          = predicate
-    params.as_of_iso8601      = as_of_iso
-    params.trace_id           = trace_id or str(uuid.uuid4())
-    params.query_id           = query_id or str(uuid.uuid4())
+    params.tenant_id              = tenant_id
+    params.holder_id              = holder
+    params.holder_perspective     = holder_perspective or ""
+    params.intent                 = _core.QueryIntent.FACT_LOOKUP
+    params.subject_id             = subject
+    params.predicate              = predicate
+    params.as_of_iso8601          = as_of_iso
+    params.trace_id               = trace_id or str(uuid.uuid4())
+    params.query_id               = query_id or str(uuid.uuid4())
+    params.apply_frontier_filter  = apply_frontier_filter
 
     r = _core.BasicRetriever(adapter)
     raw = r.run(params)
@@ -113,6 +118,7 @@ def basic_retrieve(
                           for f in raw.receipt.filters_applied],
         candidate_counts=counts,
         evidence_erased_count=raw.receipt.evidence_erased_count,
+        frontier_masked_count=raw.receipt.frontier_masked_count,
         sufficiency_status=_SUFFICIENCY_NAME[raw.receipt.sufficiency_status],
     )
     rows = [StatementRow(

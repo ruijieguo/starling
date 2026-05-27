@@ -61,9 +61,25 @@ add_executable(starling_tests
     test_basic_retriever_filter_predicates.cpp
     test_basic_retriever_multi_holder_reject.cpp
     test_basic_retriever_recalled_emit.cpp
+    test_basic_retriever_frontier_filter.cpp
     test_mark_evidence_erased.cpp
     test_openai_adapter.cpp
     test_statement_writer_derived_from.cpp
+    test_uuid5.cpp
+    test_alias_normalizer.cpp
+    test_cognizer_types.cpp
+    test_cognizer_hub_register.cpp
+    test_cognizer_relations.cpp
+    test_knowledge_frontier_record.cpp
+    test_knowledge_frontier_visible.cpp
+    test_conflict_key_unique.cpp
+    test_conflict_key_backfill.cpp
+    test_tom_engine_perspective.cpp
+    test_nesting_depth_writer.cpp
+    test_rate_limiter_tom.cpp
+    test_depth_estimator_cache.cpp
+    test_mentalizing.cpp
+    test_belief_tracker.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

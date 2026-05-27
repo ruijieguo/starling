@@ -38,6 +38,9 @@ struct RetrievalReceipt {
     } candidate_counts;
 
     std::int64_t evidence_erased_count{};
+    // P2.a: count of rows filtered out by apply_frontier_filter. Zero when
+    // apply_frontier_filter == false.
+    std::int64_t frontier_masked_count{};
     Sufficiency  sufficiency_status{Sufficiency::ABSTAINED};
 };
 

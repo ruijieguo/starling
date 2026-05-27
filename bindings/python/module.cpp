@@ -24,7 +24,15 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/cognizer/cognizer.hpp"
+#include "starling/cognizer/cognizer_hub.hpp"
+#include "starling/cognizer/knowledge_frontier.hpp"
 #include "starling/evidence/engram.hpp"
+#include "starling/tom/belief_tracker.hpp"
+#include "starling/tom/common_ground.hpp"
+#include "starling/tom/mentalizing.hpp"
+#include "starling/tom/nesting_depth_writer.hpp"
+#include "starling/tom/tom_engine.hpp"
 #include "starling/evidence/ingest_policy_resolver.hpp"
 #include "starling/extractor/extractor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
@@ -510,6 +518,7 @@ PYBIND11_MODULE(_core, m) {
         .def_readonly("filters_applied",       &starling::retrieval::RetrievalReceipt::filters_applied)
         .def_readonly("candidate_counts",      &starling::retrieval::RetrievalReceipt::candidate_counts)
         .def_readonly("evidence_erased_count", &starling::retrieval::RetrievalReceipt::evidence_erased_count)
+        .def_readonly("frontier_masked_count", &starling::retrieval::RetrievalReceipt::frontier_masked_count)
         .def_readonly("sufficiency_status",    &starling::retrieval::RetrievalReceipt::sufficiency_status);
 
     py::class_<starling::retrieval::StatementRow>(m, "StatementRow")
@@ -535,15 +544,16 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())
-        .def_readwrite("tenant_id",          &starling::retrieval::BasicRetrieverParams::tenant_id)
-        .def_readwrite("holder_id",          &starling::retrieval::BasicRetrieverParams::holder_id)
-        .def_readwrite("holder_perspective", &starling::retrieval::BasicRetrieverParams::holder_perspective)
-        .def_readwrite("intent",             &starling::retrieval::BasicRetrieverParams::intent)
-        .def_readwrite("subject_id",         &starling::retrieval::BasicRetrieverParams::subject_id)
-        .def_readwrite("predicate",          &starling::retrieval::BasicRetrieverParams::predicate)
-        .def_readwrite("as_of_iso8601",      &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
-        .def_readwrite("trace_id",           &starling::retrieval::BasicRetrieverParams::trace_id)
-        .def_readwrite("query_id",           &starling::retrieval::BasicRetrieverParams::query_id);
+        .def_readwrite("tenant_id",              &starling::retrieval::BasicRetrieverParams::tenant_id)
+        .def_readwrite("holder_id",              &starling::retrieval::BasicRetrieverParams::holder_id)
+        .def_readwrite("holder_perspective",     &starling::retrieval::BasicRetrieverParams::holder_perspective)
+        .def_readwrite("intent",                 &starling::retrieval::BasicRetrieverParams::intent)
+        .def_readwrite("subject_id",             &starling::retrieval::BasicRetrieverParams::subject_id)
+        .def_readwrite("predicate",              &starling::retrieval::BasicRetrieverParams::predicate)
+        .def_readwrite("as_of_iso8601",          &starling::retrieval::BasicRetrieverParams::as_of_iso8601)
+        .def_readwrite("trace_id",               &starling::retrieval::BasicRetrieverParams::trace_id)
+        .def_readwrite("query_id",               &starling::retrieval::BasicRetrieverParams::query_id)
+        .def_readwrite("apply_frontier_filter",  &starling::retrieval::BasicRetrieverParams::apply_frontier_filter);
 
     py::class_<starling::retrieval::BasicRetrieveResult>(m, "BasicRetrieveResult")
         .def_readonly("rows",    &starling::retrieval::BasicRetrieveResult::rows)
@@ -733,4 +743,377 @@ PYBIND11_MODULE(_core, m) {
              py::arg("holder_id"),
              py::arg("holder_tenant_id"),
              py::arg("existing_ref_map"));
+
+    // ── 08_cognizer ────────────────────────────────────────────────
+
+    py::enum_<starling::cognizer::CognizerKind>(m, "CognizerKind")
+        .value("Self",     starling::cognizer::CognizerKind::Self)
+        .value("Human",    starling::cognizer::CognizerKind::Human)
+        .value("Agent",    starling::cognizer::CognizerKind::Agent)
+        .value("Group",    starling::cognizer::CognizerKind::Group)
+        .value("Role",     starling::cognizer::CognizerKind::Role)
+        .value("External", starling::cognizer::CognizerKind::External);
+
+    py::enum_<starling::cognizer::FiskeMode>(m, "FiskeMode")
+        .value("Communal",  starling::cognizer::FiskeMode::Communal)
+        .value("Authority", starling::cognizer::FiskeMode::Authority)
+        .value("Equality",  starling::cognizer::FiskeMode::Equality)
+        .value("Market",    starling::cognizer::FiskeMode::Market);
+
+    py::class_<starling::cognizer::Cognizer>(m, "Cognizer")
+        .def_readonly("id",              &starling::cognizer::Cognizer::id)
+        .def_readonly("tenant_id",       &starling::cognizer::Cognizer::tenant_id)
+        .def_readonly("kind",            &starling::cognizer::Cognizer::kind)
+        .def_readonly("canonical_name",  &starling::cognizer::Cognizer::canonical_name)
+        .def_readonly("external_id",     &starling::cognizer::Cognizer::external_id)
+        .def_readonly("aliases",         &starling::cognizer::Cognizer::aliases)
+        .def_readonly("created_at",      &starling::cognizer::Cognizer::created_at)
+        .def_readonly("last_seen_at",    &starling::cognizer::Cognizer::last_seen_at);
+
+    py::class_<starling::cognizer::RelationEdge>(m, "RelationEdge")
+        .def_readonly("id",               &starling::cognizer::RelationEdge::id)
+        .def_readonly("tenant_id",        &starling::cognizer::RelationEdge::tenant_id)
+        .def_readonly("a_id",             &starling::cognizer::RelationEdge::a_id)
+        .def_readonly("b_id",             &starling::cognizer::RelationEdge::b_id)
+        .def_readonly("affinity",         &starling::cognizer::RelationEdge::affinity)
+        .def_readonly("power_asymmetry",  &starling::cognizer::RelationEdge::power_asymmetry)
+        .def_readonly("created_at",       &starling::cognizer::RelationEdge::created_at)
+        .def_readonly("updated_at",       &starling::cognizer::RelationEdge::updated_at);
+
+    py::class_<starling::cognizer::CognizerHub>(m, "CognizerHub")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("register_cognizer",
+             [](starling::cognizer::CognizerHub& hub,
+                const std::string& kind_str,
+                const std::string& external_id,
+                const std::string& canonical_name,
+                const std::string& tenant_id,
+                const std::vector<std::string>& aliases,
+                bool tenant_explicitly_set) {
+                 starling::cognizer::CognizerRegistration req;
+                 req.external_id = external_id;
+                 req.canonical_name = canonical_name;
+                 req.tenant_id = tenant_id;
+                 req.aliases = aliases;
+                 req.tenant_explicitly_set = tenant_explicitly_set;
+                 if      (kind_str == "self")     req.kind = starling::cognizer::CognizerKind::Self;
+                 else if (kind_str == "human")    req.kind = starling::cognizer::CognizerKind::Human;
+                 else if (kind_str == "agent")    req.kind = starling::cognizer::CognizerKind::Agent;
+                 else if (kind_str == "group")    req.kind = starling::cognizer::CognizerKind::Group;
+                 else if (kind_str == "role")     req.kind = starling::cognizer::CognizerKind::Role;
+                 else if (kind_str == "external") req.kind = starling::cognizer::CognizerKind::External;
+                 else throw py::value_error("unknown kind: " + kind_str);
+                 return hub.register_cognizer(req);
+             },
+             py::arg("kind"), py::arg("external_id"), py::arg("canonical_name"),
+             py::arg("tenant_id") = "default",
+             py::arg("aliases") = std::vector<std::string>{},
+             py::arg("tenant_explicitly_set") = false)
+        .def("lookup_by_alias",
+             [](const starling::cognizer::CognizerHub& hub,
+                const std::string& tenant_id,
+                const std::string& alias) -> py::object {
+                 auto r = hub.lookup_by_alias(tenant_id, alias);
+                 if (!r) return py::none();
+                 return py::str(*r);
+             },
+             py::arg("tenant_id"), py::arg("alias"))
+        .def("get",
+             [](const starling::cognizer::CognizerHub& hub,
+                const std::string& id,
+                const std::string& tenant_id) -> py::object {
+                 auto r = hub.get(id, tenant_id);
+                 if (!r) return py::none();
+                 return py::cast(*r);
+             },
+             py::arg("id"), py::arg("tenant_id") = "default")
+        .def("update_last_seen_at",
+             [](starling::cognizer::CognizerHub& hub,
+                const std::string& id,
+                const std::string& tenant_id,
+                const std::string& at_iso8601) {
+                 hub.update_last_seen_at(id, tenant_id, at_iso8601);
+             },
+             py::arg("id"), py::arg("tenant_id"), py::arg("at"))
+        .def("upsert_relation",
+             [](starling::cognizer::CognizerHub& hub,
+                const std::string& a_id, const std::string& b_id,
+                const std::string& tenant_id,
+                const std::map<std::string, double>& fiske_map,
+                double affinity, double power_asymmetry) {
+                 starling::cognizer::RelationEdgeInput req;
+                 req.a_id = a_id;
+                 req.b_id = b_id;
+                 req.tenant_id = tenant_id;
+                 req.affinity = affinity;
+                 req.power_asymmetry = power_asymmetry;
+                 for (auto& [k, v] : fiske_map) {
+                     if      (k == "communal")  req.fiske_weights[starling::cognizer::FiskeMode::Communal]  = v;
+                     else if (k == "authority") req.fiske_weights[starling::cognizer::FiskeMode::Authority] = v;
+                     else if (k == "equality")  req.fiske_weights[starling::cognizer::FiskeMode::Equality]  = v;
+                     else if (k == "market")    req.fiske_weights[starling::cognizer::FiskeMode::Market]    = v;
+                 }
+                 return hub.upsert_relation(req);
+             },
+             py::arg("a_id"), py::arg("b_id"),
+             py::arg("tenant_id") = "default",
+             py::arg("fiske_weights") = std::map<std::string, double>{},
+             py::arg("affinity") = 0.5,
+             py::arg("power_asymmetry") = 0.0)
+        .def("relations_of",
+             &starling::cognizer::CognizerHub::relations_of,
+             py::arg("cognizer_id"), py::arg("tenant_id") = "default");
+
+    py::class_<starling::cognizer::KnowledgeFrontier>(m, "KnowledgeFrontier")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("record_presence_from_statement",
+             [](starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::vector<std::string>& perceived_by,
+                const std::string& engram_id,
+                const std::string& observed_at,
+                starling::persistence::Connection& conn) {
+                 f.record_presence_from_statement(tenant_id, perceived_by,
+                                                   engram_id, observed_at, conn);
+             },
+             py::arg("tenant_id"), py::arg("perceived_by"),
+             py::arg("engram_id"), py::arg("observed_at"), py::arg("conn"))
+        .def("record_explicit_told",
+             [](starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::vector<std::string>& perceived_by,
+                const std::string& statement_id,
+                const std::string& source_engram_id,
+                const std::string& observed_at,
+                starling::persistence::Connection& conn) {
+                 f.record_explicit_told(tenant_id, perceived_by, statement_id,
+                                        source_engram_id, observed_at, conn);
+             },
+             py::arg("tenant_id"), py::arg("perceived_by"),
+             py::arg("statement_id"), py::arg("source_engram_id"),
+             py::arg("observed_at"), py::arg("conn"))
+        .def("record_accessible_source",
+             [](starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::string& cognizer_id,
+                const std::string& adapter_name,
+                const std::string& source_engram_id,
+                const std::string& observed_at,
+                starling::persistence::Connection& conn) {
+                 f.record_accessible_source(tenant_id, cognizer_id, adapter_name,
+                                             source_engram_id, observed_at, conn);
+             },
+             py::arg("tenant_id"), py::arg("cognizer_id"),
+             py::arg("adapter_name"), py::arg("source_engram_id"),
+             py::arg("observed_at"), py::arg("conn"))
+        .def("record_group_membership",
+             [](starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::string& cognizer_id,
+                const std::string& group_id,
+                const std::string& at_iso8601,
+                starling::persistence::Connection& conn) {
+                 f.record_group_membership(tenant_id, cognizer_id, group_id,
+                                            at_iso8601, conn);
+             },
+             py::arg("tenant_id"), py::arg("cognizer_id"),
+             py::arg("group_id"), py::arg("at"), py::arg("conn"))
+        .def("record_explicit_negation",
+             [](starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::string& cognizer_id,
+                const std::string& referenced_statement_id,
+                const std::string& source_engram_id,
+                const std::string& observed_at,
+                starling::persistence::Connection& conn) {
+                 f.record_explicit_negation(tenant_id, cognizer_id,
+                                             referenced_statement_id,
+                                             source_engram_id, observed_at, conn);
+             },
+             py::arg("tenant_id"), py::arg("cognizer_id"),
+             py::arg("referenced_statement_id"), py::arg("source_engram_id"),
+             py::arg("observed_at"), py::arg("conn"))
+        .def("visible_engrams_at",
+             [](const starling::cognizer::KnowledgeFrontier& f,
+                const std::string& tenant_id,
+                const std::string& cognizer_id,
+                const std::string& as_of) {
+                 auto s = f.visible_engrams_at(tenant_id, cognizer_id, as_of);
+                 return std::vector<std::string>(s.begin(), s.end());
+             },
+             py::arg("tenant_id"), py::arg("cognizer_id"), py::arg("as_of"));
+
+    // Error types (§6.7)
+    py::register_exception<starling::cognizer::AliasCollision>(
+        m, "AliasCollision", PyExc_RuntimeError);
+    py::register_exception<starling::cognizer::FiskeWeightsInvalid>(
+        m, "FiskeWeightsInvalid", PyExc_ValueError);
+    py::register_exception<starling::cognizer::GroupTenantImplicit>(
+        m, "GroupTenantImplicit", PyExc_ValueError);
+    py::register_exception<starling::cognizer::CognizerNotFound>(
+        m, "CognizerNotFound", PyExc_KeyError);
+
+    // ── 09_tom ─────────────────────────────────────────────────────────────
+
+    // FactKey — read-write (builders need to set fields)
+    py::class_<starling::tom::mentalizing::FactKey>(m, "FactKey")
+        .def(py::init<>())
+        .def(py::init([](std::string subject_kind,
+                         std::string subject_id,
+                         std::string predicate,
+                         std::string canonical_object_hash) {
+            return starling::tom::mentalizing::FactKey{
+                std::move(subject_kind),
+                std::move(subject_id),
+                std::move(predicate),
+                std::move(canonical_object_hash),
+            };
+        }),
+        py::arg("subject_kind") = "",
+        py::arg("subject_id") = "",
+        py::arg("predicate") = "",
+        py::arg("canonical_object_hash") = "")
+        .def_readwrite("subject_kind",           &starling::tom::mentalizing::FactKey::subject_kind)
+        .def_readwrite("subject_id",             &starling::tom::mentalizing::FactKey::subject_id)
+        .def_readwrite("predicate",              &starling::tom::mentalizing::FactKey::predicate)
+        .def_readwrite("canonical_object_hash",  &starling::tom::mentalizing::FactKey::canonical_object_hash);
+
+    // KnowsResult enum
+    py::enum_<starling::tom::mentalizing::KnowsResult>(m, "KnowsResult")
+        .value("FullKnowledge", starling::tom::mentalizing::KnowsResult::FullKnowledge)
+        .value("NotKnown",      starling::tom::mentalizing::KnowsResult::NotKnown)
+        .value("Unknowable",    starling::tom::mentalizing::KnowsResult::Unknowable);
+
+    // SharedFact — read-only
+    py::class_<starling::tom::mentalizing::SharedFact>(m, "SharedFact")
+        .def_readonly("subject_kind",           &starling::tom::mentalizing::SharedFact::subject_kind)
+        .def_readonly("subject_id",             &starling::tom::mentalizing::SharedFact::subject_id)
+        .def_readonly("predicate",              &starling::tom::mentalizing::SharedFact::predicate)
+        .def_readonly("canonical_object_hash",  &starling::tom::mentalizing::SharedFact::canonical_object_hash)
+        .def_readonly("polarity",               &starling::tom::mentalizing::SharedFact::polarity)
+        .def_readonly("source_statement_ids",   &starling::tom::mentalizing::SharedFact::source_statement_ids);
+
+    // Misalignment — read-only vectors; confidence_diverges exposed as list of
+    // 2-tuples (x_row, y_row) via a property lambda.
+    py::class_<starling::tom::mentalizing::Misalignment>(m, "Misalignment")
+        .def_readonly("only_x_believes",  &starling::tom::mentalizing::Misalignment::only_x_believes)
+        .def_readonly("only_y_believes",  &starling::tom::mentalizing::Misalignment::only_y_believes)
+        .def_property_readonly("confidence_diverges",
+            [](const starling::tom::mentalizing::Misalignment& m_) {
+                py::list result;
+                for (const auto& p : m_.confidence_diverges) {
+                    result.append(py::make_tuple(p.first, p.second));
+                }
+                return result;
+            });
+
+    // CommonGroundEntry — read-only
+    py::class_<starling::tom::CommonGroundEntry>(m, "CommonGroundEntry")
+        .def_readonly("id",            &starling::tom::CommonGroundEntry::id)
+        .def_readonly("tenant_id",     &starling::tom::CommonGroundEntry::tenant_id)
+        .def_readonly("statement_id",  &starling::tom::CommonGroundEntry::statement_id)
+        .def_readonly("status",        &starling::tom::CommonGroundEntry::status)
+        .def_readonly("parties_json",  &starling::tom::CommonGroundEntry::parties_json)
+        .def_readonly("created_at",    &starling::tom::CommonGroundEntry::created_at)
+        .def_readonly("updated_at",    &starling::tom::CommonGroundEntry::updated_at);
+
+    // Context — read-only snapshot from perspective_take
+    py::class_<starling::tom::Context>(m, "Context")
+        .def_readonly("visible_engram_ids",  &starling::tom::Context::visible_engram_ids)
+        .def_readonly("target_beliefs",      &starling::tom::Context::target_beliefs)
+        .def_readonly("cg",                  &starling::tom::Context::cg);
+
+    // NestingDepthOverflow exception
+    py::register_exception<starling::tom::NestingDepthOverflow>(
+        m, "NestingDepthOverflow", PyExc_RecursionError);
+
+    // ToMEngine — takes references to adapter/hub/frontier (keep_alive on all).
+    py::class_<starling::tom::ToMEngine>(m, "ToMEngine")
+        .def(py::init<starling::persistence::SqliteAdapter&,
+                      starling::cognizer::CognizerHub&,
+                      starling::cognizer::KnowledgeFrontier&>(),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
+             py::arg("adapter"), py::arg("hub"), py::arg("frontier"))
+        .def("perspective_take",
+             [](const starling::tom::ToMEngine& eng,
+                const std::string& target,
+                const std::string& tenant,
+                const std::string& as_of) {
+                 return eng.perspective_take(target, tenant, as_of);
+             },
+             py::arg("target"), py::arg("tenant"), py::arg("as_of"));
+
+    // Free function bindings for mentalizing primitives
+
+    m.def("what_does_X_believe",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& x,
+           const std::string& about_y,
+           const std::string& tenant,
+           const std::string& as_of,
+           const std::string& modality_filter) {
+            return starling::tom::mentalizing::what_does_X_believe(
+                adapter, x, about_y, tenant, as_of, modality_filter);
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("about_y"),
+        py::arg("tenant"), py::arg("as_of"), py::arg("modality_filter") = "",
+        "Return all statements held by X about Y. Optional modality_filter.");
+
+    m.def("does_X_know",
+        [](starling::persistence::SqliteAdapter& adapter,
+           starling::cognizer::KnowledgeFrontier& frontier,
+           const std::string& x,
+           const starling::tom::mentalizing::FactKey& fact,
+           const std::string& tenant,
+           const std::string& as_of) {
+            return starling::tom::mentalizing::does_X_know(
+                adapter, frontier, x, fact, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("frontier"), py::arg("x"),
+        py::arg("fact"), py::arg("tenant"), py::arg("as_of"),
+        "Tri-valued query: FullKnowledge / NotKnown / Unknowable.");
+
+    m.def("find_misalignment",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& x,
+           const std::string& y,
+           const std::string& subject_kind,
+           const std::string& subject_id,
+           const std::string& tenant,
+           const std::string& as_of) {
+            return starling::tom::mentalizing::find_misalignment(
+                adapter, x, y, subject_kind, subject_id, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("y"),
+        py::arg("subject_kind"), py::arg("subject_id"),
+        py::arg("tenant"), py::arg("as_of"),
+        "Find belief misalignments between cognizers X and Y.");
+
+    m.def("shared_with",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::vector<std::string>& members,
+           const std::string& tenant,
+           const std::string& as_of) {
+            return starling::tom::mentalizing::shared_with(adapter, members, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("members"), py::arg("tenant"), py::arg("as_of"),
+        "Return facts believed by ALL members.");
+
+    // TickStats — read-only
+    py::class_<starling::tom::belief_tracker::TickStats>(m, "TickStats")
+        .def_readonly("events_processed",       &starling::tom::belief_tracker::TickStats::events_processed)
+        .def_readonly("frontier_facts_written",  &starling::tom::belief_tracker::TickStats::frontier_facts_written)
+        .def_readonly("trust_prior_updates",     &starling::tom::belief_tracker::TickStats::trust_prior_updates)
+        .def_readonly("last_seen_updates",       &starling::tom::belief_tracker::TickStats::last_seen_updates)
+        .def_readonly("presence_log_writes",     &starling::tom::belief_tracker::TickStats::presence_log_writes);
+
+    // belief_tracker_tick — free function for Python consumers
+    m.def("belief_tracker_tick",
+        [](starling::persistence::SqliteAdapter& adapter, int batch_size) {
+            return starling::tom::belief_tracker::tick_one_batch(adapter, batch_size);
+        },
+        py::arg("adapter"), py::arg("batch_size") = 100,
+        "Process one batch of bus events through BeliefTracker. Returns TickStats.");
 }

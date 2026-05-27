@@ -59,6 +59,7 @@ target_sources(starling_core PRIVATE
     src/bus/canonical_scope.cpp
     src/bus/conflict_key.cpp
     src/bus/conflict_probe.cpp
+    src/bus/conflict_key_backfill.cpp
     src/persistence/sqlite_adapter.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
@@ -72,6 +73,21 @@ target_sources(starling_core PRIVATE
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
     src/retrieval/basic_retriever.cpp
+    src/cognizer/uuid5.cpp
+    src/cognizer/alias_normalizer.cpp
+    src/cognizer/cognizer_hub.cpp
+    src/cognizer/knowledge_frontier.cpp
+    src/tom/tom_engine.cpp
+    src/tom/common_ground.cpp
+    src/tom/nesting_depth_writer.cpp
+    src/tom/rate_limiter.cpp
+    src/tom/depth_estimator.cpp
+    src/tom/mentalizing_believe.cpp
+    src/tom/mentalizing_know.cpp
+    src/tom/mentalizing_misalign.cpp
+    src/tom/mentalizing_shared.cpp
+    src/tom/belief_tracker.cpp
+    src/tom/belief_tracker_handlers.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3

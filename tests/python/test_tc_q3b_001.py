@@ -103,13 +103,53 @@ def _make_extracted(*, inner_stmt_id: str, canonical_hash: str):
     return s
 
 
+def _seed_inner_statement(rt, stmt_id: str) -> None:
+    """Seed a minimal flat (nesting_depth=0) Statement row so that
+    Bus::write with object_kind='statement' can look up the parent depth.
+
+    P2.a makes nesting_depth load-bearing: StatementWriter calls
+    compute_nesting_depth which does SELECT nesting_depth FROM statements
+    WHERE id = object_value.  Without this seed the write would throw
+    'parent statement not found'.
+    """
+    with sqlite3.connect(str(rt.adapter.db_path)) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(
+            "INSERT INTO statements("
+            "  id, tenant_id, holder_id, holder_perspective,"
+            "  subject_kind, subject_id, predicate, object_kind, object_value,"
+            "  canonical_object_hash, canonical_object_hash_version,"
+            "  modality, polarity, confidence, observed_at,"
+            "  salience, affect_json, activation, last_accessed,"
+            "  provenance, evidence_json, source_spans_json, perceived_by_json,"
+            "  consolidation_state, review_status,"
+            "  derived_from_json, derived_depth, nesting_depth,"
+            "  created_at, updated_at"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                stmt_id, "default", "bob", "first_person",
+                "cognizer", "bob", "knows", "str", "placeholder",
+                "hash-placeholder", "v1",
+                "believes", "pos", 0.9, "2026-05-25T09:00:00Z",
+                0.0, "{}", 0.0, "2026-05-25T09:00:00Z",
+                "user_input", "[]", "[]", "[]",
+                "volatile", "approved",
+                "[]", 0, 0,
+                "2026-05-25T09:00:00Z", "2026-05-25T09:00:00Z",
+            ))
+        conn.commit()
+
+
 def test_2nd_order_statement_hash_distinction(rt):
     """TC-Q3b-001 happy path — §15.3.1 2nd-order statement object invariants.
 
     Sequence:
       1. Seed two Engrams (one FK target per Bus::write call).
-      2. Bus::write S1: alice believes (inner stmt = bob knows calculus).
-      3. Bus::write S2: alice believes (inner stmt = bob knows physics).
+      2. Seed the two inner Statement rows that alice will reference
+         (required since P2.a makes nesting_depth load-bearing: the writer
+         looks up parent.nesting_depth before INSERT).
+      3. Bus::write S1: alice believes (inner stmt = bob knows calculus).
+      4. Bus::write S2: alice believes (inner stmt = bob knows physics).
 
     Invariants:
       1. Both writes return kind == "accepted".
@@ -119,9 +159,12 @@ def test_2nd_order_statement_hash_distinction(rt):
     """
     _seed_engram(rt, "engram-calculus", "hash-calculus")
     _seed_engram(rt, "engram-physics",  "hash-physics")
+    # P2.a: seed the inner statement rows so the nesting_depth lookup succeeds.
+    _seed_inner_statement(rt, _INNER_ID_CALCULUS)
+    _seed_inner_statement(rt, _INNER_ID_PHYSICS)
     bus = _core.Bus(rt.adapter)
 
-    # Step 2: Write S1 — alice believes bob knows calculus.
+    # Step 3: Write S1 — alice believes bob knows calculus.
     s1 = _make_extracted(inner_stmt_id=_INNER_ID_CALCULUS,
                          canonical_hash=_HASH_CALCULUS)
     out1 = bus.write(s1, "engram-calculus", "span-calculus", None)
@@ -129,7 +172,7 @@ def test_2nd_order_statement_hash_distinction(rt):
         f"S1 write must be 'accepted', got {out1!r}"
     s1_id = out1["stmt_id"]
 
-    # Step 3: Write S2 — alice believes bob knows physics (different inner stmt).
+    # Step 4: Write S2 — alice believes bob knows physics (different inner stmt).
     s2 = _make_extracted(inner_stmt_id=_INNER_ID_PHYSICS,
                          canonical_hash=_HASH_PHYSICS)
     out2 = bus.write(s2, "engram-physics", "span-physics", None)

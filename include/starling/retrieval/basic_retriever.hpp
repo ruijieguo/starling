@@ -31,6 +31,9 @@ struct BasicRetrieverParams {
     std::string  as_of_iso8601;         // canonicalized at the Python boundary
     std::string  trace_id;              // caller-supplied; receipt echoes it
     std::string  query_id;              // caller-supplied; usually a fresh UUID
+    // P2.a: when true, adds an EXISTS subquery against KnowledgeFrontier
+    // visible_engrams_at(holder, as_of). Default false preserves P1 behavior.
+    bool         apply_frontier_filter{false};
 };
 
 struct BasicRetrieveResult {
