@@ -44,4 +44,10 @@ OpResult op_decay(persistence::Connection& conn,
                   std::string_view tenant_id,
                   std::string_view now_iso);
 
+// reconcile: 冲突 stmt CONSOLIDATED→REPLAYING_RECONSOLIDATING (路由到 Reconsolidation,
+// emit belief.conflict 由 ReplayScheduler). Replay 本身不仲裁.
+OpResult op_reconcile(persistence::Connection& conn,
+                      const std::string& stmt_id,
+                      std::string_view tenant_id);
+
 }  // namespace starling::replay

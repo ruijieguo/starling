@@ -130,4 +130,22 @@ OpResult op_decay(persistence::Connection& conn,
     return r;
 }
 
+OpResult op_reconcile(persistence::Connection& conn,
+                      const std::string& stmt_id,
+                      std::string_view tenant_id) {
+    OpResult r{ConsolidationOp::Reconcile, stmt_id, 0};
+    sqlite3* db = conn.raw();
+    const char* sql =
+        "UPDATE statements SET consolidation_state='replaying_reconsolidating' "
+        "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
+    sqlite3_stmt* raw=nullptr;
+    if (sqlite3_prepare_v2(db,sql,-1,&raw,nullptr)!=SQLITE_OK)
+        throw make_sqlite_error(db,"op_reconcile: prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(),1,stmt_id); bind_sv(h.get(),2,tenant_id);
+    if (sqlite3_step(h.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_reconcile: step");
+    r.affected = sqlite3_changes(db);
+    return r;
+}
+
 }  // namespace starling::replay
