@@ -1,6 +1,7 @@
 #include "starling/replay/consolidation_ops.hpp"
 #include "starling/bus/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/replay/forgetting_curve.hpp"
 #include <stdexcept>
 
 namespace starling::replay {
@@ -87,6 +88,45 @@ OpResult op_abstract(persistence::Connection& conn,
         r.affected += sqlite3_changes(db);
     }
     if (!input_stmt_ids.empty()) r.output_stmt_id = input_stmt_ids.front();
+    return r;
+}
+
+OpResult op_decay(persistence::Connection& conn,
+                  const std::vector<std::string>& candidate_stmt_ids,
+                  std::string_view tenant_id,
+                  std::string_view now_iso) {
+    OpResult r{ConsolidationOp::Decay, {}, 0};
+    sqlite3* db = conn.raw();
+    for (const auto& id : candidate_stmt_ids) {
+        ForgettingInputs in;
+        sqlite3_stmt* sel=nullptr;
+        if (sqlite3_prepare_v2(db,
+            "SELECT salience,access_count,modality,last_accessed,consolidation_state "
+            "FROM statements WHERE id=? AND tenant_id=?",-1,&sel,nullptr)!=SQLITE_OK)
+            throw make_sqlite_error(db,"op_decay: prepare select");
+        StmtHandle hsel(sel);
+        bind_sv(hsel.get(),1,id); bind_sv(hsel.get(),2,tenant_id);
+        if (sqlite3_step(hsel.get())!=SQLITE_ROW) continue;
+        in.salience = sqlite3_column_double(hsel.get(),0);
+        in.access_count = sqlite3_column_int64(hsel.get(),1);
+        in.modality = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),2));
+        in.last_accessed_iso = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),3));
+        std::string state = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),4));
+        in.active_grounded = false;
+        if (state != "consolidated") continue;  // 串行守护: 已变即跳过
+        if (compute_s_t(in, now_iso) < 0.05 && !in.active_grounded) {
+            sqlite3_stmt* upd=nullptr;
+            if (sqlite3_prepare_v2(db,
+                "UPDATE statements SET consolidation_state='archived' "
+                "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'",
+                -1,&upd,nullptr)!=SQLITE_OK)
+                throw make_sqlite_error(db,"op_decay: prepare update");
+            StmtHandle hupd(upd);
+            bind_sv(hupd.get(),1,id); bind_sv(hupd.get(),2,tenant_id);
+            if (sqlite3_step(hupd.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_decay: step");
+            r.affected += sqlite3_changes(db);
+        }
+    }
     return r;
 }
 

@@ -36,4 +36,12 @@ OpResult op_reinforce(persistence::Connection& conn,
                       std::string_view tenant_id,
                       std::string_view replay_batch_id);
 
+// decay: S(t)<0.05 且 not active_grounded → CONSOLIDATED→ARCHIVED.
+// 串行守护: 读到 state 已非 consolidated → 跳过 (T5/T8 race 消除).
+// emit statement.archived 由 ReplayScheduler 统一. active_grounded M0.8 默认 false.
+OpResult op_decay(persistence::Connection& conn,
+                  const std::vector<std::string>& candidate_stmt_ids,
+                  std::string_view tenant_id,
+                  std::string_view now_iso);
+
 }  // namespace starling::replay
