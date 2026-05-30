@@ -103,6 +103,7 @@ add_executable(starling_tests
     test_stub_embedding_adapter.cpp
     test_openai_embedding_adapter.cpp
     test_embedding_worker.cpp
+    test_proj_vector_payload.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
