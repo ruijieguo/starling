@@ -111,6 +111,7 @@ add_executable(starling_tests
     test_action_guard.cpp
     test_commitment_engine.cpp
     test_trigger.cpp
+    test_policy_engine_post_write.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
