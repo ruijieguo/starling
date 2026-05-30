@@ -165,7 +165,11 @@ int supersedes_chain_length(persistence::Connection& conn, std::string_view star
     const char* sql =
         "SELECT dst_id FROM statement_edges "
         "WHERE src_id=? AND edge_kind='supersedes' LIMIT 1";
-    while (true) {
+    // Bound the walk: the caller only needs to distinguish < kMaxRenegotiationChain
+    // from >=, so stop once count exceeds the cap. This also makes a cyclic
+    // supersedes edge set (which a misbehaving caller could create) terminate —
+    // a cycle counts as >= cap, hence correctly blocked.
+    while (count <= kMaxRenegotiationChain) {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             break;

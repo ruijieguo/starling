@@ -116,3 +116,28 @@ TEST(PolicyEnginePostWrite, CheckpointAdvancesNoDoubleProcess) {
         "SELECT COUNT(*) FROM commitment_triggers WHERE commitment_stmt_id='c1'"),
         triggers_after_first);
 }
+
+// Regression (final-review): commitment.fulfilled must NOT feedback-loop through
+// run_post_write. fulfill() is the sole emitter of commitment.fulfilled;
+// run_post_write consuming it must not re-fulfill (already terminal) and re-emit,
+// else bus_events floods across window buckets.
+TEST(PolicyEnginePostWrite, FulfilledEventDoesNotFeedbackLoop) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c1");
+    append_bus_event(c, "statement.written", "c1", "default", "{}", "ikey-sw-1");
+    PolicyEngine eng(*a);
+    eng.run_post_write(c, "2026-05-30T10:00:00Z");  // → ACTIVE
+    CommitmentEngine(*a).fulfill(c, "c1", "2026-05-30T10:05:00Z");  // emits commitment.fulfilled
+    const int after_fulfill = icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.fulfilled' AND primary_id='c1'");
+    // Multiple run_post_write in DISTINCT window buckets — must not grow the count.
+    eng.run_post_write(c, "2026-05-30T10:10:00Z");
+    eng.run_post_write(c, "2026-05-30T10:20:00Z");
+    eng.run_post_write(c, "2026-05-30T10:30:00Z");
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.fulfilled' AND primary_id='c1'"),
+        after_fulfill);  // no feedback growth
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM commitments WHERE stmt_id='c1' AND state='FULFILLED'"), 1);
+}

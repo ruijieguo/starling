@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <random>
 #include <string>
 #include <string_view>
@@ -40,6 +41,30 @@ using starling::bus::compute_window_bucket;
 using starling::bus::detail::bind_sv;
 using starling::bus::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
+
+// Default deadline window for a COMMITS statement that carries no explicit
+// event_time_end (spec §10: "用 observed_at + 默认窗口"). 24h.
+constexpr int kDefaultDeadlineWindowMinutes = 24 * 60;
+
+// Add minutes to an ISO-8601 UTC timestamp (mirrors plastic_window.cpp). Returns
+// the input unchanged if it doesn't parse, so a malformed observed_at can't crash.
+std::string add_minutes_to_iso(const std::string& iso, int minutes) {
+    std::tm tm{};
+    int y, mo, d, h, mi, s;
+    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%dZ",
+                    &y, &mo, &d, &h, &mi, &s) != 6)
+        return iso;
+    tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
+    tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s;
+    std::time_t epoch = timegm(&tm) + static_cast<std::time_t>(minutes) * 60;
+    std::tm out{};
+    gmtime_r(&epoch, &out);
+    char buf[21];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  out.tm_year + 1900, out.tm_mon + 1, out.tm_mday,
+                  out.tm_hour, out.tm_min, out.tm_sec);
+    return std::string(buf);
+}
 
 // 32 random hex chars for new trigger ids (mirrors arbitration.cpp).
 std::string random_hex_32() {
@@ -318,8 +343,15 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
         if (ev.event_type == "statement.written") {
             StmtMeta m = read_stmt_meta(conn, ev.primary_id);
             if (m.found && m.modality == "COMMITS") {
+                // spec §10: explicit event_time_end wins; else observed_at + 默认窗口
+                // (NOT raw observed_at — that's in the past, so the commitment would
+                // break on the very next tick).
                 const std::string deadline =
-                    !m.event_time_end.empty() ? m.event_time_end : m.observed_at;
+                    !m.event_time_end.empty()
+                        ? m.event_time_end
+                        : (m.observed_at.empty()
+                               ? std::string()
+                               : add_minutes_to_iso(m.observed_at, kDefaultDeadlineWindowMinutes));
                 commitment_engine_.create_from_statement(
                     conn, ev.primary_id, m.tenant_id, deadline, now_iso);
                 if (!deadline.empty())
@@ -327,9 +359,16 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
                                           deadline, now_iso);
             }
         } else if (ev.event_type == "commitment.fulfilled") {
-            commitment_engine_.fulfill(conn, ev.primary_id, now_iso);
+            // fulfill() is the SOLE emitter of commitment.fulfilled. Re-processing
+            // its own output would re-emit and feedback-loop; only act on a
+            // non-terminal commitment (idempotent: already-FULFILLED → skip).
+            const std::string cur = read_commitment_state(conn, ev.primary_id);
+            if (cur == "ACTIVE" || cur == "BROKEN")
+                commitment_engine_.fulfill(conn, ev.primary_id, now_iso);
         } else if (ev.event_type == "commitment.withdrawn") {
-            commitment_engine_.withdraw(conn, ev.primary_id, now_iso);
+            const std::string cur = read_commitment_state(conn, ev.primary_id);
+            if (cur == "ACTIVE" || cur == "BROKEN" || cur == "RENEGOTIATED")
+                commitment_engine_.withdraw(conn, ev.primary_id, now_iso);
         }
 
         // Evaluate armed event/state triggers against THIS event. Collect first
