@@ -210,6 +210,61 @@ std::vector<TriggerRow> collect_armed_event_state_triggers(
     return rows;
 }
 
+// Collect all armed time triggers whose commitment is ACTIVE.
+std::vector<TriggerRow> collect_armed_time_triggers(persistence::Connection& conn) {
+    std::vector<TriggerRow> rows;
+    const char* sql =
+        "SELECT t.id, t.commitment_stmt_id, t.spec_json, t.tenant_id "
+        "FROM commitment_triggers t "
+        "JOIN commitments c ON c.stmt_id = t.commitment_stmt_id "
+        "WHERE t.kind='time' AND t.status='armed' AND c.state='ACTIVE'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        return rows;
+    StmtHandle h(raw);
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        TriggerRow r;
+        r.id                 = col_text(h.get(), 0);
+        r.commitment_stmt_id = col_text(h.get(), 1);
+        r.spec_json          = col_text(h.get(), 2);
+        r.tenant_id          = col_text(h.get(), 3);
+        r.kind               = "time";
+        rows.push_back(std::move(r));
+    }
+    return rows;
+}
+
+// Collect stmt_ids of ACTIVE commitments whose deadline has passed.
+std::vector<std::string> collect_expired_active_commitments(
+    persistence::Connection& conn, std::string_view now_iso) {
+    std::vector<std::string> ids;
+    const char* sql =
+        "SELECT stmt_id FROM commitments "
+        "WHERE state='ACTIVE' AND deadline IS NOT NULL AND deadline <= ?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        return ids;
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, now_iso);
+    while (sqlite3_step(h.get()) == SQLITE_ROW)
+        ids.push_back(col_text(h.get(), 0));
+    return ids;
+}
+
+// Read a commitment's current state; "" if absent.
+std::string read_commitment_state(persistence::Connection& conn,
+                                  std::string_view stmt_id) {
+    const char* sql = "SELECT state FROM commitments WHERE stmt_id=?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        return "";
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, stmt_id);
+    if (sqlite3_step(h.get()) == SQLITE_ROW)
+        return col_text(h.get(), 0);
+    return "";
+}
+
 // Mark a trigger fired.
 void mark_trigger_fired(persistence::Connection& conn, std::string_view id) {
     const char* sql = "UPDATE commitment_triggers SET status='fired' WHERE id=?";
@@ -301,8 +356,36 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
 PolicyTickStats PolicyEngine::tick(persistence::Connection& conn,
                                    std::string_view now_iso) {
     PolicyTickStats stats;
-    (void)conn;
-    (void)now_iso;
+
+    // 1. Fire due TimeTriggers. Collect first to avoid mutating mid-cursor.
+    {
+        const std::vector<TriggerRow> triggers = collect_armed_time_triggers(conn);
+        for (const auto& t : triggers) {
+            TriggerContext tctx{std::string(now_iso), /*event_type=*/"",
+                                /*event_primary_id=*/""};
+            if (evaluate_trigger(conn, "time", t.spec_json, tctx)) {
+                emit_event(conn, "commitment.fire", t.commitment_stmt_id,
+                           t.commitment_stmt_id, t.tenant_id, "{}");
+                mark_trigger_fired(conn, t.id);
+                ++stats.fired;
+            }
+        }
+    }
+
+    // 2. Deadline expiry: ACTIVE commitments whose deadline passed →
+    //    on_deadline_expired (BROKEN, or auto-WITHDRAWN after chronic failure).
+    {
+        const std::vector<std::string> expired =
+            collect_expired_active_commitments(conn, now_iso);
+        for (const auto& stmt_id : expired) {
+            commitment_engine_.on_deadline_expired(conn, stmt_id, now_iso);
+            if (read_commitment_state(conn, stmt_id) == "WITHDRAWN")
+                ++stats.auto_withdrawn;
+            else
+                ++stats.broken;
+        }
+    }
+
     return stats;
 }
 
