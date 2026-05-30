@@ -89,6 +89,7 @@ add_executable(starling_tests
     test_replay_scheduler.cpp
     test_plastic_window.cpp
     test_arbitration_mild.cpp
+    test_arbitration_severe.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

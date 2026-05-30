@@ -26,6 +26,17 @@ void apply_supports(persistence::Connection& conn, std::string_view stmt_id,
 void apply_mild_contradict(persistence::Connection& conn, std::string_view stmt_id,
                            std::string_view tenant_id, const Aggregated& agg, std::string_view now_iso);
 
+// severe contradict: 4 项原子提交 (仅原子事务, saga 推迟 P3):
+//   1. 新版 (provenance=reconsolidation_derived, CONSOLIDATED, supersedes_id=old)
+//   2. SUPERSEDES 边 (新版→旧版)
+//   3. 旧版 ARCHIVED
+//   4. emit statement.corrected + archived + superseded (同 outbox batch)
+// 新版不 emit statement.written (防重入 Replay). 返回新版 stmt_id.
+std::string apply_severe_contradict(persistence::Connection& conn,
+                                    std::string_view old_stmt_id,
+                                    std::string_view tenant_id,
+                                    const Aggregated& agg, std::string_view now_iso);
+
 double bayesian_update_up(double conf, double strength);
 double bayesian_update_down(double conf, double strength);
 

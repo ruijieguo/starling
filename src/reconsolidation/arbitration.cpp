@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -25,6 +26,18 @@ using starling::bus::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 namespace {
+
+// 32 random hex chars for new statement id / edge id.
+std::string random_hex_32() {
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    const std::uint64_t a = rng();
+    const std::uint64_t b = rng();
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(a),
+                  static_cast<unsigned long long>(b));
+    return std::string(buf, 32);
+}
 
 // Minimal JSON string escaping (keys/values are controlled; no control chars expected)
 std::string json_str(std::string_view sv) {
@@ -253,6 +266,183 @@ void apply_mild_contradict(persistence::Connection& conn, std::string_view stmt_
             // idempotency_key UNIQUE collision — skip duplicate
         }
     }
+}
+
+// ── apply_severe_contradict ──────────────────────────────────────────────────
+// §7.3: 4-item atomic commit. No saga (P3). Returns new stmt_id.
+// The new version does NOT emit statement.written (防重入 Replay).
+
+std::string apply_severe_contradict(persistence::Connection& conn,
+                                    std::string_view old_stmt_id,
+                                    std::string_view tenant_id,
+                                    const Aggregated& agg,
+                                    std::string_view now_iso) {
+    sqlite3* db = conn.raw();
+
+    // Step 1: Read old row — all NOT NULL columns needed for the fork.
+    struct OldRow {
+        std::string holder_id, holder_perspective, subject_kind, subject_id;
+        std::string predicate, object_kind, object_value;
+        std::string canonical_object_hash, canonical_object_hash_version;
+        std::string modality, polarity, observed_at, salience_str, affect_json;
+        std::string activation_str, last_accessed, review_status;
+        double confidence = 0.0;
+    } old;
+
+    {
+        const char* sel_sql =
+            "SELECT holder_id, holder_perspective, subject_kind, subject_id, predicate, "
+            "object_kind, object_value, canonical_object_hash, canonical_object_hash_version, "
+            "modality, polarity, confidence, observed_at, salience, affect_json, activation, "
+            "last_accessed, review_status "
+            "FROM statements WHERE id=? AND tenant_id=?";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db, sel_sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "apply_severe_contradict: prepare SELECT old row");
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, old_stmt_id);
+        bind_sv(h.get(), 2, tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_ROW)
+            throw make_sqlite_error(db, "apply_severe_contradict: old statement not found");
+
+        auto col_str = [&](int idx) -> std::string {
+            const auto* txt = sqlite3_column_text(h.get(), idx);
+            return txt ? reinterpret_cast<const char*>(txt) : "";
+        };
+        old.holder_id                   = col_str(0);
+        old.holder_perspective          = col_str(1);
+        old.subject_kind                = col_str(2);
+        old.subject_id                  = col_str(3);
+        old.predicate                   = col_str(4);
+        old.object_kind                 = col_str(5);
+        old.object_value                = col_str(6);
+        old.canonical_object_hash       = col_str(7);
+        old.canonical_object_hash_version = col_str(8);
+        old.modality                    = col_str(9);
+        old.polarity                    = col_str(10);
+        old.confidence                  = sqlite3_column_double(h.get(), 11);
+        old.observed_at                 = col_str(12);
+        old.salience_str                = col_str(13);
+        old.affect_json                 = col_str(14);
+        old.activation_str              = col_str(15);
+        old.last_accessed               = col_str(16);
+        old.review_status               = col_str(17);
+    }
+
+    const std::string new_id = random_hex_32();
+    const std::string now_s(now_iso);
+
+    // Wrap steps 2-5 atomically.
+    persistence::TransactionGuard tx(conn);
+
+    // Step 2: INSERT new forked statement (provenance=reconsolidation_derived,
+    //         consolidation_state=consolidated, supersedes_id=old_stmt_id).
+    //         Do NOT emit statement.written (防重入).
+    {
+        const char* ins_sql =
+            "INSERT INTO statements("
+            "id, tenant_id, holder_id, holder_perspective, subject_kind, subject_id, "
+            "predicate, object_kind, object_value, canonical_object_hash, "
+            "canonical_object_hash_version, modality, polarity, confidence, observed_at, "
+            "salience, affect_json, activation, last_accessed, provenance, "
+            "consolidation_state, review_status, supersedes_id, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+            "'reconsolidation_derived','consolidated',?,?,?,?)";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db, ins_sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "apply_severe_contradict: prepare INSERT new row");
+        StmtHandle h(raw);
+        bind_sv(h.get(),  1, new_id);
+        bind_sv(h.get(),  2, tenant_id);
+        bind_sv(h.get(),  3, old.holder_id);
+        bind_sv(h.get(),  4, old.holder_perspective);
+        bind_sv(h.get(),  5, old.subject_kind);
+        bind_sv(h.get(),  6, old.subject_id);
+        bind_sv(h.get(),  7, old.predicate);
+        bind_sv(h.get(),  8, old.object_kind);
+        bind_sv(h.get(),  9, old.object_value);
+        bind_sv(h.get(), 10, old.canonical_object_hash);
+        bind_sv(h.get(), 11, old.canonical_object_hash_version);
+        bind_sv(h.get(), 12, old.modality);
+        bind_sv(h.get(), 13, old.polarity);
+        sqlite3_bind_double(h.get(), 14, old.confidence);
+        bind_sv(h.get(), 15, old.observed_at);
+        bind_sv(h.get(), 16, old.salience_str);
+        bind_sv(h.get(), 17, old.affect_json);
+        bind_sv(h.get(), 18, old.activation_str);
+        bind_sv(h.get(), 19, old.last_accessed);
+        bind_sv(h.get(), 20, old.review_status);
+        bind_sv(h.get(), 21, old_stmt_id);  // supersedes_id
+        bind_sv(h.get(), 22, now_s);         // created_at
+        bind_sv(h.get(), 23, now_s);         // updated_at
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw make_sqlite_error(db, "apply_severe_contradict: INSERT new row step");
+    }
+
+    // Step 3: INSERT SUPERSEDES edge: new_id -> old_stmt_id.
+    {
+        const std::string edge_id = random_hex_32();
+        const char* edge_sql =
+            "INSERT INTO statement_edges(id, tenant_id, src_id, dst_id, edge_kind, created_at) "
+            "VALUES(?,?,?,?,'supersedes',?)";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db, edge_sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "apply_severe_contradict: prepare INSERT edge");
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, edge_id);
+        bind_sv(h.get(), 2, tenant_id);
+        bind_sv(h.get(), 3, new_id);
+        bind_sv(h.get(), 4, old_stmt_id);
+        bind_sv(h.get(), 5, now_s);
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw make_sqlite_error(db, "apply_severe_contradict: INSERT edge step");
+    }
+
+    // Step 4: UPDATE old statement → archived.
+    {
+        const char* upd_sql =
+            "UPDATE statements SET consolidation_state='archived', updated_at=? "
+            "WHERE id=? AND tenant_id=?";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db, upd_sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "apply_severe_contradict: prepare UPDATE archive");
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, now_s);
+        bind_sv(h.get(), 2, old_stmt_id);
+        bind_sv(h.get(), 3, tenant_id);
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw make_sqlite_error(db, "apply_severe_contradict: UPDATE archive step");
+        if (sqlite3_changes(db) != 1)
+            throw std::runtime_error("apply_severe_contradict: old statement row not found for archive");
+    }
+
+    // Step 5: Emit 3 outbox events (statement.corrected, statement.archived, statement.superseded).
+    // Do NOT emit statement.written for new_id (防重入 Replay).
+    {
+        std::ostringstream corrected_payload;
+        corrected_payload << "{\"old_stmt_id\":" << json_str(old_stmt_id)
+                          << ",\"new_stmt_id\":" << json_str(new_id) << "}";
+        emit_event(conn, "statement.corrected",
+                   new_id, new_id, tenant_id, corrected_payload.str());
+    }
+    {
+        std::ostringstream archived_payload;
+        archived_payload << "{\"reason\":\"severe_contradict\""
+                         << ",\"superseded_by\":" << json_str(new_id) << "}";
+        emit_event(conn, "statement.archived",
+                   old_stmt_id, old_stmt_id, tenant_id, archived_payload.str());
+    }
+    {
+        std::ostringstream superseded_payload;
+        superseded_payload << "{\"old_stmt_id\":" << json_str(old_stmt_id)
+                           << ",\"new_stmt_id\":" << json_str(new_id) << "}";
+        emit_event(conn, "statement.superseded",
+                   new_id, new_id, tenant_id, superseded_payload.str());
+    }
+
+    tx.commit();
+    (void)agg;  // agg.strength available for future confidence fork; kept as-is per spec
+    return new_id;
 }
 
 }  // namespace starling::reconsolidation
