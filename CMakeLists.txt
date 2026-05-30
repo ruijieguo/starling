@@ -109,6 +109,7 @@ target_sources(starling_core PRIVATE
     src/embedding/embedding_worker.cpp
     src/affect/affect_vector.cpp
     src/prospective/action_guard.cpp
+    src/prospective/commitment_engine.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
