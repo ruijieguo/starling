@@ -89,6 +89,7 @@ target_sources(starling_core PRIVATE
     src/tom/belief_tracker.cpp
     src/tom/belief_tracker_handlers.cpp
     src/replay/forgetting_curve.cpp
+    src/replay/swr_sampler.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3

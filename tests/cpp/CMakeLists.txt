@@ -81,6 +81,7 @@ add_executable(starling_tests
     test_mentalizing.cpp
     test_belief_tracker.cpp
     test_forgetting_curve.cpp
+    test_swr_sampler.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
