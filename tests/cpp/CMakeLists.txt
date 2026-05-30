@@ -107,6 +107,15 @@ add_executable(starling_tests
     test_proj_vector_payload.cpp
     test_vector_repair_guard.cpp
     test_vector_capability.cpp
+    test_affect_vector.cpp
+    test_affect_replay_weight.cpp
+    test_action_guard.cpp
+    test_commitment_engine.cpp
+    test_commitment_protection_decay.cpp
+    test_trigger.cpp
+    test_policy_engine_post_write.cpp
+    test_policy_engine_tick.cpp
+    test_policy_engine_subscriber.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

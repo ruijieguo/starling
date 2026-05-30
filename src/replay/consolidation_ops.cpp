@@ -112,7 +112,19 @@ OpResult op_decay(persistence::Connection& conn,
         in.modality = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),2));
         in.last_accessed_iso = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),3));
         std::string state = reinterpret_cast<const char*>(sqlite3_column_text(hsel.get(),4));
-        in.active_grounded = false;
+        // active_grounded: 受 ACTIVE commitment 反向保护 (P2.c §7) → 不衰减
+        {
+            sqlite3_stmt* pst = nullptr;
+            const char* psql =
+                "SELECT EXISTS(SELECT 1 FROM commitment_protection cp "
+                " JOIN commitments c ON c.stmt_id = cp.commitment_stmt_id "
+                " WHERE cp.protected_stmt_id = ?1 AND c.state = 'ACTIVE')";
+            if (sqlite3_prepare_v2(db, psql, -1, &pst, nullptr) != SQLITE_OK)
+                throw make_sqlite_error(db, "op_decay: prepare protection EXISTS");
+            StmtHandle hp(pst);
+            bind_sv(hp.get(), 1, id);
+            in.active_grounded = (sqlite3_step(hp.get()) == SQLITE_ROW && sqlite3_column_int(hp.get(), 0) == 1);
+        }
         if (state != "consolidated") continue;  // 串行守护: 已变即跳过
         if (compute_s_t(in, now_iso) < 0.05 && !in.active_grounded) {
             sqlite3_stmt* upd=nullptr;

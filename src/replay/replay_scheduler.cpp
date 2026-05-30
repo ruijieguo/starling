@@ -1,4 +1,5 @@
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/affect/affect_vector.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/bus/sqlite_helpers.hpp"
@@ -128,8 +129,18 @@ std::vector<StmtRow> sample_volatile(sqlite3* db, int limit, std::string_view no
         r.salience  = sqlite3_column_double(h.get(), 3);
         const auto* lr = sqlite3_column_text(h.get(), 4);
         if (lr) r.last_replayed = reinterpret_cast<const char*>(lr);
-        // affect_json is "{}" or JSON; arousal extraction is out of M0.8 scope; default 0.
-        r.affect_arousal = 0.0;
+        // P2.c: affect_json → AffectVector → 优先级重放权重 (spec §8)
+        // 高 affect 用 salience() 覆盖 column salience,arousal 喂 sample_weight
+        // 的 (1 + arousal_bonus·affect_arousal) 乘子;空/{} 时保留 column 行为。
+        const auto* aj = sqlite3_column_text(h.get(), 5);
+        const std::string affect_json_str = aj ? reinterpret_cast<const char*>(aj) : "";
+        if (!affect_json_str.empty() && affect_json_str != "{}") {
+            const affect::AffectVector av = affect::parse_affect_json(affect_json_str);
+            r.salience       = affect::salience(av);  // 覆盖 column salience
+            r.affect_arousal = av.arousal;
+        } else {
+            r.affect_arousal = 0.0;  // 保留 column salience + arousal=0(原行为)
+        }
         r.provenance  = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 6));
         r.replay_count = sqlite3_column_int64(h.get(), 7);
         r.derived_depth = sqlite3_column_int(h.get(), 8);
