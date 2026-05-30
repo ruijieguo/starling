@@ -30,9 +30,15 @@
 #include "starling/evidence/engram.hpp"
 #include "starling/tom/belief_tracker.hpp"
 #include "starling/tom/common_ground.hpp"
+#include "starling/tom/common_ground_writer.hpp"
 #include "starling/tom/mentalizing.hpp"
 #include "starling/tom/nesting_depth_writer.hpp"
 #include "starling/tom/tom_engine.hpp"
+#include "starling/replay/replay_scheduler.hpp"
+#include "starling/reconsolidation/reconsolidation_engine.hpp"
+#include "starling/neocortex/persona_container.hpp"
+#include "starling/neocortex/common_ground_container.hpp"
+#include "starling/projection/projection_maintainer.hpp"
 #include "starling/evidence/ingest_policy_resolver.hpp"
 #include "starling/extractor/extractor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
@@ -1116,4 +1122,207 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("adapter"), py::arg("batch_size") = 100,
         "Process one batch of bus events through BeliefTracker. Returns TickStats.");
+
+    // ── M0.8: ReplayScheduler ──────────────────────────────────────────────
+
+    py::class_<starling::replay::ReplayStats>(m, "ReplayStats")
+        .def_readonly("sampled",               &starling::replay::ReplayStats::sampled)
+        .def_readonly("compressed",            &starling::replay::ReplayStats::compressed)
+        .def_readonly("abstracted",            &starling::replay::ReplayStats::abstracted)
+        .def_readonly("reinforced",            &starling::replay::ReplayStats::reinforced)
+        .def_readonly("decayed",               &starling::replay::ReplayStats::decayed)
+        .def_readonly("reconciled",            &starling::replay::ReplayStats::reconciled)
+        .def_readonly("forced_consolidated",   &starling::replay::ReplayStats::forced_consolidated)
+        .def_readonly("ttl_archived",          &starling::replay::ReplayStats::ttl_archived)
+        .def_readonly("replay_batch_id",       &starling::replay::ReplayStats::replay_batch_id);
+
+    py::class_<starling::replay::ReplayScheduler>(m, "ReplayScheduler")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("enforce_oscillation_guard",
+             [](starling::replay::ReplayScheduler& s) {
+                 return s.enforce_oscillation_guard(s.connection());
+             })
+        .def("sweep_volatile_ttl",
+             [](starling::replay::ReplayScheduler& s, std::string now) {
+                 return s.sweep_volatile_ttl(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("run_decay",
+             [](starling::replay::ReplayScheduler& s,
+                std::vector<std::string> ids, std::string now) {
+                 return s.run_decay(s.connection(), ids, now);
+             },
+             py::arg("candidate_ids"), py::arg("now_iso"))
+        .def("tick_online",
+             [](starling::replay::ReplayScheduler& s, std::string now) {
+                 return s.tick_online(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("run_idle",
+             [](starling::replay::ReplayScheduler& s, std::string now) {
+                 return s.run_idle(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("run_sleep",
+             [](starling::replay::ReplayScheduler& s, std::string now) {
+                 return s.run_sleep(s.connection(), now);
+             },
+             py::arg("now_iso"));
+
+    // ── M0.8: ReconsolidationEngine ───────────────────────────────────────
+
+    py::class_<starling::reconsolidation::EngineStats>(m, "EngineStats")
+        .def_readonly("events_processed", &starling::reconsolidation::EngineStats::events_processed)
+        .def_readonly("windows_opened",   &starling::reconsolidation::EngineStats::windows_opened)
+        .def_readonly("windows_closed",   &starling::reconsolidation::EngineStats::windows_closed);
+
+    py::class_<starling::reconsolidation::ReconsolidationEngine>(m, "ReconsolidationEngine")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("tick_one_batch",
+             [](starling::reconsolidation::ReconsolidationEngine& s, std::string now) {
+                 return s.tick_one_batch(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("close_due_windows",
+             [](starling::reconsolidation::ReconsolidationEngine& s, std::string now) {
+                 return s.close_due_windows(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("reconsolidate",
+             [](starling::reconsolidation::ReconsolidationEngine& s,
+                std::string stmt_id, std::string event_type,
+                std::string payload_hash, double weight, std::string now) {
+                 s.reconsolidate(s.connection(), stmt_id, event_type,
+                                 payload_hash, weight, now);
+             },
+             py::arg("stmt_id"), py::arg("event_type"),
+             py::arg("payload_hash"), py::arg("weight"), py::arg("now_iso"));
+
+    // ── M0.8: ProjectionMaintainer ────────────────────────────────────────
+
+    py::class_<starling::projection::MaintainerStats>(m, "MaintainerStats")
+        .def_readonly("events_processed", &starling::projection::MaintainerStats::events_processed)
+        .def_readonly("rows_upserted",    &starling::projection::MaintainerStats::rows_upserted);
+
+    py::class_<starling::projection::RebuildReport>(m, "RebuildReport")
+        .def_readonly("projection_name",      &starling::projection::RebuildReport::projection_name)
+        .def_readonly("ground_truth_count",   &starling::projection::RebuildReport::ground_truth_count)
+        .def_readonly("rebuilt_count",        &starling::projection::RebuildReport::rebuilt_count)
+        .def_readonly("truncation_suspected", &starling::projection::RebuildReport::truncation_suspected);
+
+    py::class_<starling::projection::ProjectionMaintainer>(m, "ProjectionMaintainer")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("tick_one_batch",
+             [](starling::projection::ProjectionMaintainer& s, std::string now) {
+                 return s.tick_one_batch(s.connection(), now);
+             },
+             py::arg("now_iso"))
+        .def("rebuild_projection",
+             [](starling::projection::ProjectionMaintainer& s,
+                std::string name, std::string now) {
+                 return s.rebuild_projection(s.connection(), name, now);
+             },
+             py::arg("projection_name"), py::arg("now_iso"))
+        .def("rebuild_projection_with_injected_count",
+             [](starling::projection::ProjectionMaintainer& s,
+                std::string name, std::int64_t injected, std::string now) {
+                 return s.rebuild_projection_with_injected_count(
+                     s.connection(), name, injected, now);
+             },
+             py::arg("projection_name"), py::arg("injected_rebuilt"), py::arg("now_iso"));
+
+    // ── M0.8: CommonGroundWriter ──────────────────────────────────────────
+
+    py::class_<starling::tom::CommonGroundWriter>(m, "CommonGroundWriter")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("assert_",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string tenant_id, std::string stmt_id,
+                std::vector<std::string> parties, std::string now) {
+                 return s.assert_(s.connection(), tenant_id, stmt_id, parties, now);
+             },
+             py::arg("tenant_id"), py::arg("stmt_id"),
+             py::arg("parties"), py::arg("now_iso"))
+        .def("acknowledge",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string actor, std::string now) {
+                 s.acknowledge(s.connection(), cg_id, actor, now);
+             },
+             py::arg("cg_id"), py::arg("actor"), py::arg("now_iso"))
+        .def("repair",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string actor, std::string now) {
+                 s.repair(s.connection(), cg_id, actor, now);
+             },
+             py::arg("cg_id"), py::arg("actor"), py::arg("now_iso"))
+        .def("withdraw",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string actor, std::string now) {
+                 s.withdraw(s.connection(), cg_id, actor, now);
+             },
+             py::arg("cg_id"), py::arg("actor"), py::arg("now_iso"))
+        .def("supersede_ground",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string old_cg_id, std::string new_stmt_id, std::string now) {
+                 s.supersede_ground(s.connection(), old_cg_id, new_stmt_id, now);
+             },
+             py::arg("old_cg_id"), py::arg("new_stmt_id"), py::arg("now_iso"))
+        .def("sweep_timeout_downgrade",
+             [](starling::tom::CommonGroundWriter& s, std::string now) {
+                 return s.sweep_timeout_downgrade(s.connection(), now);
+             },
+             py::arg("now_iso"));
+
+    // ── M0.8: PersonaContainer + AnchorStatement + ConcurrentRebuildError ─
+
+    py::class_<starling::neocortex::AnchorStatement>(m, "AnchorStatement")
+        .def(py::init<>())
+        .def(py::init([](std::string stmt_id, std::string anchor_type,
+                         std::string dimension, std::string value, double confidence) {
+            return starling::neocortex::AnchorStatement{
+                std::move(stmt_id), std::move(anchor_type),
+                std::move(dimension), std::move(value), confidence};
+        }),
+        py::arg("stmt_id") = "",
+        py::arg("anchor_type") = "",
+        py::arg("dimension") = "",
+        py::arg("value") = "",
+        py::arg("confidence") = 0.0)
+        .def_readwrite("stmt_id",     &starling::neocortex::AnchorStatement::stmt_id)
+        .def_readwrite("anchor_type", &starling::neocortex::AnchorStatement::anchor_type)
+        .def_readwrite("dimension",   &starling::neocortex::AnchorStatement::dimension)
+        .def_readwrite("value",       &starling::neocortex::AnchorStatement::value)
+        .def_readwrite("confidence",  &starling::neocortex::AnchorStatement::confidence);
+
+    py::register_exception<starling::neocortex::ConcurrentRebuildError>(
+        m, "ConcurrentRebuildError", PyExc_RuntimeError);
+
+    py::class_<starling::neocortex::PersonaContainer>(m, "PersonaContainer")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("rebuild",
+             [](starling::neocortex::PersonaContainer& s,
+                std::string tenant_id, std::string holder_id,
+                std::vector<starling::neocortex::AnchorStatement> sources,
+                std::string now_iso) {
+                 s.rebuild(s.connection(), tenant_id, holder_id, sources, now_iso);
+             },
+             py::arg("tenant_id"), py::arg("holder_id"), py::arg("sources"),
+             py::arg("now_iso"));
+
+    // ── M0.8: CommonGroundContainer ───────────────────────────────────────
+
+    py::class_<starling::neocortex::CommonGroundContainer>(m, "CommonGroundContainer")
+        .def(py::init<starling::persistence::SqliteAdapter&>(),
+             py::keep_alive<1, 2>(), py::arg("adapter"))
+        .def("rebuild",
+             [](starling::neocortex::CommonGroundContainer& s,
+                std::string tenant_id, std::string cg_ref, std::string now_iso) {
+                 s.rebuild(s.connection(), tenant_id, cg_ref, now_iso);
+             },
+             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"));
 }

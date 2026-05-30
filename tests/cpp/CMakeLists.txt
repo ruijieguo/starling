@@ -80,6 +80,23 @@ add_executable(starling_tests
     test_depth_estimator_cache.cpp
     test_mentalizing.cpp
     test_belief_tracker.cpp
+    test_forgetting_curve.cpp
+    test_swr_sampler.cpp
+    test_consolidation_compress.cpp
+    test_consolidation_abstract_reinforce.cpp
+    test_consolidation_decay.cpp
+    test_consolidation_reconcile.cpp
+    test_replay_scheduler.cpp
+    test_plastic_window.cpp
+    test_arbitration_mild.cpp
+    test_arbitration_severe.cpp
+    test_reconsolidation_engine.cpp
+    test_persona_container.cpp
+    test_common_ground_container.cpp
+    test_common_ground_writer.cpp
+    test_projection_incremental.cpp
+    test_projection_repair_guard.cpp
+    test_subscriber_pump.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

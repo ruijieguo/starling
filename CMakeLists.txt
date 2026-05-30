@@ -79,6 +79,7 @@ target_sources(starling_core PRIVATE
     src/cognizer/knowledge_frontier.cpp
     src/tom/tom_engine.cpp
     src/tom/common_ground.cpp
+    src/tom/common_ground_writer.cpp
     src/tom/nesting_depth_writer.cpp
     src/tom/rate_limiter.cpp
     src/tom/depth_estimator.cpp
@@ -88,6 +89,17 @@ target_sources(starling_core PRIVATE
     src/tom/mentalizing_shared.cpp
     src/tom/belief_tracker.cpp
     src/tom/belief_tracker_handlers.cpp
+    src/replay/forgetting_curve.cpp
+    src/replay/swr_sampler.cpp
+    src/replay/consolidation_ops.cpp
+    src/replay/replay_scheduler.cpp
+    src/reconsolidation/plastic_window.cpp
+    src/reconsolidation/arbitration.cpp
+    src/reconsolidation/reconsolidation_engine.cpp
+    src/neocortex/persona_container.cpp
+    src/neocortex/common_ground_container.cpp
+    src/projection/projection_maintainer.cpp
+    src/bus/subscriber_pump.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
