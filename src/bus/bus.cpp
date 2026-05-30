@@ -1,7 +1,6 @@
 #include "starling/bus/bus.hpp"
 #include "starling/bus/bus_event.hpp"
-#include "starling/bus/conflict_key_backfill.hpp"
-#include "starling/tom/belief_tracker.hpp"
+#include "starling/bus/subscriber_pump.hpp"
 #include "starling/bus/conflict_probe.hpp"
 #include "starling/bus/normalized_interval.hpp"
 #include "starling/bus/outbox_writer.hpp"
@@ -618,14 +617,9 @@ StatementWriteOutcome Bus::write_impl(
 
     tx.commit();
 
-    // Best-effort backfill: process one batch of pre-P2.a conflicts_with edges
-    // that lack canonical_conflict_key. Runs in its own SAVEPOINT inside
-    // tick_one_batch so failures here cannot affect the committed write above.
-    conflict_key_backfill::tick_one_batch(conn);
-
-    // Best-effort BeliefTracker tick -- same position as conflict_key_backfill,
-    // failures don't propagate.
-    try { starling::tom::belief_tracker::tick_one_batch(adapter_); } catch (...) {}
+    // 统一 post-write 泵: 5 subscriber 各 SAVEPOINT 隔离 (spec §11).
+    const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
+    SubscriberPump::run_post_write(adapter_, conn, now_iso);
 
     return outcome;
 }
