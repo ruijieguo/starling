@@ -33,6 +33,7 @@ bool capability_has(const ProfileCapability& cap, std::string_view name) {
     if (name == "projection_index_supported") return cap.projection_index_supported;
     if (name == "dimension_versions_supported") return cap.dimension_versions_supported;
     if (name == "testing_helper_marker") return cap.testing_helper_marker;
+    if (name == "vector_index") return !cap.vector_backend.empty();
     return false;  // unknown -> fail-closed
 }
 

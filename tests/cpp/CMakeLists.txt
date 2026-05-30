@@ -106,6 +106,7 @@ add_executable(starling_tests
     test_semantic_retriever.cpp
     test_proj_vector_payload.cpp
     test_vector_repair_guard.cpp
+    test_vector_capability.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
