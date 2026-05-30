@@ -83,6 +83,7 @@ add_executable(starling_tests
     test_forgetting_curve.cpp
     test_swr_sampler.cpp
     test_consolidation_compress.cpp
+    test_consolidation_abstract_reinforce.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
