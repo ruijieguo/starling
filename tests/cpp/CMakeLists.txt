@@ -97,6 +97,8 @@ add_executable(starling_tests
     test_projection_incremental.cpp
     test_projection_repair_guard.cpp
     test_subscriber_pump.cpp
+    test_vector_math.cpp
+    test_pattern_separator.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

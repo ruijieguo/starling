@@ -100,6 +100,8 @@ target_sources(starling_core PRIVATE
     src/neocortex/common_ground_container.cpp
     src/projection/projection_maintainer.cpp
     src/bus/subscriber_pump.cpp
+    src/vector/vector_math.cpp
+    src/vector/pattern_separator.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
