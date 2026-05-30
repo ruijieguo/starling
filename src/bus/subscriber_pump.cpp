@@ -4,6 +4,7 @@
 #include "starling/reconsolidation/reconsolidation_engine.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/prospective/policy_engine.hpp"
 #include <sqlite3.h>
 #include <functional>
 #include <string>
@@ -58,6 +59,12 @@ void SubscriberPump::run_post_write(persistence::SqliteAdapter& adapter,
     // 5. replay_online — online trigger counter; fires sampling window every N writes.
     run_isolated(conn, "replay_online", [&]{
         replay::ReplayScheduler(adapter).tick_online(conn, now_iso);
+    });
+
+    // 6. policy_engine — Prospective Loop post-write (P2.c): COMMITS→commitment
+    //    生命周期 + Trigger 评估 + commitment.* 迁移。
+    run_isolated(conn, "policy_engine", [&]{
+        prospective::PolicyEngine(adapter).run_post_write(conn, now_iso);
     });
 }
 
