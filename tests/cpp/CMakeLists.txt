@@ -110,6 +110,7 @@ add_executable(starling_tests
     test_affect_vector.cpp
     test_action_guard.cpp
     test_commitment_engine.cpp
+    test_commitment_protection_decay.cpp
     test_trigger.cpp
     test_policy_engine_post_write.cpp
     test_policy_engine_tick.cpp
