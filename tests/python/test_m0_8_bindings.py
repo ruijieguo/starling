@@ -164,7 +164,7 @@ class TestPersonaContainer:
 
     def test_rebuild_empty_sources(self, adapter):
         pc = _core.PersonaContainer(adapter)
-        pc.rebuild("default", "holder-001", [])
+        pc.rebuild("default", "holder-001", [], "2026-05-30T10:00:00Z")
 
     def test_rebuild_with_anchors(self, adapter):
         pc = _core.PersonaContainer(adapter)
@@ -175,7 +175,7 @@ class TestPersonaContainer:
             value="curious",
             confidence=0.9,
         )
-        pc.rebuild("default", "holder-001", [a])
+        pc.rebuild("default", "holder-001", [a], "2026-05-30T10:00:00Z")
 
     def test_concurrent_rebuild_error_exists(self):
         assert hasattr(_core, "ConcurrentRebuildError")
@@ -193,7 +193,7 @@ class TestCommonGroundContainer:
 
     def test_rebuild_no_op(self, adapter):
         cgc = _core.CommonGroundContainer(adapter)
-        cgc.rebuild("default", "cg-ref-001")
+        cgc.rebuild("default", "cg-ref-001", "2026-05-30T10:00:00Z")
 
 
 # ── Python subpackage re-exports ──────────────────────────────────────────────

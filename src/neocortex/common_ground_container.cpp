@@ -54,7 +54,8 @@ CommonGroundContainer::CommonGroundContainer(persistence::SqliteAdapter& adapter
 void CommonGroundContainer::rebuild(
     persistence::Connection& conn,
     std::string_view tenant_id,
-    std::string_view cg_ref)
+    std::string_view cg_ref,
+    std::string_view now_iso)
 {
     sqlite3* db = conn.raw();
 
@@ -104,7 +105,6 @@ void CommonGroundContainer::rebuild(
     const std::string content_json = cj.str();
 
     // ── Step 3: CAS write into containers (kind='common_ground') ─────────────
-    static constexpr const char* kNow = "2026-05-27T00:00:00Z";
 
     // Check if a row exists already.
     std::string existing_id;
@@ -142,8 +142,8 @@ void CommonGroundContainer::rebuild(
         bind_sv(h.get(), 2, tenant_id);
         bind_sv(h.get(), 3, cg_ref);
         bind_sv(h.get(), 4, content_json);
-        bind_sv(h.get(), 5, kNow);
-        bind_sv(h.get(), 6, kNow);
+        bind_sv(h.get(), 5, now_iso);
+        bind_sv(h.get(), 6, now_iso);
         if (sqlite3_step(h.get()) != SQLITE_DONE)
             throw make_sqlite_error(db, "CommonGroundContainer::rebuild: INSERT step");
     } else {
@@ -156,7 +156,7 @@ void CommonGroundContainer::rebuild(
             throw make_sqlite_error(db, "CommonGroundContainer::rebuild: prepare UPDATE");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, content_json);
-        bind_sv(h.get(), 2, kNow);
+        bind_sv(h.get(), 2, now_iso);
         bind_sv(h.get(), 3, tenant_id);
         bind_sv(h.get(), 4, cg_ref);
         sqlite3_bind_int64(h.get(), 5, existing_version);

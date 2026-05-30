@@ -287,3 +287,53 @@ TEST(ReconsolidationEngine, ReconsolidateOpensAndAppends) {
         "SELECT COUNT(*) FROM reconsolidation_pending_evidence "
         "WHERE window_stmt_id='stmt-r'"), 1);
 }
+
+// ── Regression: severe arbitration inside an outer SAVEPOINT (pump context) ──
+//
+// SubscriberPump::run_isolated wraps each subscriber in `SAVEPOINT sub_*`, so in
+// production close_due_windows runs inside an active savepoint-transaction.
+// apply_severe_contradict previously opened a persistence::TransactionGuard
+// (BEGIN IMMEDIATE), which throws "cannot start a transaction within a
+// transaction" inside that savepoint; close_due_windows' fallback then silently
+// swallowed it and the severe fork was lost. With the SAVEPOINT-based guard the
+// 4-item severe commit lands correctly in BOTH contexts. This test reproduces
+// the pump context by wrapping close_due_windows in an explicit outer SAVEPOINT.
+TEST(ReconsolidationEngine, SevereArbitrationWorksInsideOuterSavepoint) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    ReconsolidationEngine engine(*adapter);
+
+    seed_stmt(conn.raw(), "stmt-sev");
+    // Accumulate high-weight contradicting evidence (first call opens the window
+    // with no pending row; calls 2-5 append pending evidence) → strength 1.0
+    // > 0.7 → severe. Mirrors the Python TC-A8-001 setup.
+    for (int i = 0; i < 5; ++i) {
+        engine.reconsolidate(conn, "stmt-sev", "belief.conflict",
+                             "hash-sev-" + std::to_string(i), 1.0,
+                             "2026-05-27T10:00:00Z");
+    }
+
+    // Simulate the pump: wrap close_due_windows in an outer SAVEPOINT.
+    ASSERT_EQ(sqlite3_exec(conn.raw(), "SAVEPOINT sub_reconsolidation",
+                           nullptr, nullptr, nullptr), SQLITE_OK);
+    int closed = 0;
+    EXPECT_NO_THROW(
+        closed = engine.close_due_windows(conn, "2026-05-27T12:00:00Z"));
+    ASSERT_EQ(sqlite3_exec(conn.raw(), "RELEASE sub_reconsolidation",
+                           nullptr, nullptr, nullptr), SQLITE_OK);
+
+    EXPECT_EQ(closed, 1);
+
+    // The severe fork must have committed inside the outer savepoint:
+    //  (1) a new reconsolidation_derived CONSOLIDATED statement exists,
+    //  (2) the old statement is archived,
+    //  (3) a SUPERSEDES edge new→old was created.
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM statements WHERE provenance='reconsolidation_derived' "
+        "AND consolidation_state='consolidated'"), 1);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT consolidation_state FROM statements WHERE id='stmt-sev'"), "archived");
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM statement_edges WHERE dst_id='stmt-sev' "
+        "AND edge_kind='supersedes'"), 1);
+}

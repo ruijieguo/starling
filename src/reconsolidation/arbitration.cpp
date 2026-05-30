@@ -27,6 +27,43 @@ using starling::persistence::StmtHandle;
 
 namespace {
 
+// SAVEPOINT-based atomic guard. Unlike persistence::TransactionGuard (which
+// issues BEGIN IMMEDIATE and cannot nest), a SAVEPOINT nests correctly: issued
+// outside any transaction it starts one; issued inside an existing transaction
+// or savepoint (e.g. SubscriberPump::run_isolated wraps each subscriber in
+// `SAVEPOINT sub_reconsolidation`) it nests. close_due_windows runs in BOTH
+// contexts — standalone (Python tests) and inside the pump savepoint — so the
+// severe 4-item commit must use a savepoint, not BEGIN IMMEDIATE.
+class SavepointGuard {
+public:
+    SavepointGuard(sqlite3* db, std::string name)
+        : db_(db), name_(std::move(name)), active_(true) {
+        if (sqlite3_exec(db_, ("SAVEPOINT " + name_).c_str(),
+                         nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db_, "SavepointGuard: SAVEPOINT");
+    }
+    ~SavepointGuard() {
+        if (active_) {
+            // Roll back then release (ROLLBACK TO does not pop the savepoint).
+            sqlite3_exec(db_, ("ROLLBACK TO " + name_).c_str(), nullptr, nullptr, nullptr);
+            sqlite3_exec(db_, ("RELEASE " + name_).c_str(), nullptr, nullptr, nullptr);
+        }
+    }
+    void release() {
+        if (sqlite3_exec(db_, ("RELEASE " + name_).c_str(),
+                         nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db_, "SavepointGuard: RELEASE");
+        active_ = false;
+    }
+    SavepointGuard(const SavepointGuard&) = delete;
+    SavepointGuard& operator=(const SavepointGuard&) = delete;
+
+private:
+    sqlite3* db_;
+    std::string name_;
+    bool active_;
+};
+
 // 32 random hex chars for new statement id / edge id.
 std::string random_hex_32() {
     static thread_local std::mt19937_64 rng{std::random_device{}()};
@@ -332,8 +369,12 @@ std::string apply_severe_contradict(persistence::Connection& conn,
     const std::string new_id = random_hex_32();
     const std::string now_s(now_iso);
 
-    // Wrap steps 2-5 atomically.
-    persistence::TransactionGuard tx(conn);
+    // Wrap steps 2-5 atomically. Use a SAVEPOINT (not BEGIN IMMEDIATE) so this
+    // nests correctly when close_due_windows runs inside the SubscriberPump's
+    // `SAVEPOINT sub_reconsolidation` — otherwise BEGIN IMMEDIATE throws
+    // "cannot start a transaction within a transaction" and the async severe
+    // commit is silently rolled back by run_isolated.
+    SavepointGuard tx(db, "severe_contradict");
 
     // Step 2: INSERT new forked statement (provenance=reconsolidation_derived,
     //         consolidation_state=consolidated, supersedes_id=old_stmt_id).
@@ -400,9 +441,12 @@ std::string apply_severe_contradict(persistence::Connection& conn,
 
     // Step 4: UPDATE old statement → archived.
     {
+        // State guard: only archive a still-live row. Mirrors the P1 sync path's
+        // defensive guard against archiving an already-terminal statement.
         const char* upd_sql =
             "UPDATE statements SET consolidation_state='archived', updated_at=? "
-            "WHERE id=? AND tenant_id=?";
+            "WHERE id=? AND tenant_id=? "
+            "  AND consolidation_state NOT IN ('archived','forgotten')";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db, upd_sql, -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(db, "apply_severe_contradict: prepare UPDATE archive");
@@ -413,7 +457,7 @@ std::string apply_severe_contradict(persistence::Connection& conn,
         if (sqlite3_step(h.get()) != SQLITE_DONE)
             throw make_sqlite_error(db, "apply_severe_contradict: UPDATE archive step");
         if (sqlite3_changes(db) != 1)
-            throw std::runtime_error("apply_severe_contradict: old statement row not found for archive");
+            throw std::runtime_error("apply_severe_contradict: old statement row not found or already terminal");
     }
 
     // Step 5: Emit 3 outbox events (statement.corrected, statement.archived, statement.superseded).
@@ -440,7 +484,7 @@ std::string apply_severe_contradict(persistence::Connection& conn,
                    new_id, new_id, tenant_id, superseded_payload.str());
     }
 
-    tx.commit();
+    tx.release();
     (void)agg;  // agg.strength available for future confidence fork; kept as-is per spec
     return new_id;
 }

@@ -36,7 +36,8 @@ public:
     // subsequent rebuilds it updates WHERE version == last_known_version; if another
     // writer changed the version in between → ConcurrentRebuildError.
     void rebuild(persistence::Connection& conn, std::string_view tenant_id,
-                 std::string_view holder_id, const std::vector<AnchorStatement>& sources);
+                 std::string_view holder_id, const std::vector<AnchorStatement>& sources,
+                 std::string_view now_iso);
 
     // Python binding helper.
     persistence::Connection& connection() { return adapter_.connection(); }

@@ -157,7 +157,8 @@ void CommonGroundWriter::acknowledge(persistence::Connection& conn,
     {
         const char* q = "SELECT tenant_id FROM common_ground WHERE id=?";
         sqlite3_stmt* qraw = nullptr;
-        sqlite3_prepare_v2(db, q, -1, &qraw, nullptr);
+        if (sqlite3_prepare_v2(db, q, -1, &qraw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "common_ground_writer: prepare tenant_id lookup");
         StmtHandle qh(qraw);
         bind_sv(qh.get(), 1, cg_id);
         if (sqlite3_step(qh.get()) == SQLITE_ROW) {
@@ -190,7 +191,8 @@ void CommonGroundWriter::repair(persistence::Connection& conn,
     {
         const char* q = "SELECT tenant_id FROM common_ground WHERE id=?";
         sqlite3_stmt* qraw = nullptr;
-        sqlite3_prepare_v2(db, q, -1, &qraw, nullptr);
+        if (sqlite3_prepare_v2(db, q, -1, &qraw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "common_ground_writer: prepare tenant_id lookup");
         StmtHandle qh(qraw);
         bind_sv(qh.get(), 1, cg_id);
         if (sqlite3_step(qh.get()) == SQLITE_ROW) {
@@ -223,7 +225,8 @@ void CommonGroundWriter::withdraw(persistence::Connection& conn,
     {
         const char* q = "SELECT tenant_id FROM common_ground WHERE id=?";
         sqlite3_stmt* qraw = nullptr;
-        sqlite3_prepare_v2(db, q, -1, &qraw, nullptr);
+        if (sqlite3_prepare_v2(db, q, -1, &qraw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "common_ground_writer: prepare tenant_id lookup");
         StmtHandle qh(qraw);
         bind_sv(qh.get(), 1, cg_id);
         if (sqlite3_step(qh.get()) == SQLITE_ROW) {
@@ -257,7 +260,8 @@ void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
     {
         const char* q = "SELECT tenant_id FROM common_ground WHERE id=?";
         sqlite3_stmt* qraw = nullptr;
-        sqlite3_prepare_v2(db, q, -1, &qraw, nullptr);
+        if (sqlite3_prepare_v2(db, q, -1, &qraw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "common_ground_writer: prepare tenant_id lookup");
         StmtHandle qh(qraw);
         bind_sv(qh.get(), 1, old_cg_id);
         if (sqlite3_step(qh.get()) == SQLITE_ROW) {

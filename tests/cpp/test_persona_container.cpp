@@ -61,7 +61,7 @@ TEST(PersonaContainer, SelfAnchorWinsOverProfile) {
         {"s2", "profile_anchor",    "traits", "anxious", 0.5},
     };
 
-    pc.rebuild(conn, "default", "holder-1", sources);
+    pc.rebuild(conn, "default", "holder-1", sources, "2026-05-30T10:00:00Z");
 
     // content_json should contain "calm" (self wins) and NOT "anxious" as chosen value.
     std::string cj = scol(conn.raw(),
@@ -88,7 +88,7 @@ TEST(PersonaContainer, DivergenceMarksSuspected) {
         {"s2", "profile_anchor",    "mood", "Y", 0.2},
     };
 
-    pc.rebuild(conn, "default", "holder-div", sources);
+    pc.rebuild(conn, "default", "holder-div", sources, "2026-05-30T10:00:00Z");
 
     std::string cj = scol(conn.raw(),
         "SELECT content_json FROM containers WHERE holder_id='holder-div' AND kind='persona'");
@@ -121,7 +121,7 @@ TEST(PersonaContainer, ProfileUsedWhenNoSelf) {
         {"s1", "profile_anchor", "preferences", "tea", 0.7},
     };
 
-    pc.rebuild(conn, "default", "holder-prof", sources);
+    pc.rebuild(conn, "default", "holder-prof", sources, "2026-05-30T10:00:00Z");
 
     std::string cj = scol(conn.raw(),
         "SELECT content_json FROM containers WHERE holder_id='holder-prof' AND kind='persona'");
@@ -142,13 +142,13 @@ TEST(PersonaContainer, CASIncrementsVersion) {
     };
 
     // First rebuild → version 1
-    pc.rebuild(conn, "default", "holder-cas", sources);
+    pc.rebuild(conn, "default", "holder-cas", sources, "2026-05-30T10:00:00Z");
     int v1 = icol(conn.raw(),
         "SELECT version FROM containers WHERE holder_id='holder-cas' AND kind='persona'");
     EXPECT_EQ(v1, 1);
 
     // Second rebuild → version 2
-    pc.rebuild(conn, "default", "holder-cas", sources);
+    pc.rebuild(conn, "default", "holder-cas", sources, "2026-05-30T10:00:00Z");
     int v2 = icol(conn.raw(),
         "SELECT version FROM containers WHERE holder_id='holder-cas' AND kind='persona'");
     EXPECT_EQ(v2, 2);
@@ -166,7 +166,7 @@ TEST(PersonaContainer, CASMismatchThrows) {
     };
 
     // First rebuild succeeds → version 1.
-    pc.rebuild(conn, "default", "holder-mismatch", sources);
+    pc.rebuild(conn, "default", "holder-mismatch", sources, "2026-05-30T10:00:00Z");
 
     // Simulate a concurrent write by bumping version directly.
     sqlite3_exec(conn.raw(),
@@ -176,6 +176,6 @@ TEST(PersonaContainer, CASMismatchThrows) {
 
     // Second rebuild should see version mismatch and throw ConcurrentRebuildError.
     EXPECT_THROW(
-        pc.rebuild(conn, "default", "holder-mismatch", sources),
+        pc.rebuild(conn, "default", "holder-mismatch", sources, "2026-05-30T10:00:00Z"),
         ConcurrentRebuildError);
 }

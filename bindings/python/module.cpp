@@ -1307,10 +1307,12 @@ PYBIND11_MODULE(_core, m) {
         .def("rebuild",
              [](starling::neocortex::PersonaContainer& s,
                 std::string tenant_id, std::string holder_id,
-                std::vector<starling::neocortex::AnchorStatement> sources) {
-                 s.rebuild(s.connection(), tenant_id, holder_id, sources);
+                std::vector<starling::neocortex::AnchorStatement> sources,
+                std::string now_iso) {
+                 s.rebuild(s.connection(), tenant_id, holder_id, sources, now_iso);
              },
-             py::arg("tenant_id"), py::arg("holder_id"), py::arg("sources"));
+             py::arg("tenant_id"), py::arg("holder_id"), py::arg("sources"),
+             py::arg("now_iso"));
 
     // ── M0.8: CommonGroundContainer ───────────────────────────────────────
 
@@ -1319,8 +1321,8 @@ PYBIND11_MODULE(_core, m) {
              py::keep_alive<1, 2>(), py::arg("adapter"))
         .def("rebuild",
              [](starling::neocortex::CommonGroundContainer& s,
-                std::string tenant_id, std::string cg_ref) {
-                 s.rebuild(s.connection(), tenant_id, cg_ref);
+                std::string tenant_id, std::string cg_ref, std::string now_iso) {
+                 s.rebuild(s.connection(), tenant_id, cg_ref, now_iso);
              },
-             py::arg("tenant_id"), py::arg("cg_ref"));
+             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"));
 }

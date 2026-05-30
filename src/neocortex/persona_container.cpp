@@ -91,7 +91,8 @@ void PersonaContainer::rebuild(
     persistence::Connection& conn,
     std::string_view tenant_id,
     std::string_view holder_id,
-    const std::vector<AnchorStatement>& sources)
+    const std::vector<AnchorStatement>& sources,
+    std::string_view now_iso)
 {
     sqlite3* db = conn.raw();
     const std::string cache_key = make_cache_key(tenant_id, holder_id);
@@ -201,7 +202,6 @@ void PersonaContainer::rebuild(
     const std::string content_json = cj.str();
 
     // ── Step 3: CAS write into containers ─────────────────────────────────
-    static constexpr const char* kNow = "2026-05-27T00:00:00Z";
 
     auto cache_it = version_cache_.find(cache_key);
     const bool known_to_this_instance = (cache_it != version_cache_.end());
@@ -244,8 +244,8 @@ void PersonaContainer::rebuild(
             bind_sv(h.get(), 2, tenant_id);
             bind_sv(h.get(), 3, holder_id);
             bind_sv(h.get(), 4, content_json);
-            bind_sv(h.get(), 5, kNow);
-            bind_sv(h.get(), 6, kNow);
+            bind_sv(h.get(), 5, now_iso);
+            bind_sv(h.get(), 6, now_iso);
             if (sqlite3_step(h.get()) != SQLITE_DONE)
                 throw make_sqlite_error(db, "PersonaContainer::rebuild: INSERT step");
             // Cache the written version (1)
@@ -261,7 +261,7 @@ void PersonaContainer::rebuild(
                 throw make_sqlite_error(db, "PersonaContainer::rebuild: prepare UPDATE (first-seen)");
             StmtHandle h(raw);
             bind_sv(h.get(), 1, content_json);
-            bind_sv(h.get(), 2, kNow);
+            bind_sv(h.get(), 2, now_iso);
             bind_sv(h.get(), 3, tenant_id);
             bind_sv(h.get(), 4, holder_id);
             sqlite3_bind_int64(h.get(), 5, existing_version);
@@ -283,7 +283,7 @@ void PersonaContainer::rebuild(
             throw make_sqlite_error(db, "PersonaContainer::rebuild: prepare UPDATE (cached)");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, content_json);
-        bind_sv(h.get(), 2, kNow);
+        bind_sv(h.get(), 2, now_iso);
         bind_sv(h.get(), 3, tenant_id);
         bind_sv(h.get(), 4, holder_id);
         sqlite3_bind_int64(h.get(), 5, expected_version);

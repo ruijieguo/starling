@@ -71,7 +71,7 @@ TEST(CommonGroundContainer, MaterializesGroupedByStatus) {
     seed_cg(conn.raw(), "cg4", "stmt-expired",    "expired");
     seed_cg(conn.raw(), "cg5", "stmt-recanted",   "recanted");
 
-    cgc.rebuild(conn, "default", "cgref-1");
+    cgc.rebuild(conn, "default", "cgref-1", "2026-05-30T10:00:00Z");
 
     std::string cj = scol(conn.raw(),
         "SELECT content_json FROM containers "
@@ -108,7 +108,7 @@ TEST(CommonGroundContainer, EmptyCommonGroundProducesEmptyGroups) {
     CommonGroundContainer cgc(*adapter);
 
     // No common_ground rows seeded.
-    cgc.rebuild(conn, "default", "cgref-empty");
+    cgc.rebuild(conn, "default", "cgref-empty", "2026-05-30T10:00:00Z");
 
     std::string cj = scol(conn.raw(),
         "SELECT content_json FROM containers "
@@ -134,14 +134,14 @@ TEST(CommonGroundContainer, RebuildIncrementsVersion) {
     seed_cg(conn.raw(), "cg1", "stmt-a", "grounded");
 
     // First rebuild → version 1
-    cgc.rebuild(conn, "default", "cgref-ver");
+    cgc.rebuild(conn, "default", "cgref-ver", "2026-05-30T10:00:00Z");
     int v1 = icol(conn.raw(),
         "SELECT version FROM containers "
         "WHERE holder_id='cgref-ver' AND kind='common_ground'");
     EXPECT_EQ(v1, 1);
 
     // Second rebuild → version 2
-    cgc.rebuild(conn, "default", "cgref-ver");
+    cgc.rebuild(conn, "default", "cgref-ver", "2026-05-30T10:00:00Z");
     int v2 = icol(conn.raw(),
         "SELECT version FROM containers "
         "WHERE holder_id='cgref-ver' AND kind='common_ground'");
