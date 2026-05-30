@@ -31,6 +31,9 @@ public:
     int run_decay(persistence::Connection& conn,
                   const std::vector<std::string>& candidate_ids, std::string_view now_iso);
 
+    // Python binding helper: exposes adapter_.connection() without making adapter_ public.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     persistence::SqliteAdapter& adapter_;
     static constexpr int kOnlineTrigger=3;

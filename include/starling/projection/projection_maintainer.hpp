@@ -28,6 +28,10 @@ public:
     RebuildReport rebuild_projection_with_injected_count(
         persistence::Connection& conn, std::string_view projection_name,
         int64_t injected_rebuilt, std::string_view now_iso);
+
+    // Python binding helper.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     persistence::SqliteAdapter& adapter_;
     RebuildReport do_rebuild(persistence::Connection& conn,

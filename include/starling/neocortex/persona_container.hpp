@@ -37,6 +37,10 @@ public:
     // writer changed the version in between → ConcurrentRebuildError.
     void rebuild(persistence::Connection& conn, std::string_view tenant_id,
                  std::string_view holder_id, const std::vector<AnchorStatement>& sources);
+
+    // Python binding helper.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     [[maybe_unused]] persistence::SqliteAdapter& adapter_;
     // version cache: key = "tenant_id\x1fholder_id", value = last written version

@@ -21,6 +21,10 @@ public:
     void reconsolidate(persistence::Connection& conn, std::string_view stmt_id,
                        std::string_view event_type, std::string_view payload_hash,
                        double weight, std::string_view now_iso);
+
+    // Python binding helper.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     persistence::SqliteAdapter& adapter_;
 };

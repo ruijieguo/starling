@@ -13,6 +13,10 @@ public:
     // 单 version CAS (复用 PersonaContainer 的 CAS 模式).
     void rebuild(persistence::Connection& conn, std::string_view tenant_id,
                  std::string_view cg_ref);
+
+    // Python binding helper.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     [[maybe_unused]] persistence::SqliteAdapter& adapter_;
 };

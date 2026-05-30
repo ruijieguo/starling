@@ -27,6 +27,10 @@ public:
                           std::string_view new_stmt_id, std::string_view now_iso);
     // 24h 超时降级: asserted_unack > 24h 无 Ack/Repair → suspected_diverge. 返回降级数.
     int sweep_timeout_downgrade(persistence::Connection& conn, std::string_view now_iso);
+
+    // Python binding helper.
+    persistence::Connection& connection() { return adapter_.connection(); }
+
 private:
     persistence::SqliteAdapter& adapter_;
 };
