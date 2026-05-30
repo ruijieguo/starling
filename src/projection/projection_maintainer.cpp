@@ -81,13 +81,14 @@ struct StmtRow {
     std::string observed_at;
     double      salience = 0.0;
     std::string modality;
+    std::string review_status;
     bool        found = false;
 };
 
 StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id) {
     const char* sql =
         "SELECT tenant_id, holder_id, subject_kind, subject_id, predicate, "
-        "       consolidation_state, observed_at, salience, modality "
+        "       consolidation_state, observed_at, salience, modality, review_status "
         "FROM statements WHERE id = ?";
     sqlite3_stmt* raw = nullptr;
     StmtRow row;
@@ -110,6 +111,7 @@ StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id) {
         row.observed_at         = get_text(6);
         row.salience            = sqlite3_column_double(h.get(), 7);
         row.modality            = get_text(8);
+        row.review_status       = get_text(9);
         row.found               = true;
     }
     return row;
@@ -236,6 +238,69 @@ int upsert_projection_rows(persistence::Connection& conn,
     return count;
 }
 
+// ── Vector payload projection (M0.9, 7th projection) ─────────────────────────
+// proj_vector_payload is keyed by stmt_id but only materializes rows for
+// statements that already have an embedded index vector. Driven by the
+// vector.embedded event (and refreshed on statement.* when a vector exists).
+// These helpers run ALONGSIDE the 6 M0.8 SQL projections; they never touch
+// the existing projection tables.
+
+// No-op unless the statement has an embedded vector. UPSERT keyed on stmt_id.
+void upsert_vector_payload(persistence::Connection& conn,
+                           std::string_view stmt_id,
+                           const StmtRow& r) {
+    // Only materialize if an embedded vector exists for this stmt.
+    {
+        const char* exists_sql =
+            "SELECT 1 FROM statement_vectors "
+            "WHERE stmt_id = ? AND status = 'embedded'";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), exists_sql, -1, &raw, nullptr) != SQLITE_OK)
+            return;
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, stmt_id);
+        if (sqlite3_step(h.get()) != SQLITE_ROW)
+            return;  // no embedded vector yet → do not create a payload row
+    }
+
+    const char* sql =
+        "INSERT INTO proj_vector_payload"
+        "(tenant_id, holder_id, consolidation_state, modality, review_status, stmt_id)"
+        " VALUES(?,?,?,?,?,?)"
+        " ON CONFLICT(stmt_id) DO UPDATE SET"
+        "   consolidation_state=excluded.consolidation_state,"
+        "   review_status=excluded.review_status,"
+        "   modality=excluded.modality,"
+        "   holder_id=excluded.holder_id,"
+        "   tenant_id=excluded.tenant_id";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        return;
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, r.tenant_id);
+    bind_sv(h.get(), 2, r.holder_id);
+    bind_sv(h.get(), 3, r.consolidation_state);
+    if (r.modality.empty())
+        sqlite3_bind_null(h.get(), 4);
+    else
+        bind_sv(h.get(), 4, r.modality);
+    bind_sv(h.get(), 5, r.review_status);
+    bind_sv(h.get(), 6, stmt_id);
+    sqlite3_step(h.get());
+}
+
+// Remove the stmt's row from proj_vector_payload (called on retire).
+void delete_vector_payload(persistence::Connection& conn,
+                           std::string_view stmt_id) {
+    const char* sql = "DELETE FROM proj_vector_payload WHERE stmt_id = ?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        return;
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, stmt_id);
+    sqlite3_step(h.get());
+}
+
 // ── Event row ────────────────────────────────────────────────────────────────
 
 struct EventRow {
@@ -272,11 +337,8 @@ void emit_event(
 
 // ── Rebuild helpers ──────────────────────────────────────────────────────────
 
-// COUNT(*) FROM statements — the ground truth for how many rows proj_holder_state_time should have.
-int64_t count_ground_truth(persistence::Connection& conn,
-                           std::string_view /*projection_name*/) {
-    // For all supported projections at M0.8: every statement maps to one row.
-    const char* sql = "SELECT COUNT(*) FROM statements";
+// Small helper: run a single-column COUNT query and return the int64 result.
+int64_t scalar_count(persistence::Connection& conn, const char* sql) {
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return 0;
@@ -287,18 +349,33 @@ int64_t count_ground_truth(persistence::Connection& conn,
     return count;
 }
 
-// Recompute for proj_holder_state_time: COUNT(*) FROM statements (1 statement → 1 row).
+// Ground truth = how many rows the projection SHOULD have after a rebuild.
+// For the 6 M0.8 SQL projections this is 1:1 with statements. For the M0.9
+// proj_vector_payload it is the number of embedded vectors whose statement is
+// not retired — genuinely smaller than COUNT(*) FROM statements.
+int64_t count_ground_truth(persistence::Connection& conn,
+                           std::string_view projection_name) {
+    if (projection_name == "proj_vector_payload") {
+        return scalar_count(conn,
+            "SELECT COUNT(*) FROM statement_vectors v "
+            "JOIN statements s ON s.id = v.stmt_id "
+            "WHERE v.status = 'embedded' "
+            "AND s.consolidation_state NOT IN ('archived','forgotten')");
+    }
+    // For all 6 M0.8 SQL projections: every statement maps to one row.
+    return scalar_count(conn, "SELECT COUNT(*) FROM statements");
+}
+
+// Rebuilt = how many rows the rebuild produced. For the M0.8 projections this
+// is recomputed from statements (1:1). For proj_vector_payload it is the
+// ACTUAL materialized row count of the projection table — which can lag the
+// ground truth and so trips the §16.3 truncation guard.
 int64_t recompute_rebuilt(persistence::Connection& conn,
-                          std::string_view /*projection_name*/) {
-    const char* sql = "SELECT COUNT(*) FROM statements";
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return 0;
-    StmtHandle h(raw);
-    int64_t count = 0;
-    if (sqlite3_step(h.get()) == SQLITE_ROW)
-        count = sqlite3_column_int64(h.get(), 0);
-    return count;
+                          std::string_view projection_name) {
+    if (projection_name == "proj_vector_payload") {
+        return scalar_count(conn, "SELECT COUNT(*) FROM proj_vector_payload");
+    }
+    return scalar_count(conn, "SELECT COUNT(*) FROM statements");
 }
 
 // UPSERT projection_rebuild_state.
@@ -388,6 +465,21 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
     for (const auto& ev : batch) {
         if (ev.outbox_sequence > max_seq) max_seq = ev.outbox_sequence;
 
+        // ── vector.embedded → materialize proj_vector_payload (M0.9) ──────────
+        // Runs alongside the statement.* handling below; only the 7th
+        // projection is touched here.
+        if (ev.event_type == "vector.embedded") {
+            stats.events_processed++;
+            StmtRow sr = read_stmt(conn, ev.primary_id);
+            if (!sr.found) continue;
+            const bool is_retiring =
+                (sr.consolidation_state == "archived" ||
+                 sr.consolidation_state == "forgotten");
+            if (!is_retiring)
+                upsert_vector_payload(conn, ev.primary_id, sr);
+            continue;
+        }
+
         // Only handle statement.* events.
         if (ev.event_type.size() < 10 ||
             ev.event_type.substr(0, 10) != "statement.")
@@ -405,9 +497,15 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
 
         if (is_retiring) {
             delete_projection_rows(conn, ev.primary_id);
+            // Also retire the 7th projection (M0.9).
+            delete_vector_payload(conn, ev.primary_id);
         } else {
             stats.rows_upserted +=
                 upsert_projection_rows(conn, ev.primary_id, sr);
+            // Refresh the 7th projection — no-op unless an embedded vector
+            // already exists (a plain statement.written before its vector
+            // lands must NOT create a payload row).
+            upsert_vector_payload(conn, ev.primary_id, sr);
         }
     }
 
@@ -492,6 +590,36 @@ RebuildReport ProjectionMaintainer::do_rebuild(
                 StmtHandle h(raw);
                 if (sqlite3_step(h.get()) != SQLITE_DONE)
                     throw make_sqlite_error(conn.raw(), "rebuild: INSERT proj_holder_state_time step");
+            }
+        } else if (projection_name == "proj_vector_payload") {
+            // M0.9 7th projection — DELETE+INSERT from embedded vectors joined
+            // to non-retired statements. ground_truth/rebuilt counting differs
+            // from the 6 SQL projections (see count_ground_truth above).
+            {
+                const char* del_sql = "DELETE FROM proj_vector_payload";
+                sqlite3_stmt* raw = nullptr;
+                if (sqlite3_prepare_v2(conn.raw(), del_sql, -1, &raw, nullptr) != SQLITE_OK)
+                    throw make_sqlite_error(conn.raw(), "rebuild: DELETE proj_vector_payload prepare");
+                StmtHandle h(raw);
+                if (sqlite3_step(h.get()) != SQLITE_DONE)
+                    throw make_sqlite_error(conn.raw(), "rebuild: DELETE proj_vector_payload step");
+            }
+            {
+                const char* ins_sql =
+                    "INSERT INTO proj_vector_payload"
+                    "(tenant_id, holder_id, consolidation_state, modality, review_status, stmt_id)"
+                    " SELECT s.tenant_id, s.holder_id, s.consolidation_state,"
+                    "        s.modality, s.review_status, s.id"
+                    " FROM statement_vectors v"
+                    " JOIN statements s ON s.id = v.stmt_id"
+                    " WHERE v.status = 'embedded'"
+                    "   AND s.consolidation_state NOT IN ('archived','forgotten')";
+                sqlite3_stmt* raw = nullptr;
+                if (sqlite3_prepare_v2(conn.raw(), ins_sql, -1, &raw, nullptr) != SQLITE_OK)
+                    throw make_sqlite_error(conn.raw(), "rebuild: INSERT proj_vector_payload prepare");
+                StmtHandle h(raw);
+                if (sqlite3_step(h.get()) != SQLITE_DONE)
+                    throw make_sqlite_error(conn.raw(), "rebuild: INSERT proj_vector_payload step");
             }
         }
         // Generic fallback for other projection names: no-op on the table

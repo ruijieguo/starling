@@ -97,6 +97,16 @@ add_executable(starling_tests
     test_projection_incremental.cpp
     test_projection_repair_guard.cpp
     test_subscriber_pump.cpp
+    test_vector_math.cpp
+    test_pattern_separator.cpp
+    test_sqlite_blob_vector_index.cpp
+    test_stub_embedding_adapter.cpp
+    test_openai_embedding_adapter.cpp
+    test_embedding_worker.cpp
+    test_semantic_retriever.cpp
+    test_proj_vector_payload.cpp
+    test_vector_repair_guard.cpp
+    test_vector_capability.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

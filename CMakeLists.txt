@@ -73,6 +73,7 @@ target_sources(starling_core PRIVATE
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
     src/retrieval/basic_retriever.cpp
+    src/retrieval/semantic_retriever.cpp
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
     src/cognizer/cognizer_hub.cpp
@@ -100,6 +101,12 @@ target_sources(starling_core PRIVATE
     src/neocortex/common_ground_container.cpp
     src/projection/projection_maintainer.cpp
     src/bus/subscriber_pump.cpp
+    src/vector/vector_math.cpp
+    src/vector/pattern_separator.cpp
+    src/vector/sqlite_blob_vector_index.cpp
+    src/embedding/stub_embedding_adapter.cpp
+    src/embedding/openai_embedding_adapter.cpp
+    src/embedding/embedding_worker.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3

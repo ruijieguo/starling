@@ -47,6 +47,10 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/retrieval/basic_retriever.hpp"
 #include "starling/schema/enums.hpp"
+#include "starling/embedding/embedding_adapter.hpp"
+#include "starling/embedding/embedding_worker.hpp"
+#include "starling/vector/vector_index.hpp"
+#include "starling/retrieval/semantic_retriever.hpp"
 
 namespace py = pybind11;
 
@@ -1233,6 +1237,97 @@ PYBIND11_MODULE(_core, m) {
                      s.connection(), name, injected, now);
              },
              py::arg("projection_name"), py::arg("injected_rebuilt"), py::arg("now_iso"));
+
+    // ── M0.9: Embedding / Vector / Worker / SemanticRetriever ─────────────
+
+    // Abstract bases (no init) so derived-to-base-ref passing works.
+    py::class_<starling::embedding::EmbeddingAdapter>(m, "EmbeddingAdapter");
+    py::class_<starling::vector::VectorIndex>(m, "VectorIndex");
+
+    py::class_<starling::embedding::StubEmbeddingAdapter,
+               starling::embedding::EmbeddingAdapter>(m, "StubEmbeddingAdapter")
+        .def(py::init<int>(), py::arg("dim") = 8)
+        .def("dim", &starling::embedding::StubEmbeddingAdapter::dim)
+        .def("model", &starling::embedding::StubEmbeddingAdapter::model)
+        .def("fail_next",
+             [](starling::embedding::StubEmbeddingAdapter& s, std::string text) {
+                 s.fail_next(text);
+             },
+             py::arg("text"));
+
+    py::class_<starling::vector::SqliteBlobVectorIndex,
+               starling::vector::VectorIndex>(m, "SqliteBlobVectorIndex")
+        .def(py::init<>());
+
+    py::class_<starling::embedding::EmbeddingStats>(m, "EmbeddingStats")
+        .def_readonly("embedded",         &starling::embedding::EmbeddingStats::embedded)
+        .def_readonly("failed",           &starling::embedding::EmbeddingStats::failed)
+        .def_readonly("overlaps_created", &starling::embedding::EmbeddingStats::overlaps_created);
+
+    // EmbeddingWorker holds REFERENCES to adapter/embedder/index — keep_alive on
+    // all three (without it you get a use-after-free).
+    py::class_<starling::embedding::EmbeddingWorker>(m, "EmbeddingWorker")
+        .def(py::init<starling::persistence::SqliteAdapter&,
+                      starling::embedding::EmbeddingAdapter&,
+                      starling::vector::VectorIndex&>(),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
+             py::arg("adapter"), py::arg("embedder"), py::arg("index"))
+        .def("tick_one_batch",
+             [](starling::embedding::EmbeddingWorker& s, std::string now) {
+                 return s.tick_one_batch(s.connection(), now);
+             },
+             py::arg("now_iso"));
+
+    py::class_<starling::retrieval::SemanticRetrieverParams>(
+            m, "SemanticRetrieverParams")
+        .def(py::init([](std::string tenant_id, std::string holder_id,
+                         std::string holder_perspective, std::string query_text,
+                         int k, std::string trace_id, std::string query_id) {
+            starling::retrieval::SemanticRetrieverParams p;
+            p.tenant_id = std::move(tenant_id);
+            p.holder_id = std::move(holder_id);
+            p.holder_perspective = std::move(holder_perspective);
+            p.query_text = std::move(query_text);
+            p.k = k;
+            p.trace_id = std::move(trace_id);
+            p.query_id = std::move(query_id);
+            return p;
+        }),
+        py::arg("tenant_id") = "",
+        py::arg("holder_id") = "",
+        py::arg("holder_perspective") = "",
+        py::arg("query_text") = "",
+        py::arg("k") = 10,
+        py::arg("trace_id") = "",
+        py::arg("query_id") = "")
+        .def_readwrite("tenant_id",          &starling::retrieval::SemanticRetrieverParams::tenant_id)
+        .def_readwrite("holder_id",          &starling::retrieval::SemanticRetrieverParams::holder_id)
+        .def_readwrite("holder_perspective", &starling::retrieval::SemanticRetrieverParams::holder_perspective)
+        .def_readwrite("query_text",         &starling::retrieval::SemanticRetrieverParams::query_text)
+        .def_readwrite("k",                  &starling::retrieval::SemanticRetrieverParams::k)
+        .def_readwrite("trace_id",           &starling::retrieval::SemanticRetrieverParams::trace_id)
+        .def_readwrite("query_id",           &starling::retrieval::SemanticRetrieverParams::query_id);
+
+    py::class_<starling::retrieval::SemanticScored>(m, "SemanticScored")
+        .def_readonly("row",   &starling::retrieval::SemanticScored::row)
+        .def_readonly("score", &starling::retrieval::SemanticScored::score);
+
+    py::class_<starling::retrieval::SemanticResult>(m, "SemanticResult")
+        .def_readonly("rows",     &starling::retrieval::SemanticResult::rows)
+        .def_readonly("degraded", &starling::retrieval::SemanticResult::degraded);
+
+    py::class_<starling::retrieval::SemanticRetriever>(m, "SemanticRetriever")
+        .def(py::init<starling::persistence::SqliteAdapter&,
+                      starling::embedding::EmbeddingAdapter&,
+                      starling::vector::VectorIndex&>(),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
+             py::arg("adapter"), py::arg("embedder"), py::arg("index"))
+        .def("vector_recall",
+             [](starling::retrieval::SemanticRetriever& s,
+                const starling::retrieval::SemanticRetrieverParams& p) {
+                 return s.vector_recall(s.connection(), p);
+             },
+             py::arg("params"));
 
     // ── M0.8: CommonGroundWriter ──────────────────────────────────────────
 
