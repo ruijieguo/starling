@@ -14,7 +14,10 @@ namespace starling::retrieval {
 
 namespace {
 
-// SELECT columns mirror basic_retriever.cpp exactly.
+// SELECT columns mirror basic_retriever.cpp exactly. The WHERE clause re-checks
+// the visibility predicate (spec §7 "再次校验可见性") so a row whose state changed
+// between search_topk and this fetch (rejected / pending_review / cross-tenant)
+// is dropped — defense-in-depth on top of search_topk's scope filtering.
 constexpr const char* kSelectByIdSql =
     "SELECT id, tenant_id, holder_id, holder_perspective, "
     "       subject_kind, subject_id, predicate, "
@@ -23,7 +26,10 @@ constexpr const char* kSelectByIdSql =
     "       valid_from, valid_to, consolidation_state, review_status, "
     "       evidence_json "
     "  FROM statements "
-    " WHERE id = ?1 LIMIT 1;";
+    " WHERE id = ?1 AND tenant_id = ?2 "
+    "   AND consolidation_state IN ('consolidated','archived') "
+    "   AND review_status NOT IN ('rejected','pending_review') "
+    " LIMIT 1;";
 
 }  // namespace
 
@@ -62,6 +68,7 @@ SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
         persistence::StmtHandle h{raw};
 
         sqlite3_bind_text(raw, 1, s.stmt_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(raw, 2, params.tenant_id.c_str(), -1, SQLITE_TRANSIENT);
 
         auto col_text = [raw](int i) {
             const unsigned char* t = sqlite3_column_text(raw, i);
