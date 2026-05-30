@@ -103,6 +103,7 @@ target_sources(starling_core PRIVATE
     src/vector/vector_math.cpp
     src/vector/pattern_separator.cpp
     src/vector/sqlite_blob_vector_index.cpp
+    src/embedding/stub_embedding_adapter.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3

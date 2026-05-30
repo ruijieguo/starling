@@ -100,6 +100,7 @@ add_executable(starling_tests
     test_vector_math.cpp
     test_pattern_separator.cpp
     test_sqlite_blob_vector_index.cpp
+    test_stub_embedding_adapter.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
