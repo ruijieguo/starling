@@ -93,6 +93,7 @@ add_executable(starling_tests
     test_reconsolidation_engine.cpp
     test_persona_container.cpp
     test_common_ground_container.cpp
+    test_common_ground_writer.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

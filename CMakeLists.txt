@@ -79,6 +79,7 @@ target_sources(starling_core PRIVATE
     src/cognizer/knowledge_frontier.cpp
     src/tom/tom_engine.cpp
     src/tom/common_ground.cpp
+    src/tom/common_ground_writer.cpp
     src/tom/nesting_depth_writer.cpp
     src/tom/rate_limiter.cpp
     src/tom/depth_estimator.cpp
