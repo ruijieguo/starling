@@ -103,8 +103,14 @@ void emit_event(
     OutboxWriter ow(conn);
     try {
         ow.append(ev);
-    } catch (...) {
-        // idempotency collision — tolerate (commitment.fire may repeat).
+    } catch (const persistence::SqliteError& e) {
+        // ONLY tolerate the idempotency_key UNIQUE collision (commitment.fire may
+        // repeat inside a window bucket). Any other SQLite error (I/O, busy,
+        // schema) is real and must propagate — a broad catch(...) would hide it.
+        // SqliteError::code() is the extended code; low 8 bits == SQLITE_CONSTRAINT
+        // for all constraint violations.
+        if ((e.code() & 0xFF) != SQLITE_CONSTRAINT)
+            throw;
     }
 }
 
@@ -113,7 +119,7 @@ void emit_event(
 struct EventRow {
     std::string event_type;
     std::string primary_id;
-    int         outbox_sequence = 0;
+    std::int64_t outbox_sequence = 0;
 };
 
 struct StmtMeta {
@@ -141,25 +147,30 @@ std::string col_text(sqlite3_stmt* s, int col) {
 }
 
 // Read policy_engine_checkpoint.seq; default 0 if missing/unreadable.
-int read_checkpoint(persistence::Connection& conn) {
+std::int64_t read_checkpoint(persistence::Connection& conn) {
     const char* sql = "SELECT seq FROM policy_engine_checkpoint WHERE id=1";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return 0;
     StmtHandle h(raw);
     if (sqlite3_step(h.get()) == SQLITE_ROW)
-        return sqlite3_column_int(h.get(), 0);
+        return sqlite3_column_int64(h.get(), 0);
     return 0;
 }
 
-void write_checkpoint(persistence::Connection& conn, int new_seq) {
+// Advance the checkpoint. A failure here must NOT be swallowed: run_post_write
+// runs inside a SAVEPOINT (subscriber_pump::run_isolated), so throwing rolls the
+// whole batch back — side effects must not commit without the cursor advancing,
+// else the same events reprocess forever.
+void write_checkpoint(persistence::Connection& conn, std::int64_t new_seq) {
     const char* sql = "UPDATE policy_engine_checkpoint SET seq=? WHERE id=1";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return;
+        throw make_sqlite_error(conn.raw(), "policy_engine: write_checkpoint prepare");
     StmtHandle h(raw);
-    sqlite3_bind_int(h.get(), 1, new_seq);
-    sqlite3_step(h.get());
+    sqlite3_bind_int64(h.get(), 1, new_seq);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(conn.raw(), "policy_engine: write_checkpoint step");
 }
 
 // Look up modality/tenant/deadline columns for a statement.
@@ -334,7 +345,7 @@ void mark_trigger_fired(persistence::Connection& conn, std::string_view id) {
 void PolicyEngine::run_post_write(persistence::Connection& conn,
                                   std::string_view now_iso) {
     // 1. Read checkpoint.
-    const int last_seq = read_checkpoint(conn);
+    const std::int64_t last_seq = read_checkpoint(conn);
 
     // 2. Collect new bus_events (ordered).
     std::vector<EventRow> batch;
@@ -347,12 +358,12 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             return;
         StmtHandle h(raw);
-        sqlite3_bind_int(h.get(), 1, last_seq);
+        sqlite3_bind_int64(h.get(), 1, last_seq);
         while (sqlite3_step(h.get()) == SQLITE_ROW) {
             EventRow r;
             r.event_type      = col_text(h.get(), 0);
             r.primary_id      = col_text(h.get(), 1);
-            r.outbox_sequence = sqlite3_column_int(h.get(), 2);
+            r.outbox_sequence = sqlite3_column_int64(h.get(), 2);
             batch.push_back(std::move(r));
         }
     }
@@ -360,7 +371,7 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
     if (batch.empty())
         return;
 
-    int max_seq = last_seq;
+    std::int64_t max_seq = last_seq;
 
     // 3. Process each event.
     for (const auto& ev : batch) {

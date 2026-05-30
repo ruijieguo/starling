@@ -67,18 +67,25 @@ void emit_event(
     OutboxWriter ow(conn);
     try {
         ow.append(ev);
-    } catch (...) {
-        // idempotency_key UNIQUE collision — a commitment.* event with the same
-        // (event_type, aggregate_id, primary_id) re-emitted inside the same
-        // window bucket coalesces. Tolerate, matching arbitration.cpp. The
-        // state UPDATE has already committed; the duplicate event is dropped.
+    } catch (const persistence::SqliteError& e) {
+        // ONLY tolerate the idempotency_key UNIQUE collision: a commitment.* event
+        // with the same (event_type, aggregate_id, primary_id) re-emitted inside
+        // the same window bucket coalesces (the state UPDATE has already committed;
+        // the duplicate event is dropped). Any other SQLite error (I/O, busy,
+        // schema) is a real failure and must propagate — a broad catch(...) would
+        // hide it. SqliteError::code() carries the extended error code; its low
+        // 8 bits == SQLITE_CONSTRAINT for all constraint violations.
+        if ((e.code() & 0xFF) != SQLITE_CONSTRAINT)
+            throw;
     }
 }
 
 // UPSERT a commitment row into ACTIVE state with the given deadline/broken_count.
 // deadline bound as NULL when empty. created_at and updated_at set to now. The
 // conflict key is composite (tenant_id, stmt_id) — statements PK is (id,
-// tenant_id), so a bare stmt_id collides across tenants.
+// tenant_id), so a bare stmt_id collides across tenants. The conflict update only
+// re-activates non-terminal rows: a reprocessed statement.written must NOT
+// resurrect a FULFILLED/WITHDRAWN commitment.
 void upsert_active_commitment(persistence::Connection& conn,
                               std::string_view stmt_id,
                               std::string_view tenant_id,
@@ -93,7 +100,8 @@ void upsert_active_commitment(persistence::Connection& conn,
         "   state='ACTIVE',"
         "   broken_count=excluded.broken_count,"
         "   deadline=excluded.deadline,"
-        "   updated_at=excluded.updated_at";
+        "   updated_at=excluded.updated_at"
+        " WHERE commitments.state NOT IN ('FULFILLED','WITHDRAWN')";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(conn.raw(), "commitment: upsert active prepare");
@@ -223,11 +231,13 @@ void CommitmentEngine::on_deadline_expired(persistence::Connection& conn,
                                            std::string_view stmt_id,
                                            std::string_view tenant_id,
                                            std::string_view now_iso) {
-    // Read current broken_count, scoped to (tenant_id, stmt_id).
+    // Read current (broken_count, state), scoped to (tenant_id, stmt_id).
     int broken_count = 0;
+    std::string state;
+    bool found = false;
     {
         const char* sql =
-            "SELECT broken_count FROM commitments "
+            "SELECT broken_count, state FROM commitments "
             "WHERE tenant_id=? AND stmt_id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
@@ -237,8 +247,17 @@ void CommitmentEngine::on_deadline_expired(persistence::Connection& conn,
         bind_sv(h.get(), 2, stmt_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             broken_count = sqlite3_column_int(h.get(), 0);
+            const auto* t = sqlite3_column_text(h.get(), 1);
+            state = t ? reinterpret_cast<const char*>(t) : "";
+            found = true;
         }
     }
+
+    // Source-state guard: only an ACTIVE commitment breaks/auto-withdraws on a
+    // deadline. A terminal/renegotiated row (e.g. a stale deadline that re-fired
+    // after the commitment was already fulfilled) must not transition.
+    if (!found || state != "ACTIVE")
+        return;
 
     if (broken_count >= kMaxBrokenCount) {
         // Chronic failure → auto WITHDRAWN.
@@ -271,12 +290,14 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
                                    std::string_view new_stmt_id,
                                    std::string_view tenant_id,
                                    std::string_view now_iso) {
-    // Old broken_count, scoped to (tenant_id, old_stmt_id). tenant_id is supplied
-    // by the caller (which knows it) rather than read from the row.
+    // Old (broken_count, state), scoped to (tenant_id, old_stmt_id). tenant_id is
+    // supplied by the caller (which knows it) rather than read from the row.
     int old_broken_count = 0;
+    std::string old_state;
+    bool found = false;
     {
         const char* sql =
-            "SELECT broken_count FROM commitments "
+            "SELECT broken_count, state FROM commitments "
             "WHERE tenant_id=? AND stmt_id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
@@ -286,8 +307,17 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
         bind_sv(h.get(), 2, old_stmt_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             old_broken_count = sqlite3_column_int(h.get(), 0);
+            const auto* t = sqlite3_column_text(h.get(), 1);
+            old_state = t ? reinterpret_cast<const char*>(t) : "";
+            found = true;
         }
     }
+
+    // Source-state guard: only an ACTIVE or BROKEN commitment can be a
+    // renegotiation source. A FULFILLED/WITHDRAWN/RENEGOTIATED (or missing) source
+    // returns false, emits nothing, and creates no supersedes edge.
+    if (!found || (old_state != "ACTIVE" && old_state != "BROKEN"))
+        return false;
 
     const int chain_len = supersedes_chain_length(conn, old_stmt_id, tenant_id);
     if (chain_len >= kMaxRenegotiationChain) {
