@@ -99,6 +99,7 @@ add_executable(starling_tests
     test_subscriber_pump.cpp
     test_vector_math.cpp
     test_pattern_separator.cpp
+    test_sqlite_blob_vector_index.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
