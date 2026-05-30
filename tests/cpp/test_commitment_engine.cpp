@@ -39,10 +39,10 @@ TEST(CommitmentEngine, ThreeBrokenAutoWithdrawn) {  // TC-A2-001 CRITICAL
     CommitmentEngine eng(*a);
     eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
     for (int i = 0; i < 3; ++i) {
-        eng.on_deadline_expired(c, "c1", "2026-05-30T19:00:00Z");
+        eng.on_deadline_expired(c, "c1", "default", "2026-05-30T19:00:00Z");
         sqlite3_exec(c.raw(), "UPDATE commitments SET state='ACTIVE' WHERE stmt_id='c1'", nullptr,nullptr,nullptr);
     }
-    eng.on_deadline_expired(c, "c1", "2026-05-30T20:00:00Z");
+    eng.on_deadline_expired(c, "c1", "default", "2026-05-30T20:00:00Z");
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "WITHDRAWN");
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.auto_withdrawn' AND primary_id='c1'"), 1);
 }
@@ -52,8 +52,8 @@ TEST(CommitmentEngine, RenegotiationChainCappedAtThree) {  // TC-A2-002 CRITICAL
     seed_commits_stmt(c.raw(), "c0");
     CommitmentEngine eng(*a);
     eng.create_from_statement(c, "c0", "default", "", "2026-05-30T10:00:00Z");
-    seed_commits_stmt(c.raw(), "c1"); EXPECT_TRUE(eng.renegotiate(c, "c0", "c1", "2026-05-30T11:00:00Z"));
-    seed_commits_stmt(c.raw(), "c2"); EXPECT_TRUE(eng.renegotiate(c, "c1", "c2", "2026-05-30T12:00:00Z"));
-    seed_commits_stmt(c.raw(), "c3"); EXPECT_FALSE(eng.renegotiate(c, "c2", "c3", "2026-05-30T13:00:00Z"));
+    seed_commits_stmt(c.raw(), "c1"); EXPECT_TRUE(eng.renegotiate(c, "c0", "c1", "default", "2026-05-30T11:00:00Z"));
+    seed_commits_stmt(c.raw(), "c2"); EXPECT_TRUE(eng.renegotiate(c, "c1", "c2", "default", "2026-05-30T12:00:00Z"));
+    seed_commits_stmt(c.raw(), "c3"); EXPECT_FALSE(eng.renegotiate(c, "c2", "c3", "default", "2026-05-30T13:00:00Z"));
     EXPECT_GE(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.renegotiation_blocked'"), 1);
 }

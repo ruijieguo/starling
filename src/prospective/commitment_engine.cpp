@@ -75,24 +75,10 @@ void emit_event(
     }
 }
 
-// Read a single TEXT column for the commitment row; returns "" if absent.
-std::string read_commitment_tenant(persistence::Connection& conn,
-                                   std::string_view stmt_id) {
-    const char* sql = "SELECT tenant_id FROM commitments WHERE stmt_id=?";
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return "";
-    StmtHandle h(raw);
-    bind_sv(h.get(), 1, stmt_id);
-    if (sqlite3_step(h.get()) == SQLITE_ROW) {
-        const auto* t = sqlite3_column_text(h.get(), 0);
-        return t ? reinterpret_cast<const char*>(t) : "";
-    }
-    return "";
-}
-
 // UPSERT a commitment row into ACTIVE state with the given deadline/broken_count.
-// deadline bound as NULL when empty. created_at and updated_at set to now.
+// deadline bound as NULL when empty. created_at and updated_at set to now. The
+// conflict key is composite (tenant_id, stmt_id) — statements PK is (id,
+// tenant_id), so a bare stmt_id collides across tenants.
 void upsert_active_commitment(persistence::Connection& conn,
                               std::string_view stmt_id,
                               std::string_view tenant_id,
@@ -103,7 +89,7 @@ void upsert_active_commitment(persistence::Connection& conn,
         "INSERT INTO commitments"
         "(stmt_id,tenant_id,state,broken_count,deadline,created_at,updated_at)"
         " VALUES(?,?,'ACTIVE',?,?,?,?)"
-        " ON CONFLICT(stmt_id) DO UPDATE SET"
+        " ON CONFLICT(tenant_id, stmt_id) DO UPDATE SET"
         "   state='ACTIVE',"
         "   broken_count=excluded.broken_count,"
         "   deadline=excluded.deadline,"
@@ -127,31 +113,37 @@ void upsert_active_commitment(persistence::Connection& conn,
 
 // INSERT OR IGNORE a self-protection row (commitment protects its own stmt).
 void insert_self_protection(persistence::Connection& conn,
+                            std::string_view tenant_id,
                             std::string_view stmt_id) {
     const char* sql =
         "INSERT OR IGNORE INTO commitment_protection"
-        "(commitment_stmt_id, protected_stmt_id) VALUES(?, ?)";
+        "(tenant_id, commitment_stmt_id, protected_stmt_id) VALUES(?, ?, ?)";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(conn.raw(), "commitment: insert protection prepare");
     StmtHandle h(raw);
-    bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 1, tenant_id);
     bind_sv(h.get(), 2, stmt_id);
+    bind_sv(h.get(), 3, stmt_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(conn.raw(), "commitment: insert protection step");
 }
 
-// Simple state-only UPDATE with updated_at.
+// Simple state-only UPDATE with updated_at, scoped to (tenant_id, stmt_id).
 void update_state(persistence::Connection& conn, std::string_view stmt_id,
-                  std::string_view state, std::string_view now_iso) {
-    const char* sql = "UPDATE commitments SET state=?, updated_at=? WHERE stmt_id=?";
+                  std::string_view tenant_id, std::string_view state,
+                  std::string_view now_iso) {
+    const char* sql =
+        "UPDATE commitments SET state=?, updated_at=? "
+        "WHERE tenant_id=? AND stmt_id=?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(conn.raw(), "commitment: update state prepare");
     StmtHandle h(raw);
     bind_sv(h.get(), 1, state);
     bind_sv(h.get(), 2, now_iso);
-    bind_sv(h.get(), 3, stmt_id);
+    bind_sv(h.get(), 3, tenant_id);
+    bind_sv(h.get(), 4, stmt_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(conn.raw(), "commitment: update state step");
 }
@@ -159,12 +151,13 @@ void update_state(persistence::Connection& conn, std::string_view stmt_id,
 // supersedes chain length ENDING at stmt_id: count stmt_id + each predecessor it
 // superseded. A renegotiation inserts edge src=new, dst=old ("new supersedes
 // old"); following src=cur→dst walks backward through the chain.
-int supersedes_chain_length(persistence::Connection& conn, std::string_view start) {
+int supersedes_chain_length(persistence::Connection& conn, std::string_view start,
+                            std::string_view tenant_id) {
     int count = 1;
     std::string cur(start);
     const char* sql =
         "SELECT dst_id FROM statement_edges "
-        "WHERE src_id=? AND edge_kind='supersedes' LIMIT 1";
+        "WHERE src_id=? AND tenant_id=? AND edge_kind='supersedes' LIMIT 1";
     // Bound the walk: the caller only needs to distinguish < kMaxRenegotiationChain
     // from >=, so stop once count exceeds the cap. This also makes a cyclic
     // supersedes edge set (which a misbehaving caller could create) terminate —
@@ -175,6 +168,7 @@ int supersedes_chain_length(persistence::Connection& conn, std::string_view star
             break;
         StmtHandle h(raw);
         bind_sv(h.get(), 1, cur);
+        bind_sv(h.get(), 2, tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_ROW)
             break;
         const auto* t = sqlite3_column_text(h.get(), 0);
@@ -197,7 +191,7 @@ void CommitmentEngine::create_from_statement(persistence::Connection& conn,
                                              std::string_view now_iso) {
     upsert_active_commitment(conn, stmt_id, tenant_id, deadline, /*broken_count=*/0,
                              now_iso);
-    insert_self_protection(conn, stmt_id);
+    insert_self_protection(conn, tenant_id, stmt_id);
     emit_event(conn, "commitment.active_holding", stmt_id, stmt_id, tenant_id, "{}");
 }
 
@@ -205,44 +199,44 @@ void CommitmentEngine::create_from_statement(persistence::Connection& conn,
 
 void CommitmentEngine::fulfill(persistence::Connection& conn,
                                std::string_view stmt_id,
+                               std::string_view tenant_id,
                                std::string_view now_iso) {
-    const std::string tenant = read_commitment_tenant(conn, stmt_id);
-    update_state(conn, stmt_id, "FULFILLED", now_iso);
-    emit_event(conn, "commitment.fulfilled", stmt_id, stmt_id, tenant, "{}");
-    emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant, "{}");
+    update_state(conn, stmt_id, tenant_id, "FULFILLED", now_iso);
+    emit_event(conn, "commitment.fulfilled", stmt_id, stmt_id, tenant_id, "{}");
+    emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant_id, "{}");
 }
 
 // ── withdraw ─────────────────────────────────────────────────────────────────
 
 void CommitmentEngine::withdraw(persistence::Connection& conn,
                                 std::string_view stmt_id,
+                                std::string_view tenant_id,
                                 std::string_view now_iso) {
-    const std::string tenant = read_commitment_tenant(conn, stmt_id);
-    update_state(conn, stmt_id, "WITHDRAWN", now_iso);
-    emit_event(conn, "commitment.withdrawn", stmt_id, stmt_id, tenant, "{}");
-    emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant, "{}");
+    update_state(conn, stmt_id, tenant_id, "WITHDRAWN", now_iso);
+    emit_event(conn, "commitment.withdrawn", stmt_id, stmt_id, tenant_id, "{}");
+    emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant_id, "{}");
 }
 
 // ── on_deadline_expired ──────────────────────────────────────────────────────
 
 void CommitmentEngine::on_deadline_expired(persistence::Connection& conn,
                                            std::string_view stmt_id,
+                                           std::string_view tenant_id,
                                            std::string_view now_iso) {
-    // Read current broken_count + tenant_id.
+    // Read current broken_count, scoped to (tenant_id, stmt_id).
     int broken_count = 0;
-    std::string tenant;
     {
         const char* sql =
-            "SELECT broken_count, tenant_id FROM commitments WHERE stmt_id=?";
+            "SELECT broken_count FROM commitments "
+            "WHERE tenant_id=? AND stmt_id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(conn.raw(), "commitment: read broken_count prepare");
         StmtHandle h(raw);
-        bind_sv(h.get(), 1, stmt_id);
+        bind_sv(h.get(), 1, tenant_id);
+        bind_sv(h.get(), 2, stmt_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             broken_count = sqlite3_column_int(h.get(), 0);
-            const auto* t = sqlite3_column_text(h.get(), 1);
-            tenant = t ? reinterpret_cast<const char*>(t) : "";
         }
     }
 
@@ -250,22 +244,23 @@ void CommitmentEngine::on_deadline_expired(persistence::Connection& conn,
         // Chronic failure → auto WITHDRAWN.
         // TODO(P3): cognizer_hub.downgrade_trust_priors — emitting the event is
         // the P2.c contract; trust_priors downgrade is deferred.
-        update_state(conn, stmt_id, "WITHDRAWN", now_iso);
-        emit_event(conn, "commitment.auto_withdrawn", stmt_id, stmt_id, tenant,
+        update_state(conn, stmt_id, tenant_id, "WITHDRAWN", now_iso);
+        emit_event(conn, "commitment.auto_withdrawn", stmt_id, stmt_id, tenant_id,
                    R"({"reason":"chronic_failure"})");
     } else {
         const char* sql =
             "UPDATE commitments SET state='BROKEN', broken_count=broken_count+1, "
-            "updated_at=? WHERE stmt_id=?";
+            "updated_at=? WHERE tenant_id=? AND stmt_id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(conn.raw(), "commitment: broken update prepare");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, now_iso);
-        bind_sv(h.get(), 2, stmt_id);
+        bind_sv(h.get(), 2, tenant_id);
+        bind_sv(h.get(), 3, stmt_id);
         if (sqlite3_step(h.get()) != SQLITE_DONE)
             throw make_sqlite_error(conn.raw(), "commitment: broken update step");
-        emit_event(conn, "commitment.broken", stmt_id, stmt_id, tenant, "{}");
+        emit_event(conn, "commitment.broken", stmt_id, stmt_id, tenant_id, "{}");
     }
 }
 
@@ -274,29 +269,30 @@ void CommitmentEngine::on_deadline_expired(persistence::Connection& conn,
 bool CommitmentEngine::renegotiate(persistence::Connection& conn,
                                    std::string_view old_stmt_id,
                                    std::string_view new_stmt_id,
+                                   std::string_view tenant_id,
                                    std::string_view now_iso) {
-    // tenant_id + old broken_count from the old commitment row.
+    // Old broken_count, scoped to (tenant_id, old_stmt_id). tenant_id is supplied
+    // by the caller (which knows it) rather than read from the row.
     int old_broken_count = 0;
-    std::string tenant;
     {
         const char* sql =
-            "SELECT tenant_id, broken_count FROM commitments WHERE stmt_id=?";
+            "SELECT broken_count FROM commitments "
+            "WHERE tenant_id=? AND stmt_id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(conn.raw(), "commitment: renegotiate read old prepare");
         StmtHandle h(raw);
-        bind_sv(h.get(), 1, old_stmt_id);
+        bind_sv(h.get(), 1, tenant_id);
+        bind_sv(h.get(), 2, old_stmt_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
-            const auto* t = sqlite3_column_text(h.get(), 0);
-            tenant = t ? reinterpret_cast<const char*>(t) : "";
-            old_broken_count = sqlite3_column_int(h.get(), 1);
+            old_broken_count = sqlite3_column_int(h.get(), 0);
         }
     }
 
-    const int chain_len = supersedes_chain_length(conn, old_stmt_id);
+    const int chain_len = supersedes_chain_length(conn, old_stmt_id, tenant_id);
     if (chain_len >= kMaxRenegotiationChain) {
         emit_event(conn, "commitment.renegotiation_blocked", old_stmt_id, old_stmt_id,
-                   tenant,
+                   tenant_id,
                    std::string(R"({"chain_len":)") + std::to_string(chain_len) + "}");
         return false;
     }
@@ -313,7 +309,7 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
         StmtHandle h(raw);
         const std::string edge_id = random_hex_32();
         bind_sv(h.get(), 1, edge_id);
-        bind_sv(h.get(), 2, tenant);
+        bind_sv(h.get(), 2, tenant_id);
         bind_sv(h.get(), 3, new_stmt_id);
         bind_sv(h.get(), 4, old_stmt_id);
         bind_sv(h.get(), 5, now_iso);
@@ -322,15 +318,15 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
     }
 
     // Old commitment → RENEGOTIATED.
-    update_state(conn, old_stmt_id, "RENEGOTIATED", now_iso);
+    update_state(conn, old_stmt_id, tenant_id, "RENEGOTIATED", now_iso);
 
     // New commitment → ACTIVE, carrying over the old broken_count so chronic
     // failure persists across renegotiation. deadline NULL (carried fresh).
-    upsert_active_commitment(conn, new_stmt_id, tenant, /*deadline=*/"",
+    upsert_active_commitment(conn, new_stmt_id, tenant_id, /*deadline=*/"",
                              old_broken_count, now_iso);
-    insert_self_protection(conn, new_stmt_id);
+    insert_self_protection(conn, tenant_id, new_stmt_id);
 
-    emit_event(conn, "commitment.renegotiated", new_stmt_id, new_stmt_id, tenant,
+    emit_event(conn, "commitment.renegotiated", new_stmt_id, new_stmt_id, tenant_id,
                std::string(R"({"old_stmt_id":")") + std::string(old_stmt_id) + "\"}");
     return true;
 }

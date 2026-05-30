@@ -214,9 +214,10 @@ std::vector<TriggerRow> collect_armed_event_state_triggers(
     persistence::Connection& conn) {
     std::vector<TriggerRow> rows;
     const char* sql =
-        "SELECT t.id, t.kind, t.spec_json, t.commitment_stmt_id, t.tenant_id "
+        "SELECT t.id, t.kind, t.spec_json, t.commitment_stmt_id, c.tenant_id "
         "FROM commitment_triggers t "
-        "JOIN commitments c ON c.stmt_id = t.commitment_stmt_id "
+        "JOIN commitments c ON c.tenant_id = t.tenant_id "
+        "  AND c.stmt_id = t.commitment_stmt_id "
         "WHERE t.status='armed' AND t.kind IN ('event','state') "
         "AND c.state='ACTIVE'";
     sqlite3_stmt* raw = nullptr;
@@ -239,9 +240,10 @@ std::vector<TriggerRow> collect_armed_event_state_triggers(
 std::vector<TriggerRow> collect_armed_time_triggers(persistence::Connection& conn) {
     std::vector<TriggerRow> rows;
     const char* sql =
-        "SELECT t.id, t.commitment_stmt_id, t.spec_json, t.tenant_id "
+        "SELECT t.id, t.commitment_stmt_id, t.spec_json, c.tenant_id "
         "FROM commitment_triggers t "
-        "JOIN commitments c ON c.stmt_id = t.commitment_stmt_id "
+        "JOIN commitments c ON c.tenant_id = t.tenant_id "
+        "  AND c.stmt_id = t.commitment_stmt_id "
         "WHERE t.kind='time' AND t.status='armed' AND c.state='ACTIVE'";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
@@ -259,35 +261,59 @@ std::vector<TriggerRow> collect_armed_time_triggers(persistence::Connection& con
     return rows;
 }
 
-// Collect stmt_ids of ACTIVE commitments whose deadline has passed.
-std::vector<std::string> collect_expired_active_commitments(
+// An expired ACTIVE commitment: (stmt_id, tenant_id) — tenant carried so the
+// on_deadline_expired transition is scoped to the owning tenant.
+struct ExpiredCommitment {
+    std::string stmt_id;
+    std::string tenant_id;
+};
+
+// Collect (stmt_id, tenant_id) of ACTIVE commitments whose deadline has passed.
+std::vector<ExpiredCommitment> collect_expired_active_commitments(
     persistence::Connection& conn, std::string_view now_iso) {
-    std::vector<std::string> ids;
+    std::vector<ExpiredCommitment> rows;
     const char* sql =
-        "SELECT stmt_id FROM commitments "
+        "SELECT stmt_id, tenant_id FROM commitments "
         "WHERE state='ACTIVE' AND deadline IS NOT NULL AND deadline <= ?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return ids;
+        return rows;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, now_iso);
-    while (sqlite3_step(h.get()) == SQLITE_ROW)
-        ids.push_back(col_text(h.get(), 0));
-    return ids;
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        ExpiredCommitment r;
+        r.stmt_id   = col_text(h.get(), 0);
+        r.tenant_id = col_text(h.get(), 1);
+        rows.push_back(std::move(r));
+    }
+    return rows;
 }
 
-// Read a commitment's current state; "" if absent.
-std::string read_commitment_state(persistence::Connection& conn,
-                                  std::string_view stmt_id) {
-    const char* sql = "SELECT state FROM commitments WHERE stmt_id=?";
+// A commitment's current (state, tenant_id). state="" when the row is absent.
+struct CommitmentStateRow {
+    std::string state;
+    std::string tenant_id;
+};
+
+// Read a commitment's current (state, tenant_id) by stmt_id. With the composite
+// (tenant_id, stmt_id) PK a stmt_id is unique per tenant; for the bus events the
+// engine consumes, the originating tenant is whatever owns that stmt_id row. If
+// two tenants share a stmt_id this returns the first; callers pass the resolved
+// tenant_id into the engine so the subsequent transition is correctly scoped.
+CommitmentStateRow read_commitment_state(persistence::Connection& conn,
+                                         std::string_view stmt_id) {
+    CommitmentStateRow r;
+    const char* sql = "SELECT state, tenant_id FROM commitments WHERE stmt_id=?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return "";
+        return r;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
-    if (sqlite3_step(h.get()) == SQLITE_ROW)
-        return col_text(h.get(), 0);
-    return "";
+    if (sqlite3_step(h.get()) == SQLITE_ROW) {
+        r.state     = col_text(h.get(), 0);
+        r.tenant_id = col_text(h.get(), 1);
+    }
+    return r;
 }
 
 // Mark a trigger fired.
@@ -362,13 +388,14 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
             // fulfill() is the SOLE emitter of commitment.fulfilled. Re-processing
             // its own output would re-emit and feedback-loop; only act on a
             // non-terminal commitment (idempotent: already-FULFILLED → skip).
-            const std::string cur = read_commitment_state(conn, ev.primary_id);
-            if (cur == "ACTIVE" || cur == "BROKEN")
-                commitment_engine_.fulfill(conn, ev.primary_id, now_iso);
+            const CommitmentStateRow cur = read_commitment_state(conn, ev.primary_id);
+            if (cur.state == "ACTIVE" || cur.state == "BROKEN")
+                commitment_engine_.fulfill(conn, ev.primary_id, cur.tenant_id, now_iso);
         } else if (ev.event_type == "commitment.withdrawn") {
-            const std::string cur = read_commitment_state(conn, ev.primary_id);
-            if (cur == "ACTIVE" || cur == "BROKEN" || cur == "RENEGOTIATED")
-                commitment_engine_.withdraw(conn, ev.primary_id, now_iso);
+            const CommitmentStateRow cur = read_commitment_state(conn, ev.primary_id);
+            if (cur.state == "ACTIVE" || cur.state == "BROKEN" ||
+                cur.state == "RENEGOTIATED")
+                commitment_engine_.withdraw(conn, ev.primary_id, cur.tenant_id, now_iso);
         }
 
         // Evaluate armed event/state triggers against THIS event. Collect first
@@ -377,7 +404,7 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
             collect_armed_event_state_triggers(conn);
         for (const auto& t : triggers) {
             TriggerContext tctx{std::string(now_iso), ev.event_type,
-                                ev.primary_id};
+                                ev.primary_id, t.tenant_id};
             if (evaluate_trigger(conn, t.kind, t.spec_json, tctx)) {
                 emit_event(conn, "commitment.fire", t.commitment_stmt_id,
                            t.commitment_stmt_id, t.tenant_id, "{}");
@@ -401,7 +428,7 @@ PolicyTickStats PolicyEngine::tick(persistence::Connection& conn,
         const std::vector<TriggerRow> triggers = collect_armed_time_triggers(conn);
         for (const auto& t : triggers) {
             TriggerContext tctx{std::string(now_iso), /*event_type=*/"",
-                                /*event_primary_id=*/""};
+                                /*event_primary_id=*/"", t.tenant_id};
             if (evaluate_trigger(conn, "time", t.spec_json, tctx)) {
                 emit_event(conn, "commitment.fire", t.commitment_stmt_id,
                            t.commitment_stmt_id, t.tenant_id, "{}");
@@ -414,11 +441,12 @@ PolicyTickStats PolicyEngine::tick(persistence::Connection& conn,
     // 2. Deadline expiry: ACTIVE commitments whose deadline passed →
     //    on_deadline_expired (BROKEN, or auto-WITHDRAWN after chronic failure).
     {
-        const std::vector<std::string> expired =
+        const std::vector<ExpiredCommitment> expired =
             collect_expired_active_commitments(conn, now_iso);
-        for (const auto& stmt_id : expired) {
-            commitment_engine_.on_deadline_expired(conn, stmt_id, now_iso);
-            if (read_commitment_state(conn, stmt_id) == "WITHDRAWN")
+        for (const auto& e : expired) {
+            commitment_engine_.on_deadline_expired(conn, e.stmt_id, e.tenant_id,
+                                                   now_iso);
+            if (read_commitment_state(conn, e.stmt_id).state == "WITHDRAWN")
                 ++stats.auto_withdrawn;
             else
                 ++stats.broken;

@@ -117,12 +117,15 @@ OpResult op_decay(persistence::Connection& conn,
             sqlite3_stmt* pst = nullptr;
             const char* psql =
                 "SELECT EXISTS(SELECT 1 FROM commitment_protection cp "
-                " JOIN commitments c ON c.stmt_id = cp.commitment_stmt_id "
-                " WHERE cp.protected_stmt_id = ?1 AND c.state = 'ACTIVE')";
+                " JOIN commitments c ON c.tenant_id = cp.tenant_id "
+                "   AND c.stmt_id = cp.commitment_stmt_id "
+                " WHERE cp.protected_stmt_id = ?1 AND cp.tenant_id = ?2 "
+                "   AND c.state = 'ACTIVE')";
             if (sqlite3_prepare_v2(db, psql, -1, &pst, nullptr) != SQLITE_OK)
                 throw make_sqlite_error(db, "op_decay: prepare protection EXISTS");
             StmtHandle hp(pst);
             bind_sv(hp.get(), 1, id);
+            bind_sv(hp.get(), 2, tenant_id);
             in.active_grounded = (sqlite3_step(hp.get()) == SQLITE_ROW && sqlite3_column_int(hp.get(), 0) == 1);
         }
         if (state != "consolidated") continue;  // 串行守护: 已变即跳过

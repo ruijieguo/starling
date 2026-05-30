@@ -53,7 +53,8 @@ bool eval_event(const nlohmann::json& spec, const TriggerContext& ctx) {
            spec.value("event_type", std::string()) == ctx.event_type;
 }
 
-bool eval_state(persistence::Connection& conn, const nlohmann::json& spec) {
+bool eval_state(persistence::Connection& conn, const nlohmann::json& spec,
+                const TriggerContext& ctx) {
     auto field = spec.value("field", std::string());
     auto op    = spec.value("op", std::string());
     auto value = spec.value("value", std::string());
@@ -65,8 +66,11 @@ bool eval_state(persistence::Connection& conn, const nlohmann::json& spec) {
     std::string sqlop = map_op(op);
     if (sqlop.empty()) return false;
 
-    // Build safe SQL — field is whitelisted, op is mapped from fixed set, value is bound
-    std::string sql = "SELECT EXISTS(SELECT 1 FROM statements WHERE " + field + " " + sqlop + " ?)";
+    // Build safe SQL — field is whitelisted, op is mapped from fixed set, value is
+    // bound. Tenant-scope: a trigger belongs to a tenant's commitment, so the
+    // statements predicate must not match another tenant's rows.
+    std::string sql = "SELECT EXISTS(SELECT 1 FROM statements WHERE " + field + " " +
+                      sqlop + " ? AND tenant_id = ?)";
 
     sqlite3_stmt* raw_stmt = nullptr;
     int rc = sqlite3_prepare_v2(conn.raw(), sql.c_str(), -1, &raw_stmt, nullptr);
@@ -74,6 +78,7 @@ bool eval_state(persistence::Connection& conn, const nlohmann::json& spec) {
     StmtHandle stmt(raw_stmt);
 
     bind_sv(stmt.get(), 1, value);
+    bind_sv(stmt.get(), 2, ctx.tenant_id);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_ROW) return false;
@@ -110,7 +115,7 @@ bool eval_dispatch(persistence::Connection& conn, const std::string& kind,
                    const nlohmann::json& spec_obj, const TriggerContext& ctx) {
     if (kind == "time")     return eval_time(spec_obj, ctx);
     if (kind == "event")    return eval_event(spec_obj, ctx);
-    if (kind == "state")    return eval_state(conn, spec_obj);
+    if (kind == "state")    return eval_state(conn, spec_obj, ctx);
     if (kind == "compound") return eval_compound(conn, spec_obj, ctx);
     return false;
 }

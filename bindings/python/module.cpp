@@ -1477,30 +1477,31 @@ PYBIND11_MODULE(_core, m) {
              py::arg("deadline"), py::arg("now_iso"))
         .def("fulfill",
              [](starling::prospective::CommitmentEngine& s,
-                std::string stmt_id, std::string now) {
-                 s.fulfill(s.connection(), stmt_id, now);
+                std::string stmt_id, std::string tenant, std::string now) {
+                 s.fulfill(s.connection(), stmt_id, tenant, now);
              },
-             py::arg("stmt_id"), py::arg("now_iso"))
+             py::arg("stmt_id"), py::arg("tenant_id"), py::arg("now_iso"))
         .def("withdraw",
              [](starling::prospective::CommitmentEngine& s,
-                std::string stmt_id, std::string now) {
-                 s.withdraw(s.connection(), stmt_id, now);
+                std::string stmt_id, std::string tenant, std::string now) {
+                 s.withdraw(s.connection(), stmt_id, tenant, now);
              },
-             py::arg("stmt_id"), py::arg("now_iso"))
+             py::arg("stmt_id"), py::arg("tenant_id"), py::arg("now_iso"))
         .def("on_deadline_expired",
              [](starling::prospective::CommitmentEngine& s,
-                std::string stmt_id, std::string now) {
-                 s.on_deadline_expired(s.connection(), stmt_id, now);
+                std::string stmt_id, std::string tenant, std::string now) {
+                 s.on_deadline_expired(s.connection(), stmt_id, tenant, now);
              },
-             py::arg("stmt_id"), py::arg("now_iso"))
+             py::arg("stmt_id"), py::arg("tenant_id"), py::arg("now_iso"))
         .def("renegotiate",
              [](starling::prospective::CommitmentEngine& s,
                 std::string old_stmt_id, std::string new_stmt_id,
-                std::string now) {
+                std::string tenant, std::string now) {
                  return s.renegotiate(s.connection(), old_stmt_id,
-                                      new_stmt_id, now);
+                                      new_stmt_id, tenant, now);
              },
-             py::arg("old_stmt_id"), py::arg("new_stmt_id"), py::arg("now_iso"));
+             py::arg("old_stmt_id"), py::arg("new_stmt_id"),
+             py::arg("tenant_id"), py::arg("now_iso"));
 
     // ── P2.c: prospective PolicyEngine (conn-free) ────────────────────────
 
