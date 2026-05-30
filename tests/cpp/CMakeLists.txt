@@ -87,6 +87,7 @@ add_executable(starling_tests
     test_consolidation_decay.cpp
     test_consolidation_reconcile.cpp
     test_replay_scheduler.cpp
+    test_plastic_window.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
