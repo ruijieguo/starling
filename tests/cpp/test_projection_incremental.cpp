@@ -206,15 +206,18 @@ TEST(ProjectionIncremental, CheckpointAdvancesIdempotent) {
         rows_after_first);
 }
 
-// ── TC-P1-004: RebuildProjectionThrowsNotImplemented ────────────────────────
+// ── TC-P1-004: RebuildProjectionEmptyDbHealthy ──────────────────────────────
+// Task 27 is implemented; empty DB → ground_truth=0, rebuilt=0 → healthy path,
+// no truncation.
 
-TEST(ProjectionIncremental, RebuildProjectionThrowsNotImplemented) {
+TEST(ProjectionIncremental, RebuildProjectionEmptyDbHealthy) {
     auto adapter = open_fresh();
     auto& conn   = adapter->connection();
     ProjectionMaintainer pm(*adapter);
 
-    EXPECT_THROW(
-        pm.rebuild_projection(conn, "proj_holder_state_time", "2026-05-27T10:00:00Z"),
-        std::runtime_error
-    );
+    RebuildReport r = pm.rebuild_projection(conn, "proj_holder_state_time",
+                                            "2026-05-27T10:00:00Z");
+    EXPECT_FALSE(r.truncation_suspected);
+    EXPECT_EQ(r.ground_truth_count, 0);
+    EXPECT_EQ(r.rebuilt_count, 0);
 }

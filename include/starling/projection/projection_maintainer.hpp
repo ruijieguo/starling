@@ -23,8 +23,17 @@ public:
     // 全量 rebuild + repair guard — Task 27.
     RebuildReport rebuild_projection(persistence::Connection& conn,
                                      std::string_view projection_name, std::string_view now_iso);
+    // 测试钩子: 注入一个 rebuilt_count 以触发 truncation 路径 (TC-PROJECTION-REPAIR).
+    // prod 不调. injected_rebuilt < ground_truth → truncation_suspected + 不替换 active.
+    RebuildReport rebuild_projection_with_injected_count(
+        persistence::Connection& conn, std::string_view projection_name,
+        int64_t injected_rebuilt, std::string_view now_iso);
 private:
     persistence::SqliteAdapter& adapter_;
+    RebuildReport do_rebuild(persistence::Connection& conn,
+                             std::string_view projection_name,
+                             int64_t rebuilt_override,
+                             std::string_view now_iso);
 };
 
 }  // namespace starling::projection

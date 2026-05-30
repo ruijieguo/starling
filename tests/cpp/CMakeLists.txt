@@ -95,6 +95,7 @@ add_executable(starling_tests
     test_common_ground_container.cpp
     test_common_ground_writer.cpp
     test_projection_incremental.cpp
+    test_projection_repair_guard.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
