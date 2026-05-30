@@ -94,6 +94,7 @@ target_sources(starling_core PRIVATE
     src/replay/replay_scheduler.cpp
     src/reconsolidation/plastic_window.cpp
     src/reconsolidation/arbitration.cpp
+    src/reconsolidation/reconsolidation_engine.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
