@@ -102,6 +102,7 @@ add_executable(starling_tests
     test_sqlite_blob_vector_index.cpp
     test_stub_embedding_adapter.cpp
     test_openai_embedding_adapter.cpp
+    test_embedding_worker.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
