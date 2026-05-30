@@ -103,6 +103,7 @@ add_executable(starling_tests
     test_stub_embedding_adapter.cpp
     test_openai_embedding_adapter.cpp
     test_embedding_worker.cpp
+    test_semantic_retriever.cpp
     test_proj_vector_payload.cpp
     test_vector_repair_guard.cpp
 )

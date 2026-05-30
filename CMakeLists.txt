@@ -73,6 +73,7 @@ target_sources(starling_core PRIVATE
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
     src/retrieval/basic_retriever.cpp
+    src/retrieval/semantic_retriever.cpp
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
     src/cognizer/cognizer_hub.cpp
