@@ -128,7 +128,7 @@ TEST(PolicyEnginePostWrite, FulfilledEventDoesNotFeedbackLoop) {
     append_bus_event(c, "statement.written", "c1", "default", "{}", "ikey-sw-1");
     PolicyEngine eng(*a);
     eng.run_post_write(c, "2026-05-30T10:00:00Z");  // → ACTIVE
-    CommitmentEngine(*a).fulfill(c, "c1", "2026-05-30T10:05:00Z");  // emits commitment.fulfilled
+    CommitmentEngine(*a).fulfill(c, "c1", "default", "2026-05-30T10:05:00Z");  // emits commitment.fulfilled
     const int after_fulfill = icol(c.raw(),
         "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.fulfilled' AND primary_id='c1'");
     // Multiple run_post_write in DISTINCT window buckets — must not grow the count.

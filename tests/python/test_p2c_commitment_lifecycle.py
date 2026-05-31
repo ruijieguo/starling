@@ -37,6 +37,6 @@ def test_commitment_lifecycle(rt):
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         assert c.execute("SELECT state FROM commitments WHERE stmt_id='c1'").fetchone()[0] == "ACTIVE"
         assert c.execute("SELECT COUNT(*) FROM commitment_protection WHERE protected_stmt_id='c1'").fetchone()[0] == 1
-    eng.fulfill("c1", "2026-05-30T11:00:00Z")
+    eng.fulfill("c1", "default", "2026-05-30T11:00:00Z")
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         assert c.execute("SELECT state FROM commitments WHERE stmt_id='c1'").fetchone()[0] == "FULFILLED"

@@ -39,10 +39,10 @@ TEST(CommitmentEngine, ThreeBrokenAutoWithdrawn) {  // TC-A2-001 CRITICAL
     CommitmentEngine eng(*a);
     eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
     for (int i = 0; i < 3; ++i) {
-        eng.on_deadline_expired(c, "c1", "2026-05-30T19:00:00Z");
+        eng.on_deadline_expired(c, "c1", "default", "2026-05-30T19:00:00Z");
         sqlite3_exec(c.raw(), "UPDATE commitments SET state='ACTIVE' WHERE stmt_id='c1'", nullptr,nullptr,nullptr);
     }
-    eng.on_deadline_expired(c, "c1", "2026-05-30T20:00:00Z");
+    eng.on_deadline_expired(c, "c1", "default", "2026-05-30T20:00:00Z");
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "WITHDRAWN");
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.auto_withdrawn' AND primary_id='c1'"), 1);
 }
@@ -52,8 +52,51 @@ TEST(CommitmentEngine, RenegotiationChainCappedAtThree) {  // TC-A2-002 CRITICAL
     seed_commits_stmt(c.raw(), "c0");
     CommitmentEngine eng(*a);
     eng.create_from_statement(c, "c0", "default", "", "2026-05-30T10:00:00Z");
-    seed_commits_stmt(c.raw(), "c1"); EXPECT_TRUE(eng.renegotiate(c, "c0", "c1", "2026-05-30T11:00:00Z"));
-    seed_commits_stmt(c.raw(), "c2"); EXPECT_TRUE(eng.renegotiate(c, "c1", "c2", "2026-05-30T12:00:00Z"));
-    seed_commits_stmt(c.raw(), "c3"); EXPECT_FALSE(eng.renegotiate(c, "c2", "c3", "2026-05-30T13:00:00Z"));
+    seed_commits_stmt(c.raw(), "c1"); EXPECT_TRUE(eng.renegotiate(c, "c0", "c1", "default", "2026-05-30T11:00:00Z"));
+    seed_commits_stmt(c.raw(), "c2"); EXPECT_TRUE(eng.renegotiate(c, "c1", "c2", "default", "2026-05-30T12:00:00Z"));
+    seed_commits_stmt(c.raw(), "c3"); EXPECT_FALSE(eng.renegotiate(c, "c2", "c3", "default", "2026-05-30T13:00:00Z"));
     EXPECT_GE(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.renegotiation_blocked'"), 1);
+}
+
+// P2.c hardening (B#1): a reprocessed statement.written must NOT resurrect a
+// terminal commitment via the ON CONFLICT update.
+TEST(CommitmentEngine, ConflictDoesNotResurrectTerminal) {
+    auto a = SqliteAdapter::open(":memory:"); auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c1");
+    CommitmentEngine eng(*a);
+    eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
+    eng.fulfill(c, "c1", "default", "2026-05-30T11:00:00Z");
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "FULFILLED");
+    // Re-create (e.g. statement.written reprocessed) — must stay FULFILLED.
+    eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T12:00:00Z");
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "FULFILLED");
+}
+
+// P2.c hardening (B#2): on_deadline_expired only acts on ACTIVE commitments.
+TEST(CommitmentEngine, DeadlineExpiredIgnoresTerminal) {
+    auto a = SqliteAdapter::open(":memory:"); auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c1");
+    CommitmentEngine eng(*a);
+    eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
+    eng.fulfill(c, "c1", "default", "2026-05-30T11:00:00Z");
+    eng.on_deadline_expired(c, "c1", "default", "2026-05-30T20:00:00Z");
+    // No BROKEN/auto_withdrawn transition: stays FULFILLED, broken_count untouched.
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "FULFILLED");
+    EXPECT_EQ(icol(c.raw(), "SELECT broken_count FROM commitments WHERE stmt_id='c1'"), 0);
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.broken'"), 0);
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.auto_withdrawn'"), 0);
+}
+
+// P2.c hardening (B#3): renegotiate requires an ACTIVE/BROKEN source.
+TEST(CommitmentEngine, RenegotiateRejectsTerminalSource) {
+    auto a = SqliteAdapter::open(":memory:"); auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c0");
+    CommitmentEngine eng(*a);
+    eng.create_from_statement(c, "c0", "default", "", "2026-05-30T10:00:00Z");
+    eng.fulfill(c, "c0", "default", "2026-05-30T11:00:00Z");  // → FULFILLED (terminal)
+    seed_commits_stmt(c.raw(), "c1");
+    EXPECT_FALSE(eng.renegotiate(c, "c0", "c1", "default", "2026-05-30T12:00:00Z"));
+    // No supersedes edge created, no new commitment row for c1.
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM statement_edges WHERE edge_kind='supersedes'"), 0);
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM commitments WHERE stmt_id='c1'"), 0);
 }

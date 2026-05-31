@@ -42,7 +42,7 @@ TEST(CommitmentProtectionDecay, TerminalReleasesProtection) {
     seed_decayable_commits(c.raw(), "c1");
     prospective::CommitmentEngine eng(*a);
     eng.create_from_statement(c, "c1", "default", "", "2026-05-30T10:00:00Z");
-    eng.fulfill(c, "c1", "2026-05-30T11:00:00Z");
+    eng.fulfill(c, "c1", "default", "2026-05-30T11:00:00Z");
     replay::op_decay(c, {"c1"}, "default", "2030-01-01T00:00:00Z");
     EXPECT_EQ(scol(c.raw(), "SELECT consolidation_state FROM statements WHERE id='c1'"), "archived");
 }
