@@ -18,6 +18,82 @@ namespace {
 using starling::bus::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
+// per-kind 乘子;P2.d 全部传播边默认 1.0(MAY_OVERLAP_WITH 用存储余弦权)。
+double kind_multiplier(const std::string& /*kind*/) { return 1.0; }
+
+// edge_weight = kind_multiplier × clamp(stored_weight, 0, 1)。
+double edge_weight(const std::string& kind, double stored_weight) {
+    double w = stored_weight;
+    if (w < 0.0) w = 0.0;
+    if (w > 1.0) w = 1.0;
+    return kind_multiplier(kind) * w;
+}
+
+// frontier id 集合 → JSON 数组字面量。statement id 为 UUID(无引号/反斜杠),手工拼安全。
+std::string build_frontier_json(const std::unordered_map<std::string, double>& activation) {
+    std::string s = "[";
+    bool first = true;
+    for (const auto& kv : activation) {
+        if (!first) s += ",";
+        s += "\"" + kv.first + "\"";
+        first = false;
+    }
+    s += "]";
+    return s;
+}
+
+struct EdgeHit { std::string src_id, target_id, edge_kind; double weight; };
+
+// 每跳边扩展:前向(前沿作 src,target=dst,所有传播边) + 对称反向(前沿作 dst,
+// target=src,仅 MAY_OVERLAP_WITH)。scope 谓词逐字对齐 search_topk,隐私永不放宽。
+std::vector<EdgeHit> expand(persistence::Connection& conn,
+                            const std::string& frontier_json,
+                            const PatternCompletionParams& p) {
+    const char* sql =
+        "SELECT f.value AS src_id, e.dst_id AS target_id, e.edge_kind, e.weight"
+        "  FROM json_each(?1) f"
+        "  JOIN statement_edges e ON e.tenant_id = ?2 AND e.src_id = f.value"
+        "  JOIN statements s ON s.id = e.dst_id AND s.tenant_id = e.tenant_id"
+        " WHERE e.edge_kind IN ('MAY_OVERLAP_WITH','derived_from','evidence',"
+        "                       'OBSERVED_BY','SHARED_GROUND')"
+        "   AND (?3 = '' OR s.holder_id = ?3)"
+        "   AND (?4 = '' OR s.holder_perspective = ?4)"
+        "   AND s.consolidation_state IN ('consolidated','archived')"
+        "   AND s.review_status NOT IN ('rejected','pending_review')"
+        " UNION ALL "
+        "SELECT f.value AS src_id, e.src_id AS target_id, e.edge_kind, e.weight"
+        "  FROM json_each(?1) f"
+        "  JOIN statement_edges e ON e.tenant_id = ?2 AND e.dst_id = f.value"
+        "  JOIN statements s ON s.id = e.src_id AND s.tenant_id = e.tenant_id"
+        " WHERE e.edge_kind IN ('MAY_OVERLAP_WITH')"
+        "   AND (?3 = '' OR s.holder_id = ?3)"
+        "   AND (?4 = '' OR s.holder_perspective = ?4)"
+        "   AND s.consolidation_state IN ('consolidated','archived')"
+        "   AND s.review_status NOT IN ('rejected','pending_review')";
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "PatternCompletor::expand prepare");
+    StmtHandle h{raw};
+    auto bind_txt = [raw](int i, const std::string& v) {
+        sqlite3_bind_text(raw, i, v.c_str(), -1, SQLITE_TRANSIENT);
+    };
+    bind_txt(1, frontier_json);
+    bind_txt(2, p.tenant_id);
+    bind_txt(3, p.holder_id);
+    bind_txt(4, p.holder_perspective);
+
+    auto col = [raw](int i) {
+        const unsigned char* t = sqlite3_column_text(raw, i);
+        return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
+    };
+    std::vector<EdgeHit> hits;
+    while (sqlite3_step(raw) == SQLITE_ROW) {
+        hits.push_back(EdgeHit{col(0), col(1), col(2), sqlite3_column_double(raw, 3)});
+    }
+    return hits;
+}
+
 // Fetch a full StatementRow by (id, tenant) re-checking visibility — mirrors
 // semantic_retriever.cpp kSelectByIdSql exactly (defense-in-depth on top of the
 // walk's per-hop scope predicate).
@@ -87,7 +163,25 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
         visited.insert(s.row.id);
     }
 
-    // Step 3: spreading-activation walk — filled in a later task. No propagation yet.
+    // Step 3: spreading-activation walk（Task 3 单步;后续 Task 扩成多步循环 + 终止）。
+    {
+        const std::string frontier_json = build_frontier_json(activation);
+        auto hits = expand(conn, frontier_json, params);
+        std::unordered_map<std::string, double> next;
+        for (const auto& e : hits) {
+            const double contrib =
+                activation[e.src_id] * edge_weight(e.edge_kind, e.weight) * params.decay;
+            if (contrib < params.theta_propagate) continue;
+            auto it = next.find(e.target_id);
+            if (it == next.end() || contrib > it->second) next[e.target_id] = contrib;
+        }
+        for (const auto& kv : next) {
+            visited.insert(kv.first);
+            auto it = activation.find(kv.first);
+            if (it == activation.end() || kv.second > it->second)
+                activation[kv.first] = kv.second;
+        }
+    }
 
     // Step 4: top result_k by activation desc.
     std::vector<std::pair<std::string, double>> ranked(activation.begin(), activation.end());

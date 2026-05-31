@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <string>
+#include <unordered_map>
 
 using starling::embedding::EmbeddingWorker;
 using starling::embedding::StubEmbeddingAdapter;  // declared in embedding_adapter.hpp
@@ -111,4 +112,90 @@ TEST(PatternCompletor, SeedsOnlyNoEdges) {
     EXPECT_DOUBLE_EQ(res.rows[0].activation, 1.0);
     EXPECT_FALSE(res.completion_truncated);
     EXPECT_FALSE(res.degraded);
+}
+
+// 单跳前向:seed→A(w=0.9)、seed→B(w=0.5)。decay=0.5 →
+//   A=0.9*0.5=0.45, B=0.5*0.5=0.25。存储相似度参与(高权更高)。
+TEST(PatternCompletor, OneHopForwardUsesStoredWeight) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);   // 只嵌入 seed
+    seed_stmt(db, "A", "a");                     // walk-only 目标,无向量
+    seed_stmt(db, "B", "b");
+    seed_edge(db, "e1", "seed", "A", 0.9);
+    seed_edge(db, "e2", "seed", "B", 0.5);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats"; p.seed_k = 5;
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    ASSERT_TRUE(act.count("A")); ASSERT_TRUE(act.count("B"));
+    EXPECT_DOUBLE_EQ(act["A"], 0.45);
+    EXPECT_DOUBLE_EQ(act["B"], 0.25);
+    EXPECT_GT(act["A"], act["B"]);
+}
+
+// clamp:w=1.5→1.0→A=0.5;w=-0.2→0→contrib=0<θ→B 被剪。
+TEST(PatternCompletor, EdgeWeightClamped) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "A", "a");
+    seed_stmt(db, "B", "b");
+    seed_edge(db, "e1", "seed", "A", 1.5);   // → clamp 1.0
+    seed_edge(db, "e2", "seed", "B", -0.2);  // → clamp 0 → 剪
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    ASSERT_TRUE(act.count("A"));
+    EXPECT_DOUBLE_EQ(act["A"], 0.5);
+    EXPECT_FALSE(act.count("B")) << "negative-weight edge must be pruned";
+}
+
+// 对称反向:边写 src=A dst=seed;种子=seed → A 经反向 UNION 可达,act=0.5。
+TEST(PatternCompletor, SymmetricReverseTraversal) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "A", "a");
+    seed_edge(db, "e1", "A", "seed", 1.0);   // seed 作为 dst
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    ASSERT_TRUE(act.count("A"));
+    EXPECT_DOUBLE_EQ(act["A"], 0.5);
 }
