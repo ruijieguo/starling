@@ -49,21 +49,6 @@ A Statement Bus is the spine — every read and write goes through it. Around it
 | **Prospective Loop** (`12`) | Commitment state machine, typed Triggers, ActionGuard |
 | **Retrieval** (`13`) | Perspective filter, semantic recall, context-pack builder |
 
-## Status
-
-P1 (foundation) and all of P2 are implemented and tested. P3 is next.
-
-| Phase | Scope | Status |
-|---|---|---|
-| **P1** (M0.1–M0.7) | Statement Bus + outbox, EngramStore + evidence, OpenAI-compatible extractor, `basic_retrieve`, preflight/RuntimeHealth, canonicalization, ConflictProbe | ✅ Complete |
-| **P2.a** Social-mind schema | Cognizer Hub, first-order ToM schema, 4-class ConflictProbe + `CONFLICTS_WITH` edges, perspective retrieval, KnowledgeFrontier | ✅ Complete |
-| **P2.b** Brain dynamics — M0.8 (no-vector core) | Replay Scheduler, Reconsolidation Engine, Neocortex containers, CommonGround grounding acts, 6 SQL Projection Index + repair guard, SubscriberPump | ✅ Complete |
-| **P2.b** Brain dynamics — M0.9 (vector layer) | Embedding adapter, `VectorIndex` (brute-force SQLite-BLOB; seekdb backend deferred), async EmbeddingWorker, pattern separation, `idx_vector_payload`, privacy-first `SemanticRetriever` | ✅ Complete |
-| **P2.c** Prospection & affect | Commitment five-state machine, PolicyEngine (4 triggers + post-write/tick), `active_holding` decay protection, AffectVector → replay priority, ActionGuard (minimal) + tenant-isolation/robustness hardening | ✅ Complete |
-| **P3** | Multi-substrate productization (dist-store / cloud-store profiles), cross-tier migration tooling, full eval suite, ActionPolicyGraph + external tool execution | ⏳ Planned |
-
-**Designed but deferred:** seekdb single-engine vector backend, pattern completion (Personalized-PageRank / CA3 walk), EM-LLM event segmentation + LLM logprobs, the dist-store multi-tenant profile, and external action execution. Today's runtime is the **local-store SQLite profile** running single-tenant.
-
 ## Tech stack
 
 C++20 · raw SQLite (≥3.46) · libcurl · nlohmann/json · OpenSSL · pybind11 · Python ≥3.11 · CMake (≥3.27) + Ninja · ctest + pytest.
