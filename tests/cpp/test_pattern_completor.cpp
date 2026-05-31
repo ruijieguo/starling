@@ -84,3 +84,31 @@ TEST(PatternCompletor, ConstructsAndReturnsEmptyWhenNoSeeds) {
     EXPECT_TRUE(res.rows.empty());
     EXPECT_FALSE(res.completion_truncated);
 }
+
+TEST(PatternCompletor, SeedsOnlyNoEdges) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);   // 只嵌入 seed
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+
+    PatternCompletionParams p;
+    p.tenant_id = "default";
+    p.holder_id = "alice";
+    p.holder_perspective = "first_person";
+    p.cue_text  = "bob knows cats";  // == seed render_text
+    p.seed_k    = 5;
+
+    auto res = pc.complete(conn, p);
+    ASSERT_EQ(res.rows.size(), 1u);
+    EXPECT_EQ(res.rows[0].row.id, "seed");
+    EXPECT_DOUBLE_EQ(res.rows[0].activation, 1.0);
+    EXPECT_FALSE(res.completion_truncated);
+    EXPECT_FALSE(res.degraded);
+}
