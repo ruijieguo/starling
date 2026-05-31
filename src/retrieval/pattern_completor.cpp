@@ -179,18 +179,24 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
             if (it == next.end() || contrib > it->second) next[e.target_id] = contrib;
         }
 
-        bool any_new = false;
+        bool changed = false;
         for (const auto& kv : next) {
-            if (visited.insert(kv.first).second) { ++node_count; any_new = true; }
+            if (visited.insert(kv.first).second) ++node_count;
             auto it = activation.find(kv.first);
-            if (it == activation.end() || kv.second > it->second)
+            if (it == activation.end()) {
                 activation[kv.first] = kv.second;
+                changed = true;
+            } else if (kv.second > it->second) {
+                it->second = kv.second;
+                changed = true;
+            }
         }
 
         if (node_count >= params.node_cap) { truncated = true; break; }
-        // 收敛:本步无新节点即停。(设计的 max(activation)<θ 被种子 1.0 支配、永不触发;
-        //  re-expand-all 下"无新节点"是 operative 收敛判据,budget 为兜底上限。)
-        if (!any_new) break;
+        // 收敛:本步既无新节点也无激活抬升 → 达不动点即停。(设计的 max(activation)<θ
+        //  被种子 1.0 支配永不触发;"无新节点且无抬升"才是 value-exact 收敛判据。激活
+        //  单调递增且有上界 → 必收敛;budget 为兜底上限。)
+        if (!changed) break;
     }
     out.completion_truncated = truncated;
 

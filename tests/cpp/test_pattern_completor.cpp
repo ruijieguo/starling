@@ -360,3 +360,38 @@ TEST(PatternCompletor, NodeCapTruncation) {
     EXPECT_TRUE(res.completion_truncated);
     EXPECT_LE(res.rows.size(), 20u);
 }
+
+// 迟到捷径:S→X(w=0.2 直达,值低) 与 S→A→B→X(更长但更高值) + X→Y。
+// X 的高值路径在后续步才完成,必须把抬升传播到下游 Y 才达不动点:
+//   A=0.5 B=0.25 X=max(0.1,0.125)=0.125 Y=0.125*0.5=0.0625。
+TEST(PatternCompletor, LateShortcutReachesFixpoint) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "S", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "X", "x"); seed_stmt(db, "A", "a");
+    seed_stmt(db, "B", "b"); seed_stmt(db, "Y", "y");
+    seed_edge(db, "d1", "S", "X", 0.2);   // 直达低值
+    seed_edge(db, "d2", "S", "A", 1.0);
+    seed_edge(db, "d3", "A", "B", 1.0);
+    seed_edge(db, "d4", "B", "X", 1.0);   // 更长高值路径到 X
+    seed_edge(db, "d5", "X", "Y", 1.0);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats"; p.result_k = 20;
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    ASSERT_TRUE(act.count("X")); ASSERT_TRUE(act.count("Y"));
+    EXPECT_DOUBLE_EQ(act["X"], 0.125) << "higher-value longer path wins";
+    EXPECT_DOUBLE_EQ(act["Y"], 0.0625)
+        << "X's raise must propagate downstream to Y (value-exact convergence)";
+}
