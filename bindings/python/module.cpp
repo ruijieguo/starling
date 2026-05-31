@@ -55,6 +55,7 @@
 #include "starling/embedding/embedding_worker.hpp"
 #include "starling/vector/vector_index.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
+#include "starling/retrieval/pattern_completor.hpp"
 
 namespace py = pybind11;
 
@@ -1330,6 +1331,63 @@ PYBIND11_MODULE(_core, m) {
              [](starling::retrieval::SemanticRetriever& s,
                 const starling::retrieval::SemanticRetrieverParams& p) {
                  return s.vector_recall(s.connection(), p);
+             },
+             py::arg("params"));
+
+    // ── P2.d: Pattern Completion ──────────────────────────────────────────
+    py::class_<starling::retrieval::PatternCompletionParams>(
+            m, "PatternCompletionParams")
+        .def(py::init([](std::string tenant_id, std::string holder_id,
+                         std::string holder_perspective, std::string cue_text,
+                         int seed_k, int budget, int result_k, int node_cap,
+                         double theta_propagate, double decay,
+                         std::string trace_id, std::string query_id) {
+            starling::retrieval::PatternCompletionParams p;
+            p.tenant_id = std::move(tenant_id);
+            p.holder_id = std::move(holder_id);
+            p.holder_perspective = std::move(holder_perspective);
+            p.cue_text = std::move(cue_text);
+            p.seed_k = seed_k; p.budget = budget; p.result_k = result_k;
+            p.node_cap = node_cap; p.theta_propagate = theta_propagate; p.decay = decay;
+            p.trace_id = std::move(trace_id); p.query_id = std::move(query_id);
+            return p;
+        }),
+        py::arg("tenant_id") = "", py::arg("holder_id") = "",
+        py::arg("holder_perspective") = "", py::arg("cue_text") = "",
+        py::arg("seed_k") = 5, py::arg("budget") = 20, py::arg("result_k") = 20,
+        py::arg("node_cap") = 1000, py::arg("theta_propagate") = 0.05,
+        py::arg("decay") = 0.5, py::arg("trace_id") = "", py::arg("query_id") = "")
+        .def_readwrite("tenant_id",          &starling::retrieval::PatternCompletionParams::tenant_id)
+        .def_readwrite("holder_id",          &starling::retrieval::PatternCompletionParams::holder_id)
+        .def_readwrite("holder_perspective", &starling::retrieval::PatternCompletionParams::holder_perspective)
+        .def_readwrite("cue_text",           &starling::retrieval::PatternCompletionParams::cue_text)
+        .def_readwrite("seed_k",             &starling::retrieval::PatternCompletionParams::seed_k)
+        .def_readwrite("budget",             &starling::retrieval::PatternCompletionParams::budget)
+        .def_readwrite("result_k",           &starling::retrieval::PatternCompletionParams::result_k)
+        .def_readwrite("node_cap",           &starling::retrieval::PatternCompletionParams::node_cap)
+        .def_readwrite("theta_propagate",    &starling::retrieval::PatternCompletionParams::theta_propagate)
+        .def_readwrite("decay",              &starling::retrieval::PatternCompletionParams::decay)
+        .def_readwrite("trace_id",           &starling::retrieval::PatternCompletionParams::trace_id)
+        .def_readwrite("query_id",           &starling::retrieval::PatternCompletionParams::query_id);
+
+    py::class_<starling::retrieval::CompletionScored>(m, "CompletionScored")
+        .def_readonly("row",        &starling::retrieval::CompletionScored::row)
+        .def_readonly("activation", &starling::retrieval::CompletionScored::activation);
+
+    py::class_<starling::retrieval::CompletionResult>(m, "CompletionResult")
+        .def_readonly("rows",                 &starling::retrieval::CompletionResult::rows)
+        .def_readonly("completion_truncated", &starling::retrieval::CompletionResult::completion_truncated)
+        .def_readonly("degraded",             &starling::retrieval::CompletionResult::degraded);
+
+    py::class_<starling::retrieval::PatternCompletor>(m, "PatternCompletor")
+        .def(py::init<starling::persistence::SqliteAdapter&,
+                      starling::retrieval::SemanticRetriever&>(),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
+             py::arg("adapter"), py::arg("seeds"))
+        .def("complete",
+             [](starling::retrieval::PatternCompletor& s,
+                const starling::retrieval::PatternCompletionParams& p) {
+                 return s.complete(s.connection(), p);
              },
              py::arg("params"));
 
