@@ -199,3 +199,75 @@ TEST(PatternCompletor, SymmetricReverseTraversal) {
     ASSERT_TRUE(act.count("A"));
     EXPECT_DOUBLE_EQ(act["A"], 0.5);
 }
+
+// 严格逐跳:overlap 边连到别 perspective 的陈述 → 该节点不进结果。
+TEST(PatternCompletor, StrictPerHopExcludesOtherPerspective) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats", "alice", "first_person");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "other", "cats", "alice", "third_person");  // 别 perspective
+    seed_edge(db, "e1", "seed", "other", 1.0);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    for (const auto& r : res.rows)
+        EXPECT_NE(r.row.id, "other") << "cross-perspective node must never be activated";
+}
+
+// 别 holder 同理被排除。
+TEST(PatternCompletor, StrictPerHopExcludesOtherHolder) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats", "alice", "first_person");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "bobstmt", "cats", "bob", "first_person");  // 别 holder
+    seed_edge(db, "e1", "seed", "bobstmt", 1.0);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    for (const auto& r : res.rows)
+        EXPECT_NE(r.row.id, "bobstmt") << "cross-holder node must never be activated";
+}
+
+// 跨租户边不可桥:边在 default,dst 仅存在于 tenant 'other' → JOIN 无果。
+TEST(PatternCompletor, TenantIsolationNotBridged) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats", "alice", "first_person", "default");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "xt", "cats", "alice", "first_person", "other");  // 别租户
+    seed_edge(db, "e1", "seed", "xt", 1.0, "MAY_OVERLAP_WITH", "default");
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    for (const auto& r : res.rows)
+        EXPECT_NE(r.row.id, "xt") << "cross-tenant node must never be bridged";
+}
