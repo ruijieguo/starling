@@ -112,6 +112,7 @@ target_sources(starling_core PRIVATE
     src/prospective/commitment_engine.cpp
     src/prospective/trigger.cpp
     src/prospective/policy_engine.cpp
+    src/retrieval/pattern_completor.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
