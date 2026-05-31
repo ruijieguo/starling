@@ -6,7 +6,7 @@ Starling gives an LLM agent something a vector store can't: a persistent, evolvi
 
 It is **not** `user_id` isolation plus vector-RAG. It's a three-part system — a data model, a runtime scheduler, and a retrieval planner — that can sit on top of mem0 / Letta / cognee / Graphiti rather than replace them.
 
-C++20 core, raw SQLite, with Python (`pybind11`) bindings. **486 C++ tests + 487 Python tests, all green.**
+C++20 core, raw SQLite, with Python (`pybind11`) bindings.
 
 ---
 
@@ -110,7 +110,5 @@ A license has not yet been chosen. Until one is added, all rights are reserved b
 **七大差异**:① Cognizer 一等公民(非 user_id);② Statement 替代 Fact(谁、何时、基于何证据、对谁、以何样态/极性、持有何判断);③ 二阶 ToM 数据模型(嵌套 Statement + nesting_depth);④ 类脑六态状态机(consolidation_state);⑤ Reconsolidation 不覆盖(supersedes 链);⑥ 真前瞻(类型化 Trigger + Commitment 五态机);⑦ 视角化检索 + 心智摘要。
 
 **三条公理**:① 没有孤立的事实,只有归属于主体的陈述;② 两套时间尺度协同(CLS):写入先入 Hippocampus(VOLATILE),经 Replay / 模式分离补全 / 再巩固才上升到 Neocortex;③ 记忆为当前目标重构,不是录像回放,且可显式弃答。
-
-**进度**:P1(基础)+ 整个 P2(P2.a 社会心智 Schema、P2.b 类脑动力学 = M0.8 无向量核心 + M0.9 向量层、P2.c 前瞻与情感)已实现并测试通过(486 C++ + 487 Python 测试全绿)。P3(多底座产品化 / dist-store / 跨档迁移 / 完整评测)待写。当前运行的是 **local-store SQLite 单租户档**;seekdb 向量后端、模式补全(PPR)、EM-LLM 切分、dist-store 多租户、外部动作执行均为已设计、待落地。
 
 完整设计见 [`docs/design/system_design.md`](docs/design/system_design.md) 与 [`docs/design/subsystems_design/`](docs/design/subsystems_design/)。构建与测试见上文 **Build & test**。
