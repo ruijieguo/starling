@@ -1643,10 +1643,12 @@ statement.written × 3
 
 | 阶段 | 定位 | 周数 | 状态 |
 |---|---|---|---|
-| **P1** | 最小系统，主要功能完备可测试 | 6 周 | 编码起点 |
-| **P2** | 所有功能基本完备，局部待优化，支持小规模应用 | 14 周 | 接续 P1 |
-| **P3** | 所有功能完备，系统完成主要优化，支持大规模应用 | 12 周 | 接续 P2 |
+| **P1** | 最小系统，主要功能完备可测试 | 6 周 | 已交付（local-store SQLite） |
+| **P2** | 所有功能基本完备，局部待优化，支持小规模应用 | 14 周 | 子阶段 a/b/c 已落地，收尾中（P2.d/e/f，详见 roadmap 索引） |
+| **P3** | 所有功能完备，系统完成主要优化，支持大规模应用 | 12 周 | 待启动 |
 | P3+ | 持续演进，无硬性交付节点 | 不定 | 研究方向 |
+
+> 进度追踪以执行索引 `docs/superpowers/plans/2026-05-23-roadmap.md` 为准；本表"状态"列只作粗粒度指针。各阶段定位（"支持小规模应用"等）以可量化验收指标为准入/出口，不以功能清单为判据。
 
 总工期（不含 P3+）：P1（6 周）+ P2（14 周）+ P3（12 周）= 32 周 ≈ 8 个月。P2 与 P3 内部子阶段可并行展开，压缩至 6-7 个月内。
 
@@ -1679,7 +1681,7 @@ statement.written × 3
 | 子阶段 | 周数 | 核心交付 | 验收方式 |
 |---|---|---|---|
 | P3.a 检索规划 + 二阶 ToM | 4 周 | Retrieval Planner 完整 7 步 + 9 种 QueryIntent；perspective filter（iterative masking）；Abstention 判定；Context Pack Builder 8 标签；二阶 ToM（nesting_depth=2）全链路；ToMDepthEstimator（A-ToM 风格）；CommonGround 完整 grounding acts；Affect Buffer 参与采样 | ToMBench / FANToM / SoMi-ToM 全量；二阶 ToM 主动提示 precision > 70%；ToMDepth 估计 accuracy > 60% |
-| P3.b 多底座产品化 | 4 周 | Substrate Adapter 三档 profile 全量交付：local-store（seekdb+LadybugDB）已在 P1 落地；dist-store（Postgres+pgvector+AGE）已在 P2 落地；P3.b 交付 cloud-store 三形态（单云原生 AWS/GCP/Azure、混合托管、跨云 SaaS）；P1↔P2↔P3 跨档迁移工具；mem0 / Letta / cognee / Graphiti / memU 迁移脚本；评测体系全量跑通；API 文档 + 接入指南 | 用户主观评测 A/B 对照；跨档迁移 + 5 种外部系统迁移集成测试 |
+| P3.b 多底座产品化 | 4 周 | Substrate Adapter 三档 profile 全量交付：local-store（目标形态 seekdb+LadybugDB；P1/P2 当前实现落在 raw SQLite + 暴力 BLOB 向量，seekdb 后端经 `VectorIndex` seam 后续接入）；dist-store（Postgres+pgvector+AGE，原规划 P2，未落地，顺延至 P3.b）；P3.b 交付 cloud-store 三形态（单云原生 AWS/GCP/Azure、混合托管、跨云 SaaS）；P1↔P2↔P3 跨档迁移工具；mem0 / Letta / cognee / Graphiti / memU 迁移脚本；评测体系全量跑通；API 文档 + 接入指南 | 用户主观评测 A/B 对照；跨档迁移 + 5 种外部系统迁移集成测试 |
 | P3.c 规模化优化 | 4 周 | 完整 ScopedWorkGate / RestartGuard / stage_timing；RuntimeHealth 完整仪表盘与自动背压调度；完整 SourceAdapter 插件系统；dimension-level Container CAS；segment_map / span_start / span_end；ActionPolicyGraph 8 规则完整版；PipelineStepContract 通用 step graph；Retrieval 多源 fan-out latency budget | P3 规模化负载测试：1000 Cognizer × 10000 Statement × 100 QPS 检索 |
 
 ### 15.2 P1 内部里程碑 M0.0 - M0.7
@@ -1965,7 +1967,7 @@ Starling 不要求替换现有系统。任何开源系统都可以作为 Substra
 | 自然语言 belief 列表注入 LLM Context Pack | 形式化 belief base（如 PDDL-Mind） | LLM 对自然语言的理解远好于形式逻辑；形式化作为 P3+ 高阶可选，不阻塞 MVP |
 | 核心 C++ 实现 + 多语言绑定 | Python / Rust / Go 实现 | 性能可预期；零开销抽象 + RAII；与 seekdb / LadybugDB 同栈无跨语言开销；多语言绑定通过 pybind11/NAPI 等成熟工具 |
 | 配置文件统一 JSON | YAML / TOML / Protobuf | 跨语言一等支持；JSON Schema 校验；diff/audit 友好；YAML 缩进陷阱在多语言生态不一致 |
-| local-store 用 seekdb 单引擎合并文本+向量+FTS | SQLite + LanceDB + DuckDB 多引擎 | 减少 outbox 跨引擎协调；ACID 跨表事务原生支持；C++ 实现匹配核心栈；MySQL wire 形态 < 100μs 同机延迟可接受 |
+| local-store 用 seekdb 单引擎合并文本+向量+FTS | SQLite + LanceDB + DuckDB 多引擎 | 减少 outbox 跨引擎协调；ACID 跨表事务原生支持；C++ 实现匹配核心栈；MySQL wire 形态 < 100μs 同机延迟可接受。（当前实现先以 raw SQLite + 暴力 BLOB 向量落地，seekdb 单引擎后端经 `VectorIndex` seam 后续接入；见 §16.5） |
 
 ### 16.2 风险与开放问题
 
@@ -2034,9 +2036,9 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 | CommonGround pool | P2（基础）/ P3（完整 grounding acts） | 分阶段 |
 | Affect Buffer 参与采样 | P3 | P1 写入 salience 字段但不参与采样 |
 | 完整 ActionPolicyGraph 8 规则 | P3 高阶 | P3 仅 ActionGuard 最小子集 |
-| 模式补全 CA3 风格 | P2 | 计算重 |
+| 模式补全 CA3 风格（PPR 图游走） | P2（收尾 P2.d） | 计算重；M0.9 只落地模式分离（反相似偏移 + MAY_OVERLAP_WITH 边），补全顺延 |
 | dimension-level Container CAS | P3 | P1 整体 rebuild 够用 |
-| segment_map / span_start / span_end | P2 | 多模态/PDF 分段才需要 |
+| segment_map / span_start / span_end（含 EM-LLM 事件切分 + logprobs） | P3.c | 多模态/PDF 分段才需要；P2 未落地 |
 | ToMDepthEstimator（A-ToM） | P3 | 需 partner 历史数据 |
 | 完整 ScopedWorkGate / RestartGuard / stage_timing | P2+ | P1 单线程不需要 |
 | RuntimeHealth 完整仪表盘与自动背压调度 | P2 | P1 只实现 capability preflight + 最小 run ledger |
@@ -2044,6 +2046,10 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 | 外部库原生数据结构直连核心表 | 永不交付 | 只能经 Adapter 映射为 Starling 原生原语 |
 | Retrieval P3 多源 fan-out latency budget | P3 | 实际负载成点才能估准默认值 |
 | PipelineStepContract/requires/produces/failure_policy 通用 step graph | P3 | P1 只记录 pipeline_name/version/status/counters |
+| seekdb 单引擎 local-store 后端 | P3 | 当前 local-store 以 raw SQLite + 暴力 BLOB 向量落地；seekdb 后端经 `VectorIndex` seam 后接（seekdb 为 MySQL-wire 守护进程，无可嵌入 C++ SDK） |
+| dist-store（Postgres+pgvector+AGE）底座 | P3.b（原规划 P2） | P2 未落地，顺延至 P3.b 多底座产品化；当前仅 local-store SQLite 单租户 |
+| 应用接口层（`Memory` 门面 + Working Set 渲染 + quickstart 示例） | P2（收尾 P2.e） | 「支持小规模应用」所需的可用 facade；P2.a–c 仅交付 `_core` 绑定 + Runtime 监督器，无 agent 可直接消费的入口 |
+| 承诺履行 100 条 / LongMemEval 评测准入 | P2（收尾 P2.f） | P2.c 走 tests-only；roadmap P2 准入的 eval（承诺履行 detection/timeliness、LongMemEval 时间/更新）尚未跑通 |
 
 ---
 ## 附录 A 术语速查
