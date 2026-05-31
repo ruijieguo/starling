@@ -163,10 +163,13 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
         visited.insert(s.row.id);
     }
 
-    // Step 3: spreading-activation walk（Task 3 单步;后续 Task 扩成多步循环 + 终止）。
-    {
+    // Step 3: spreading-activation walk（06_hippocampus.md §3）。
+    int node_count = static_cast<int>(visited.size());
+    bool truncated = false;
+    for (int step = 0; step < params.budget; ++step) {
         const std::string frontier_json = build_frontier_json(activation);
         auto hits = expand(conn, frontier_json, params);
+
         std::unordered_map<std::string, double> next;
         for (const auto& e : hits) {
             const double contrib =
@@ -175,13 +178,21 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
             auto it = next.find(e.target_id);
             if (it == next.end() || contrib > it->second) next[e.target_id] = contrib;
         }
+
+        bool any_new = false;
         for (const auto& kv : next) {
-            visited.insert(kv.first);
+            if (visited.insert(kv.first).second) { ++node_count; any_new = true; }
             auto it = activation.find(kv.first);
             if (it == activation.end() || kv.second > it->second)
                 activation[kv.first] = kv.second;
         }
+
+        if (node_count >= params.node_cap) { truncated = true; break; }
+        // 收敛:本步无新节点即停。(设计的 max(activation)<θ 被种子 1.0 支配、永不触发;
+        //  re-expand-all 下"无新节点"是 operative 收敛判据,budget 为兜底上限。)
+        if (!any_new) break;
     }
+    out.completion_truncated = truncated;
 
     // Step 4: top result_k by activation desc.
     std::vector<std::pair<std::string, double>> ranked(activation.begin(), activation.end());

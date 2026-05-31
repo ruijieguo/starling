@@ -271,3 +271,92 @@ TEST(PatternCompletor, TenantIsolationNotBridged) {
     for (const auto& r : res.rows)
         EXPECT_NE(r.row.id, "xt") << "cross-tenant node must never be bridged";
 }
+
+// 菱形:seed→A,seed→B,A→D,B→D(全 w=1.0,decay=0.5)。
+//   A=B=0.5;D 经两路各得 0.5*0.5=0.25,max 合并 → 0.25(非 sum 0.5)。
+TEST(PatternCompletor, DiamondMaxNotAccumulate) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    seed_stmt(db, "A", "a"); seed_stmt(db, "B", "b"); seed_stmt(db, "D", "d");
+    seed_edge(db, "e1", "seed", "A", 1.0);
+    seed_edge(db, "e2", "seed", "B", 1.0);
+    seed_edge(db, "e3", "A", "D", 1.0);
+    seed_edge(db, "e4", "B", "D", 1.0);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats";
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    ASSERT_TRUE(act.count("D"));
+    EXPECT_DOUBLE_EQ(act["D"], 0.25) << "max-merge, not sum";
+    EXPECT_DOUBLE_EQ(act["A"], 0.5);
+}
+
+// 衰减链 seed→n1→n2→n3→n4→n5(全 w=1.0)。activation=0.5^depth:
+//   n1=.5 n2=.25 n3=.125 n4=.0625 n5=.03125<θ(0.05) → n5 被剪。
+TEST(PatternCompletor, DecayChainThetaCutoff) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    for (int i = 1; i <= 5; ++i) seed_stmt(db, "n" + std::to_string(i), "n" + std::to_string(i));
+    seed_edge(db, "c0", "seed", "n1", 1.0);
+    seed_edge(db, "c1", "n1", "n2", 1.0);
+    seed_edge(db, "c2", "n2", "n3", 1.0);
+    seed_edge(db, "c3", "n3", "n4", 1.0);
+    seed_edge(db, "c4", "n4", "n5", 1.0);
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats"; p.result_k = 20;
+
+    auto res = pc.complete(conn, p);
+    std::unordered_map<std::string, double> act;
+    for (const auto& r : res.rows) act[r.row.id] = r.activation;
+    EXPECT_TRUE(act.count("n4")); EXPECT_DOUBLE_EQ(act["n4"], 0.0625);
+    EXPECT_FALSE(act.count("n5")) << "activation 0.03125 < theta 0.05 → pruned";
+}
+
+// node_cap 截断:seed 连 1100 个目标(w=1.0)→ node_count≥1000 → truncated,结果≤result_k。
+TEST(PatternCompletor, NodeCapTruncation) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+
+    seed_stmt(db, "seed", "cats");
+    embed_existing(*adapter, emb, idx, conn);
+    for (int i = 0; i < 1100; ++i) {
+        std::string nid = "t" + std::to_string(i);
+        seed_stmt(db, nid, nid);
+        seed_edge(db, "edge" + std::to_string(i), "seed", nid, 1.0);
+    }
+
+    SemanticRetriever sr(*adapter, emb, idx);
+    PatternCompletor pc(*adapter, sr);
+    PatternCompletionParams p;
+    p.tenant_id = "default"; p.holder_id = "alice"; p.holder_perspective = "first_person";
+    p.cue_text = "bob knows cats"; p.result_k = 20; p.node_cap = 1000;
+
+    auto res = pc.complete(conn, p);
+    EXPECT_TRUE(res.completion_truncated);
+    EXPECT_LE(res.rows.size(), 20u);
+}
