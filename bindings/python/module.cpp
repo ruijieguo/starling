@@ -660,7 +660,7 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Connection (opaque) -----
     py::class_<starling::persistence::Connection>(m, "Connection");
 
-    // ----- M0.4: LLMResponse + FakeLLMAdapter -----
+    // ----- M0.4: LLMResponse + LLMAdapter base + FakeLLMAdapter -----
     py::class_<starling::extractor::LLMResponse>(m, "LLMResponse")
         .def(py::init<>())
         .def(py::init([](std::string raw_xml, bool ok, std::string error) {
@@ -670,7 +670,10 @@ PYBIND11_MODULE(_core, m) {
         .def_readwrite("ok",      &starling::extractor::LLMResponse::ok)
         .def_readwrite("error",   &starling::extractor::LLMResponse::error);
 
-    py::class_<starling::extractor::FakeLLMAdapter>(m, "FakeLLMAdapter")
+    // Abstract base — register so pybind knows FakeLLMAdapter / OpenAIAdapter share it.
+    py::class_<starling::extractor::LLMAdapter>(m, "LLMAdapter");
+
+    py::class_<starling::extractor::FakeLLMAdapter, starling::extractor::LLMAdapter>(m, "FakeLLMAdapter")
         .def(py::init<>())
         .def("set_response",
              [](starling::extractor::FakeLLMAdapter& self, const std::string& hash,
@@ -699,7 +702,7 @@ PYBIND11_MODULE(_core, m) {
             .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
             .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
-        py::class_<OpenAIAdapter>(m, "OpenAIAdapter")
+        py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
     }
 
@@ -726,7 +729,7 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Extractor -----
     py::class_<starling::extractor::Extractor>(m, "Extractor")
         .def(py::init([](starling::persistence::Connection& conn,
-                         starling::extractor::FakeLLMAdapter& a) {
+                         starling::extractor::LLMAdapter& a) {
             return new starling::extractor::Extractor(conn, a);
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
            py::arg("connection"), py::arg("adapter"))
