@@ -53,6 +53,7 @@
 #include "starling/schema/enums.hpp"
 #include "starling/embedding/embedding_adapter.hpp"
 #include "starling/embedding/embedding_worker.hpp"
+#include "starling/embedding/openai_embedding_adapter.hpp"
 #include "starling/vector/vector_index.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/retrieval/pattern_completor.hpp"
@@ -1263,6 +1264,22 @@ PYBIND11_MODULE(_core, m) {
                  s.fail_next(text);
              },
              py::arg("text"));
+
+    // ----- P2.f: OpenAIEmbeddingAdapter (real embedder for gated evals) -----
+    {
+        using starling::embedding::OpenAIEmbeddingAdapter;
+        py::class_<OpenAIEmbeddingAdapter::Config>(m, "OpenAIEmbeddingConfig")
+            .def(py::init<>())
+            .def_readwrite("base_url",    &OpenAIEmbeddingAdapter::Config::base_url)
+            .def_readwrite("model",       &OpenAIEmbeddingAdapter::Config::model)
+            .def_readwrite("dim",         &OpenAIEmbeddingAdapter::Config::dim)
+            .def_readwrite("timeout_ms",  &OpenAIEmbeddingAdapter::Config::timeout_ms)
+            .def_readwrite("max_retries", &OpenAIEmbeddingAdapter::Config::max_retries)
+            .def_static("from_env",       &OpenAIEmbeddingAdapter::Config::from_env);
+        py::class_<OpenAIEmbeddingAdapter, starling::embedding::EmbeddingAdapter>(
+                m, "OpenAIEmbeddingAdapter")
+            .def(py::init<OpenAIEmbeddingAdapter::Config>(), py::arg("config"));
+    }
 
     py::class_<starling::vector::SqliteBlobVectorIndex,
                starling::vector::VectorIndex>(m, "SqliteBlobVectorIndex")
