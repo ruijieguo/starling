@@ -555,7 +555,8 @@ PYBIND11_MODULE(_core, m) {
         .def_readonly("valid_to",               &starling::retrieval::StatementRow::valid_to)
         .def_readonly("consolidation_state",    &starling::retrieval::StatementRow::consolidation_state)
         .def_readonly("review_status",          &starling::retrieval::StatementRow::review_status)
-        .def_readonly("evidence_json",          &starling::retrieval::StatementRow::evidence_json);
+        .def_readonly("evidence_json",          &starling::retrieval::StatementRow::evidence_json)
+        .def_readonly("affect_json",            &starling::retrieval::StatementRow::affect_json);
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())
@@ -659,7 +660,7 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Connection (opaque) -----
     py::class_<starling::persistence::Connection>(m, "Connection");
 
-    // ----- M0.4: LLMResponse + FakeLLMAdapter -----
+    // ----- M0.4: LLMResponse + LLMAdapter base + FakeLLMAdapter -----
     py::class_<starling::extractor::LLMResponse>(m, "LLMResponse")
         .def(py::init<>())
         .def(py::init([](std::string raw_xml, bool ok, std::string error) {
@@ -669,7 +670,10 @@ PYBIND11_MODULE(_core, m) {
         .def_readwrite("ok",      &starling::extractor::LLMResponse::ok)
         .def_readwrite("error",   &starling::extractor::LLMResponse::error);
 
-    py::class_<starling::extractor::FakeLLMAdapter>(m, "FakeLLMAdapter")
+    // Abstract base — register so pybind knows FakeLLMAdapter / OpenAIAdapter share it.
+    py::class_<starling::extractor::LLMAdapter>(m, "LLMAdapter");
+
+    py::class_<starling::extractor::FakeLLMAdapter, starling::extractor::LLMAdapter>(m, "FakeLLMAdapter")
         .def(py::init<>())
         .def("set_response",
              [](starling::extractor::FakeLLMAdapter& self, const std::string& hash,
@@ -698,7 +702,7 @@ PYBIND11_MODULE(_core, m) {
             .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
             .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
-        py::class_<OpenAIAdapter>(m, "OpenAIAdapter")
+        py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
     }
 
@@ -725,7 +729,7 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Extractor -----
     py::class_<starling::extractor::Extractor>(m, "Extractor")
         .def(py::init([](starling::persistence::Connection& conn,
-                         starling::extractor::FakeLLMAdapter& a) {
+                         starling::extractor::LLMAdapter& a) {
             return new starling::extractor::Extractor(conn, a);
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
            py::arg("connection"), py::arg("adapter"))
@@ -1436,6 +1440,13 @@ PYBIND11_MODULE(_core, m) {
 
     // ── M0.8: PersonaContainer + AnchorStatement + ConcurrentRebuildError ─
 
+    py::class_<starling::neocortex::PersonaView>(m, "PersonaView")
+        .def_readonly("found",      &starling::neocortex::PersonaView::found)
+        .def_readonly("tenant_id",  &starling::neocortex::PersonaView::tenant_id)
+        .def_readonly("holder_id",  &starling::neocortex::PersonaView::holder_id)
+        .def_readonly("version",    &starling::neocortex::PersonaView::version)
+        .def_readonly("dimensions", &starling::neocortex::PersonaView::dimensions);
+
     py::class_<starling::neocortex::AnchorStatement>(m, "AnchorStatement")
         .def(py::init<>())
         .def(py::init([](std::string stmt_id, std::string anchor_type,
@@ -1469,9 +1480,24 @@ PYBIND11_MODULE(_core, m) {
                  s.rebuild(s.connection(), tenant_id, holder_id, sources, now_iso);
              },
              py::arg("tenant_id"), py::arg("holder_id"), py::arg("sources"),
-             py::arg("now_iso"));
+             py::arg("now_iso"))
+        .def("read",
+             [](starling::neocortex::PersonaContainer& self,
+                const std::string& tenant_id, const std::string& holder_id) {
+                 return self.read(self.connection(), tenant_id, holder_id);
+             },
+             py::arg("tenant_id"), py::arg("holder_id"));
 
     // ── M0.8: CommonGroundContainer ───────────────────────────────────────
+
+    py::class_<starling::neocortex::CommonGroundView>(m, "CommonGroundView")
+        .def_readonly("found",             &starling::neocortex::CommonGroundView::found)
+        .def_readonly("tenant_id",         &starling::neocortex::CommonGroundView::tenant_id)
+        .def_readonly("cg_ref",            &starling::neocortex::CommonGroundView::cg_ref)
+        .def_readonly("version",           &starling::neocortex::CommonGroundView::version)
+        .def_readonly("grounded",          &starling::neocortex::CommonGroundView::grounded)
+        .def_readonly("asserted_unack",    &starling::neocortex::CommonGroundView::asserted_unack)
+        .def_readonly("suspected_diverge", &starling::neocortex::CommonGroundView::suspected_diverge);
 
     py::class_<starling::neocortex::CommonGroundContainer>(m, "CommonGroundContainer")
         .def(py::init<starling::persistence::SqliteAdapter&>(),
@@ -1481,7 +1507,13 @@ PYBIND11_MODULE(_core, m) {
                 std::string tenant_id, std::string cg_ref, std::string now_iso) {
                  s.rebuild(s.connection(), tenant_id, cg_ref, now_iso);
              },
-             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"));
+             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"))
+        .def("read",
+             [](starling::neocortex::CommonGroundContainer& self,
+                const std::string& tenant_id, const std::string& cg_ref) {
+                 return self.read(self.connection(), tenant_id, cg_ref);
+             },
+             py::arg("tenant_id"), py::arg("cg_ref"));
 
     // ── P2.c: affect ──────────────────────────────────────────────────────
 
@@ -1518,6 +1550,17 @@ PYBIND11_MODULE(_core, m) {
 
     m.def("action_guard_check", &starling::prospective::check,
           py::arg("guard"), py::arg("action_name"));
+
+    // ── P2.c: prospective CommitmentView (read result) ────────────────────
+
+    py::class_<starling::prospective::CommitmentView>(m, "CommitmentView")
+        .def_readonly("stmt_id",      &starling::prospective::CommitmentView::stmt_id)
+        .def_readonly("state",        &starling::prospective::CommitmentView::state)
+        .def_readonly("deadline",     &starling::prospective::CommitmentView::deadline)
+        .def_readonly("subject_id",   &starling::prospective::CommitmentView::subject_id)
+        .def_readonly("predicate",    &starling::prospective::CommitmentView::predicate)
+        .def_readonly("object_value", &starling::prospective::CommitmentView::object_value)
+        .def_readonly("fired",        &starling::prospective::CommitmentView::fired);
 
     // ── P2.c: prospective CommitmentEngine (conn-free) ────────────────────
 
@@ -1559,7 +1602,14 @@ PYBIND11_MODULE(_core, m) {
                                       new_stmt_id, tenant, now);
              },
              py::arg("old_stmt_id"), py::arg("new_stmt_id"),
-             py::arg("tenant_id"), py::arg("now_iso"));
+             py::arg("tenant_id"), py::arg("now_iso"))
+        .def("pending",
+             [](starling::prospective::CommitmentEngine& self,
+                const std::string& tenant_id, const std::string& holder_id,
+                const std::string& interlocutor_id) {
+                 return self.pending(self.connection(), tenant_id, holder_id, interlocutor_id);
+             },
+             py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor_id"));
 
     // ── P2.c: prospective PolicyEngine (conn-free) ────────────────────────
 

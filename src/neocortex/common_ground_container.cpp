@@ -5,6 +5,8 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -165,6 +167,55 @@ void CommonGroundContainer::rebuild(
         if (sqlite3_changes(db) == 0)
             throw ConcurrentRebuildError{};
     }
+}
+
+CommonGroundView CommonGroundContainer::read(persistence::Connection& conn,
+        std::string_view tenant_id, std::string_view cg_ref) {
+    CommonGroundView v;
+    v.tenant_id = std::string(tenant_id);
+    v.cg_ref = std::string(cg_ref);
+    sqlite3* db = conn.raw();
+    const char* sql =
+        "SELECT content_json, version FROM containers"
+        " WHERE tenant_id=?1 AND holder_id=?2 AND kind='common_ground' LIMIT 1";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "CommonGroundContainer::read prepare");
+    StmtHandle h{raw};
+    bind_sv(raw, 1, tenant_id);
+    bind_sv(raw, 2, cg_ref);
+    if (sqlite3_step(raw) != SQLITE_ROW) return v;
+    const unsigned char* cj = sqlite3_column_text(raw, 0);
+    std::string content = cj ? reinterpret_cast<const char*>(cj) : "{}";
+    v.version = sqlite3_column_int(raw, 1);
+    v.found = true;
+    auto j = nlohmann::json::parse(content, nullptr, false);
+
+    auto render = [&](const std::string& sid) -> std::string {
+        const char* q =
+            "SELECT subject_id, predicate, object_value FROM statements"
+            " WHERE id=?1 AND tenant_id=?2 LIMIT 1";
+        sqlite3_stmt* sr = nullptr;
+        if (sqlite3_prepare_v2(db, q, -1, &sr, nullptr) != SQLITE_OK) return sid;
+        StmtHandle sh{sr};
+        bind_sv(sr, 1, sid);
+        bind_sv(sr, 2, tenant_id);
+        if (sqlite3_step(sr) != SQLITE_ROW) return sid;
+        auto t = [sr](int i) {
+            const unsigned char* c = sqlite3_column_text(sr, i);
+            return c ? std::string(reinterpret_cast<const char*>(c)) : std::string();
+        };
+        return t(0) + " " + t(1) + " " + t(2);
+    };
+    auto fill = [&](const char* key, std::vector<std::string>& out) {
+        if (j.is_object() && j.contains(key) && j[key].is_array())
+            for (const auto& e : j[key])
+                if (e.is_string()) out.push_back(render(e.get<std::string>()));
+    };
+    fill("grounded", v.grounded);
+    fill("asserted_unack", v.asserted_unack);
+    fill("suspected_diverge", v.suspected_diverge);
+    return v;
 }
 
 }  // namespace starling::neocortex

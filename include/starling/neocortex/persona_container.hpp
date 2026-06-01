@@ -9,6 +9,13 @@
 
 namespace starling::neocortex {
 
+struct PersonaView {
+    bool found = false;
+    std::string tenant_id, holder_id;
+    int version = 0;
+    std::map<std::string, std::string> dimensions;   // dim → arbitrated value (skips null/diverged)
+};
+
 struct AnchorStatement {
     std::string stmt_id;
     std::string anchor_type;    // "self_model_anchor" | "profile_anchor"
@@ -38,6 +45,9 @@ public:
     void rebuild(persistence::Connection& conn, std::string_view tenant_id,
                  std::string_view holder_id, const std::vector<AnchorStatement>& sources,
                  std::string_view now_iso);
+
+    PersonaView read(persistence::Connection& conn, std::string_view tenant_id,
+                     std::string_view holder_id);
 
     // Python binding helper.
     persistence::Connection& connection() { return adapter_.connection(); }

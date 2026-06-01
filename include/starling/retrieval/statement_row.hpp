@@ -27,6 +27,7 @@ struct StatementRow {
     std::string consolidation_state; // "consolidated" | "archived"
     std::string review_status;
     std::string evidence_json;       // raw JSON array of EvidenceRef-like dicts
+    std::string affect_json;         // raw affect JSON ("{}" if absent); P2.e
 };
 
 }  // namespace starling::retrieval
