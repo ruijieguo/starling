@@ -1,12 +1,19 @@
 #pragma once
 #include <string>
 #include <string_view>
+#include <vector>
 #include "starling/persistence/sqlite_adapter.hpp"
 
 namespace starling::prospective {
 
 inline constexpr int kMaxBrokenCount = 3;
 inline constexpr int kMaxRenegotiationChain = 3;
+
+struct CommitmentView {
+    std::string stmt_id, state, deadline;
+    std::string subject_id, predicate, object_value;
+    bool fired = false;
+};
 
 class CommitmentEngine {
 public:
@@ -23,6 +30,9 @@ public:
     bool renegotiate(persistence::Connection&, std::string_view old_stmt_id,
                      std::string_view new_stmt_id, std::string_view tenant_id,
                      std::string_view now_iso);
+    std::vector<CommitmentView> pending(persistence::Connection& conn,
+            std::string_view tenant_id, std::string_view holder_id,
+            std::string_view interlocutor_id);
     persistence::Connection& connection() { return adapter_.connection(); }
 private:
     persistence::SqliteAdapter& adapter_;

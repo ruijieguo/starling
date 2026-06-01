@@ -1548,6 +1548,17 @@ PYBIND11_MODULE(_core, m) {
     m.def("action_guard_check", &starling::prospective::check,
           py::arg("guard"), py::arg("action_name"));
 
+    // ── P2.c: prospective CommitmentView (read result) ────────────────────
+
+    py::class_<starling::prospective::CommitmentView>(m, "CommitmentView")
+        .def_readonly("stmt_id",      &starling::prospective::CommitmentView::stmt_id)
+        .def_readonly("state",        &starling::prospective::CommitmentView::state)
+        .def_readonly("deadline",     &starling::prospective::CommitmentView::deadline)
+        .def_readonly("subject_id",   &starling::prospective::CommitmentView::subject_id)
+        .def_readonly("predicate",    &starling::prospective::CommitmentView::predicate)
+        .def_readonly("object_value", &starling::prospective::CommitmentView::object_value)
+        .def_readonly("fired",        &starling::prospective::CommitmentView::fired);
+
     // ── P2.c: prospective CommitmentEngine (conn-free) ────────────────────
 
     py::class_<starling::prospective::CommitmentEngine>(m, "CommitmentEngine")
@@ -1588,7 +1599,14 @@ PYBIND11_MODULE(_core, m) {
                                       new_stmt_id, tenant, now);
              },
              py::arg("old_stmt_id"), py::arg("new_stmt_id"),
-             py::arg("tenant_id"), py::arg("now_iso"));
+             py::arg("tenant_id"), py::arg("now_iso"))
+        .def("pending",
+             [](starling::prospective::CommitmentEngine& self,
+                const std::string& tenant_id, const std::string& holder_id,
+                const std::string& interlocutor_id) {
+                 return self.pending(self.connection(), tenant_id, holder_id, interlocutor_id);
+             },
+             py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor_id"));
 
     // ── P2.c: prospective PolicyEngine (conn-free) ────────────────────────
 

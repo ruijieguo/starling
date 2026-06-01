@@ -19,6 +19,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace starling::prospective {
 
@@ -359,6 +360,40 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
     emit_event(conn, "commitment.renegotiated", new_stmt_id, new_stmt_id, tenant_id,
                std::string(R"({"old_stmt_id":")") + std::string(old_stmt_id) + "\"}");
     return true;
+}
+
+// ── pending ──────────────────────────────────────────────────────────────────
+
+std::vector<CommitmentView> CommitmentEngine::pending(persistence::Connection& conn,
+        std::string_view tenant_id, std::string_view holder_id, std::string_view interlocutor_id) {
+    const char* sql =
+        "SELECT c.stmt_id, c.state, COALESCE(c.deadline,''), s.subject_id, s.predicate, s.object_value,"
+        "       EXISTS(SELECT 1 FROM commitment_triggers t"
+        "              WHERE t.commitment_stmt_id=c.stmt_id AND t.tenant_id=c.tenant_id"
+        "                AND t.status='fired') AS fired"
+        "  FROM commitments c JOIN statements s ON s.id=c.stmt_id AND s.tenant_id=c.tenant_id"
+        " WHERE c.tenant_id=?1 AND c.state='ACTIVE' AND s.holder_id=?2"
+        "   AND (?3='' OR s.subject_id=?3 OR s.object_value=?3)"
+        " ORDER BY c.deadline";
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "CommitmentEngine::pending prepare");
+    StmtHandle h{raw};
+    bind_sv(raw, 1, tenant_id);
+    bind_sv(raw, 2, holder_id);
+    bind_sv(raw, 3, interlocutor_id);
+    auto t = [raw](int i){ const unsigned char* c=sqlite3_column_text(raw,i);
+                           return c ? std::string(reinterpret_cast<const char*>(c)) : std::string(); };
+    std::vector<CommitmentView> out;
+    while (sqlite3_step(raw) == SQLITE_ROW) {
+        CommitmentView v;
+        v.stmt_id=t(0); v.state=t(1); v.deadline=t(2);
+        v.subject_id=t(3); v.predicate=t(4); v.object_value=t(5);
+        v.fired = sqlite3_column_int(raw, 6) != 0;
+        out.push_back(std::move(v));
+    }
+    return out;
 }
 
 }  // namespace starling::prospective
