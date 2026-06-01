@@ -5,6 +5,7 @@
 #include "starling/bus/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -307,6 +308,38 @@ void PersonaContainer::rebuild(
             }
         }
     }
+}
+
+PersonaView PersonaContainer::read(persistence::Connection& conn,
+                                   std::string_view tenant_id, std::string_view holder_id) {
+    PersonaView v;
+    v.tenant_id = std::string(tenant_id);
+    v.holder_id = std::string(holder_id);
+    const char* sql =
+        "SELECT content_json, version FROM containers"
+        " WHERE tenant_id=?1 AND holder_id=?2 AND kind='persona' LIMIT 1";
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "PersonaContainer::read prepare");
+    StmtHandle h{raw};
+    bind_sv(raw, 1, tenant_id);
+    bind_sv(raw, 2, holder_id);
+    if (sqlite3_step(raw) != SQLITE_ROW) return v;  // found=false
+    const unsigned char* cj = sqlite3_column_text(raw, 0);
+    std::string content = cj ? reinterpret_cast<const char*>(cj) : "{}";
+    v.version = sqlite3_column_int(raw, 1);
+    v.found = true;
+    auto j = nlohmann::json::parse(content, nullptr, /*allow_exceptions=*/false);
+    if (j.is_object() && j.contains("dimensions") && j["dimensions"].is_object()) {
+        for (auto& [dim, entry] : j["dimensions"].items()) {
+            if (!entry.is_object()) continue;
+            if (entry.value("suspected_diverge", false)) continue;
+            const auto& val = entry["value"];
+            if (val.is_string()) v.dimensions[dim] = val.get<std::string>();
+        }
+    }
+    return v;
 }
 
 }  // namespace starling::neocortex

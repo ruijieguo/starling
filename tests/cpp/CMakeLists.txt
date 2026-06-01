@@ -118,6 +118,7 @@ add_executable(starling_tests
     test_policy_engine_tick.cpp
     test_policy_engine_subscriber.cpp
     test_pattern_completor.cpp
+    test_persona_read.cpp
 )
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 

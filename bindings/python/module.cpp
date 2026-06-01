@@ -1437,6 +1437,13 @@ PYBIND11_MODULE(_core, m) {
 
     // ── M0.8: PersonaContainer + AnchorStatement + ConcurrentRebuildError ─
 
+    py::class_<starling::neocortex::PersonaView>(m, "PersonaView")
+        .def_readonly("found",      &starling::neocortex::PersonaView::found)
+        .def_readonly("tenant_id",  &starling::neocortex::PersonaView::tenant_id)
+        .def_readonly("holder_id",  &starling::neocortex::PersonaView::holder_id)
+        .def_readonly("version",    &starling::neocortex::PersonaView::version)
+        .def_readonly("dimensions", &starling::neocortex::PersonaView::dimensions);
+
     py::class_<starling::neocortex::AnchorStatement>(m, "AnchorStatement")
         .def(py::init<>())
         .def(py::init([](std::string stmt_id, std::string anchor_type,
@@ -1470,7 +1477,13 @@ PYBIND11_MODULE(_core, m) {
                  s.rebuild(s.connection(), tenant_id, holder_id, sources, now_iso);
              },
              py::arg("tenant_id"), py::arg("holder_id"), py::arg("sources"),
-             py::arg("now_iso"));
+             py::arg("now_iso"))
+        .def("read",
+             [](starling::neocortex::PersonaContainer& self,
+                const std::string& tenant_id, const std::string& holder_id) {
+                 return self.read(self.connection(), tenant_id, holder_id);
+             },
+             py::arg("tenant_id"), py::arg("holder_id"));
 
     // ── M0.8: CommonGroundContainer ───────────────────────────────────────
 
