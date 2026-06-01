@@ -1487,6 +1487,15 @@ PYBIND11_MODULE(_core, m) {
 
     // ── M0.8: CommonGroundContainer ───────────────────────────────────────
 
+    py::class_<starling::neocortex::CommonGroundView>(m, "CommonGroundView")
+        .def_readonly("found",             &starling::neocortex::CommonGroundView::found)
+        .def_readonly("tenant_id",         &starling::neocortex::CommonGroundView::tenant_id)
+        .def_readonly("cg_ref",            &starling::neocortex::CommonGroundView::cg_ref)
+        .def_readonly("version",           &starling::neocortex::CommonGroundView::version)
+        .def_readonly("grounded",          &starling::neocortex::CommonGroundView::grounded)
+        .def_readonly("asserted_unack",    &starling::neocortex::CommonGroundView::asserted_unack)
+        .def_readonly("suspected_diverge", &starling::neocortex::CommonGroundView::suspected_diverge);
+
     py::class_<starling::neocortex::CommonGroundContainer>(m, "CommonGroundContainer")
         .def(py::init<starling::persistence::SqliteAdapter&>(),
              py::keep_alive<1, 2>(), py::arg("adapter"))
@@ -1495,7 +1504,13 @@ PYBIND11_MODULE(_core, m) {
                 std::string tenant_id, std::string cg_ref, std::string now_iso) {
                  s.rebuild(s.connection(), tenant_id, cg_ref, now_iso);
              },
-             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"));
+             py::arg("tenant_id"), py::arg("cg_ref"), py::arg("now_iso"))
+        .def("read",
+             [](starling::neocortex::CommonGroundContainer& self,
+                const std::string& tenant_id, const std::string& cg_ref) {
+                 return self.read(self.connection(), tenant_id, cg_ref);
+             },
+             py::arg("tenant_id"), py::arg("cg_ref"));
 
     // ── P2.c: affect ──────────────────────────────────────────────────────
 
