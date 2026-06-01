@@ -69,6 +69,14 @@ class RememberResult:
     outcome: str = ""
 
 
+@dataclass
+class TickStats:
+    embedded: int = 0
+    fired: int = 0
+    broken: int = 0
+    auto_withdrawn: int = 0
+
+
 class Memory:
     """Public facade over the Starling write path."""
 
@@ -79,6 +87,13 @@ class Memory:
         self._llm = llm
         # Shared connection handle for the extractor (keep-alive in binding).
         self._conn = rt.adapter.connection()
+        # Retrieval / embedding components (shared embedder + index for consistency).
+        self._emb = _core.StubEmbeddingAdapter(8)
+        self._idx = _core.SqliteBlobVectorIndex()
+        self._semantic = _core.SemanticRetriever(rt.adapter, self._emb, self._idx)
+        self._completor = _core.PatternCompletor(rt.adapter, self._semantic)
+        self._worker = _core.EmbeddingWorker(rt.adapter, self._emb, self._idx)
+        self._policy = _core.PolicyEngine(rt.adapter)
 
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
@@ -124,6 +139,49 @@ class Memory:
             engram_ref=engram_ref,
             statement_ids=list(r.accepted_statement_ids),
             outcome=kind,
+        )
+
+    def recall(self, query: str, *, perspective: str = "first_person",
+               k: int = 10, mode: str = "semantic") -> list:
+        """Retrieve memories by semantic similarity or pattern completion.
+
+        mode="semantic"    — vector cosine search via SemanticRetriever.vector_recall
+        mode="completion"  — associative spreading via PatternCompletor.complete
+        """
+        if mode == "completion":
+            res = self._completor.complete(_core.PatternCompletionParams(
+                tenant_id=self._tenant,
+                holder_id=self._agent,
+                holder_perspective=perspective,
+                cue_text=query,
+                result_k=k,
+            ))
+            return [{"row": s.row, "score": s.activation} for s in res.rows]
+        # Default: semantic vector recall
+        res = self._semantic.vector_recall(_core.SemanticRetrieverParams(
+            tenant_id=self._tenant,
+            holder_id=self._agent,
+            holder_perspective=perspective,
+            query_text=query,
+            k=k,
+        ))
+        return [{"row": s.row, "score": s.score} for s in res.rows]
+
+    def tick(self, now: str = "2026-06-01T10:00:00Z") -> TickStats:
+        """Advance background workers: embed pending statements + fire due commitments.
+
+        Returns a TickStats aggregating results from EmbeddingWorker.tick_one_batch
+        and PolicyEngine.tick.
+        """
+        es = self._worker.tick_one_batch(now)
+        ps = self._policy.tick(now)
+        # EmbeddingWorker.tick_one_batch returns EmbeddingStats (has .embedded int)
+        embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
+        return TickStats(
+            embedded=embedded,
+            fired=ps.fired,
+            broken=ps.broken,
+            auto_withdrawn=ps.auto_withdrawn,
         )
 
     def close(self) -> None:

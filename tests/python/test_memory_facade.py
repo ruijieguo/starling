@@ -62,3 +62,14 @@ def test_openai_adapter_constructs_into_extractor(tmp_path):
     llm = starling.make_openai_llm()                 # OpenAIAdapter, constructs offline
     ext = _core.Extractor(rt.adapter.connection(), llm)   # must NOT raise TypeError
     assert ext is not None
+
+
+def test_recall_and_tick(tmp_path):
+    llm = starling.make_stub_llm(default_xml=CANNED_XML)
+    mem = starling.Memory.open(str(tmp_path / "m3.db"), agent="alice", llm=llm)
+    mem.remember("Bob owns the auth module")
+    stats = mem.tick()                       # embed + commitment tick
+    assert stats.embedded >= 0
+    hits = mem.recall("bob owns auth", mode="semantic", k=5)
+    assert isinstance(hits, list)
+    mem.close()
