@@ -184,6 +184,52 @@ class Memory:
             auto_withdrawn=ps.auto_withdrawn,
         )
 
+    def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
+        """Assemble a prompt-ready ContextBlock from memory (P2.e).
+
+        Composes five sections — persona / common_ground / relevant_memories /
+        pending_commitments / affect — under an approximate token budget. A
+        `fired` commitment surfaces as a ⚠ DUE reminder (B3 closure).
+        """
+        from starling import working_set as _ws
+        adapter = self._rt.adapter
+        sections = {}
+        # persona
+        pv = _core.PersonaContainer(adapter).read(self._tenant, self._agent)
+        if pv.found and pv.dimensions:
+            sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
+        # common ground
+        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{self._agent}::{interlocutor}")
+        if cg.found and cg.grounded:
+            sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
+        # relevant memories
+        hits = self.recall(goal, mode="semantic", k=5) if goal else []
+        if hits:
+            sections["relevant_memories"] = "\n".join(
+                "- " + f"{h['row'].subject_id} {h['row'].predicate} {h['row'].object_value}" for h in hits)
+        # pending commitments (fired → ⚠)
+        pend = _core.CommitmentEngine(adapter).pending(self._tenant, self._agent, interlocutor)
+        if pend:
+            lines = []
+            for c in pend:
+                tag = "⚠ DUE: " if c.fired else ""
+                base = f"- {tag}{c.subject_id} {c.predicate} {c.object_value}"
+                lines.append(base + (f" (by {c.deadline})" if c.deadline else ""))
+            sections["pending_commitments"] = "\n".join(lines)
+        # affect (peak salience among relevant memories)
+        peak = 0.0
+        have = False
+        for h in hits:
+            aj = h["row"].affect_json
+            if aj and aj != "{}":
+                av = _core.affect_parse_json(aj)
+                s = _core.affect_salience(av, 1.0)
+                if s > peak:
+                    peak, have = s, True
+        if have:
+            sections["affect"] = f"salience {peak:.2f}"
+        return _ws.assemble(sections, token_budget)
+
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing
         # to release explicitly in the embedded facade.
