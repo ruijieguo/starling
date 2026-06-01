@@ -555,7 +555,8 @@ PYBIND11_MODULE(_core, m) {
         .def_readonly("valid_to",               &starling::retrieval::StatementRow::valid_to)
         .def_readonly("consolidation_state",    &starling::retrieval::StatementRow::consolidation_state)
         .def_readonly("review_status",          &starling::retrieval::StatementRow::review_status)
-        .def_readonly("evidence_json",          &starling::retrieval::StatementRow::evidence_json);
+        .def_readonly("evidence_json",          &starling::retrieval::StatementRow::evidence_json)
+        .def_readonly("affect_json",            &starling::retrieval::StatementRow::affect_json);
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())

@@ -66,7 +66,7 @@ constexpr const char* kSelectSqlBase =
     "       object_kind, object_value, canonical_object_hash, "
     "       modality, polarity, confidence, observed_at, "
     "       valid_from, valid_to, consolidation_state, review_status, "
-    "       evidence_json "
+    "       evidence_json, affect_json "
     "  FROM statements "
     " WHERE tenant_id = ?1 "
     "   AND holder_id = ?2 "
@@ -323,6 +323,7 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
         row.consolidation_state     = col_text(16);
         row.review_status           = col_text(17);
         row.evidence_json           = col_text(18);
+        row.affect_json             = col_text(19);
 
         if (any_evidence_erased(conn, row.tenant_id, row.evidence_json)) {
             result.receipt.candidate_counts.dropped_by_evidence_erasure += 1;

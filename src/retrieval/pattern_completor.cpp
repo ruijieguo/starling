@@ -103,7 +103,7 @@ constexpr const char* kSelectByIdSql =
     "       object_kind, object_value, canonical_object_hash, "
     "       modality, polarity, confidence, observed_at, "
     "       valid_from, valid_to, consolidation_state, review_status, "
-    "       evidence_json "
+    "       evidence_json, affect_json "
     "  FROM statements "
     " WHERE id = ?1 AND tenant_id = ?2 "
     "   AND consolidation_state IN ('consolidated','archived') "
@@ -133,6 +133,7 @@ StatementRow fetch_row(persistence::Connection& conn, const std::string& id,
     row.confidence = sqlite3_column_double(raw, 12); row.observed_at = col(13);
     row.valid_from = col(14); row.valid_to = col(15); row.consolidation_state = col(16);
     row.review_status = col(17); row.evidence_json = col(18);
+    row.affect_json = col(19);
     return row;
 }
 

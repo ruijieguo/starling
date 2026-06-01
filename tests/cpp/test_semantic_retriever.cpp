@@ -150,3 +150,20 @@ TEST(SemanticRetriever, HiddenStatementsExcluded) {
     }
     EXPECT_TRUE(vis_found) << "visible consolidated/approved statement must be returned";
 }
+
+TEST(SemanticRetriever, CarriesAffectJson) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed_stmt(db, "s1", "cats");
+    sqlite3_exec(db, "UPDATE statements SET affect_json='{\"valence\":0.7}' WHERE id='s1'",
+                 nullptr, nullptr, nullptr);
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker(*adapter, emb, idx).tick_one_batch(conn, "2026-06-01T10:00:00Z");
+    SemanticRetriever sr(*adapter, emb, idx);
+    SemanticRetrieverParams p; p.tenant_id="default"; p.holder_id="alice";
+    p.k=1; p.query_text="bob knows cats";
+    auto res = sr.vector_recall(conn, p);
+    ASSERT_GE(res.rows.size(), 1u);
+    EXPECT_EQ(res.rows[0].row.affect_json, "{\"valence\":0.7}");
+}
