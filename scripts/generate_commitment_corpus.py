@@ -4,8 +4,21 @@ from __future__ import annotations
 import argparse, json, os, sys
 from pathlib import Path
 
-# 固定分布(合计 100): 30 fulfill + 25 deadline_break + 20 chronic_withdraw + 15 withdraw + 10 active_pending
-_PLAN = (["fulfill"]*30 + ["deadline_break"]*25 + ["chronic_withdraw"]*20
+# 固定分布(合计 100): 30 fulfill + 25 deadline_break + 20 renegotiate + 15 withdraw + 10 active_pending
+#
+# NOTE on the `renegotiate` category (was `chronic_withdraw`): the real engine
+# guards on_deadline_expired against re-expiring a non-ACTIVE commitment, so 3×
+# expire on one stmt ends at BROKEN (broken_count=1), never WITHDRAWN. Chronic
+# auto-WITHDRAWN requires broken_count>=3 on an ACTIVE row, which means breaking
+# AND renegotiating back to ACTIVE three times — but the renegotiation chain caps
+# at 3 (kMaxRenegotiationChain), so the path is blocked before the 4th expire can
+# fire the auto-withdraw. That transition is therefore UNREACHABLE through the
+# public engine API (the C++ TC-A2-001 only reaches it by forcing the row back to
+# ACTIVE with raw SQL between expires — not a legitimate engine operation). We
+# instead exercise a real, deterministic renegotiation transition: expire→BROKEN
+# then renegotiate onto a fresh statement, leaving the tracked (old) stmt
+# RENEGOTIATED.
+_PLAN = (["fulfill"]*30 + ["deadline_break"]*25 + ["renegotiate"]*20
          + ["withdraw"]*15 + ["active_pending"]*10)
 
 def _base_times(i: int):
@@ -29,11 +42,14 @@ def build_scenario(i: int, category: str) -> dict:
         actions = [{"turn":0,"op":"tick","now":f"{day}T11:00:00Z"},
                    {"turn":1,"op":"expire","now":f"{day}T13:00:00Z"}]
         expected = {"final_state":"BROKEN","detect_by_turn":1}
-    elif category == "chronic_withdraw":
+    elif category == "renegotiate":
+        # expire → BROKEN, then renegotiate onto a fresh statement; the tracked
+        # (old) commitment lands in RENEGOTIATED. new_stmt_id is seeded by the
+        # harness before the renegotiate call.
         actions = [{"turn":0,"op":"expire","now":f"{day}T13:00:00Z"},
-                   {"turn":1,"op":"expire","now":f"{day}T14:00:00Z"},
-                   {"turn":2,"op":"expire","now":f"{day}T15:00:00Z"}]
-        expected = {"final_state":"WITHDRAWN","detect_by_turn":2}
+                   {"turn":1,"op":"renegotiate","new_stmt_id":f"{cstmt}-r",
+                    "now":f"{day}T13:30:00Z"}]
+        expected = {"final_state":"RENEGOTIATED","detect_by_turn":1}
     elif category == "withdraw":
         actions = [{"turn":0,"op":"tick","now":f"{day}T09:00:00Z"},
                    {"turn":1,"op":"withdraw","now":f"{day}T10:00:00Z"}]

@@ -12,7 +12,10 @@ def test_corpus_shape():
         r = json.loads(l)
         assert r["scenario_id"] and r["category"]
         assert r["commit"]["stmt_id"] and r["commit"]["deadline"]
-        assert r["actions"] and all(a["op"] in {"tick", "fulfill", "withdraw", "expire"} for a in r["actions"])
+        assert r["actions"] and all(a["op"] in {"tick", "fulfill", "withdraw", "expire", "renegotiate"} for a in r["actions"])
+        for a in r["actions"]:
+            if a["op"] == "renegotiate":
+                assert a["new_stmt_id"]
         assert r["expected"]["final_state"] in _VALID_STATES
         assert isinstance(r["expected"]["detect_by_turn"], int)
 
