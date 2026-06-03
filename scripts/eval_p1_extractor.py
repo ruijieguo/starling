@@ -308,6 +308,10 @@ def _extract_via_gpt_once(conversation: list[dict], base_url: str, api_key: str,
         "model": model,
         "messages": [{"role": "user", "content": _EXTRACT_PROMPT.format(convo=convo_str)}],
         "temperature": 0,
+        # Explicit, generous cap so reasoning models (deepseek-v4-*, o1-style) have
+        # room for both their reasoning_content and the full JSON array; without it
+        # a small API default can truncate the array and break json.loads below.
+        "max_tokens": 4096,
     }).encode("utf-8")
     req = urllib.request.Request(
         url=f"{base_url}/chat/completions",

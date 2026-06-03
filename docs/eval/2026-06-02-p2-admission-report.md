@@ -59,12 +59,24 @@ OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
 OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
   python scripts/eval_tom_bench.py --corpus tests/data/eval_tom_bench/first_order.jsonl --rounds 3 --model deepseek-v4-flash --report build/tom_real.md
 
-# P1 extractor（可选，尚未跑）
+# P1 extractor（可选；P1 期 eval，非 P2 准入门槛。2026-06-03 已补跑，结果见 §5.1）
 OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
-  python scripts/eval_p1_extractor.py --corpus tests/data/eval_p1_corpus.jsonl --model deepseek-v4-flash --report build/p1_real.md
+  python scripts/eval_p1_extractor.py --corpus tests/data/eval_p1_corpus.jsonl --rounds 3 --model deepseek-v4-flash --report build/p1_real.md
 ```
 
-注：DeepSeek 无 embeddings 端点，故 C2 向量检索经 DashScope `text-embedding-v3`（dim 1024），chat 经 DeepSeek `deepseek-v4-flash`。harness 的 `max_tokens` 由 4 提至 512，使推理型模型（deepseek-v4-*）有空间产出可见答案（解析器取首个 0–3 数字，多余/推理文本无害）。key 仅经环境变量注入，不入参/log/语料/报告。
+注：DeepSeek 无 embeddings 端点，故 C2 向量检索经 DashScope `text-embedding-v3`（dim 1024），chat 经 DeepSeek `deepseek-v4-flash`。harness 的 `max_tokens` 由 4 提至 512，使推理型模型（deepseek-v4-*）有空间产出可见答案（解析器取首个 0–3 数字，多余/推理文本无害）。P1 extractor 的 payload 原无 `max_tokens`，补跑时显式加 4096，给推理 + JSON 数组留余量。key 仅经环境变量注入，不入参/log/语料/报告。
+
+### 5.1 P1 extractor 补跑结果（deepseek-v4-flash，3 轮 50 条；P1 期 eval，非 P2 准入门槛）
+
+| field | round 1 | round 2 | round 3 | 阈值 | last ≥ 阈值 |
+|---|---|---|---|---|---|
+| holder | 0.865 | 0.869 | 0.851 | 0.85 | ✅ PASS |
+| holder_perspective | 0.823 | 0.786 | 0.794 | 0.80 | ❌ FAIL（差 0.006）|
+| predicate | 0.908 | 0.910 | 0.894 | 0.75 | ✅ PASS |
+| object | 0.908 | 0.910 | 0.894 | 0.70 | ✅ PASS |
+| nesting_depth_1 | 0.526 | 0.762 | 0.600 | 0.60 | ✅ PASS |
+
+5 个字段中 **4 个达阈**；`holder_perspective` 末轮 0.794 微差阈值 0.80（round 1 曾 0.823 达阈，rounds 2/3 回落至 0.786/0.794）。抽取 prompt 为 gpt-5.5 重度调优，deepseek-v4-flash 在 perspective 细则（FIRST_PERSON/QUOTED/HEARSAY/INFERRED）上略逊。整体 harness exit=1（因末轮单字段未达阈）。**此为 P1 期质量指标，不构成 P2 准入门槛**——P2 准入门槛为 §16.3 十条 + C1/C2/C3，均已达阈。
 
 ## 6. 结论
 
@@ -73,3 +85,5 @@ P2 §16.3 CRITICAL 准入达成；eval harness 就位且离线全绿（C1/C2/C3 
 **C2 LongMemEval 真模型过**（time-reasoning 1.0000 / knowledge-update 1.0000，均 ≥ 0.55）；
 **C3 ToMBench 一阶真模型过**（1.0000 ≥ 0.55，3 轮一致）。
 **P2 准入达成：结构性（§16.3 十条）+ 离线（C1/C2/C3 fixture）+ 真模型 gated（C1 离线真 / C2 / C3）三层 eval 数字全部达阈。**
+
+（附：P1 期 extractor eval 以 deepseek-v4-flash 补跑，5 字段 4 达阈，holder_perspective 末轮 0.794 微差 0.80；详见 §5.1。该指标属 P1 期，不构成 P2 准入门槛。）
