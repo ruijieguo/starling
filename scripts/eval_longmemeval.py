@@ -123,7 +123,25 @@ def _real_answer(record: dict) -> int:
 
     # --- embed the seeded statements (production embedder, gated on key) ---
     now_iso = "2026-06-01T00:00:00Z"
-    emb = _core.OpenAIEmbeddingAdapter(_core.OpenAIEmbeddingConfig.from_env())
+    # Embeddings and chat may be different providers (a reasoning chat model like
+    # DeepSeek has no embeddings endpoint). OpenAIEmbeddingConfig.from_env() reads
+    # OPENAI_* (api_key is env-only), so if DASHSCOPE_API_KEY is set, temporarily
+    # point OPENAI_* at DashScope's OpenAI-compatible embeddings endpoint to build
+    # the embedder, then restore OPENAI_* for the chat call below.
+    if os.environ.get("DASHSCOPE_API_KEY"):
+        _sv_k, _sv_b = os.environ.get("OPENAI_API_KEY"), os.environ.get("OPENAI_BASE_URL")
+        os.environ["OPENAI_API_KEY"] = os.environ["DASHSCOPE_API_KEY"]
+        os.environ["OPENAI_BASE_URL"] = os.environ.get("DASHSCOPE_BASE_URL", "")
+        _emb_cfg = _core.OpenAIEmbeddingConfig.from_env()
+        _emb_cfg.model = os.environ.get("EMBEDDING_MODEL", "text-embedding-v3")
+        _emb_cfg.dim = int(os.environ.get("EMBEDDING_DIM", "1024"))
+        emb = _core.OpenAIEmbeddingAdapter(_emb_cfg)
+        if _sv_k is not None:
+            os.environ["OPENAI_API_KEY"] = _sv_k
+        if _sv_b is not None:
+            os.environ["OPENAI_BASE_URL"] = _sv_b
+    else:
+        emb = _core.OpenAIEmbeddingAdapter(_core.OpenAIEmbeddingConfig.from_env())
     idx = _core.SqliteBlobVectorIndex()
     _core.EmbeddingWorker(adapter, emb, idx).tick_one_batch(now_iso)
 
@@ -152,6 +170,9 @@ def _real_answer(record: dict) -> int:
     # proven HTTP path (mirrors scripts/eval_fantom.py). Both read OPENAI_API_KEY
     # from the env on the C++ side / Authorization header — never as a param/log.
     cfg = _core.OpenAIAdapterConfig.from_env()  # raises if OPENAI_API_KEY unset
+    # from_env() does NOT read a model env var (defaults to gpt-5.5); allow an
+    # override so the gated run can point chat at e.g. DeepSeek's deepseek-v4-flash.
+    cfg.model = os.environ.get("CHAT_MODEL", cfg.model)
     _adapter_constructed = _core.OpenAIAdapter(cfg)  # offline; no network yet
     base_url = cfg.base_url
     model = cfg.model
@@ -163,7 +184,9 @@ def _real_answer(record: dict) -> int:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
-            "max_tokens": 4,
+            # 512 so reasoning models (deepseek-v4-*) can emit a visible answer;
+            # _parse_option_index grabs the first valid index, so extra text is fine.
+            "max_tokens": 512,
         }
     ).encode("utf-8")
     req = urllib.request.Request(

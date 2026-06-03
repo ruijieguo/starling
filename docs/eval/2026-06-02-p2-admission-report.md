@@ -27,31 +27,49 @@
 
 注：chronic auto-WITHDRAWN（broken_count≥3）经探针确认**不可由公共 API 路径触达**（on_deadline_expired 的 ACTIVE 源态守护 + renegotiation 链长上限），故承诺语料用 renegotiate 类替代；C++ `CommitmentEngine.ThreeBrokenAutoWithdrawn` 经 raw-SQL 强置 ACTIVE 覆盖该内部路径。
 
-## 3. C2 LongMemEval（fixture 离线 PASS；真模型 gated）
+## 3. C2 LongMemEval（fixture 离线 PASS；真模型 gated 已跑）
 
 fixture-mode：`python scripts/eval_longmemeval.py --corpus tests/data/eval_longmemeval/sessions.jsonl --fixture-mode` → **PASS**。
 
-| 子集 | fixture | real（gated，待跑） |
+real-mode（gated，2026-06-03 跑）：chat=`deepseek-v4-flash`@DeepSeek 官网 + embedding=`text-embedding-v3`@DashScope（dim 1024）；OpenAIEmbeddingAdapter→EmbeddingWorker→SemanticRetriever 真向量检索 + DeepSeek 答题；3 轮 24 条。
+
+| 子集 | fixture | real（gated，last-acc） |
 |---|---|---|
-| time-reasoning | 0.9167 PASS | TBD |
-| knowledge-update | 0.9167 PASS | TBD |
+| time-reasoning | 0.9167 PASS | **1.0000 PASS** |
+| knowledge-update | 0.9167 PASS | **1.0000 PASS** |
 
-## 4. C3 ToMBench 一阶（fixture 离线 PASS；真模型 gated）
+## 4. C3 ToMBench 一阶（fixture 离线 PASS；真模型 gated 已跑）
 
-fixture-mode：`python scripts/eval_tom_bench.py --corpus tests/data/eval_tom_bench/first_order.jsonl --fixture-mode` → **PASS**（accuracy **0.7500** ≥ 0.55，24 条一阶语料；round 1/2/3 一致）。real gated 待跑。
+fixture-mode：`python scripts/eval_tom_bench.py --corpus tests/data/eval_tom_bench/first_order.jsonl --fixture-mode` → **PASS**（accuracy **0.7500** ≥ 0.55，24 条一阶语料；round 1/2/3 一致）。
 
-## 5. Gated 真模型 run（需 OPENAI_API_KEY，不入 CI）
+real-mode（gated，2026-06-03 跑）：`--model deepseek-v4-flash`@DeepSeek 官网，3 轮 24 条 → accuracy **1.0000 / 1.0000 / 1.0000**（≥ 0.55）**PASS**。
+
+## 5. Gated 真模型 run（需 key，不入 CI；2026-06-03 实跑）
+
+C2/C3 已用 DeepSeek 官网（chat）+ DashScope（embedding）双 provider 实跑（数字见 §3/§4）：
 
 ```
-OPENAI_API_KEY=… python scripts/eval_longmemeval.py --corpus tests/data/eval_longmemeval/sessions.jsonl --report build/lme.md
-OPENAI_API_KEY=… python scripts/eval_tom_bench.py    --corpus tests/data/eval_tom_bench/first_order.jsonl --report build/tom.md
-OPENAI_API_KEY=… python scripts/eval_p1_extractor.py --corpus tests/data/eval_p1_corpus.jsonl --report build/p1.md
+# C2 LongMemEval — chat=deepseek-v4-flash@DeepSeek + emb=text-embedding-v3@DashScope
+OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
+  CHAT_MODEL=deepseek-v4-flash EMBEDDING_MODEL=text-embedding-v3 EMBEDDING_DIM=1024 \
+  DASHSCOPE_API_KEY=… DASHSCOPE_BASE_URL=… \
+  python scripts/eval_longmemeval.py --corpus tests/data/eval_longmemeval/sessions.jsonl --rounds 3 --report build/lme_real.md
+
+# C3 ToMBench — chat=deepseek-v4-flash@DeepSeek
+OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
+  python scripts/eval_tom_bench.py --corpus tests/data/eval_tom_bench/first_order.jsonl --rounds 3 --model deepseek-v4-flash --report build/tom_real.md
+
+# P1 extractor（可选，尚未跑）
+OPENAI_BASE_URL=https://api.deepseek.com/v1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
+  python scripts/eval_p1_extractor.py --corpus tests/data/eval_p1_corpus.jsonl --model deepseek-v4-flash --report build/p1_real.md
 ```
 
-（C2 real-mode 用 OpenAIEmbeddingAdapter + SemanticRetriever 真检索 + OpenAI 答题。）
+注：DeepSeek 无 embeddings 端点，故 C2 向量检索经 DashScope `text-embedding-v3`（dim 1024），chat 经 DeepSeek `deepseek-v4-flash`。harness 的 `max_tokens` 由 4 提至 512，使推理型模型（deepseek-v4-*）有空间产出可见答案（解析器取首个 0–3 数字，多余/推理文本无害）。key 仅经环境变量注入，不入参/log/语料/报告。
 
 ## 6. 结论
 
 P2 §16.3 CRITICAL 准入达成；eval harness 就位且离线全绿（C1/C2/C3 fixture 自测入 CI）；
-**C1 承诺履行离线真过**（detection 1.0000 / timeliness 1.00 turns，均达阈）。C2/C3 真模型阈值数字待 gated run。
-**P2 结构性达标 + 离线验证完成，真模型 eval 数字 gated。**
+**C1 承诺履行离线真过**（detection 1.0000 / timeliness 1.00 turns，均达阈）；
+**C2 LongMemEval 真模型过**（time-reasoning 1.0000 / knowledge-update 1.0000，均 ≥ 0.55）；
+**C3 ToMBench 一阶真模型过**（1.0000 ≥ 0.55，3 轮一致）。
+**P2 准入达成：结构性（§16.3 十条）+ 离线（C1/C2/C3 fixture）+ 真模型 gated（C1 离线真 / C2 / C3）三层 eval 数字全部达阈。**

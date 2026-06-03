@@ -114,7 +114,10 @@ def _call_openai_once(
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
-            "max_tokens": 4,
+            # 512 (not 4) so reasoning models (deepseek-v4-*, o1-style) have room to
+            # emit a visible answer; the parser below grabs the first 0-3 digit, so
+            # extra/reasoning text is harmless.
+            "max_tokens": 512,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
