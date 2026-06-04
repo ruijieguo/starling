@@ -1,6 +1,8 @@
 """FastAPI app factory for the Starling dashboard engine-API."""
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -42,14 +44,12 @@ def create_app(config: DashboardConfig, *, memory: object | None = None) -> Fast
             await ws.accept()
             try:
                 first = await ws.receive_text()
-            except Exception:
+            except WebSocketDisconnect:
                 return
-            import hmac
-
             if not hmac.compare_digest(first, config.token):
                 await ws.close(code=1008)
                 return
-            app.state.ws_manager._active.append(ws)
+            app.state.ws_manager.register(ws)
         else:
             await app.state.ws_manager.connect(ws)
         try:

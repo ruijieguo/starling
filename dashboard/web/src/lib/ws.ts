@@ -16,5 +16,7 @@ export function connectWs(onEvent: (e: WsEvent) => void): () => void {
 			/* ignore malformed frames */
 		}
 	};
+	ws.onerror = (e) => console.error('[ws] error', e);
+	ws.onclose = (e) => { if (!e.wasClean) console.warn('[ws] closed', e.code); };
 	return () => ws.close();
 }
