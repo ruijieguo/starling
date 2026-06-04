@@ -23,7 +23,11 @@ class TickBody(BaseModel):
 
 
 def _memory(request: Request):
-    """Return the engine-owning Memory, building it lazily from config."""
+    """Return the engine-owning Memory, building it lazily from config.
+
+    Single-process only: under `uvicorn --workers N` each worker would build
+    its own Memory writing the same SQLite. Run one worker.
+    """
     mem = request.app.state.memory
     if mem is None:
         from starling.memory import Memory, make_openai_llm

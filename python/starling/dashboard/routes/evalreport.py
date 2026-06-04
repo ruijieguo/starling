@@ -6,12 +6,19 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 
 
+def _repo_root(start: Path) -> Path:
+    for p in [start, *start.parents]:
+        if (p / "pyproject.toml").exists():
+            return p
+    return start
+
+
 def build_eval_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
     @router.get("/eval")
     async def eval_reports():
-        root = Path(__file__).resolve().parents[4] / "docs" / "eval"
+        root = _repo_root(Path(__file__).resolve()) / "docs" / "eval"
         reports = []
         if root.is_dir():
             for p in sorted(root.glob("*.md")):

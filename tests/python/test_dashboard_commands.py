@@ -32,6 +32,17 @@ def test_remember_then_tick(client):
     assert set(t.json()) == {"embedded", "fired", "broken", "auto_withdrawn"}
 
 
+def test_recall_shape(client):
+    client.post("/api/remember", json={"text": "Bob owns auth"})
+    client.post("/api/tick", json={"now": "2026-06-01T10:00:00Z"})
+    r = client.post("/api/recall", json={"query": "auth", "k": 5})
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert isinstance(results, list)
+    for item in results:
+        assert set(item) >= {"subject", "predicate", "object", "score"}
+
+
 def test_working_set_renders(client):
     client.post("/api/remember", json={"text": "Bob owns auth"})
     r = client.get("/api/working_set", params={"interlocutor": "Alice"})
