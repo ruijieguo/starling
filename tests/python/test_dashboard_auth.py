@@ -25,3 +25,22 @@ def test_protected_requires_token():
 def test_empty_token_opens_gate():
     c = _client("")
     assert c.get("/api/ping").status_code == 200
+
+
+def test_validate_bind_blocks_public_without_token():
+    import pytest
+    cfg = DashboardConfig(db_path=":memory:", host="0.0.0.0", token="")
+    with pytest.raises(RuntimeError):
+        cfg.validate_bind()
+
+
+def test_create_app_enforces_bind_safety():
+    import pytest
+    cfg = DashboardConfig(db_path=":memory:", host="0.0.0.0", token="")
+    with pytest.raises(RuntimeError):
+        create_app(cfg)
+
+
+def test_validate_bind_allows_public_with_token():
+    cfg = DashboardConfig(db_path=":memory:", host="0.0.0.0", token="secret")
+    cfg.validate_bind()  # should not raise
