@@ -2,12 +2,28 @@
 from __future__ import annotations
 
 import hmac
+import urllib.parse
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from starling.dashboard.auth import make_require_token
 from starling.dashboard.config import DashboardConfig
+
+
+def _ws_origin_allowed(origin: str, cors_origins: list[str]) -> bool:
+    """CSWSH guard. Browsers always send Origin on WS; non-browser clients omit it.
+
+    - no Origin  -> allow (CLI / server-side client, not a CSWSH vector)
+    - allowlist set -> Origin must be in it
+    - no allowlist (loopback dev) -> allow only loopback-origin browsers
+    """
+    if not origin:
+        return True
+    if cors_origins:
+        return origin in cors_origins
+    host = urllib.parse.urlparse(origin).hostname
+    return host in ("127.0.0.1", "localhost", "::1")
 
 
 def create_app(config: DashboardConfig, *, memory: object | None = None) -> FastAPI:
@@ -38,6 +54,10 @@ def create_app(config: DashboardConfig, *, memory: object | None = None) -> Fast
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
+        origin = ws.headers.get("origin", "")
+        if not _ws_origin_allowed(origin, config.cors_origins):
+            await ws.close(code=1008)
+            return
         # auth handshake: first text frame must be the token (when configured).
         # Sending the token in-band (not via URL query) avoids leaking it in logs.
         if config.token:

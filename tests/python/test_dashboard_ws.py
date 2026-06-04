@@ -93,3 +93,51 @@ def test_ws_token_rejects_wrong():
         ws.send_text("wrong")
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
+
+
+# --- CSWSH origin guard tests ---
+
+
+def test_ws_origin_allowed_unit():
+    """Unit: _ws_origin_allowed helper returns correct values for all cases."""
+    from starling.dashboard.app import _ws_origin_allowed
+
+    # No Origin -> always allowed (non-browser client)
+    assert _ws_origin_allowed("", []) is True
+    assert _ws_origin_allowed("", ["http://allowed.example"]) is True
+
+    # With allowlist: origin must be in it
+    assert _ws_origin_allowed("http://allowed.example", ["http://allowed.example"]) is True
+    assert _ws_origin_allowed("http://evil.example", ["http://allowed.example"]) is False
+
+    # No allowlist (loopback dev): only loopback hostnames pass
+    assert _ws_origin_allowed("http://localhost:5173", []) is True
+    assert _ws_origin_allowed("http://127.0.0.1:3000", []) is True
+    assert _ws_origin_allowed("http://[::1]:8080", []) is True
+    assert _ws_origin_allowed("http://evil.example", []) is False
+
+
+def test_ws_rejects_cross_origin_browser():
+    """Integration: cross-origin browser request is rejected (close 1008)."""
+    from starlette.websockets import WebSocketDisconnect
+
+    cfg = DashboardConfig(db_path=":memory:", token="")  # loopback dev, no allowlist
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws", headers={"origin": "http://evil.example"}) as ws:
+                ws.receive_json()
+
+
+def test_ws_allows_loopback_origin():
+    """Integration: loopback-origin browser connects and receives broadcast."""
+    cfg = DashboardConfig(db_path=":memory:", token="")
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws", headers={"origin": "http://localhost:5173"}) as ws:
+            client.portal.call(
+                app.state.ws_manager.broadcast,
+                {"type": "tick", "payload": {"fired": 2}},
+            )
+            msg = ws.receive_json()
+            assert msg["type"] == "tick"
