@@ -12,7 +12,7 @@
 		<tbody>
 			{#each rows as r}
 				<tr class="border-t border-zinc-100 dark:border-zinc-800">
-					{#each columns as c}<td class="px-3 py-1.5">{r[c] ?? ''}</td>{/each}
+					{#each columns as c}<td class="px-3 py-1.5">{typeof r[c] === 'object' && r[c] !== null ? JSON.stringify(r[c]) : (r[c] ?? '')}</td>{/each}
 				</tr>
 			{/each}
 		</tbody>

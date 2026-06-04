@@ -5,7 +5,7 @@
 	let goal = $state('');
 	let ws = $state<{
 		render: string;
-		blocks: { label: string; tokens: number }[];
+		blocks: { label: string; content: string; tokens: number }[];
 		truncated: string[];
 	} | null>(null);
 	let err = $state('');

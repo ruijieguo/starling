@@ -44,7 +44,7 @@
 		class="px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm"
 		>记住</button
 	>
-	<span class="text-xs text-zinc-500">{msg} · {remembered.length} statements</span>
+	{#if msg}<span class="text-xs text-zinc-500">{msg} · {remembered.length} statements</span>{/if}
 </section>
 <section class="space-y-2">
 	<h2 class="text-sm font-semibold text-zinc-500">Recall</h2>
