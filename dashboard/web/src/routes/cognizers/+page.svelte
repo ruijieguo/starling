@@ -8,12 +8,11 @@
 	let d = $state<{ nodes: Cognizer[]; relations: Relation[] } | null>(null);
 	let err = $state('');
 
-	$effect(() => {
-		api
-			.get<{ nodes: Cognizer[]; relations: Relation[] }>('/api/cognizers')
-			.then((x) => (d = x))
-			.catch((e) => (err = String(e)));
-	});
+	async function load() {
+		try { d = await api.get<{ nodes: Cognizer[]; relations: Relation[] }>('/api/cognizers'); err = ''; }
+		catch (e) { err = String(e); }
+	}
+	$effect(() => { load(); });
 
 	let gnodes = $derived((d?.nodes ?? []).map((n) => ({ id: n.id, label: n.canonical_name })));
 	let gedges = $derived((d?.relations ?? []).map((r) => ({ a: r.a_id, b: r.b_id })));

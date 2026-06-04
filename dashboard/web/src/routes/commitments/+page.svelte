@@ -6,12 +6,11 @@
 	let rows = $state<Record<string, unknown>[]>([]);
 	let err = $state('');
 
-	$effect(() => {
-		api
-			.get<{ rows: Record<string, unknown>[] }>('/api/commitments')
-			.then((d) => (rows = d.rows))
-			.catch((e) => (err = String(e)));
-	});
+	async function load() {
+		try { const d = await api.get<{ rows: Record<string, unknown>[] }>('/api/commitments'); rows = d.rows; err = ''; }
+		catch (e) { err = String(e); }
+	}
+	$effect(() => { load(); });
 
 	let byState = $derived(STATES.map((s) => ({ s, n: rows.filter((r) => r.state === s).length })));
 </script>

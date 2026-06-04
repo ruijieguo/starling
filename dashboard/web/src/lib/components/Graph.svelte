@@ -15,7 +15,7 @@
 	);
 </script>
 
-<svg viewBox="0 0 400 340" class="w-full max-w-lg">
+<svg viewBox="0 0 400 340" class="w-full max-w-lg" aria-hidden="true">
 	{#each edges as e}
 		{@const a = pos.get(e.a)}
 		{@const b = pos.get(e.b)}
