@@ -1,7 +1,7 @@
 """FastAPI app factory for the Starling dashboard engine-API."""
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from starling.dashboard.auth import make_require_token
@@ -29,6 +29,34 @@ def create_app(config: DashboardConfig, *, memory: object | None = None) -> Fast
         )
 
     require_token = make_require_token(config.token)
+
+    from starling.dashboard.realtime import ConnectionManager
+
+    app.state.ws_manager = ConnectionManager()
+
+    @app.websocket("/ws")
+    async def ws_endpoint(ws: WebSocket) -> None:
+        # auth handshake: first text frame must be the token (when configured).
+        # Sending the token in-band (not via URL query) avoids leaking it in logs.
+        if config.token:
+            await ws.accept()
+            try:
+                first = await ws.receive_text()
+            except Exception:
+                return
+            import hmac
+
+            if not hmac.compare_digest(first, config.token):
+                await ws.close(code=1008)
+                return
+            app.state.ws_manager._active.append(ws)
+        else:
+            await app.state.ws_manager.connect(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            app.state.ws_manager.disconnect(ws)
 
     @app.get("/health")
     async def health() -> dict:

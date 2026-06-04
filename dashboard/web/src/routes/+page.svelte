@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { connectWs } from '$lib/ws';
 	import StatCard from '$lib/components/StatCard.svelte';
 
 	type Overview = {
@@ -20,6 +21,12 @@
 	}
 	$effect(() => {
 		load();
+	});
+	$effect(() => {
+		const close = connectWs((e) => {
+			if (e.type === 'tick' || e.type === 'statement_added') load();
+		});
+		return close;
 	});
 </script>
 
