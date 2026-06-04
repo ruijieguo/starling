@@ -1,0 +1,22 @@
+<script lang="ts">
+	import { api } from '$lib/api';
+
+	type Reports = { reports: { name: string; markdown: string }[] };
+	let data = $state<Reports | null>(null);
+	$effect(() => {
+		api
+			.get<Reports>('/api/eval')
+			.then((d) => (data = d))
+			.catch(() => {});
+	});
+</script>
+
+<h1 class="text-xl font-semibold mb-4">Eval 报告</h1>
+{#if data}
+	{#each data.reports as r}
+		<details class="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 p-3" open>
+			<summary class="cursor-pointer font-medium">{r.name}</summary>
+			<pre class="mt-2 text-xs whitespace-pre-wrap font-mono">{r.markdown}</pre>
+		</details>
+	{/each}
+{/if}
