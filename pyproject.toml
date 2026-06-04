@@ -11,6 +11,11 @@ readme = "README.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-mock>=3.12", "jsonschema>=4.26"]
+dashboard = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+]
 
 [tool.scikit-build]
 cmake.version = ">=3.27"
