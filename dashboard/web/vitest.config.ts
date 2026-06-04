@@ -1,7 +1,13 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
 	plugins: [svelte()],
-	test: { environment: 'jsdom', globals: true, restoreMocks: true }
+	test: {
+		environment: 'jsdom',
+		globals: true,
+		restoreMocks: true,
+		// Playwright e2e specs run under `playwright test`, not vitest.
+		exclude: [...configDefaults.exclude, 'e2e/**']
+	}
 });
