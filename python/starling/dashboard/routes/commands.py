@@ -1,8 +1,15 @@
 """Command routes — go through the starling.Memory facade (single writer)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+
+
+def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 'Z' string (tick default)."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class RememberBody(BaseModel):
@@ -19,7 +26,7 @@ class RecallBody(BaseModel):
 
 
 class TickBody(BaseModel):
-    now: str = "2026-06-01T10:00:00Z"
+    now: str | None = None  # defaults to current UTC time at request handling
 
 
 def _memory(request: Request):
@@ -61,7 +68,7 @@ def build_commands_router(require_token) -> APIRouter:
     @router.post("/tick")
     async def tick(body: TickBody, request: Request):
         mem = _memory(request)
-        st = mem.tick(body.now)
+        st = mem.tick(body.now or _now_iso())
         payload = {"embedded": st.embedded, "fired": st.fired,
                    "broken": st.broken, "auto_withdrawn": st.auto_withdrawn}
         await _broadcast(request, "tick", payload)
