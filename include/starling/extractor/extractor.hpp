@@ -35,7 +35,8 @@ public:
         const std::vector<std::uint8_t>&        payload_bytes,
         std::string_view                        holder_id,
         std::string_view                        holder_tenant_id,
-        const ExistingRefMap&                   existing_ref_map);
+        const ExistingRefMap&                   existing_ref_map,
+        std::string_view                        interlocutor = "");
 
     // Public so tests can use the same hash as the adapter's keying.
     static std::string compute_prompt_input_hash(std::string_view prompt_body);

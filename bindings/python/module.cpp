@@ -756,16 +756,18 @@ PYBIND11_MODULE(_core, m) {
                 py::bytes payload,
                 const std::string& holder_id,
                 const std::string& holder_tenant_id,
-                const std::map<std::string, std::string>& existing_ref_map) {
+                const std::map<std::string, std::string>& existing_ref_map,
+                const std::string& interlocutor) {
                  std::string s = payload;
                  std::vector<std::uint8_t> v(s.begin(), s.end());
-                 return self.run(engram_ref_id, v, holder_id, holder_tenant_id, existing_ref_map);
+                 return self.run(engram_ref_id, v, holder_id, holder_tenant_id, existing_ref_map, interlocutor);
              },
              py::arg("engram_ref_id"),
              py::arg("payload_bytes"),
              py::arg("holder_id"),
              py::arg("holder_tenant_id"),
-             py::arg("existing_ref_map"));
+             py::arg("existing_ref_map"),
+             py::arg("interlocutor") = "");
 
     // ── 08_cognizer ────────────────────────────────────────────────
 

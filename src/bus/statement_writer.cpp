@@ -147,7 +147,7 @@ void insert_statement_row(
         "  modality, polarity, confidence, observed_at,"
         "  valid_from, valid_to, event_time_start,"
         "  salience, affect_json, activation, last_accessed,"
-        "  provenance, evidence_json, source_spans_json, perceived_by_json,"
+        "  provenance, evidence_json, source_spans_json, perceived_by_json, scope_parties_json,"
         "  consolidation_state, review_status,"
         "  derived_from_json, derived_depth,"
         "  nesting_depth,"
@@ -159,7 +159,7 @@ void insert_statement_row(
         "  ?, ?, ?, ?,"
         "  ?, ?, ?,"
         "  0.0, '{}', 0.0, ?,"
-        "  ?, ?, ?, ?,"
+        "  ?, ?, ?, ?, ?,"
         "  'volatile', ?,"
         "  ?, ?,"
         "  ?,"
@@ -204,6 +204,13 @@ void insert_statement_row(
     bind_sv(h.get(), i++, evid);
     bind_sv(h.get(), i++, spans);
     bind_sv(h.get(), i++, perc);
+    std::string scope_parties_js;
+    if (s.scope_parties.empty()) {
+        sqlite3_bind_null(h.get(), i++);
+    } else {
+        scope_parties_js = perceived_by_json(s.scope_parties);  // reuse JSON-array-of-strings serializer
+        bind_sv(h.get(), i++, scope_parties_js);
+    }
     bind_sv(h.get(), i++, schema::to_string(effective_review_status));
     bind_sv(h.get(), i++, derived_from_json);
     sqlite3_bind_int(h.get(), i++, derived_depth);

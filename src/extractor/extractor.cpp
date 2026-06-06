@@ -11,6 +11,7 @@
 #include "starling/extractor/json_parser.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <set>
@@ -164,7 +165,8 @@ ExtractionRunResult Extractor::run(
         const std::vector<std::uint8_t>&  payload_bytes,
         std::string_view                  holder_id,
         std::string_view                  holder_tenant_id,
-        const ExistingRefMap&             existing_ref_map) {
+        const ExistingRefMap&             existing_ref_map,
+        std::string_view                  interlocutor) {
 
     ExtractionRunResult result;
 
@@ -242,7 +244,13 @@ ExtractionRunResult Extractor::run(
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
             }
-            if (stmt.perceived_by.empty()) {
+            if (!interlocutor.empty()) {
+                // 对话语境：grounding 参与方 + 可见性都含 self+interlocutor（#2 前提 perceived_by⊇parties）。
+                std::vector<std::string> pair{std::string(holder_id), std::string(interlocutor)};
+                std::sort(pair.begin(), pair.end());
+                stmt.scope_parties = pair;
+                if (stmt.perceived_by.empty()) stmt.perceived_by = pair;
+            } else if (stmt.perceived_by.empty()) {
                 stmt.perceived_by = {std::string(holder_id)};
             }
             const ValidationOutcome v = validate_extracted_statement(stmt);
