@@ -25,17 +25,25 @@ def main() -> int:
         print("SKIP: OPENAI_API_KEY not set", file=sys.stderr)
         return 0
     from starling.memory import Memory, make_openai_llm
-    db = tempfile.mktemp(suffix=".db")
-    mem = Memory.open(db, agent="self", tenant_id="default",
-                      llm=make_openai_llm(model=args.model))
-    r = mem.remember(args.text)
-    n = len(r.statement_ids)
-    print(f"remember outcome={r.outcome} statements={n}")
-    if n >= 1:
-        print("PASS — real-LLM extraction produced statements")
-        return 0
-    print("BLOCKED — real-LLM extraction produced 0 statements")
-    return 1
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        mem = Memory.open(db, agent="self", tenant_id="default",
+                          llm=make_openai_llm(model=args.model))
+        r = mem.remember(args.text)
+        n = len(r.statement_ids)
+        print(f"remember outcome={r.outcome} statements={n}")
+        if n >= 1:
+            print("PASS — real-LLM extraction produced statements")
+            return 0
+        print("BLOCKED — real-LLM extraction produced 0 statements")
+        return 1
+    finally:
+        for path in (db, db + "-wal", db + "-shm"):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":
