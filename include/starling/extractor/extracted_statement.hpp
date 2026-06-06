@@ -9,7 +9,7 @@
 
 namespace starling::extractor {
 
-// POD produced by xml_parser::parse_extractor_xml and consumed by
+// POD produced by json_parser::parse_extractor_json and consumed by
 // statement_validator + StatementWriter. M0.4-minimal: no nesting_depth>0,
 // no salience/affect. M0.7 adds derived_from (parent Statement.id list).
 // M0.5 will extend (or supersede) this when ConflictProbe + reconsolidation arrive.

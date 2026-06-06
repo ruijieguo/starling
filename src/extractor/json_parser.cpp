@@ -47,6 +47,8 @@ std::string now_iso8601_utc() {
 }
 
 // Strip a leading ```json / ``` fence and locate the first '[' .. last ']'.
+// A bare "[]" yields a valid empty array (zero statements, zero errors); a
+// response with no brackets yields an empty view (caller emits not_json_array).
 std::string_view extract_array(std::string_view raw) {
     const auto lb = raw.find('[');
     const auto rb = raw.rfind(']');
@@ -96,6 +98,8 @@ ParseResult parse_extractor_json(
             s.predicate    = el.value("predicate", std::string());
             s.object_value = el.value("object", std::string());
             // nesting_depth>=2 -> object_kind="statement", else "str".
+            // value<int> coerces a JSON float (2.0->2) and defaults a non-number
+            // (string/bool/absent) to 0 -> "str", the safe default.
             const int nesting_depth = el.value("nesting_depth", 0);
             s.object_kind  = (nesting_depth >= 2) ? "statement" : "str";
             if (s.subject_id.empty() || s.predicate.empty() || s.object_value.empty()) {
