@@ -204,6 +204,57 @@ TEST(CommonGroundSubscriber, OppositePolarityRepairs) {
     EXPECT_EQ(status, "suspected_diverge");
 }
 
+// ── TC-CGS-005: CoPresenceGroundsAfterThreeRounds ────────────────────────────
+//
+// S1 asserted by self (scope ["bob","self"], pred=p, hash=h1).
+// After the assert event the entry has rounds_since_assert=1.
+// Two more events in the SAME scope but DIFFERENT subject/pred/hash (so they
+// do NOT ack/repair S1) push rounds to 2, then 3 → auto-grounded.
+
+TEST(CommonGroundSubscriber, CoPresenceGroundsAfterThreeRounds) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+
+    // Event 1: self asserts S1 (subject=bob, pred=p, hash=h1).
+    insert_statement(conn, "S1", "self", "pos", "[\"bob\",\"self\"]",
+                     "default", "bob", "p", "h1");
+    insert_bus_event(conn, "ev1", "S1", 1);
+    CommonGroundSubscriber::tick_one_batch(
+        *adapter, adapter->connection(), "2026-06-06T10:00:00Z");
+    // rounds_since_assert should be 1 now, not yet grounded.
+    EXPECT_EQ("asserted_unack", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='S1'"));
+    EXPECT_EQ(1, icol(conn.raw(),
+        "SELECT rounds_since_assert FROM common_ground WHERE statement_id='S1'"));
+
+    // Event 2: different proposition in same scope (subject=carol, pred=q, hash=h2).
+    // No match against S1 → new asserted_unack (S2). Bumps both S1 and S2 rounds.
+    insert_statement(conn, "S2", "self", "pos", "[\"bob\",\"self\"]",
+                     "default", "carol", "q", "h2");
+    insert_bus_event(conn, "ev2", "S2", 2);
+    CommonGroundSubscriber::tick_one_batch(
+        *adapter, adapter->connection(), "2026-06-06T10:01:00Z");
+    // S1 rounds=2, still asserted_unack.
+    EXPECT_EQ("asserted_unack", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='S1'"));
+    EXPECT_EQ(2, icol(conn.raw(),
+        "SELECT rounds_since_assert FROM common_ground WHERE statement_id='S1'"));
+
+    // Event 3: another different proposition in same scope (subject=dave, pred=r, hash=h3).
+    insert_statement(conn, "S3", "self", "pos", "[\"bob\",\"self\"]",
+                     "default", "dave", "r", "h3");
+    insert_bus_event(conn, "ev3", "S3", 3);
+    CommonGroundSubscriber::tick_one_batch(
+        *adapter, adapter->connection(), "2026-06-06T10:02:00Z");
+    // S1 rounds=3 → auto-grounded via co-presence.
+    EXPECT_EQ("grounded", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='S1'"));
+    // Grounding act with actor='copresence' should exist for S1's cg entry.
+    int act_cnt = icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE act='acknowledge' AND actor_cognizer_id='copresence'");
+    EXPECT_GE(act_cnt, 1);
+}
+
 // ── TC-CGS-004: ContainerRebuilt ──────────────────────────────────────────────
 
 TEST(CommonGroundSubscriber, ContainerRebuilt) {

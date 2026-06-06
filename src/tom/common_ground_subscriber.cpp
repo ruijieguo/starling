@@ -126,6 +126,35 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         if (!handled) {
             writer.assert_(conn, ev.tenant, ev.stmt_id, parties, now_iso);
         }
+        // #2 共同在场推定：该 scope 下 asserted_unack 条目轮次+1，达 N=3 自动 grounded。
+        const std::string parties_js = std::string("[\"") + parties[0] + "\",\"" + parties[1] + "\"]";
+        {
+            sqlite3_stmt* raw = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "UPDATE common_ground SET rounds_since_assert = rounds_since_assert + 1 "
+                "WHERE tenant_id=? AND status='asserted_unack' AND parties_json=?",
+                -1, &raw, nullptr) != SQLITE_OK)
+                throw make_sqlite_error(db, "cg_subscriber: bump rounds prepare");
+            StmtHandle h(raw);
+            bind_sv(h.get(), 1, ev.tenant);
+            bind_sv(h.get(), 2, parties_js);
+            sqlite3_step(h.get());
+        }
+        {
+            // 达 N=3 → grounded（co-presence），逐条 acknowledge 走审计 + grounded_at。
+            std::vector<std::string> due;
+            sqlite3_stmt* raw = nullptr;
+            if (sqlite3_prepare_v2(db,
+                "SELECT id FROM common_ground WHERE tenant_id=? AND status='asserted_unack' "
+                "AND parties_json=? AND rounds_since_assert >= 3",
+                -1, &raw, nullptr) != SQLITE_OK)
+                throw make_sqlite_error(db, "cg_subscriber: copresence select prepare");
+            StmtHandle h(raw);
+            bind_sv(h.get(), 1, ev.tenant);
+            bind_sv(h.get(), 2, parties_js);
+            while (sqlite3_step(h.get()) == SQLITE_ROW) due.push_back(col(h.get(), 0));
+            for (const auto& id : due) writer.acknowledge(conn, id, "copresence", now_iso);
+        }
         // cg_ref = sorted "a::b"（与 Task 7 Python 读路径一致）。本期假设 2 方对话；
         // parties>2 时仅取前两个（多方 grounding 超本期范围，见 spec §1）。
         rebuilt.emplace_back(ev.tenant, parties[0] + "::" + parties[1]);
