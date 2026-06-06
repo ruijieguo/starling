@@ -183,6 +183,7 @@ class Memory:
         """
         es = self._worker.tick_one_batch(now)
         ps = self._policy.tick(now)
+        _core._common_ground_tick(self._rt.adapter, now)   # P2.j: flush grounding 滞后事件
         # EmbeddingWorker.tick_one_batch returns EmbeddingStats (has .embedded int)
         embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
         return TickStats(
@@ -207,7 +208,8 @@ class Memory:
         if pv.found and pv.dimensions:
             sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
         # common ground
-        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{self._agent}::{interlocutor}")
+        _pair = sorted([self._agent, interlocutor])
+        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{_pair[0]}::{_pair[1]}")
         if cg.found and cg.grounded:
             sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
         # relevant memories

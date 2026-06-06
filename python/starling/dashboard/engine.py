@@ -169,7 +169,8 @@ class DashboardEngine:
         pv = _core.PersonaContainer(adapter).read(self._tenant, self._agent)
         if pv.found and pv.dimensions:
             sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
-        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{self._agent}::{interlocutor}")
+        _pair = sorted([self._agent, interlocutor])
+        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{_pair[0]}::{_pair[1]}")
         if cg.found and cg.grounded:
             sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
         hits = self.recall(goal, mode="semantic", k=5) if goal else []
