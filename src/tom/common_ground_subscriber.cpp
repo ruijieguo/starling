@@ -127,6 +127,9 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             writer.assert_(conn, ev.tenant, ev.stmt_id, parties, now_iso);
         }
         // #2 共同在场推定：该 scope 下 asserted_unack 条目轮次+1，达 N=3 自动 grounded。
+        // 设计要求 perceived_by⊇parties；本期恒成立——extractor.cpp 在对话语境把
+        // perceived_by 设成与 scope_parties 同一 sorted pair，故此处不再单独校验。
+        // parties_js 须与 writer 的 json_array_of_strings 字节一致（2 方 ["a","b"] 无空格）。
         const std::string parties_js = std::string("[\"") + parties[0] + "\",\"" + parties[1] + "\"]";
         {
             sqlite3_stmt* raw = nullptr;
