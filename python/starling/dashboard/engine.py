@@ -157,6 +157,7 @@ class DashboardEngine:
     def tick(self, now: str) -> dict:
         es = self._worker.tick_one_batch(now)
         ps = self._policy.tick(now)
+        _core._common_ground_tick(self._rt.adapter, now)   # P2.j: flush grounding 滞后事件（与 Memory.tick 对称）
         embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
         return {"embedded": embedded, "fired": ps.fired, "broken": ps.broken,
                 "auto_withdrawn": ps.auto_withdrawn}
