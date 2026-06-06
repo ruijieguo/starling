@@ -103,7 +103,7 @@ Context ToMEngine::perspective_take(
         }
     }
 
-    // Step 3: common ground (P2.a stub always returns [])
+    // Step 3: common ground (P2.j: real read from common_ground table)
     // self_id hardcoded to "system_self" per spec §7.2 (P2.b reads from
     // RuntimeConfig).
     auto cg = common_ground::query(

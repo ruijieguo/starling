@@ -9,8 +9,8 @@
 namespace starling::tom {
 
 // CommonGroundEntry mirrors one row from the common_ground table (migration
-// 0010). In P2.a, the write path (Grounding Acts) is not yet implemented —
-// common_ground::query always returns an empty vector (spec §7.2 step 3).
+// 0010). P2.j: populated by CommonGroundSubscriber (assert/acknowledge/repair),
+// read back by common_ground::query.
 struct CommonGroundEntry {
     std::string id;
     std::string tenant_id;
@@ -23,11 +23,9 @@ struct CommonGroundEntry {
 
 namespace common_ground {
 
-// Returns all active common-ground entries shared between self_id and
-// target_id for the given tenant, as of as_of_iso8601.
-//
-// P2.a stub: returns [] per spec §7.2 step 3. P2.b adds the Grounding Acts
-// writer.
+// Returns all active common-ground entries (grounded/asserted_unack/
+// suspected_diverge) shared between self_id and target_id for the given tenant,
+// as of as_of_iso8601. P2.j: real read (populated by CommonGroundSubscriber).
 std::vector<CommonGroundEntry> query(
     persistence::SqliteAdapter& adapter,
     std::string_view self_id,
