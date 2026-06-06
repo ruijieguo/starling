@@ -4,6 +4,8 @@
 #include <variant>
 #include <vector>
 
+namespace starling::extractor { struct ExtractedStatement; }
+
 namespace starling::bus {
 
 // M0.5: only Null is constructed. Norm/Commitment/CommonGround arms are declared
@@ -41,12 +43,8 @@ using CanonicalScope = std::variant<
 
 std::string canonical_scope_bytes(const CanonicalScope& scope);
 
-// scope_of: derive the canonical scope from an ExtractedStatement.
-// M0.5: always returns CanonicalScopeNull{}.
-// M0.5+1: will inspect stmt.statement_kind to branch.
-template <typename StmtT>
-CanonicalScope scope_of(const StmtT& /*stmt*/) {
-    return CanonicalScopeNull{};
-}
+// scope_of: derive the canonical scope from an ExtractedStatement (P2.j).
+// modality 优先：COMMITS→Commitment；NORM_*→Norm；else scope_parties≥2→CommonGround；else Null。
+CanonicalScope scope_of(const starling::extractor::ExtractedStatement& stmt);
 
 }  // namespace starling::bus

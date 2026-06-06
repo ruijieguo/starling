@@ -4,6 +4,9 @@ from starling.bus.conflict_key import canonical_conflict_key_hex
 # Locked parity fixture -- IMPLEMENTER: paste hex from C++ ParityFixtureHex stdout.
 PARITY_HEX = "128e262474462a27c39126dbfc4c3876cac63f6d11f53a0161a8b6c8b66f8790"
 
+# Scope parity fixture -- IMPLEMENTER: paste hex from C++ ScopeParityFixtureHex stdout.
+SCOPE_PARITY_HEX = "699bab199643ae7db994971a230545b9b03eeda030805086963f19e4ef6c21c6"
+
 
 class ParityStmt:
     holder_id             = "holder-uuid-parity"
@@ -21,12 +24,20 @@ class ParityStmt:
     valid_from            = None
     valid_to              = None
     event_time_start      = None
+    scope_parties         = []
 
 
 def test_parity_hex_matches_cpp():
     assert PARITY_HEX != "REPLACE_WITH_CPP_OUTPUT", \
         "Implementer must run C++ test and paste PARITY_HEX value"
     assert canonical_conflict_key_hex(ParityStmt()) == PARITY_HEX
+
+
+def test_scope_parity_hex_matches_cpp():
+    class S(ParityStmt):
+        scope_parties = ["bob", "self"]
+    assert SCOPE_PARITY_HEX != "REPLACE_WITH_CPP_SCOPE_OUTPUT", "paste C++ hex"
+    assert canonical_conflict_key_hex(S()) == SCOPE_PARITY_HEX
 
 
 def test_different_holder_produces_different_key():

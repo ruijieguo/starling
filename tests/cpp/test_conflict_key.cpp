@@ -34,6 +34,15 @@ TEST(ConflictKey, ParityFixtureHex) {
     EXPECT_EQ(hex, "128e262474462a27c39126dbfc4c3876cac63f6d11f53a0161a8b6c8b66f8790");
 }
 
+TEST(ConflictKey, ScopeParityFixtureHex) {
+    auto s = make_parity_stmt();
+    s.scope_parties = {"bob", "self"};   // → CommonGround scope
+    auto hex = canonical_conflict_key_hex(s);
+    std::cout << "SCOPE_PARITY_HEX=" << hex << std::endl;
+    EXPECT_EQ(hex.size(), 64u);
+    EXPECT_NE(hex, "128e262474462a27c39126dbfc4c3876cac63f6d11f53a0161a8b6c8b66f8790");
+}
+
 TEST(ConflictKey, DifferentHolderProducesDifferentKey) {
     auto s1 = make_parity_stmt();
     auto s2 = make_parity_stmt();

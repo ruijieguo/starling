@@ -15,7 +15,7 @@ class CanonicalScopeNorm:
     members_sorted: tuple = ()
 
     def canonical_bytes(self) -> str:
-        raise NotImplementedError("CanonicalScopeNorm.canonical_bytes not implemented in M0.5")
+        return self.kind + ''.join('\x1f' + m for m in self.members_sorted)
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class CanonicalScopeCommitment:
     beneficiary: str = ""
 
     def canonical_bytes(self) -> str:
-        raise NotImplementedError("CanonicalScopeCommitment.canonical_bytes not implemented in M0.5")
+        return self.principal + '\x1f' + self.beneficiary
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class CanonicalScopeCommonGround:
     parties_sorted: tuple = ()
 
     def canonical_bytes(self) -> str:
-        raise NotImplementedError("CanonicalScopeCommonGround.canonical_bytes not implemented in M0.5")
+        return '\x1f'.join(self.parties_sorted)
 
 
 CanonicalScope = Union[
@@ -48,5 +48,21 @@ def canonical_scope_bytes(scope: CanonicalScope) -> str:
 
 
 def scope_of(stmt: Any) -> CanonicalScope:
-    """M0.5: always returns CanonicalScopeNull. M0.5+1 will branch on stmt.statement_kind."""
+    """Derive the canonical scope from a statement (P2.j).
+
+    Mirrors the C++ scope_of byte-for-byte: modality 优先（COMMITS→Commitment；
+    NORM_*→Norm；else scope_parties≥2→CommonGround；else Null）。
+    """
+    mod = stmt.modality.name if hasattr(stmt.modality, 'name') else str(stmt.modality)
+    parties = list(getattr(stmt, 'scope_parties', []) or [])
+    holder = stmt.holder_id
+    if mod == 'COMMITS':
+        beneficiary = next((p for p in parties if p != holder), "")
+        return CanonicalScopeCommitment(principal=holder, beneficiary=beneficiary)
+    if mod in ('NORM_OUGHT', 'NORM_FORBID'):
+        members = sorted([holder, stmt.subject_id])
+        kind = 'obligation' if mod == 'NORM_OUGHT' else 'prohibition'
+        return CanonicalScopeNorm(kind=kind, members_sorted=members)
+    if len(parties) >= 2:
+        return CanonicalScopeCommonGround(parties_sorted=sorted(parties))
     return CanonicalScopeNull()
