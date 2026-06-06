@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
-	import { getToken, setToken, adoptTokenFromHash } from '$lib/token';
+	import { getToken, setToken } from '$lib/token';
 	import { api } from '$lib/api';
 	import { llmConfigured } from '$lib/config-store';
 
@@ -20,8 +20,9 @@
 		{ href: '/queues', label: 'Queues' },
 		{ href: '/settings', label: '设置' }
 	];
+	// Token is adopted from the `#token=` fragment in +layout.ts `load` (before
+	// any page effect fires); here we just light the LLM-configured lamp.
 	$effect(() => {
-		adoptTokenFromHash();
 		api
 			.get<{ llm: { key_set: boolean } }>('/api/config')
 			.then((c) => llmConfigured.set(c.llm.key_set ?? null))

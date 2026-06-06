@@ -44,8 +44,13 @@ def main() -> None:
     cfg.validate_bind()
     _ensure_build(args.no_build)
     app = create_app(cfg)
+    from starling.dashboard.engine import DashboardEngine
+    # Build the engine eagerly so the SQLite schema exists from startup. The
+    # inspection routes open the DB read-only (mode=ro) and would 500 on a fresh
+    # DB if a request arrived before the first command lazily built the engine.
+    app.state.engine = DashboardEngine(cfg)
     shown = cfg.host if cfg.host not in ("0.0.0.0", "::") else "127.0.0.1"
-    print(f"\nDashboard ready → http://{shown}:{cfg.port}/#token={cfg.token}\n")
+    print(f"\nDashboard ready → http://{shown}:{cfg.port}/#token={cfg.token}\n", flush=True)
     uvicorn.run(app, host=cfg.host, port=cfg.port)
 
 
