@@ -122,7 +122,7 @@ class DashboardEngine:
     def llm_configured(self) -> bool:
         return self.llm is not None
 
-    def remember(self, text: str, *, holder=None, now=None) -> dict:
+    def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         if self.llm is None:
             raise _LLMNotConfigured()
         holder = holder or self._agent
@@ -139,7 +139,7 @@ class DashboardEngine:
         if kind not in ("accepted", "idempotent"):
             return {"engram_ref": "", "statement_ids": [], "outcome": kind}
         engram_ref = out["engram_ref"].id
-        r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {})
+        r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {}, interlocutor or "")
         return {"engram_ref": engram_ref, "statement_ids": list(r.accepted_statement_ids),
                 "outcome": kind}
 

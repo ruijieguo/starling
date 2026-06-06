@@ -113,6 +113,7 @@ class Memory:
         return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm)
 
     def remember(self, text: str, *, holder: Optional[str] = None,
+                 interlocutor: Optional[str] = None,
                  now: Optional[str] = None) -> RememberResult:
         if self._llm is None:
             raise RuntimeError(
@@ -141,7 +142,7 @@ class Memory:
 
         engram_ref = out["engram_ref"].id
         ext = _core.Extractor(self._conn, self._llm, EXTRACTION_PROMPT)
-        r = ext.run(engram_ref, payload, holder, self._tenant, {})
+        r = ext.run(engram_ref, payload, holder, self._tenant, {}, interlocutor or "")
         return RememberResult(
             engram_ref=engram_ref,
             statement_ids=list(r.accepted_statement_ids),
