@@ -1,5 +1,7 @@
 # Starling Memory
 
+**English** | [中文](README.zh-CN.md)
+
 **Agent memory with a multi-subject social mind and brain-inspired dynamics.**
 
 Starling gives an LLM agent something a vector store can't: a persistent, evolving model of *each* person it talks to — a picture of the other, what the agent believes about them, and what the agent thinks *they* believe — together with brain-like memory dynamics: fast write / slow consolidation, priority replay, reconsolidation (without overwrite), adaptive forgetting, salience modulation, and prospective triggers.
@@ -83,39 +85,42 @@ The Python surface is the bound C++ core: `from starling import _core`, with the
 
 ## Dashboard
 
-A web observability + interaction surface (milestone P2.g): a **FastAPI** engine-API that owns a single `starling.Memory` instance (the sole writer), fronted by a **SvelteKit + Tailwind** UI. Four panel bundles — **interaction** (remember / recall / working-set render / commitment reminders), **cognitive inspection** (statement explorer, cognizer social graph, commitment state machine), **dynamics & ops** (replay / reconsolidation, conflict probe, outbox & embedding queues), and an **overview + eval-report** landing page. Live updates stream over WebSocket; commands run through the `starling.Memory` facade, while inspection panels read SQLite read-only.
+A web observability + interaction surface: a **FastAPI** engine-API fronted by a **SvelteKit + Tailwind** UI. Four panel bundles — **interaction** (remember / recall / working-set render / commitment reminders), **cognitive inspection** (statement explorer, cognizer social graph, commitment state machine), **dynamics & ops** (replay / reconsolidation, conflict probe, outbox & embedding queues), and an **overview + eval-report** landing page. Live updates stream over WebSocket; inspection panels read SQLite read-only, while commands run through the engine (with a UI-configurable LLM + embedder).
 
-**Prerequisites:** the Python package installed (see [Build & test](#build--test)) plus Node ≥20 and npm for the frontend.
+**Prerequisites:** the Python package installed (see [Build & test](#build--test)) plus Node ≥20 and npm (for the one-time frontend build).
 
-**Run it locally** (two terminals):
+**One-click run:**
 
 ```bash
-# Terminal 1 — backend engine-API (FastAPI, defaults to 127.0.0.1:8787)
 source .venv/bin/activate
-pip install -e ".[dashboard]"                          # fastapi + uvicorn + httpx
-export STARLING_DASH_DB=path/to/your.db                # the SQLite memory store to observe
-export STARLING_DASH_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(24))")
-export OPENAI_API_KEY=...                               # only needed for command routes (real engine)
+pip install -e ".[dashboard]"
 python scripts/run_dashboard.py
-
-# Terminal 2 — frontend dev server (Vite on :5173, proxies /api and /ws to :8787)
-cd dashboard/web && npm install && npm run dev
-# open http://localhost:5173 and paste STARLING_DASH_TOKEN into the Token box (bottom-left)
 ```
 
-**Remote access:** to serve beyond loopback, bind a public interface — a token is then mandatory (the server refuses to start on a non-loopback host without `STARLING_DASH_TOKEN`):
+That single command loads the unified config (`~/.starling/starling.json`, created on first run), generates a bearer token, builds the SvelteKit frontend if missing (needs Node; `--no-build` skips it), and serves the API + the static frontend on **one port**. It prints a login URL with the token in the URL **fragment**:
+
+```
+Dashboard ready → http://127.0.0.1:8787/#token=…
+```
+
+Open it — the frontend reads the token from the fragment (which browsers never send to the server, so it stays out of access logs) and stores it. **No second terminal, no env vars to memorize.**
+
+**Configure the LLM in the UI:** the dashboard starts with no LLM configured; inspection panels, `recall`, `tick`, and working-set work immediately (offline embedder), while `remember` (statement extraction) returns 409 until you set one. Open **Settings** (`/settings`) and fill in the chat **LLM** and the **embedder** (model / base URL / API key). Changes are hot-swapped — no restart. Changing the embedder re-embeds existing memories (the vector dimension changes).
+
+**Unified config — `~/.starling/starling.json` (0600):** one file holds everything — `db_path` (defaults to `~/.starling/dashboard.db`, auto-created), `agent`, `tenant`, `token` (auto-generated), `host`, `port`, `cors_origins`, and the `llm` / `embedder` provider configs (including their API keys). The file is gitignored and chmod-0600. Override its path with `STARLING_CONFIG` or `--config`; environment variables (`STARLING_DASH_*`, `OPENAI_*`) still override the file for CI / ephemeral use.
+
+**Remote access:** bind a public interface (a token is always present, hence required), then share the printed `#token=` URL:
 
 ```bash
 export STARLING_DASH_HOST=0.0.0.0
-export STARLING_DASH_TOKEN=...                                   # shared bearer token (env-only)
-export STARLING_DASH_CORS_ORIGINS=https://your-frontend.example  # REST CORS allowlist
+python scripts/run_dashboard.py
 ```
 
-Put it behind a TLS reverse proxy. **All config is env-only:** `STARLING_DASH_DB`, `STARLING_DASH_AGENT` (default `self`), `STARLING_DASH_TENANT` (default `default`), `STARLING_DASH_TOKEN`, `STARLING_DASH_HOST` (default `127.0.0.1`), `STARLING_DASH_PORT` (default `8787`), `STARLING_DASH_CORS_ORIGINS`.
+Put it behind a TLS reverse proxy. **Security:** all secrets live only in `starling.json` (0600, gitignored) plus process memory (a transient env-swap at adapter-build time) — they never enter git, the SQLite memory DB, or logs. `GET /api/config` returns only `key_set` booleans, never the token or full keys. The token travels in the URL fragment (never in access logs) and is compared in constant time. The SPA fallback has a path-traversal guard, the WebSocket endpoint enforces an Origin check (anti-CSWSH), and the static shell is public while every `/api` + `/ws` route is token-gated.
 
-**Security:** the token is env-only (never persisted, logged, hardcoded in the frontend, or committed) and compared in constant time; non-loopback binds without a token are refused; the WebSocket endpoint enforces an Origin check (anti-CSWSH); inspection is read-only SQL and commands go only through the engine facade. Full notes: [`dashboard/README.md`](dashboard/README.md).
+**Tests:** `pytest tests/python/test_dashboard_*.py` (config / engine / auth / inspection / commands / WebSocket, offline-deterministic); in `dashboard/web/`, `npx vitest run` (unit) and `npx playwright test` (e2e smoke).
 
-**Tests:** `pytest tests/python/test_dashboard_*.py` (API / auth / inspection / WebSocket, offline-deterministic); in `dashboard/web/`, `npx vitest run` (unit) and `npx playwright test` (e2e smoke).
+> **Dev hot-reload:** for frontend iteration, run the backend (`python scripts/run_dashboard.py`) and, in a second terminal, `cd dashboard/web && npm run dev` (Vite on :5173, proxying `/api` + `/ws` to :8787).
 
 ## Repository layout
 
@@ -141,19 +146,3 @@ The authoritative design lives in [`docs/design/system_design.md`](docs/design/s
 ## License
 
 A license has not yet been chosen. Until one is added, all rights are reserved by the authors.
-
----
-
-## 中文简介
-
-**Starling Memory —— 多主体社会心智 + 类脑动力学的智能体记忆系统。**
-
-它给 LLM Agent 的不是向量库能给的东西:对每个交互对象形成一份「持续演化的他者画像 + 我对他的信念 + 我以为他相信什么」,并在系统层具备类脑的「快写慢洗、优先重放、再巩固(不覆盖)、自适应遗忘、显著性调制、前瞻触发」动力学。它不是 `user_id` 隔离 + 向量 RAG,而是**数据模型 + 运行时调度 + 检索规划器**三件套,可挂在 mem0 / Letta / cognee / Graphiti 之上。
-
-**七大差异**:① Cognizer 一等公民(非 user_id);② Statement 替代 Fact(谁、何时、基于何证据、对谁、以何样态/极性、持有何判断);③ 二阶 ToM 数据模型(嵌套 Statement + nesting_depth);④ 类脑六态状态机(consolidation_state);⑤ Reconsolidation 不覆盖(supersedes 链);⑥ 真前瞻(类型化 Trigger + Commitment 五态机);⑦ 视角化检索 + 心智摘要。
-
-**三条公理**:① 没有孤立的事实,只有归属于主体的陈述;② 两套时间尺度协同(CLS):写入先入 Hippocampus(VOLATILE),经 Replay / 模式分离补全 / 再巩固才上升到 Neocortex;③ 记忆为当前目标重构,不是录像回放,且可显式弃答。
-
-完整设计见 [`docs/design/system_design.md`](docs/design/system_design.md) 与 [`docs/design/subsystems_design/`](docs/design/subsystems_design/)。构建与测试见上文 **Build & test**(scikit-build-core 驱动 CMake + Ninja 编译 `pybind11` 扩展 `starling._core`,`migrations/` 在编译期内嵌)。
-
-**可视化 Dashboard(P2.g)**:FastAPI engine-API(持有唯一 `starling.Memory` 写者)+ SvelteKit 前端的 Web 观测/交互面——四面板(交互 / 认知检视 / 动力学·运维 / 总览·Eval)+ WebSocket 实时,支持远端访问与 token 鉴权。两个终端起:后端 `pip install -e ".[dashboard]"` 后 `python scripts/run_dashboard.py`,前端 `cd dashboard/web && npm install && npm run dev`(打开 http://localhost:5173 填 token)。详见上文 **[Dashboard](#dashboard)** 一节或 [`dashboard/README.md`](dashboard/README.md)。
