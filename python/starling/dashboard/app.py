@@ -100,12 +100,13 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
 
     _build = Path(__file__).resolve().parents[3] / "dashboard" / "web" / "build"
     if _build.is_dir():
+        _build_resolved = _build.resolve()
+
         @app.get("/{full_path:path}")
         async def spa(full_path: str):
             # SPA fallback: serve a real static file if present, else index.html.
             candidate = (_build / full_path).resolve()
-            # path-traversal guard: candidate must stay within _build
-            if full_path and candidate.is_file() and str(candidate).startswith(str(_build.resolve())):
+            if full_path and candidate.is_file() and candidate.is_relative_to(_build_resolved):
                 return FileResponse(str(candidate))
-            return FileResponse(str(_build / "index.html"))
+            return FileResponse(str(_build_resolved / "index.html"))
     return app
