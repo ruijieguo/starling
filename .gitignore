@@ -26,3 +26,4 @@ tests/data/eval_fantom/
 # Dashboard secrets store + built frontend assets
 starling.json
 dashboard/web/build
+.gstack/
