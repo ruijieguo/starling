@@ -35,8 +35,11 @@ def _merge(dst: dict, body) -> None:
         return
     for k in ("model", "base_url", "api_key", "dim"):
         v = getattr(body, k, None)
-        if v is not None:
-            dst[k] = v
+        if v is None:
+            continue
+        if k == "dim" and (not isinstance(v, int) or v <= 0):
+            continue  # ignore non-positive dim (invalid embedding dimension)
+        dst[k] = v
 
 
 def build_config_router(require_token) -> APIRouter:
