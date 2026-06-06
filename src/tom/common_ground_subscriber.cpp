@@ -16,6 +16,7 @@
 namespace starling::tom {
 
 using starling::bus::detail::bind_sv;
+using starling::bus::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 namespace {
@@ -34,9 +35,10 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
     int last_seq = 0;
     {
         sqlite3_stmt* raw = nullptr;
-        sqlite3_prepare_v2(db,
+        if (sqlite3_prepare_v2(db,
             "SELECT last_processed_outbox_sequence FROM common_ground_subscriber_checkpoint WHERE id=1",
-            -1, &raw, nullptr);
+            -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "cg_subscriber: read checkpoint prepare");
         StmtHandle h(raw);
         if (sqlite3_step(h.get()) == SQLITE_ROW) last_seq = sqlite3_column_int(h.get(), 0);
     }
@@ -45,10 +47,11 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
     std::vector<Ev> evs;
     {
         sqlite3_stmt* raw = nullptr;
-        sqlite3_prepare_v2(db,
+        if (sqlite3_prepare_v2(db,
             "SELECT primary_id, tenant_id, outbox_sequence FROM bus_events "
             "WHERE outbox_sequence > ? AND event_type='statement.written' "
-            "ORDER BY outbox_sequence LIMIT ?", -1, &raw, nullptr);
+            "ORDER BY outbox_sequence LIMIT ?", -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "cg_subscriber: read events prepare");
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, last_seq);
         sqlite3_bind_int(h.get(), 2, batch_size);
@@ -67,10 +70,11 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         std::string holder, subject_id, predicate, hash, polarity, sp_json;
         {
             sqlite3_stmt* raw = nullptr;
-            sqlite3_prepare_v2(db,
+            if (sqlite3_prepare_v2(db,
                 "SELECT holder_id, subject_id, predicate, canonical_object_hash, polarity, "
                 "       COALESCE(scope_parties_json,'') FROM statements WHERE id=? AND tenant_id=?",
-                -1, &raw, nullptr);
+                -1, &raw, nullptr) != SQLITE_OK)
+                throw make_sqlite_error(db, "cg_subscriber: load statement prepare");
             StmtHandle h(raw);
             bind_sv(h.get(), 1, ev.stmt_id);
             bind_sv(h.get(), 2, ev.tenant);
@@ -94,12 +98,13 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         std::vector<Match> matches;
         {
             sqlite3_stmt* raw = nullptr;
-            sqlite3_prepare_v2(db,
+            if (sqlite3_prepare_v2(db,
                 "SELECT cg.id, st.holder_id, st.polarity FROM common_ground cg "
                 "JOIN statements st ON st.id=cg.statement_id AND st.tenant_id=cg.tenant_id "
                 "WHERE cg.tenant_id=? AND cg.status='asserted_unack' "
                 "  AND st.subject_id=? AND st.predicate=? AND st.canonical_object_hash=?",
-                -1, &raw, nullptr);
+                -1, &raw, nullptr) != SQLITE_OK)
+                throw make_sqlite_error(db, "cg_subscriber: match prepare");
             StmtHandle h(raw);
             bind_sv(h.get(), 1, ev.tenant);
             bind_sv(h.get(), 2, subject_id);
@@ -116,10 +121,14 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             else                        writer.repair(conn, m.cg_id, holder, now_iso);        // 矛盾
             handled = true;
         }
+        // 无另一方匹配 → 新命题入库。注：若仅自己先前断言过同命题（matches 全 asserter==holder），
+        // 也走这里再 assert_——本期接受（重复 asserted_unack）；去重细则留后续。
         if (!handled) {
-            writer.assert_(conn, ev.tenant, ev.stmt_id, parties, now_iso);   // 新命题
+            writer.assert_(conn, ev.tenant, ev.stmt_id, parties, now_iso);
         }
-        rebuilt.emplace_back(ev.tenant, parties[0] + "::" + parties[1]);     // cg_ref = sorted a::b
+        // cg_ref = sorted "a::b"（与 Task 7 Python 读路径一致）。本期假设 2 方对话；
+        // parties>2 时仅取前两个（多方 grounding 超本期范围，见 spec §1）。
+        rebuilt.emplace_back(ev.tenant, parties[0] + "::" + parties[1]);
     }
 
     // 3. rebuild affected containers（去重）
@@ -130,9 +139,10 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
     // 4. advance checkpoint
     {
         sqlite3_stmt* raw = nullptr;
-        sqlite3_prepare_v2(db,
+        if (sqlite3_prepare_v2(db,
             "UPDATE common_ground_subscriber_checkpoint SET last_processed_outbox_sequence=?, last_updated_at=? WHERE id=1",
-            -1, &raw, nullptr);
+            -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "cg_subscriber: advance checkpoint prepare");
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, max_seq);
         bind_sv(h.get(), 2, now_iso);
