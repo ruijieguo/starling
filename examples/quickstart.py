@@ -25,18 +25,13 @@ import tempfile
 import starling
 from starling import _core
 
-# Exact canned XML shape that the Extractor accepts (mirrors
-# tests/python/test_memory_facade.py). The <holder ref="alice"/> and
-# <perceived_by ref="alice"/> MUST equal the agent ("alice") so the
-# orchestrator stamps the statement with that cognizer.
-CANNED_XML = (
-    "<extraction><statement>"
-    "<holder ref=\"alice\"/><perspective>first_person</perspective>"
-    "<subject kind=\"cognizer\" id=\"cog-bob\"/><predicate>responsible_for</predicate>"
-    "<object kind=\"str\" canonical_hash=\"hash-auth\">auth</object>"
-    "<modality>believes</modality><polarity>pos</polarity>"
-    "<confidence>0.9</confidence><observed_at>2026-06-01T09:00:00Z</observed_at>"
-    "<perceived_by ref=\"alice\"/></statement></extraction>"
+# Canned JSON-array response the Extractor accepts (mirrors
+# tests/python/test_memory_facade.py). The orchestrator stamps holder_id with
+# the agent ("alice"); the JSON "holder" is advisory.
+CANNED_JSON = (
+    '[{"holder":"alice","holder_perspective":"FIRST_PERSON",'
+    '"subject":"cog-bob","predicate":"responsible_for","object":"auth",'
+    '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
 )
 
 
@@ -58,7 +53,7 @@ def main() -> str:
     db = str(tmp)
     mem = starling.Memory.open(
         db, agent="alice",
-        llm=starling.make_stub_llm(default_xml=CANNED_XML))
+        llm=starling.make_stub_llm(default_response=CANNED_JSON))
     adapter = mem._rt.adapter  # the single WAL adapter for all C++ engine calls
 
     # 1) write a memory via the extractor (stub, offline)

@@ -4,7 +4,7 @@ second REVIEW_REQUESTED."""
 from __future__ import annotations
 
 import sqlite3
-import textwrap
+import json
 
 import pytest
 
@@ -12,34 +12,20 @@ from starling import _core, runtime
 from starling.testing import relax_preflight_for_m0_3
 
 
-XML_TWO_DUPS = textwrap.dedent("""
-    <extraction>
-      <statement>
-        <holder ref="cog-self"/>
-        <perspective>first_person</perspective>
-        <subject kind="cognizer" id="cog-self"/>
-        <predicate>responsible_for</predicate>
-        <object kind="str" canonical_hash="hash-auth">auth</object>
-        <modality>believes</modality>
-        <polarity>pos</polarity>
-        <confidence>0.85</confidence>
-        <observed_at>2026-05-23T10:00:00Z</observed_at>
-        <perceived_by ref="cog-self"/>
-      </statement>
-      <statement>
-        <holder ref="cog-self"/>
-        <perspective>first_person</perspective>
-        <subject kind="cognizer" id="cog-self"/>
-        <predicate>responsible_for</predicate>
-        <object kind="str" canonical_hash="hash-auth">auth</object>
-        <modality>believes</modality>
-        <polarity>pos</polarity>
-        <confidence>0.80</confidence>
-        <observed_at>2026-05-23T10:00:01Z</observed_at>
-        <perceived_by ref="cog-self"/>
-      </statement>
-    </extraction>
-""").strip()
+# Two elements with the SAME (predicate, object) → same C++-computed canonical
+# hash → chunk-level duplicate. Both FIRST_PERSON, confidence ≥0.5 so both are
+# accepted (the first APPROVED, the second REVIEW_REQUESTED). UPPERCASE enums
+# match the real eval prompt; the parser lowercases them.
+JSON_TWO_DUPS = json.dumps([
+    {"holder": "cog-self", "holder_perspective": "FIRST_PERSON",
+     "subject": "cog-self", "predicate": "responsible_for", "object": "auth",
+     "modality": "BELIEVES", "polarity": "POS", "confidence": 0.85,
+     "nesting_depth": 0},
+    {"holder": "cog-self", "holder_perspective": "FIRST_PERSON",
+     "subject": "cog-self", "predicate": "responsible_for", "object": "auth",
+     "modality": "BELIEVES", "polarity": "POS", "confidence": 0.80,
+     "nesting_depth": 0},
+])
 
 
 @pytest.fixture
@@ -65,7 +51,7 @@ def test_chunk_duplicate(rt):
     extractor = _core.Extractor(rt.adapter.connection(), llm)
     body = _core.Extractor.build_prompt_body("cog-self", b"\x01\x02\x03", {})
     h = _core.Extractor.compute_prompt_input_hash(body)
-    llm.set_response(h, raw_xml=XML_TWO_DUPS, ok=True)
+    llm.set_response(h, raw_xml=JSON_TWO_DUPS, ok=True)
 
     r = extractor.run("engram-1", b"\x01\x02\x03", "cog-self", "default", {})
     assert r.status == "success"

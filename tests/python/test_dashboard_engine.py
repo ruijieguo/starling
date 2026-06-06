@@ -3,12 +3,10 @@ import pytest
 from starling.dashboard.config import DashboardConfig
 from starling.dashboard.engine import DashboardEngine, _LLMNotConfigured
 
-_STUB_XML = (
-    "<statements><statement><holder>self</holder>"
-    "<holder_perspective>FIRST_PERSON</holder_perspective>"
-    "<subject>Bob</subject><predicate>responsible_for</predicate>"
-    "<object>auth</object><modality>BELIEVES</modality>"
-    "<polarity>POS</polarity><nesting_depth>0</nesting_depth></statement></statements>"
+_STUB_JSON = (
+    '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
+    '"subject":"Bob","predicate":"responsible_for","object":"auth",'
+    '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
 )
 
 
@@ -30,7 +28,7 @@ def test_unconfigured_llm_recall_tick_ok_but_remember_raises(engine):
 def test_set_llm_enables_remember_offline_stub(engine):
     from starling import _core
     fake = _core.FakeLLMAdapter()
-    fake.set_default_response(_STUB_XML, True, "")
+    fake.set_default_response(_STUB_JSON, True, "")
     engine.llm = fake
     r = engine.remember("Bob owns auth")
     assert r["outcome"] in ("accepted", "idempotent")

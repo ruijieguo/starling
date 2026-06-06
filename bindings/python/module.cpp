@@ -702,6 +702,7 @@ PYBIND11_MODULE(_core, m) {
             .def_readwrite("model",        &OpenAIAdapter::Config::model)
             .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
             .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
+            .def_readwrite("max_tokens",   &OpenAIAdapter::Config::max_tokens)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
@@ -730,10 +731,12 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Extractor -----
     py::class_<starling::extractor::Extractor>(m, "Extractor")
         .def(py::init([](starling::persistence::Connection& conn,
-                         starling::extractor::LLMAdapter& a) {
-            return new starling::extractor::Extractor(conn, a);
+                         starling::extractor::LLMAdapter& a,
+                         const std::string& prompt_template) {
+            return new starling::extractor::Extractor(conn, a, prompt_template);
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
-           py::arg("connection"), py::arg("adapter"))
+           py::arg("connection"), py::arg("adapter"),
+           py::arg("prompt_template") = "")
         .def_static("compute_prompt_input_hash",
                     &starling::extractor::Extractor::compute_prompt_input_hash)
         .def_static("build_prompt_body",

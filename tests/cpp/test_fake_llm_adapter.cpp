@@ -7,10 +7,10 @@ namespace starling::extractor {
 TEST(FakeLLMAdapter, ReturnsCannedResponse) {
     FakeLLMAdapter a;
     a.set_response("hash-1", LLMResponse{
-        .raw_xml = "<extraction/>", .ok = true, .error = ""});
+        .raw_xml = "[]", .ok = true, .error = ""});
     LLMResponse r = a.extract("ignored prompt", "hash-1");
     EXPECT_TRUE(r.ok);
-    EXPECT_EQ(r.raw_xml, "<extraction/>");
+    EXPECT_EQ(r.raw_xml, "[]");
 }
 
 TEST(FakeLLMAdapter, MissingHashIsTransientError) {

@@ -5,7 +5,7 @@ Per docs/design/system_design.md §15.3.1 these are P1 CRITICAL ship-gates."""
 from __future__ import annotations
 
 import sqlite3
-import textwrap
+import json
 
 import pytest
 
@@ -13,74 +13,36 @@ from starling import _core, runtime
 from starling.testing import relax_preflight_for_m0_3
 
 
-# Canned XML responses keyed by perspective; matches the parser fixtures from
-# tests/cpp/test_xml_parser.cpp so we exercise the same shape end-to-end.
+# Single-element JSON-array fixtures keyed by perspective. Each element's
+# holder_perspective is the UPPERCASE of the key (matches the real eval prompt);
+# the parser lowercases it, so the stored value round-trips to the lowercase
+# key. object is a plain string (bool true → "true"); the canonical hash is
+# computed C++-side. All confidences are ≥0.3, so all are accepted.
 FIXTURES = {
-    "first_person": textwrap.dedent("""
-        <extraction>
-          <statement>
-            <holder ref="cog-self"/>
-            <perspective>first_person</perspective>
-            <subject kind="cognizer" id="cog-self"/>
-            <predicate>responsible_for</predicate>
-            <object kind="str" canonical_hash="hash-auth">auth</object>
-            <modality>believes</modality>
-            <polarity>pos</polarity>
-            <confidence>0.85</confidence>
-            <observed_at>2026-05-23T10:00:00Z</observed_at>
-            <perceived_by ref="cog-self"/>
-          </statement>
-        </extraction>
-    """).strip(),
-    "quoted": textwrap.dedent("""
-        <extraction>
-          <statement source_speaker="cog-bob">
-            <holder ref="cog-self"/>
-            <perspective>quoted</perspective>
-            <subject kind="cognizer" id="cog-bob"/>
-            <predicate>responsible_for</predicate>
-            <object kind="str" canonical_hash="hash-auth">auth</object>
-            <modality>believes</modality>
-            <polarity>pos</polarity>
-            <confidence>0.75</confidence>
-            <observed_at>2026-05-23T10:00:00Z</observed_at>
-            <perceived_by ref="cog-self"/>
-            <perceived_by ref="cog-bob"/>
-          </statement>
-        </extraction>
-    """).strip(),
-    "hearsay": textwrap.dedent("""
-        <extraction>
-          <statement>
-            <holder ref="cog-self"/>
-            <perspective>hearsay</perspective>
-            <subject kind="cognizer" id="cog-bob"/>
-            <predicate>left_company</predicate>
-            <object kind="bool" canonical_hash="hash-true">true</object>
-            <modality>believes</modality>
-            <polarity>pos</polarity>
-            <confidence>0.55</confidence>
-            <observed_at>2026-05-23T10:00:00Z</observed_at>
-            <perceived_by ref="cog-self"/>
-          </statement>
-        </extraction>
-    """).strip(),
-    "inferred": textwrap.dedent("""
-        <extraction>
-          <statement>
-            <holder ref="cog-self"/>
-            <perspective>inferred</perspective>
-            <subject kind="cognizer" id="cog-bob"/>
-            <predicate>upset_about</predicate>
-            <object kind="str" canonical_hash="hash-x">scope_change</object>
-            <modality>believes</modality>
-            <polarity>pos</polarity>
-            <confidence>0.40</confidence>
-            <observed_at>2026-05-23T10:00:00Z</observed_at>
-            <perceived_by ref="cog-self"/>
-          </statement>
-        </extraction>
-    """).strip(),
+    "first_person": json.dumps([
+        {"holder": "cog-self", "holder_perspective": "FIRST_PERSON",
+         "subject": "cog-self", "predicate": "responsible_for", "object": "auth",
+         "modality": "BELIEVES", "polarity": "POS", "confidence": 0.85,
+         "nesting_depth": 0},
+    ]),
+    "quoted": json.dumps([
+        {"holder": "cog-self", "holder_perspective": "QUOTED",
+         "subject": "cog-bob", "predicate": "responsible_for", "object": "auth",
+         "modality": "BELIEVES", "polarity": "POS", "confidence": 0.75,
+         "nesting_depth": 0},
+    ]),
+    "hearsay": json.dumps([
+        {"holder": "cog-self", "holder_perspective": "HEARSAY",
+         "subject": "cog-bob", "predicate": "left_company", "object": "true",
+         "modality": "BELIEVES", "polarity": "POS", "confidence": 0.55,
+         "nesting_depth": 0},
+    ]),
+    "inferred": json.dumps([
+        {"holder": "cog-self", "holder_perspective": "INFERRED",
+         "subject": "cog-bob", "predicate": "upset_about", "object": "scope_change",
+         "modality": "BELIEVES", "polarity": "POS", "confidence": 0.40,
+         "nesting_depth": 0},
+    ]),
 }
 
 

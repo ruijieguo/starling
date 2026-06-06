@@ -25,8 +25,10 @@ struct ExtractionRunResult {
 // references to the Connection and the adapter; ownership is the caller's.
 class Extractor {
 public:
-    Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter)
-        : conn_(conn), adapter_(adapter) {}
+    Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter,
+              std::string prompt_template = "")
+        : conn_(conn), adapter_(adapter),
+          prompt_template_(std::move(prompt_template)) {}
 
     ExtractionRunResult run(
         std::string_view                        engram_ref_id,
@@ -37,6 +39,16 @@ public:
 
     // Public so tests can use the same hash as the adapter's keying.
     static std::string compute_prompt_input_hash(std::string_view prompt_body);
+
+    // Builds the LLM prompt body. When prompt_template_ is non-empty, the chunk
+    // payload is decoded as UTF-8 text and substituted into the "{convo}"
+    // placeholder (appended if the placeholder is absent). When empty (the
+    // FakeLLM / unit-test path), reproduces the deterministic build_prompt_body
+    // string so prompt-hash keyed test adapters keep matching.
+    std::string build_prompt(
+        std::string_view holder_id,
+        const std::vector<std::uint8_t>& payload_bytes,
+        const ExistingRefMap& existing_ref_map) const;
 
     // Public for test seeding only — production callers use run() which
     // builds the same body internally. Tests need the same byte string the
@@ -54,6 +66,7 @@ public:
 private:
     starling::persistence::Connection& conn_;
     LLMAdapter& adapter_;
+    std::string prompt_template_;
 };
 
 }  // namespace starling::extractor

@@ -43,7 +43,7 @@ add_executable(starling_tests
     test_extraction_span_key.cpp
     test_extracted_statement.cpp
     test_fake_llm_adapter.cpp
-    test_xml_parser.cpp
+    test_json_parser.cpp
     test_statement_validator.cpp
     test_statement_writer.cpp
     test_statement_writer_interval.cpp

@@ -67,7 +67,8 @@ LLMResponse OpenAIAdapter::extract(std::string_view prompt,
         {"model",       cfg_.model},
         {"messages",    nlohmann::json::array({
             {{"role", "user"}, {"content", std::string(prompt)}}})},
-        {"temperature", 0}
+        {"temperature", 0},
+        {"max_tokens",  cfg_.max_tokens}
     };
     const std::string body_str = body.dump();
     const std::string url      = cfg_.base_url + "/chat/completions";
