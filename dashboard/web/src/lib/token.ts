@@ -14,7 +14,8 @@ export function adoptTokenFromHash(): void {
 	const m = location.hash.match(/(?:^#|&)token=([^&]+)/);
 	if (m) {
 		setToken(decodeURIComponent(m[1]));
-		const cleaned = location.hash.replace(/(?:^#|&)token=[^&]+/, '').replace(/^#&?/, '#');
-		history.replaceState(null, '', location.pathname + location.search + (cleaned === '#' ? '' : cleaned));
+		const rest = location.hash.replace(/(?:^#|&)token=[^&]+/, '').replace(/^[#&]/, '');
+		const cleaned = rest ? '#' + rest : '';
+		history.replaceState(null, '', location.pathname + location.search + cleaned);
 	}
 }

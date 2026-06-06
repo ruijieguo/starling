@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { llmConfigured } from '$lib/config-store';
 	type Prov = { model: string; base_url: string; key_set?: boolean; dim?: number };
 	let llm = $state<Prov>({ model: '', base_url: '' });
 	let llmKey = $state('');
@@ -19,6 +20,7 @@
 			};
 			const c = await api.post<{ llm: Prov; embedder: Prov }>('/api/config', payload);
 			llm = c.llm; emb = c.embedder; llmKey = ''; embKey = ''; msg = '已保存';
+			llmConfigured.set(c.llm.key_set ?? null);
 		} catch (e) { msg = String(e); }
 	}
 </script>
@@ -26,16 +28,23 @@
 <div class="space-y-6 max-w-xl">
 	<section class="space-y-2">
 		<h2 class="text-sm font-semibold text-zinc-500">LLM（抽取用）{#if llm.key_set}<span class="text-green-600 text-xs"> · 已配置</span>{/if}</h2>
-		<input bind:value={llm.model} placeholder="model（如 gpt-4o-mini）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<input bind:value={llm.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<input bind:value={llmKey} type="password" placeholder={llm.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="llm-model" class="block text-xs text-zinc-500">model</label>
+		<input id="llm-model" bind:value={llm.model} placeholder="model（如 gpt-4o-mini）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="llm-base-url" class="block text-xs text-zinc-500">base_url</label>
+		<input id="llm-base-url" bind:value={llm.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="llm-api-key" class="block text-xs text-zinc-500">api_key</label>
+		<input id="llm-api-key" bind:value={llmKey} type="password" placeholder={llm.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
 	</section>
 	<section class="space-y-2">
 		<h2 class="text-sm font-semibold text-zinc-500">Embedder（召回用）{#if emb.key_set}<span class="text-green-600 text-xs"> · 已配置</span>{/if}</h2>
-		<input bind:value={emb.model} placeholder="model（如 text-embedding-v3）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<input bind:value={emb.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<input bind:value={emb.dim} type="number" placeholder="dim" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<input bind:value={embKey} type="password" placeholder={emb.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="emb-model" class="block text-xs text-zinc-500">model</label>
+		<input id="emb-model" bind:value={emb.model} placeholder="model（如 text-embedding-v3）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="emb-base-url" class="block text-xs text-zinc-500">base_url</label>
+		<input id="emb-base-url" bind:value={emb.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="emb-dim" class="block text-xs text-zinc-500">dim</label>
+		<input id="emb-dim" bind:value={emb.dim} type="number" placeholder="dim" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
+		<label for="emb-api-key" class="block text-xs text-zinc-500">api_key</label>
+		<input id="emb-api-key" bind:value={embKey} type="password" placeholder={emb.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
 		<p class="text-xs text-zinc-400">改 embedder 会重嵌已有记忆（dim 变化）。</p>
 	</section>
 	<button onclick={save} class="px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm">保存</button>

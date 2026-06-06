@@ -18,4 +18,10 @@ describe('adoptTokenFromHash', () => {
 		adoptTokenFromHash();
 		expect(getToken()).toBe('');
 	});
+	it('strips #token= but preserves other fragment params', () => {
+		history.replaceState(null, '', '/#token=abc123&ref=home');
+		adoptTokenFromHash();
+		expect(getToken()).toBe('abc123');
+		expect(location.hash).toBe('#ref=home');
+	});
 });
