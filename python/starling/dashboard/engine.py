@@ -14,6 +14,7 @@ captures it at build), so chat and embedder may use different providers/keys.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -38,6 +39,8 @@ def _env_swap(api_key: str, base_url: str):
         os.environ["OPENAI_API_KEY"] = api_key
         if base_url:
             os.environ["OPENAI_BASE_URL"] = base_url
+        else:
+            os.environ.pop("OPENAI_BASE_URL", None)  # clear stale value
         yield
     finally:
         for k, v in saved.items():
@@ -125,7 +128,7 @@ class DashboardEngine:
         created_at = _parse_now(now)
         inp = for_user_input(
             tenant_id=self._tenant, adapter_name="dashboard", adapter_version="1",
-            source_item_id="dash-" + str(abs(hash(text))), source_version="1",
+            source_item_id="dash-" + hashlib.sha256(payload).hexdigest()[:16], source_version="1",
             payload_bytes=payload, privacy_class=_core.PrivacyClass.INTERNAL,
             retention_mode=_core.EngramRetentionMode.AUDIT_RETAIN, created_at=created_at,
         )
@@ -157,6 +160,7 @@ class DashboardEngine:
                 "auto_withdrawn": ps.auto_withdrawn}
 
     def working_set(self, interlocutor, *, goal=None, token_budget=2000) -> dict:
+        """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""
         from starling import working_set as _ws
         adapter = self._rt.adapter
         sections = {}
