@@ -89,9 +89,11 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     from starling.dashboard.routes.inspect import build_inspect_router
     from starling.dashboard.routes.commands import build_commands_router
     from starling.dashboard.routes.evalreport import build_eval_router
+    from starling.dashboard.routes.config import build_config_router
 
     app.include_router(build_inspect_router(require_token))
     app.include_router(build_commands_router(require_token))
     app.include_router(build_eval_router(require_token))
+    app.include_router(build_config_router(require_token))
 
     return app
