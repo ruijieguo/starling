@@ -1,7 +1,8 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
-	import { getToken, setToken } from '$lib/token';
+	import { getToken, setToken, adoptTokenFromHash } from '$lib/token';
+	import { api } from '$lib/api';
 
 	let token = $state(getToken());
 	const NAV = [
@@ -15,8 +16,17 @@
 		{ href: '/commitments', label: 'Commitments' },
 		{ href: '/replay', label: 'Replay' },
 		{ href: '/conflicts', label: 'Conflicts' },
-		{ href: '/queues', label: 'Queues' }
+		{ href: '/queues', label: 'Queues' },
+		{ href: '/settings', label: '设置' }
 	];
+	let llmConfigured = $state<boolean | null>(null);
+	$effect(() => {
+		adoptTokenFromHash();
+		api
+			.get<{ llm: { key_set: boolean } }>('/api/config')
+			.then((c) => (llmConfigured = c.llm.key_set))
+			.catch(() => (llmConfigured = null));
+	});
 	let { children } = $props();
 </script>
 
@@ -27,6 +37,12 @@
 <div class="flex min-h-screen">
 	<nav class="w-48 shrink-0 border-r border-zinc-200 dark:border-zinc-800 p-3 space-y-1">
 		<div class="font-semibold px-2 py-3">Starling</div>
+		<div class="px-2 pb-2 text-xs">
+			LLM:
+			{#if llmConfigured === null}<span class="text-zinc-400">?</span>
+			{:else if llmConfigured}<span class="text-green-600">已配置</span>
+			{:else}<span class="text-amber-600">未配置</span>{/if}
+		</div>
 		{#each NAV as n}
 			<a
 				href={n.href}
