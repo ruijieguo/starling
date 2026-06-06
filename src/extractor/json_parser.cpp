@@ -114,7 +114,7 @@ ParseResult parse_extractor_json(
                 normalize_modality(el.value("modality", std::string("believes"))));
             s.polarity   = schema::polarity_from_string(
                 to_lower(el.value("polarity", std::string("pos"))));
-            s.confidence = 0.7;
+            s.confidence = el.value("confidence", 0.7);
             s.observed_at = now_iso8601_utc();
             result.statements.push_back(std::move(s));
         } catch (const std::exception&) {

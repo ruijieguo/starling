@@ -59,6 +59,17 @@ TEST(JsonParser, NonArrayProducesError) {
     EXPECT_TRUE(r.statements.empty());
 }
 
+TEST(JsonParser, HonorsOptionalConfidence) {
+    ExistingRefMap refs;
+    const std::string raw =
+        R"([{"holder":"self","holder_perspective":"INFERRED","subject":"Bob",)"
+        R"("predicate":"p","object":"o","modality":"BELIEVES","polarity":"POS",)"
+        R"("confidence":0.42,"nesting_depth":0}])";
+    ParseResult r = parse_extractor_json(raw, refs);
+    ASSERT_EQ(r.statements.size(), 1u);
+    EXPECT_DOUBLE_EQ(r.statements[0].confidence, 0.42);
+}
+
 TEST(JsonParser, SkipsMalformedElementLeniently) {
     ExistingRefMap refs;
     const std::string raw =
