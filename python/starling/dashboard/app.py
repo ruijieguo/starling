@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hmac
 import urllib.parse
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from starling.dashboard.auth import make_require_token
 from starling.dashboard.config import DashboardConfig
@@ -96,4 +98,14 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     app.include_router(build_eval_router(require_token))
     app.include_router(build_config_router(require_token))
 
+    _build = Path(__file__).resolve().parents[3] / "dashboard" / "web" / "build"
+    if _build.is_dir():
+        @app.get("/{full_path:path}")
+        async def spa(full_path: str):
+            # SPA fallback: serve a real static file if present, else index.html.
+            candidate = (_build / full_path).resolve()
+            # path-traversal guard: candidate must stay within _build
+            if full_path and candidate.is_file() and str(candidate).startswith(str(_build.resolve())):
+                return FileResponse(str(candidate))
+            return FileResponse(str(_build / "index.html"))
     return app
