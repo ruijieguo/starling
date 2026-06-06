@@ -19,7 +19,7 @@ unconditionally stamps the run() caller's holder_id.
 from __future__ import annotations
 
 import sqlite3
-import textwrap
+import json
 
 import pytest
 
@@ -29,53 +29,25 @@ from starling.testing import relax_preflight_for_m0_3
 
 # §14.1 flat-3 scenario: Alice announces in a group that Carol now owns auth
 # (so Bob no longer does). Self perceives the group message; the extractor
-# emits three Statements:
+# emits three Statements (as a JSON array; UPPERCASE enums match the real eval
+# prompt, parser lowercases them; object is a plain string, hash computed):
 #   S1 holder=self, subject=Bob,   predicate=responsible_for, obj=auth, pol=NEG, FIRST_PERSON
 #   S2 holder=self, subject=Carol, predicate=responsible_for, obj=auth, pol=POS, QUOTED (Alice said it)
 #   S4 holder=self, subject=Bob,   predicate=responsible_for, obj=auth, pol=NEG, HEARSAY (heard from Alice)
-SCENARIO_XML = textwrap.dedent("""
-    <extraction>
-      <statement>
-        <holder ref="cog-self"/>
-        <perspective>first_person</perspective>
-        <subject kind="cognizer" id="cog-bob"/>
-        <predicate>responsible_for</predicate>
-        <object kind="str" canonical_hash="hash-auth">auth</object>
-        <modality>believes</modality>
-        <polarity>neg</polarity>
-        <confidence>0.85</confidence>
-        <observed_at>2026-05-23T10:00:00Z</observed_at>
-        <perceived_by ref="cog-self"/>
-        <perceived_by ref="cog-alice"/>
-        <perceived_by ref="cog-bob"/>
-      </statement>
-      <statement source_speaker="cog-alice">
-        <holder ref="cog-self"/>
-        <perspective>quoted</perspective>
-        <subject kind="cognizer" id="cog-carol"/>
-        <predicate>responsible_for</predicate>
-        <object kind="str" canonical_hash="hash-auth">auth</object>
-        <modality>believes</modality>
-        <polarity>pos</polarity>
-        <confidence>0.85</confidence>
-        <observed_at>2026-05-23T10:00:00Z</observed_at>
-        <perceived_by ref="cog-self"/>
-        <perceived_by ref="cog-alice"/>
-      </statement>
-      <statement>
-        <holder ref="cog-self"/>
-        <perspective>hearsay</perspective>
-        <subject kind="cognizer" id="cog-bob"/>
-        <predicate>responsible_for</predicate>
-        <object kind="str" canonical_hash="hash-auth">auth</object>
-        <modality>believes</modality>
-        <polarity>neg</polarity>
-        <confidence>0.65</confidence>
-        <observed_at>2026-05-23T10:00:00Z</observed_at>
-        <perceived_by ref="cog-self"/>
-      </statement>
-    </extraction>
-""").strip()
+SCENARIO_JSON = json.dumps([
+    {"holder": "cog-self", "holder_perspective": "FIRST_PERSON",
+     "subject": "cog-bob", "predicate": "responsible_for", "object": "auth",
+     "modality": "BELIEVES", "polarity": "NEG", "confidence": 0.85,
+     "nesting_depth": 0},
+    {"holder": "cog-self", "holder_perspective": "QUOTED",
+     "subject": "cog-carol", "predicate": "responsible_for", "object": "auth",
+     "modality": "BELIEVES", "polarity": "POS", "confidence": 0.85,
+     "nesting_depth": 0},
+    {"holder": "cog-self", "holder_perspective": "HEARSAY",
+     "subject": "cog-bob", "predicate": "responsible_for", "object": "auth",
+     "modality": "BELIEVES", "polarity": "NEG", "confidence": 0.65,
+     "nesting_depth": 0},
+])
 
 
 @pytest.fixture
@@ -104,7 +76,7 @@ def test_section_14_1_flat_three_scenario(rt):
     extractor = _core.Extractor(rt.adapter.connection(), llm)
     body = _core.Extractor.build_prompt_body("cog-self", b"\x01\x02\x03", {})
     h = _core.Extractor.compute_prompt_input_hash(body)
-    llm.set_response(h, raw_xml=SCENARIO_XML, ok=True)
+    llm.set_response(h, raw_xml=SCENARIO_JSON, ok=True)
 
     r = extractor.run("engram-141", b"\x01\x02\x03", "cog-self", "default", {})
     assert r.status == "success"

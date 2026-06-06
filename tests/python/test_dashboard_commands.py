@@ -5,19 +5,17 @@ from starling import _core
 from starling.dashboard import DashboardConfig, create_app
 from starling.dashboard.engine import DashboardEngine
 
-_STUB_XML = (
-    "<statements><statement><holder>self</holder>"
-    "<holder_perspective>FIRST_PERSON</holder_perspective>"
-    "<subject>Bob</subject><predicate>responsible_for</predicate>"
-    "<object>auth</object><modality>BELIEVES</modality>"
-    "<polarity>POS</polarity><nesting_depth>0</nesting_depth></statement></statements>"
+_STUB_JSON = (
+    '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
+    '"subject":"Bob","predicate":"responsible_for","object":"auth",'
+    '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
 )
 
 
 def _engine_with_llm(db):
     cfg = DashboardConfig(db_path=db, token="")
     eng = DashboardEngine(cfg)
-    fake = _core.FakeLLMAdapter(); fake.set_default_response(_STUB_XML, True, "")
+    fake = _core.FakeLLMAdapter(); fake.set_default_response(_STUB_JSON, True, "")
     eng.llm = fake
     return cfg, eng
 

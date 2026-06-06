@@ -4,11 +4,11 @@
 preflight gate), and `remember(text)` runs the production write path:
 
     BusFacade.append_evidence(EngramInput)   # creates/dedupes the engram
-        -> _core.Extractor(connection, llm).run(...)   # extracts statements
+        -> _core.Extractor(connection, llm, EXTRACTION_PROMPT).run(...)  # extracts statements
 
 Offline determinism comes from `make_stub_llm` (`_core.FakeLLMAdapter` with a
-canned XML default response — no network). `make_openai_llm` builds the real
-`_core.OpenAIAdapter`; its API key is sourced from the environment only
+canned JSON-array default response — no network). `make_openai_llm` builds the
+real `_core.OpenAIAdapter`; its API key is sourced from the environment only
 (`OPENAI_API_KEY`), never a function parameter, log line, or hardcoded value.
 """
 from __future__ import annotations
@@ -21,22 +21,29 @@ from typing import Optional
 from starling import _core
 from starling import runtime as _runtime
 from starling.evidence.inputs import for_user_input
+from starling.extractor.prompts import EXTRACTION_PROMPT
 from starling.testing import relax_preflight_for_m0_3
 
 
-def make_stub_llm(*, default_xml: str, responses: Optional[dict] = None):
+def make_stub_llm(*, default_response: str, responses: Optional[dict] = None):
     """Offline deterministic LLM adapter.
 
-    `default_xml` answers any prompt whose hash is not explicitly mapped in
-    `responses` (hash -> canned XML). Drives `_core.Extractor` with zero
-    network calls.
+    `default_response` is a canned JSON array response answering any prompt
+    whose hash is not explicitly mapped in `responses` (hash -> canned JSON
+    array response). The FakeLLMAdapter ignores the prompt, so tests drive
+    behavior purely via the canned response content. Drives `_core.Extractor`
+    with zero network calls. Example `default_response`::
+
+        '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
+        '"subject":"cog-self","predicate":"responsible_for","object":"auth",'
+        '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
     """
     llm = _core.FakeLLMAdapter()
     # binding: set_default_response(raw_xml, ok=True, error="")
-    llm.set_default_response(default_xml, True, "")
-    for h, xml in (responses or {}).items():
+    llm.set_default_response(default_response, True, "")
+    for h, resp in (responses or {}).items():
         # binding: set_response(hash, raw_xml, ok=True, error="")
-        llm.set_response(h, xml, True, "")
+        llm.set_response(h, resp, True, "")
     return llm
 
 
@@ -133,7 +140,7 @@ class Memory:
             return RememberResult(engram_ref="", statement_ids=[], outcome=kind)
 
         engram_ref = out["engram_ref"].id
-        ext = _core.Extractor(self._conn, self._llm)
+        ext = _core.Extractor(self._conn, self._llm, EXTRACTION_PROMPT)
         r = ext.run(engram_ref, payload, holder, self._tenant, {})
         return RememberResult(
             engram_ref=engram_ref,

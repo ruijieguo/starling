@@ -24,6 +24,7 @@ from pathlib import Path
 from starling import _core
 from starling import runtime as _runtime
 from starling.evidence.inputs import for_user_input
+from starling.extractor.prompts import EXTRACTION_PROMPT
 from starling.testing import relax_preflight_for_m0_3
 
 
@@ -137,7 +138,7 @@ class DashboardEngine:
         if kind not in ("accepted", "idempotent"):
             return {"engram_ref": "", "statement_ids": [], "outcome": kind}
         engram_ref = out["engram_ref"].id
-        r = _core.Extractor(self._conn, self.llm).run(engram_ref, payload, holder, self._tenant, {})
+        r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {})
         return {"engram_ref": engram_ref, "statement_ids": list(r.accepted_statement_ids),
                 "outcome": kind}
 

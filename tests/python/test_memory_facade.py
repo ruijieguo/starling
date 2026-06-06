@@ -3,33 +3,30 @@
 Drives the public application surface end-to-end offline:
   Memory.open (preflight relax + local-store sqlite runtime)
   → remember(text): BusFacade.append_evidence(EngramInput) creates the engram,
-    then _core.Extractor(conn, FakeLLMAdapter).run(...) extracts ≥1 statement
-    from a deterministic canned XML (no network).
+    then _core.Extractor(conn, FakeLLMAdapter, prompt).run(...) extracts ≥1
+    statement from a deterministic canned JSON array (no network).
   → close.
 
-The canned XML mirrors test_m0_4_acceptance.py SCENARIO_XML exactly: a single
-<statement> with holder/perspective/subject/predicate/object/modality/polarity/
-confidence/observed_at/perceived_by. The holder ref ("alice") matches the
-holder_id passed to Extractor.run (Memory's agent), so the orchestrator stamps
-the statement with that cognizer.
+The canned JSON is a single-element array carrying the semantic core
+(holder/holder_perspective/subject/predicate/object/modality/polarity/
+nesting_depth). The orchestrator unconditionally stamps holder_id with the
+run() caller's holder (Memory's agent "alice"); the JSON "holder" is advisory.
 """
 import starling
 from starling import _core
 
-# Matches test_m0_4_acceptance.py SCENARIO_XML statement shape exactly.
-CANNED_XML = (
-    "<extraction><statement>"
-    "<holder ref=\"alice\"/><perspective>first_person</perspective>"
-    "<subject kind=\"cognizer\" id=\"cog-bob\"/><predicate>responsible_for</predicate>"
-    "<object kind=\"str\" canonical_hash=\"hash-auth\">auth</object>"
-    "<modality>believes</modality><polarity>pos</polarity>"
-    "<confidence>0.9</confidence><observed_at>2026-06-01T09:00:00Z</observed_at>"
-    "<perceived_by ref=\"alice\"/></statement></extraction>"
+# Single-element JSON array (semantic core only). UPPERCASE enums match the
+# real eval prompt; the parser lowercases them. object is a plain string;
+# the canonical hash is computed C++-side.
+CANNED_JSON = (
+    '[{"holder":"alice","holder_perspective":"FIRST_PERSON",'
+    '"subject":"cog-bob","predicate":"responsible_for","object":"auth",'
+    '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
 )
 
 
 def test_open_remember_close(tmp_path):
-    llm = starling.make_stub_llm(default_xml=CANNED_XML)
+    llm = starling.make_stub_llm(default_response=CANNED_JSON)
     mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=llm)
     res = mem.remember("Bob owns the auth module")
     assert res.outcome in ("accepted", "idempotent")
@@ -65,7 +62,7 @@ def test_openai_adapter_constructs_into_extractor(tmp_path):
 
 
 def test_recall_and_tick(tmp_path):
-    llm = starling.make_stub_llm(default_xml=CANNED_XML)
+    llm = starling.make_stub_llm(default_response=CANNED_JSON)
     mem = starling.Memory.open(str(tmp_path / "m3.db"), agent="alice", llm=llm)
     mem.remember("Bob owns the auth module")
     stats = mem.tick()                       # embed + commitment tick
