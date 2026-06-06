@@ -1,10 +1,11 @@
 """Authoritative extraction prompt (single source).
 
 Shared by scripts/eval_p1_extractor.py and the C++ Extractor (injected via
-_core.Extractor(conn, llm, EXTRACTION_PROMPT)). The `{convo}` placeholder is
-filled with the conversation/utterance text. Output is a JSON array of
-statement objects: {holder, holder_perspective, subject, predicate, object,
-modality, polarity, nesting_depth}.
+_core.Extractor(conn, llm, EXTRACTION_PROMPT)). The single `{convo}` placeholder
+is filled by LITERAL replacement (str.replace), NOT str.format — so the JSON
+examples below use plain single braces and both consumers send byte-identical
+text. Output is a JSON array of statement objects: {holder, holder_perspective,
+subject, predicate, object, modality, polarity, nesting_depth}.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ EXTRACTION_PROMPT = """You are an extractor for a Statement-based memory system.
 
 Given a conversation, extract ALL Statements. Output ONLY a JSON array.
 
-Each Statement: {{"holder": str, "holder_perspective": "FIRST_PERSON"|"QUOTED"|"HEARSAY"|"INFERRED", "subject": str, "predicate": str, "object": str, "modality": "BELIEVES"|"DESIRES"|"INTENDS"|"COMMITS"|"ENFORCES"|"OBSERVES", "polarity": "POS"|"NEG"|"UNKNOWN", "nesting_depth": int}}
+Each Statement: {"holder": str, "holder_perspective": "FIRST_PERSON"|"QUOTED"|"HEARSAY"|"INFERRED", "subject": str, "predicate": str, "object": str, "modality": "BELIEVES"|"DESIRES"|"INTENDS"|"COMMITS"|"ENFORCES"|"OBSERVES", "polarity": "POS"|"NEG"|"UNKNOWN", "nesting_depth": int}
 
 predicate must be one of: responsible_for, knows, prefers, promises, forbids, requires, located_at, member_of, believes, doubts. Do NOT use free-form English ("is responsible for", "thinks", "is handling") — pick the closest underscore form from the list above.
 
@@ -45,7 +46,7 @@ EXCEPTION 2 (substantive depth-2 from non-focal speakers): if a non-focal speake
 ROUTING ≠ COMMITMENT (CRITICAL): when speaker says "I'll route X to Bob", "I'll forward X to Bob", "我把X转给Bob", "如果有问题先找他确认", these are routing/operational remarks, NOT promises and NOT requires Statements. Do NOT extract them as separate Statements. Same for "Bob confirmation", "Bob approval" as object — these aren't requires Statements unless the conversation explicitly states a RULE/POLICY ("policy requires Bob to approve all X").
 
 NESTING DEPTH for 2nd-order beliefs: when text says "Alice believes Bob believes Carol knows X", produce ONE Statement:
-  {{"holder": "Alice", "predicate": "believes", "object": "Carol knows X", "nesting_depth": 2, ...}}
+  {"holder": "Alice", "predicate": "believes", "object": "Carol knows X", "nesting_depth": 2, ...}
 The object is the INNERMOST clause ("Carol knows X"), NOT the middle clause ("Bob believes Carol knows X"). nesting_depth counts the layers of belief-about-belief: depth=2 means "A believes B believes Z". Do NOT split into multiple flat Statements.
 
 DEFAULT NESTING DEPTH IS 0. Use nesting_depth=0 for ALL flat first-order Statements: "I am responsible for X" → depth=0; "I believe X" → depth=0; "Alice is responsible for auth" → depth=0. Use depth=2 ONLY for the specific "A believes B believes Z" pattern. Never use depth=1.
@@ -77,9 +78,9 @@ The English canonical is "auth"; the Chinese canonical is also "auth" when the c
 
 POLICY-AS-HOLDER (CRITICAL): when a `requires` or `forbids` claim is grounded in a NAMED policy/rule/regulation (e.g., "公司安全政策要求…", "team policy requires…", "deployment policy requires…", "根据公司规定…"), holder is the POLICY ENTITY (not the speaker), and holder_perspective is QUOTED. Use the policy's name as it appears in the text. The speaker is conveying the policy, not asserting it personally.
 - "Alice: 根据公司的安全政策，生产权限需要两次审批。"
-  → {{"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批",...}}
+  → {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批",...}
 - "Dana: the team policy requires code review before merging."
-  → {{"holder":"team policy","holder_perspective":"FIRST_PERSON","subject":"code review","predicate":"requires","object":"code review",...}}
+  → {"holder":"team policy","holder_perspective":"FIRST_PERSON","subject":"code review","predicate":"requires","object":"code review",...}
   (When the speaker simply STATES the policy as a current rule without quoting an external source — "the team policy requires…" rather than "I read that…" — perspective=FIRST_PERSON; holder still = the policy entity.)
 - BUT (POSSESSIVE DOWNGRADE): when the policy is named with a POSSESSIVE PRONOUN ("our deployment policy", "our SOP", "我们的部署政策", "my rule"), the speaker is owning the rule, NOT citing an external authority. holder=SPEAKER, perspective=FIRST_PERSON.
   "Alice: our deployment policy requires two approvals" → holder=Alice, perspective=FIRST_PERSON (NOT holder='deployment policy').
@@ -89,7 +90,7 @@ POLICY-AS-HOLDER (CRITICAL): when a `requires` or `forbids` claim is grounded in
 
 QUOTE AUTHORSHIP (CRITICAL): when speaker A explicitly reads aloud or paraphrases what NAMED PERSON B wrote/said in a verbatim quote ("A: Alice wrote: 'Bob is responsible for auth'", "A: Alice said: '…'", "A: 在交接记录里，Alice 写道：'…'"), the holder of the QUOTED Statement is **B (the original author)**, NOT A (the reader). perspective=QUOTED.
 - "Charlie: In the handoff notes, Alice wrote, 'Bob is responsible for auth.'"
-  → {{"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth",...}}
+  → {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth",...}
 - "Charlie: Alice said, 'Bob is responsible for auth.'" → holder=Alice (NOT Charlie), perspective=QUOTED
 - Contrast with SELF-QUOTING: when A quotes A's OWN prior utterance ("I said earlier: '…'", "我刚才在群里说过：'…'"), holder=A. The distinguishing test: who wrote/spoke the quoted material? holder = that person.
 
@@ -116,8 +117,8 @@ Conversation:
   Bob: I'm handling the auth service, but I haven't checked what Carol knows.
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}},
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"believes","object":"Carol knows the deployment plan","modality":"BELIEVES","polarity":"POS","nesting_depth":2}}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"believes","object":"Carol knows the deployment plan","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (Bob's reply is a confirmation/acknowledgment — NO Statement extracted from Bob.)
 
@@ -126,7 +127,7 @@ Conversation:
   Bob: 收到，我今天下午会确认 auth 的配置。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (holder=Alice not Bob — Alice voices the claim. perspective=QUOTED because she quotes a written source. Bob's reply is acknowledgment — NO Statement.)
 
@@ -135,7 +136,7 @@ Conversation:
   Alice: 可以，我承诺周五前提交认证模块测试报告。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"promises","object":"周五前提交认证模块测试报告","modality":"COMMITS","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"promises","object":"周五前提交认证模块测试报告","modality":"COMMITS","polarity":"POS","nesting_depth":0}
 ]
 (Bob's question is NOT a Statement. Alice's promise object keeps the full phrase including the temporal qualifier.)
 
@@ -144,8 +145,8 @@ Conversation:
   Bob: 收到。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}},
-  {{"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批","modality":"ENFORCES","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批","modality":"ENFORCES","polarity":"POS","nesting_depth":0}
 ]
 (POLICY-AS-HOLDER: "根据公司的安全政策…" grounds the requires claim in a named external authority, so holder is the policy entity with perspective=QUOTED.)
 
@@ -154,7 +155,7 @@ Conversation:
   Bob: 好的。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (SELF-QUOTING: Alice quotes her OWN prior utterance verbatim → holder=Alice, perspective=QUOTED.)
 
@@ -163,7 +164,7 @@ Conversation:
   Bob: I'll keep an eye on it.
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (QUOTE AUTHORSHIP: Charlie reads ALICE's written quote → holder is the AUTHOR (Alice), not the reader (Charlie). perspective=QUOTED.)
 
@@ -172,7 +173,7 @@ Conversation:
   Bob: 收到。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"HEARSAY","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}}
+  {"holder":"Alice","holder_perspective":"HEARSAY","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (HEARSAY ATTRIBUTION: holder=Alice — she is voicing the claim now. Carol is only the source she heard it from.)
 
@@ -181,8 +182,8 @@ Conversation:
   Bob: That sounds right for auth.
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}},
-  {{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Carol","predicate":"believes","object":"Bob prefers Postgres","modality":"BELIEVES","polarity":"POS","nesting_depth":2}}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Carol","predicate":"believes","object":"Bob prefers Postgres","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (DEPTH-2 here is FIRST_PERSON because Alice EXPLICITLY says "I also believe…" — direct self-attribution of the outer belief.)
 
@@ -191,7 +192,7 @@ Conversation:
   Bob: Hmm.
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"believes","object":"Carol knows auth","modality":"BELIEVES","polarity":"POS","nesting_depth":2}}
+  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"believes","object":"Carol knows auth","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (DEPTH-2 here is INFERRED because Alice JUSTIFIES her claim from observed behavior — "since he keeps assigning…".)
 
@@ -200,8 +201,8 @@ Conversation:
   Carol: 我也这么理解。Bob 刚才还说，他觉得缓存问题是 Redis 配置导致的。
 JSON array:
 [
-  {{"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}},
-  {{"holder":"Carol","holder_perspective":"HEARSAY","subject":"Bob","predicate":"believes","object":"缓存问题是 Redis 配置导致的","modality":"BELIEVES","polarity":"POS","nesting_depth":2}}
+  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Carol","holder_perspective":"HEARSAY","subject":"Bob","predicate":"believes","object":"缓存问题是 Redis 配置导致的","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (Multi-speaker depth-2: Carol introduces NEW content about Bob's said belief → Carol is the holder, perspective=HEARSAY. Alice's responsible_for is INFERRED — judged from the duty roster, not directly self-attributed.)
 

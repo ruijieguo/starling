@@ -105,7 +105,7 @@ def _extract_via_gpt_once(conversation: list[dict], base_url: str, api_key: str,
     convo_str = "\n".join(f'{t["speaker"]}: {t["text"]}' for t in conversation)
     payload = json.dumps({
         "model": model,
-        "messages": [{"role": "user", "content": EXTRACTION_PROMPT.format(convo=convo_str)}],
+        "messages": [{"role": "user", "content": EXTRACTION_PROMPT.replace("{convo}", convo_str)}],
         "temperature": 0,
         # Explicit, generous cap so reasoning models (deepseek-v4-*, o1-style) have
         # room for both their reasoning_content and the full JSON array; without it
