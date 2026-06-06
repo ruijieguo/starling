@@ -11,22 +11,8 @@ namespace starling::extractor {
 
 namespace {
 
-constexpr const char* kSuccessXml = R"XML(
-<extraction>
-  <statement>
-    <holder ref="cog-self"/>
-    <perspective>first_person</perspective>
-    <subject kind="cognizer" id="cog-self"/>
-    <predicate>responsible_for</predicate>
-    <object kind="str" canonical_hash="hash-auth">auth</object>
-    <modality>believes</modality>
-    <polarity>pos</polarity>
-    <confidence>0.85</confidence>
-    <observed_at>2026-05-23T10:00:00Z</observed_at>
-    <perceived_by ref="cog-self"/>
-  </statement>
-</extraction>
-)XML";
+constexpr const char* kSuccessXml =
+    R"JSON([{"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}])JSON";
 
 std::unique_ptr<persistence::SqliteAdapter> make_adapter() {
     auto a = persistence::SqliteAdapter::open(":memory:");
@@ -117,8 +103,9 @@ TEST(ExtractorOrchestrator, ParseErrorIsRetriedThenFails) {
     FakeLLMAdapter llm;
     Extractor ex(conn, llm);
 
+    // Non-array top level -> ParseError -> orchestrator retries then fails.
     llm.set_default_response(LLMResponse{
-        .raw_xml = "<extraction><foo/></extraction>", .ok = true});
+        .raw_xml = "not a json array", .ok = true});
 
     auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
     EXPECT_EQ(r.status, ExtractionRunResult::Status::FAILED);

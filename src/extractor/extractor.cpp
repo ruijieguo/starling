@@ -8,7 +8,7 @@
 #include "starling/crypto/sha256.hpp"
 #include "starling/extractor/extraction_span_key.hpp"
 #include "starling/extractor/statement_validator.hpp"
-#include "starling/extractor/xml_parser.hpp"
+#include "starling/extractor/json_parser.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <chrono>
@@ -137,6 +137,28 @@ std::string Extractor::build_prompt_body_for_tests(
     return body;
 }
 
+std::string Extractor::build_prompt(
+        std::string_view holder_id,
+        const std::vector<std::uint8_t>& payload_bytes,
+        const ExistingRefMap& existing_ref_map) const {
+    if (prompt_template_.empty()) {
+        // FakeLLM / unit tests ignore the prompt text but key the adapter on
+        // its hash; keep the prior deterministic body byte-for-byte.
+        return build_prompt_body_for_tests(holder_id, payload_bytes,
+                                           existing_ref_map);
+    }
+    const std::string convo(payload_bytes.begin(), payload_bytes.end());
+    const std::string placeholder = "{convo}";
+    std::string out = prompt_template_;
+    const auto pos = out.find(placeholder);
+    if (pos != std::string::npos) {
+        out.replace(pos, placeholder.size(), convo);
+    } else {
+        out += "\n\nConversation:\n" + convo;
+    }
+    return out;
+}
+
 ExtractionRunResult Extractor::run(
         std::string_view                  engram_ref_id,
         const std::vector<std::uint8_t>&  payload_bytes,
@@ -167,7 +189,7 @@ ExtractionRunResult Extractor::run(
     bool all_failed    = true;
     bool result_partial = false;
 
-    const std::string prompt_body = Extractor::build_prompt_body_for_tests(
+    const std::string prompt_body = build_prompt(
         holder_id, payload_bytes, existing_ref_map);
     const std::string prompt_input_hash = compute_prompt_input_hash(prompt_body);
 
@@ -190,7 +212,7 @@ ExtractionRunResult Extractor::run(
             continue;
         }
 
-        ParseResult parsed = parse_extractor_xml(resp.raw_xml, existing_ref_map);
+        ParseResult parsed = parse_extractor_json(resp.raw_xml, existing_ref_map);
         if (!parsed.errors.empty()) {
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::Failed,
@@ -219,6 +241,9 @@ ExtractionRunResult Extractor::run(
             stmt.chunk_index      = chunk_index;
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
+            }
+            if (stmt.perceived_by.empty()) {
+                stmt.perceived_by = {std::string(holder_id)};
             }
             const ValidationOutcome v = validate_extracted_statement(stmt);
             if (!v.ok()) {

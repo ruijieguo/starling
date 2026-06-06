@@ -731,10 +731,12 @@ PYBIND11_MODULE(_core, m) {
     // ----- M0.4: Extractor -----
     py::class_<starling::extractor::Extractor>(m, "Extractor")
         .def(py::init([](starling::persistence::Connection& conn,
-                         starling::extractor::LLMAdapter& a) {
-            return new starling::extractor::Extractor(conn, a);
+                         starling::extractor::LLMAdapter& a,
+                         const std::string& prompt_template) {
+            return new starling::extractor::Extractor(conn, a, prompt_template);
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
-           py::arg("connection"), py::arg("adapter"))
+           py::arg("connection"), py::arg("adapter"),
+           py::arg("prompt_template") = "")
         .def_static("compute_prompt_input_hash",
                     &starling::extractor::Extractor::compute_prompt_input_hash)
         .def_static("build_prompt_body",
