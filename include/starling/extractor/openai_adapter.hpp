@@ -20,6 +20,7 @@ public:
         std::string model = "gpt-5.5";
         int         timeout_ms = 60000;
         int         max_retries = 3;
+        int         max_tokens = 4096;   // bound the response; reasoning models + JSON arrays
 
         // Reads OPENAI_BASE_URL and OPENAI_API_KEY from env. Throws
         // std::runtime_error if api_key is unset.

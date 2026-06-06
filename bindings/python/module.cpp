@@ -702,6 +702,7 @@ PYBIND11_MODULE(_core, m) {
             .def_readwrite("model",        &OpenAIAdapter::Config::model)
             .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
             .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
+            .def_readwrite("max_tokens",   &OpenAIAdapter::Config::max_tokens)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
