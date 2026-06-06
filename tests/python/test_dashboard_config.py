@@ -35,3 +35,6 @@ def test_save_roundtrip_excludes_config_path(tmp_path):
     cfg.save()
     data = json.loads((tmp_path / "c.json").read_text())
     assert "config_path" not in data and data["llm"]["api_key"] == "sk-xyz"
+    assert "embedder" in data
+    import os as _os, stat as _stat
+    assert _stat.S_IMODE(_os.stat(tmp_path / "c.json").st_mode) == 0o600

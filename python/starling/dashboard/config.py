@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,9 +83,18 @@ class DashboardConfig:
     def save(self, path: str | None = None) -> None:
         p = Path(path or self.config_path or _DEFAULT_CONFIG).expanduser()
         p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
-                     encoding="utf-8")
-        os.chmod(p, 0o600)
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".starling-", suffix=".tmp")
+        try:
+            os.chmod(fd, 0o600)  # set perms before any secret bytes are written
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self.to_dict(), indent=2, ensure_ascii=False))
+            os.replace(tmp, p)   # atomic replace; never leaves a partial file
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         self.config_path = str(p)
 
     def validate_bind(self) -> None:
