@@ -1,9 +1,9 @@
-"""Command routes — go through the starling.Memory facade (single writer)."""
+"""Command routes — go through the DashboardEngine (single writer)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 
@@ -29,20 +29,18 @@ class TickBody(BaseModel):
     now: str | None = None  # defaults to current UTC time at request handling
 
 
-def _memory(request: Request):
-    """Return the engine-owning Memory, building it lazily from config.
+def _engine(request: Request):
+    """Return the DashboardEngine, building it lazily from config.
 
     Single-process only: under `uvicorn --workers N` each worker would build
-    its own Memory writing the same SQLite. Run one worker.
+    its own engine writing the same SQLite. Run one worker.
     """
-    mem = request.app.state.memory
-    if mem is None:
-        from starling.memory import Memory, make_openai_llm
-        c = request.app.state.config
-        mem = Memory.open(c.db_path, agent=c.agent, tenant_id=c.tenant,
-                          llm=make_openai_llm())
-        request.app.state.memory = mem
-    return mem
+    eng = request.app.state.engine
+    if eng is None:
+        from starling.dashboard.engine import DashboardEngine
+        eng = DashboardEngine(request.app.state.config)
+        request.app.state.engine = eng
+    return eng
 
 
 def build_commands_router(require_token) -> APIRouter:
@@ -50,16 +48,20 @@ def build_commands_router(require_token) -> APIRouter:
 
     @router.post("/remember")
     async def remember(body: RememberBody, request: Request):
-        mem = _memory(request)
-        r = mem.remember(body.text, holder=body.holder, now=body.now)
-        await _broadcast(request, "statement_added", {"statement_ids": r.statement_ids})
-        return {"engram_ref": r.engram_ref, "statement_ids": r.statement_ids,
-                "outcome": r.outcome}
+        from starling.dashboard.engine import _LLMNotConfigured
+        eng = _engine(request)
+        try:
+            r = eng.remember(body.text, holder=body.holder, now=body.now)
+        except _LLMNotConfigured:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="llm_not_configured")
+        await _broadcast(request, "statement_added", {"statement_ids": r["statement_ids"]})
+        return r
 
     @router.post("/recall")
     async def recall(body: RecallBody, request: Request):
-        mem = _memory(request)
-        hits = mem.recall(body.query, perspective=body.perspective, k=body.k, mode=body.mode)
+        eng = _engine(request)
+        hits = eng.recall(body.query, perspective=body.perspective, k=body.k, mode=body.mode)
         out = [{"subject": h["row"].subject_id, "predicate": h["row"].predicate,
                 "object": h["row"].object_value, "score": h["score"]} for h in hits]
         await _broadcast(request, "recall", {"n": len(out)})
@@ -67,24 +69,18 @@ def build_commands_router(require_token) -> APIRouter:
 
     @router.post("/tick")
     async def tick(body: TickBody, request: Request):
-        mem = _memory(request)
-        st = mem.tick(body.now or _now_iso())
-        payload = {"embedded": st.embedded, "fired": st.fired,
-                   "broken": st.broken, "auto_withdrawn": st.auto_withdrawn}
+        eng = _engine(request)
+        payload = eng.tick(body.now or _now_iso())
         await _broadcast(request, "tick", payload)
-        if st.fired:
-            await _broadcast(request, "commitment_fired", {"fired": st.fired})
+        if payload["fired"]:
+            await _broadcast(request, "commitment_fired", {"fired": payload["fired"]})
         return payload
 
     @router.get("/working_set")
     async def working_set(request: Request, interlocutor: str, goal: str | None = None,
                           token_budget: int = 2000):
-        mem = _memory(request)
-        cb = mem.render_working_set(interlocutor, goal=goal, token_budget=token_budget)
-        return {"render": cb.render(),
-                "blocks": [{"label": b.label, "content": b.content,
-                            "tokens": b.token_estimate} for b in cb.blocks],
-                "truncated": cb.truncated}
+        eng = _engine(request)
+        return eng.working_set(interlocutor, goal=goal, token_budget=token_budget)
 
     return router
 

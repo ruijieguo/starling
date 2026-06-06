@@ -26,17 +26,17 @@ def _ws_origin_allowed(origin: str, cors_origins: list[str]) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
 
 
-def create_app(config: DashboardConfig, *, memory: object | None = None) -> FastAPI:
+def create_app(config: DashboardConfig, *, engine: object | None = None) -> FastAPI:
     """Build the dashboard app.
 
-    `memory` (a `starling.Memory`) is the engine owner for command routes; when
+    `engine` (a `DashboardEngine`) is the engine owner for command routes; when
     None it is lazily built from `config` at first command use (production).
     Inspection routes read the SQLite at `config.db_path` directly (read-only).
     """
     config.validate_bind()
     app = FastAPI(title="Starling Dashboard", version="0.1.0")
     app.state.config = config
-    app.state.memory = memory
+    app.state.engine = engine
 
     if config.cors_origins:
         app.add_middleware(
