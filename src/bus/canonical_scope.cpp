@@ -7,16 +7,19 @@
 
 namespace starling::bus {
 
+// "kind\x1fmemberA\x1fmemberB"（kind 前缀 + 每个 member 前导 \x1f）。
 std::string CanonicalScopeNorm::canonical_bytes() const {
     std::string out = kind;
     for (const auto& m : members_sorted) { out += '\x1f'; out += m; }
     return out;
 }
 
+// "principal\x1fbeneficiary"。
 std::string CanonicalScopeCommitment::canonical_bytes() const {
     return principal + '\x1f' + beneficiary;
 }
 
+// "partyA\x1fpartyB\x1f..."（纯 join，无前缀；故用 first 标志免首个前导 \x1f）。
 std::string CanonicalScopeCommonGround::canonical_bytes() const {
     std::string out;
     bool first = true;

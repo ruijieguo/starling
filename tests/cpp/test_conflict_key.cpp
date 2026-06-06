@@ -41,6 +41,8 @@ TEST(ConflictKey, ScopeParityFixtureHex) {
     std::cout << "SCOPE_PARITY_HEX=" << hex << std::endl;
     EXPECT_EQ(hex.size(), 64u);
     EXPECT_NE(hex, "128e262474462a27c39126dbfc4c3876cac63f6d11f53a0161a8b6c8b66f8790");
+    // Locked so a C++-only scope-bytes regression is caught here (Python mirrors this).
+    EXPECT_EQ(hex, "699bab199643ae7db994971a230545b9b03eeda030805086963f19e4ef6c21c6");
 }
 
 TEST(ConflictKey, DifferentHolderProducesDifferentKey) {

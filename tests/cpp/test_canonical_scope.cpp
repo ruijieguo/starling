@@ -32,6 +32,12 @@ TEST(CanonicalScope, NormOughtIsNorm) {
     EXPECT_EQ(std::get<CanonicalScopeNorm>(sc).kind, "obligation");
     EXPECT_FALSE(std::get<CanonicalScopeNorm>(sc).canonical_bytes().empty());
 }
+TEST(CanonicalScope, NormForbidIsProhibition) {
+    auto s = base(); s.modality = schema::Modality::NORM_FORBID;
+    auto sc = scope_of(s);
+    ASSERT_TRUE(std::holds_alternative<CanonicalScopeNorm>(sc));
+    EXPECT_EQ(std::get<CanonicalScopeNorm>(sc).kind, "prohibition");
+}
 TEST(CanonicalScope, TwoPartiesIsCommonGround) {
     auto s = base(); s.scope_parties = {"self", "bob"};
     auto sc = scope_of(s);

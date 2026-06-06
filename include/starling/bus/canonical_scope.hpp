@@ -8,8 +8,8 @@ namespace starling::extractor { struct ExtractedStatement; }
 
 namespace starling::bus {
 
-// M0.5: only Null is constructed. Norm/Commitment/CommonGround arms are declared
-// for API stability; their construction is not implemented until M0.5+1.
+// P2.j: all four arms are constructed by scope_of (below). Null = 普通 Statement /
+// 私有信念（scope_parties 空、非 COMMITS/NORM）；其余三臂带 scope 进冲突键第 7 元。
 struct CanonicalScopeNull {
     std::string canonical_bytes() const { return ""; }
     bool operator==(const CanonicalScopeNull&) const = default;
