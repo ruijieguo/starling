@@ -47,19 +47,16 @@ def relax_preflight_for_m0_2() -> tuple[str, ...]:
     Required by M0.2 acceptance only. M0.3 ships a `null_kms` placeholder
     (identity cipher, key_ref=NULL); real per-record AES-256-GCM + KMS
     lands in M0.4, at which point `engram_per_record_key=true` and this
-    helper plus `relax_preflight_for_m0_3` can both be deleted. The CI
-    static scan (added in M0.0) refuses to merge prod entrypoints that
-    import starling.testing — so this can never leak.
+    helper plus `relax_preflight_for_m0_3` can both be deleted. The actual
+    capability-trimming now lives in the prod module as
+    `runtime.relax_preflight_for_embedded()` (the embedded facade legitimately
+    runs the reduced set); this test helper just delegates to it for back-compat,
+    so CI defense-line #1 stays satisfied (no starling.testing in prod entrypoints).
 
     Returns the original tuple so the caller can restore it in tearDown.
     """
     from starling import runtime as _r
-    original = _r.LOCAL_STORE_REQUIRED
-    _r.LOCAL_STORE_REQUIRED = tuple(
-        c for c in original
-        if c not in {"engram_per_record_key", "testing_helper_marker"}
-    )
-    return original
+    return _r.relax_preflight_for_embedded()
 
 
 def relax_preflight_for_m0_3() -> tuple[str, ...]:

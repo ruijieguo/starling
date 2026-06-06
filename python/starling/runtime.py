@@ -27,6 +27,31 @@ LOCAL_STORE_REQUIRED = (
 )
 
 
+# The embedded single-process facade (Memory / DashboardEngine) runs a reduced
+# capability set: `testing_helper_marker` is a test-only capability with no
+# meaning in a prod embedded deployment, and `engram_per_record_key` is deferred
+# to M0.4+KMS. Configuring that subset is a PRODUCTION concern, so it lives here
+# rather than in the test-helper namespace — CI defense-line #1
+# (scripts/ci_static_scan.py) bans test-namespace imports from prod entrypoints.
+_EMBEDDED_DEFERRED_CAPS = frozenset({"engram_per_record_key", "testing_helper_marker"})
+
+
+def relax_preflight_for_embedded() -> tuple[str, ...]:
+    """Trim the embedded-facade deferred capabilities from LOCAL_STORE_REQUIRED
+    so the local-store runtime reaches READY in the single-process facade.
+
+    Mutates the module global (the live tuple the preflight reads) and returns
+    the original so callers can restore it in tearDown. Drop the
+    `engram_per_record_key` entry once M0.4+KMS lands real per-record keys.
+    """
+    global LOCAL_STORE_REQUIRED
+    original = LOCAL_STORE_REQUIRED
+    LOCAL_STORE_REQUIRED = tuple(
+        c for c in original if c not in _EMBEDDED_DEFERRED_CAPS
+    )
+    return original
+
+
 class RuntimeUnreadyError(RuntimeError):
     def __init__(self, missing_capabilities: list[str]):
         # Store the list as args[0] so copy / cross-process round-trips

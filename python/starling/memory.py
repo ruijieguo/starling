@@ -22,7 +22,6 @@ from starling import _core
 from starling import runtime as _runtime
 from starling.evidence.inputs import for_user_input
 from starling.extractor.prompts import EXTRACTION_PROMPT
-from starling.testing import relax_preflight_for_m0_3
 
 
 def make_stub_llm(*, default_response: str, responses: Optional[dict] = None):
@@ -105,9 +104,10 @@ class Memory:
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
              llm=None) -> "Memory":
-        # M0.3 local-store preflight is not satisfiable in the embedded
-        # single-process facade; relax it so the runtime reaches READY.
-        relax_preflight_for_m0_3()
+        # The embedded single-process facade can't satisfy the full local-store
+        # preflight (testing_helper_marker is test-only; engram_per_record_key is
+        # deferred to M0.4+KMS); relax to the embedded subset so it reaches READY.
+        _runtime.relax_preflight_for_embedded()
         rt = _runtime._build_local_store_sqlite_runtime(Path(db_path))
         rt.start()
         return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm)

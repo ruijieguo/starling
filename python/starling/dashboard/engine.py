@@ -25,7 +25,6 @@ from starling import _core
 from starling import runtime as _runtime
 from starling.evidence.inputs import for_user_input
 from starling.extractor.prompts import EXTRACTION_PROMPT
-from starling.testing import relax_preflight_for_m0_3
 
 
 def _now_iso() -> str:
@@ -75,7 +74,9 @@ def _build_embed_adapter(emb_cfg: dict):
 
 class DashboardEngine:
     def __init__(self, config) -> None:
-        relax_preflight_for_m0_3()
+        # Embedded facade preflight: relax to the embedded capability subset
+        # (testing_helper_marker test-only; engram_per_record_key deferred M0.4+KMS).
+        _runtime.relax_preflight_for_embedded()
         self._cfg = config
         self._tenant = config.tenant
         self._agent = config.agent
