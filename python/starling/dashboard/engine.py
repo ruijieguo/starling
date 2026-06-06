@@ -122,7 +122,7 @@ class DashboardEngine:
     def llm_configured(self) -> bool:
         return self.llm is not None
 
-    def remember(self, text: str, *, holder=None, now=None) -> dict:
+    def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         if self.llm is None:
             raise _LLMNotConfigured()
         holder = holder or self._agent
@@ -139,7 +139,7 @@ class DashboardEngine:
         if kind not in ("accepted", "idempotent"):
             return {"engram_ref": "", "statement_ids": [], "outcome": kind}
         engram_ref = out["engram_ref"].id
-        r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {})
+        r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {}, interlocutor or "")
         return {"engram_ref": engram_ref, "statement_ids": list(r.accepted_statement_ids),
                 "outcome": kind}
 
@@ -157,6 +157,7 @@ class DashboardEngine:
     def tick(self, now: str) -> dict:
         es = self._worker.tick_one_batch(now)
         ps = self._policy.tick(now)
+        _core._common_ground_tick(self._rt.adapter, now)   # P2.j: flush grounding 滞后事件（与 Memory.tick 对称）
         embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
         return {"embedded": embedded, "fired": ps.fired, "broken": ps.broken,
                 "auto_withdrawn": ps.auto_withdrawn}
@@ -169,7 +170,8 @@ class DashboardEngine:
         pv = _core.PersonaContainer(adapter).read(self._tenant, self._agent)
         if pv.found and pv.dimensions:
             sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
-        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{self._agent}::{interlocutor}")
+        _pair = sorted([self._agent, interlocutor])
+        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{_pair[0]}::{_pair[1]}")
         if cg.found and cg.grounded:
             sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
         hits = self.recall(goal, mode="semantic", k=5) if goal else []

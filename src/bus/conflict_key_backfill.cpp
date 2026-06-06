@@ -10,6 +10,8 @@
 
 #include <sqlite3.h>
 
+#include <nlohmann/json.hpp>
+
 #include <chrono>
 #include <cstdio>
 #include <optional>
@@ -144,7 +146,8 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                 const char* sql =
                     "SELECT holder_id, subject_kind, subject_id, predicate, "
                     "       canonical_object_hash, modality, "
-                    "       valid_from, valid_to, event_time_start "
+                    "       valid_from, valid_to, event_time_start, "
+                    "       scope_parties_json "
                     "FROM statements "
                     "WHERE id = ? AND tenant_id = ? "
                     "LIMIT 1";
@@ -182,6 +185,17 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                     stmt_proxy.valid_from       = get_opt(6);
                     stmt_proxy.valid_to         = get_opt(7);
                     stmt_proxy.event_time_start = get_opt(8);
+                    {
+                        const std::string sp = get_text(9);
+                        if (!sp.empty()) {
+                            try {
+                                auto arr = nlohmann::json::parse(sp);
+                                if (arr.is_array())
+                                    for (const auto& e : arr)
+                                        if (e.is_string()) stmt_proxy.scope_parties.push_back(e.get<std::string>());
+                            } catch (...) { /* 容错：坏 JSON 当无 scope */ }
+                        }
+                    }
                 }
             }
 

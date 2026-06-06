@@ -1,45 +1,51 @@
 #include "starling/bus/canonical_scope.hpp"
 #include "starling/extractor/extracted_statement.hpp"
+#include "starling/schema/statement_enums.hpp"
 #include <gtest/gtest.h>
 
-namespace {
+using namespace starling;
 using namespace starling::bus;
-using namespace starling::extractor;
 
-TEST(CanonicalScope, ExtractedStatementAlwaysReturnsNull) {
-    ExtractedStatement stmt;
-    stmt.holder_id = "h1";
-    stmt.subject_kind = "entity";
-    stmt.subject_id = "e1";
-    stmt.predicate = "knows";
-    auto scope = scope_of(stmt);
-    EXPECT_TRUE(std::holds_alternative<CanonicalScopeNull>(scope));
+static extractor::ExtractedStatement base() {
+    extractor::ExtractedStatement s;
+    s.holder_id = "self"; s.subject_kind = "cognizer"; s.subject_id = "bob";
+    s.predicate = "p"; s.modality = schema::Modality::BELIEVES;
+    return s;
 }
 
-TEST(CanonicalScope, NullCanonicalBytesIsEmpty) {
-    CanonicalScopeNull null_scope;
-    EXPECT_EQ(null_scope.canonical_bytes(), "");
-    EXPECT_EQ(canonical_scope_bytes(CanonicalScope{null_scope}), "");
+TEST(CanonicalScope, PlainBeliefIsNull) {
+    auto s = base();
+    EXPECT_TRUE(std::holds_alternative<CanonicalScopeNull>(scope_of(s)));
 }
-
-TEST(CanonicalScope, FutureNormArmThrowsInM05) {
-    CanonicalScopeNorm norm;
-    norm.kind = "obligation";
-    norm.members_sorted = {"a", "b"};
-    EXPECT_THROW(norm.canonical_bytes(), std::logic_error);
+TEST(CanonicalScope, CommitsIsCommitment) {
+    auto s = base(); s.modality = schema::Modality::COMMITS;
+    s.scope_parties = {"bob", "self"};
+    auto sc = scope_of(s);
+    ASSERT_TRUE(std::holds_alternative<CanonicalScopeCommitment>(sc));
+    EXPECT_EQ(std::get<CanonicalScopeCommitment>(sc).principal, "self");
+    EXPECT_EQ(std::get<CanonicalScopeCommitment>(sc).beneficiary, "bob");
 }
-
-TEST(CanonicalScope, FutureCommitmentArmThrowsInM05) {
-    CanonicalScopeCommitment c;
-    c.principal = "alice";
-    c.beneficiary = "bob";
-    EXPECT_THROW(c.canonical_bytes(), std::logic_error);
+TEST(CanonicalScope, NormOughtIsNorm) {
+    auto s = base(); s.modality = schema::Modality::NORM_OUGHT;
+    auto sc = scope_of(s);
+    ASSERT_TRUE(std::holds_alternative<CanonicalScopeNorm>(sc));
+    EXPECT_EQ(std::get<CanonicalScopeNorm>(sc).kind, "obligation");
+    EXPECT_FALSE(std::get<CanonicalScopeNorm>(sc).canonical_bytes().empty());
 }
-
-TEST(CanonicalScope, FutureCommonGroundArmThrowsInM05) {
-    CanonicalScopeCommonGround cg;
-    cg.parties_sorted = {"alice", "bob"};
-    EXPECT_THROW(cg.canonical_bytes(), std::logic_error);
+TEST(CanonicalScope, NormForbidIsProhibition) {
+    auto s = base(); s.modality = schema::Modality::NORM_FORBID;
+    auto sc = scope_of(s);
+    ASSERT_TRUE(std::holds_alternative<CanonicalScopeNorm>(sc));
+    EXPECT_EQ(std::get<CanonicalScopeNorm>(sc).kind, "prohibition");
 }
-
-}  // namespace
+TEST(CanonicalScope, TwoPartiesIsCommonGround) {
+    auto s = base(); s.scope_parties = {"self", "bob"};
+    auto sc = scope_of(s);
+    ASSERT_TRUE(std::holds_alternative<CanonicalScopeCommonGround>(sc));
+    EXPECT_EQ(std::get<CanonicalScopeCommonGround>(sc).parties_sorted, (std::vector<std::string>{"bob","self"}));
+}
+TEST(CanonicalScope, DifferentPartiesDifferentBytes) {
+    auto a = base(); a.scope_parties = {"self","bob"};
+    auto b = base(); b.scope_parties = {"self","carol"};
+    EXPECT_NE(canonical_scope_bytes(scope_of(a)), canonical_scope_bytes(scope_of(b)));
+}

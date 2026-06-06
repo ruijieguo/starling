@@ -139,13 +139,26 @@ TEST_F(ToMEngineTest, TargetBeliefsFromHolderQuery) {
     EXPECT_EQ(ctx.target_beliefs[0].holder_id, "alice");
 }
 
-// TC-TOM-CG-EMPTY: common ground always returns [] in P2.a.
-TEST_F(ToMEngineTest, CommonGroundAlwaysEmptyInP2a) {
+// TC-TOM-CG-REAL (P2.j): perspective_take returns real common ground.
+TEST_F(ToMEngineTest, CommonGroundReturnsGroundedEntries) {
+    // Seed a grounded common_ground row with parties containing system_self + alice.
+    // grounded_at is NULL so it passes the (grounded_at IS NULL OR grounded_at <= as_of) filter.
+    sqlite3* db = adapter_->connection().raw();
+    const char* insert_sql =
+        "INSERT INTO common_ground"
+        "(id, tenant_id, statement_id, status, parties_json, created_at, updated_at)"
+        " VALUES('cg1','default','stmt-x','grounded',"
+        "        '[\"alice\",\"system_self\"]',"
+        "        '2026-05-26T09:00:00Z','2026-05-26T09:00:00Z')";
+    char* errmsg = nullptr;
+    ASSERT_EQ(sqlite3_exec(db, insert_sql, nullptr, nullptr, &errmsg), SQLITE_OK)
+        << (errmsg ? errmsg : "unknown error");
+
     ToMEngine engine(*adapter_, *hub_, *frontier_);
-    auto ctx = engine.perspective_take(
-        "alice", "default", "2026-05-26T10:00:00Z");
-    EXPECT_TRUE(ctx.cg.empty())
-        << "P2.a spec §7.2: common_ground stub must return []";
+    auto ctx = engine.perspective_take("alice", "default", "2026-05-26T10:00:00Z");
+    ASSERT_FALSE(ctx.cg.empty())
+        << "P2.j: common_ground::query must return grounded entries";
+    EXPECT_EQ(ctx.cg[0].status, "grounded");
 }
 
 // TC-TOM-AS-OF: statement with valid_from AFTER as_of must not appear.

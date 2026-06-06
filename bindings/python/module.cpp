@@ -31,6 +31,7 @@
 #include "starling/tom/belief_tracker.hpp"
 #include "starling/tom/common_ground.hpp"
 #include "starling/tom/common_ground_writer.hpp"
+#include "starling/tom/common_ground_subscriber.hpp"
 #include "starling/tom/mentalizing.hpp"
 #include "starling/tom/nesting_depth_writer.hpp"
 #include "starling/tom/tom_engine.hpp"
@@ -756,16 +757,18 @@ PYBIND11_MODULE(_core, m) {
                 py::bytes payload,
                 const std::string& holder_id,
                 const std::string& holder_tenant_id,
-                const std::map<std::string, std::string>& existing_ref_map) {
+                const std::map<std::string, std::string>& existing_ref_map,
+                const std::string& interlocutor) {
                  std::string s = payload;
                  std::vector<std::uint8_t> v(s.begin(), s.end());
-                 return self.run(engram_ref_id, v, holder_id, holder_tenant_id, existing_ref_map);
+                 return self.run(engram_ref_id, v, holder_id, holder_tenant_id, existing_ref_map, interlocutor);
              },
              py::arg("engram_ref_id"),
              py::arg("payload_bytes"),
              py::arg("holder_id"),
              py::arg("holder_tenant_id"),
-             py::arg("existing_ref_map"));
+             py::arg("existing_ref_map"),
+             py::arg("interlocutor") = "");
 
     // ── 08_cognizer ────────────────────────────────────────────────
 
@@ -1534,6 +1537,14 @@ PYBIND11_MODULE(_core, m) {
                  return self.read(self.connection(), tenant_id, cg_ref);
              },
              py::arg("tenant_id"), py::arg("cg_ref"));
+
+    // P2.j: CommonGroundSubscriber tick（供 Memory.tick / 测试确定性 flush 滞后事件）
+    m.def("_common_ground_tick",
+          [](starling::persistence::SqliteAdapter& adapter, const std::string& now_iso) {
+              return starling::tom::CommonGroundSubscriber::tick_one_batch(
+                  adapter, adapter.connection(), now_iso);
+          },
+          py::arg("adapter"), py::arg("now_iso"));
 
     // ── P2.c: affect ──────────────────────────────────────────────────────
 

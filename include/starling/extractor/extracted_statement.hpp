@@ -38,6 +38,7 @@ struct ExtractedStatement {
     std::int32_t                 chunk_index    = 0;
     std::string                  source_hash;          // chunk content hash; persisted to source_spans_json
     std::vector<std::string>     perceived_by;         // CognizerRef.id list
+    std::vector<std::string>     scope_parties;        // grounding 参与方（sorted{self,interlocutor}）；空=私有。独立于 perceived_by。
 
     schema::StatementProvenance  provenance     = schema::StatementProvenance::USER_INPUT;
     schema::ReviewStatus         review_status  = schema::ReviewStatus::APPROVED;

@@ -113,6 +113,7 @@ class Memory:
         return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm)
 
     def remember(self, text: str, *, holder: Optional[str] = None,
+                 interlocutor: Optional[str] = None,
                  now: Optional[str] = None) -> RememberResult:
         if self._llm is None:
             raise RuntimeError(
@@ -141,7 +142,7 @@ class Memory:
 
         engram_ref = out["engram_ref"].id
         ext = _core.Extractor(self._conn, self._llm, EXTRACTION_PROMPT)
-        r = ext.run(engram_ref, payload, holder, self._tenant, {})
+        r = ext.run(engram_ref, payload, holder, self._tenant, {}, interlocutor or "")
         return RememberResult(
             engram_ref=engram_ref,
             statement_ids=list(r.accepted_statement_ids),
@@ -182,6 +183,7 @@ class Memory:
         """
         es = self._worker.tick_one_batch(now)
         ps = self._policy.tick(now)
+        _core._common_ground_tick(self._rt.adapter, now)   # P2.j: flush grounding 滞后事件
         # EmbeddingWorker.tick_one_batch returns EmbeddingStats (has .embedded int)
         embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
         return TickStats(
@@ -206,7 +208,8 @@ class Memory:
         if pv.found and pv.dimensions:
             sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
         # common ground
-        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{self._agent}::{interlocutor}")
+        _pair = sorted([self._agent, interlocutor])
+        cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{_pair[0]}::{_pair[1]}")
         if cg.found and cg.grounded:
             sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
         # relevant memories

@@ -5,6 +5,7 @@
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/prospective/policy_engine.hpp"
+#include "starling/tom/common_ground_subscriber.hpp"
 #include <sqlite3.h>
 #include <functional>
 #include <string>
@@ -65,6 +66,11 @@ void SubscriberPump::run_post_write(persistence::SqliteAdapter& adapter,
     //    生命周期 + Trigger 评估 + commitment.* 迁移。
     run_isolated(conn, "policy_engine", [&]{
         prospective::PolicyEngine(adapter).run_post_write(conn, now_iso);
+    });
+
+    // 7. common_ground — grounding 协议（assert/acknowledge/repair + 容器 rebuild）。
+    run_isolated(conn, "common_ground", [&]{
+        starling::tom::CommonGroundSubscriber::tick_one_batch(adapter, conn, now_iso);
     });
 }
 
