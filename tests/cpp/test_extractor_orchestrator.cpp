@@ -11,7 +11,7 @@ namespace starling::extractor {
 
 namespace {
 
-constexpr const char* kSuccessXml =
+constexpr const char* kSuccessJson =
     R"JSON([{"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}])JSON";
 
 std::unique_ptr<persistence::SqliteAdapter> make_adapter() {
@@ -57,7 +57,7 @@ TEST(ExtractorOrchestrator, AcceptedPathWritesStatementAndPipelineRun) {
     Extractor ex(conn, llm);
 
     llm.set_default_response(LLMResponse{
-        .raw_xml = kSuccessXml, .ok = true});
+        .raw_xml = kSuccessJson, .ok = true});
 
     ExtractionRunResult r = ex.run(
         /*engram_ref_id=*/"engram-1",
@@ -120,7 +120,7 @@ TEST(ExtractorOrchestrator, IdempotencyOnRerun) {
 
     FakeLLMAdapter llm;
     Extractor ex(conn, llm);
-    llm.set_default_response(LLMResponse{.raw_xml = kSuccessXml, .ok = true});
+    llm.set_default_response(LLMResponse{.raw_xml = kSuccessJson, .ok = true});
 
     // First run: writes 1 Statement.
     auto r1 = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
