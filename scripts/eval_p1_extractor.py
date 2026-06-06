@@ -101,7 +101,6 @@ def evaluate_record(record: dict, predicted: list[dict]) -> dict[str, tuple[int,
     return {k: (v[0], v[1], v[2]) for k, v in counts.items()}
 
 
-
 def _extract_via_gpt_once(conversation: list[dict], base_url: str, api_key: str, model: str) -> list[dict]:
     convo_str = "\n".join(f'{t["speaker"]}: {t["text"]}' for t in conversation)
     payload = json.dumps({
