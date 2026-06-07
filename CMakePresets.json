@@ -1,0 +1,104 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Development",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "STARLING_BUILD_PYTHON": "ON",
+        "STARLING_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "STARLING_BUILD_PYTHON": "ON",
+        "STARLING_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-local",
+      "displayName": "Linux local dependency build",
+      "inherits": "release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "binaryDir": "${sourceDir}/build-linux"
+    },
+    {
+      "name": "macos-local",
+      "displayName": "macOS local dependency build",
+      "inherits": "release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "binaryDir": "${sourceDir}/build-macos"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "linux-local",
+      "configurePreset": "linux-local"
+    },
+    {
+      "name": "macos-local",
+      "configurePreset": "macos-local"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-local",
+      "configurePreset": "linux-local",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-local",
+      "configurePreset": "macos-local",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
