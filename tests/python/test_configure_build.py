@@ -1,3 +1,5 @@
+import pytest
+
 from scripts import configure_build as cb
 
 
@@ -74,3 +76,50 @@ def test_sqlite_header_version_missing_returns_none(tmp_path):
     header.write_text("/* no version */\n", encoding="utf-8")
 
     assert cb.sqlite_header_version(header) is None
+
+
+def test_check_stale_cache_rejects_compiler_compat(tmp_path):
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "CMAKE_CXX_COMPILER_ARG1:STRING=-pthread -B /x/miniconda3/compiler_compat\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cb.BuildConfigError, match="compiler_compat"):
+        cb.check_stale_cache(build_dir, expected_generator="Ninja")
+
+
+def test_check_stale_cache_rejects_generator_mismatch(tmp_path):
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cb.BuildConfigError, match="different generator"):
+        cb.check_stale_cache(build_dir, expected_generator="Ninja")
+
+
+def test_cmake_configure_command_contains_core_flags(tmp_path):
+    python = tmp_path / "python"
+    ninja = tmp_path / "ninja"
+    cmd = cb.cmake_configure_command(
+        build_dir=tmp_path / "build-linux",
+        build_type="Release",
+        python=python,
+        ninja=ninja,
+        build_python=True,
+        build_tests=True,
+        allow_network=True,
+        extra_args=["-DSQLite3_INCLUDE_DIR=/sqlite/include"],
+    )
+
+    assert cmd[:5] == ["cmake", "-S", str(cb.REPO_ROOT), "-B", str(tmp_path / "build-linux")]
+    assert "-G" in cmd and "Ninja" in cmd
+    assert "-DSTARLING_BUILD_PYTHON=ON" in cmd
+    assert "-DSTARLING_BUILD_TESTS=ON" in cmd
+    assert f"-DPython_EXECUTABLE={python}" in cmd
+    assert f"-DCMAKE_MAKE_PROGRAM={ninja}" in cmd
+    assert "-DSQLite3_INCLUDE_DIR=/sqlite/include" in cmd

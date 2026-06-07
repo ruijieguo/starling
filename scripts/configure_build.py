@@ -135,6 +135,71 @@ def pybind11_cmake_dir(python: Path) -> Path | None:
     return path if path.exists() else None
 
 
+def cache_value(cache_text: str, key: str) -> str | None:
+    pattern = re.compile(rf"^{re.escape(key)}(?::[^=]*)?=(.*)$", re.MULTILINE)
+    match = pattern.search(cache_text)
+    return match.group(1).strip() if match else None
+
+
+def check_stale_cache(build_dir: Path, expected_generator: str) -> None:
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.exists():
+        return
+    text = cache.read_text(encoding="utf-8", errors="ignore")
+    generator = cache_value(text, "CMAKE_GENERATOR")
+    if generator and generator != expected_generator:
+        raise BuildConfigError(
+            f"{build_dir} was configured with a different generator ({generator}). "
+            f"Use a new build directory or reconfigure manually with {expected_generator}."
+        )
+    compiler_args = (
+        cache_value(text, "CMAKE_CXX_COMPILER_ARG1"),
+        cache_value(text, "CMAKE_C_COMPILER_ARG1"),
+    )
+    if any(arg and "compiler_compat" in arg for arg in compiler_args):
+        raise BuildConfigError(
+            f"{build_dir} contains conda compiler_compat linker wrapper state. "
+            "Use a fresh build directory such as build-linux or build-macos."
+        )
+
+
+def cmake_configure_command(
+    *,
+    build_dir: Path,
+    build_type: str,
+    python: Path,
+    ninja: Path | None,
+    build_python: bool,
+    build_tests: bool,
+    allow_network: bool,
+    extra_args: Sequence[str],
+) -> list[str]:
+    cmd = [
+        "cmake",
+        "-S",
+        str(REPO_ROOT),
+        "-B",
+        str(build_dir),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        f"-DSTARLING_BUILD_PYTHON={'ON' if build_python else 'OFF'}",
+        f"-DSTARLING_BUILD_TESTS={'ON' if build_tests else 'OFF'}",
+        f"-DPython_EXECUTABLE={python}",
+    ]
+    if not allow_network:
+        cmd.append("-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
+    if ninja is not None:
+        cmd.append(f"-DCMAKE_MAKE_PROGRAM={ninja}")
+    cmd.extend(extra_args)
+    return cmd
+
+
+def run(cmd: Sequence[str], *, cwd: Path = REPO_ROOT) -> None:
+    print("+ " + " ".join(str(part) for part in cmd))
+    subprocess.run(list(map(str, cmd)), cwd=cwd, check=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=default_build_dir())
@@ -154,9 +219,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    print(f"Repository: {REPO_ROOT}")
-    print(f"Build dir: {args.build_dir}")
-    print("Dependency detection is added in later tasks.")
+    try:
+        check_stale_cache(args.build_dir, expected_generator="Ninja")
+    except BuildConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    python = python_executable()
+    ninja = REPO_ROOT / ".venv" / ("Scripts/ninja.exe" if os.name == "nt" else "bin/ninja")
+    cmd = cmake_configure_command(
+        build_dir=args.build_dir,
+        build_type=args.build_type,
+        python=python,
+        ninja=ninja if ninja.exists() else None,
+        build_python=args.build_python,
+        build_tests=args.build_tests,
+        allow_network=args.allow_network,
+        extra_args=[],
+    )
+    print("Configure command:")
+    print(" ".join(cmd))
     return 0
 
 
