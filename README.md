@@ -69,7 +69,7 @@ pip install -r requirements-build.txt
 python scripts/configure_build.py --build --test
 ```
 
-`python scripts/configure_build.py --build --test` configures first, then builds and runs C++ tests. The script is local-first: it reuses tools and dependency sources from `.venv`, an active conda environment, conda package caches, Homebrew, system packages, and existing `build/_deps` sources before letting CMake `FetchContent` use the network for missing nlohmann/json or GoogleTest.
+`python scripts/configure_build.py --build --test` configures first, then builds and runs C++ tests. It does not install the Python package. The script is local-first: it reuses tools and dependency sources from `.venv`, an active conda environment, conda package caches, Homebrew, system packages, and existing `build/_deps` sources before letting CMake `FetchContent` use the network for missing nlohmann/json or GoogleTest.
 
 Direct CMake users can run:
 
@@ -79,7 +79,9 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-Python editable install:
+This direct CMake path does not use the script's local-first dependency hints. Use it when CMake can already find SQLite >= 3.46, OpenSSL, libcurl, Linux ICU, pybind11, Ninja, and the other build inputs; otherwise use `python scripts/configure_build.py`.
+
+Python editable install, required for `from starling import _core`, examples such as `python examples/quickstart.py`, and the Dashboard's Python package prerequisite:
 
 ```bash
 python scripts/configure_build.py --python-editable
@@ -92,13 +94,15 @@ cmake --build build-linux   # Linux default from the script
 cmake --build build-macos   # macOS default from the script
 ```
 
+If you use Python editable imports, examples, or the Dashboard, rerun `python scripts/configure_build.py --python-editable` after C++/migration/binding changes so the installed `_core` extension is refreshed.
+
 **Prerequisites**
 
 - **Python ≥3.11** — check with `python3 --version`.
 - **A C++20 compiler + git.** macOS: `xcode-select --install` (installs Apple Clang + git). Linux: `sudo apt install build-essential git`.
 - The C++ core links **SQLite, OpenSSL, libcurl, ICU**, and uses **nlohmann/json** plus **GoogleTest** for C++ tests. On Linux, install the dev headers when system packages are preferred: `sudo apt install libsqlite3-dev libssl-dev libcurl4-openssl-dev libicu-dev`.
 
-That's the whole setup. `from starling import _core` (the bound C++ core) and the `starling.Memory` facade now work; `python examples/quickstart.py` runs an offline end-to-end demo.
+After the editable install, `from starling import _core` (the bound C++ core) and the `starling.Memory` facade work; `python examples/quickstart.py` runs an offline end-to-end demo.
 
 **Troubleshooting**
 

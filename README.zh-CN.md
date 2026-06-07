@@ -69,7 +69,7 @@ pip install -r requirements-build.txt
 python scripts/configure_build.py --build --test
 ```
 
-`python scripts/configure_build.py --build --test` 会先 configure,再 build 并运行 C++ 测试。这个脚本优先复用本机依赖: `.venv`、当前 conda 环境、conda package cache、Homebrew、系统包、以及已有的 `build/_deps` 源码。只有本机找不到 nlohmann/json 或 GoogleTest 时,才交给 CMake `FetchContent` 尝试联网兜底。
+`python scripts/configure_build.py --build --test` 会先 configure,再 build 并运行 C++ 测试。它不会安装 Python 包。这个脚本优先复用本机依赖: `.venv`、当前 conda 环境、conda package cache、Homebrew、系统包、以及已有的 `build/_deps` 源码。只有本机找不到 nlohmann/json 或 GoogleTest 时,才交给 CMake `FetchContent` 尝试联网兜底。
 
 直接使用 CMake:
 
@@ -79,7 +79,9 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-Python editable 安装:
+这条直接 CMake 路径不会使用脚本的本机依赖 hints。它适合 CMake 已经能找到 SQLite >= 3.46、OpenSSL、libcurl、Linux ICU、pybind11、Ninja 和其它构建输入的环境;否则请用 `python scripts/configure_build.py`。
+
+Python editable 安装;若要 `from starling import _core`、运行 `python examples/quickstart.py` 等示例,或满足 Dashboard 的 Python 包前置,需要执行它:
 
 ```bash
 python scripts/configure_build.py --python-editable
@@ -92,13 +94,15 @@ cmake --build build-linux   # Linux 默认目录
 cmake --build build-macos   # macOS 默认目录
 ```
 
+如果你使用 Python editable import、示例或 Dashboard,改了 C++/migration/binding 后还要重新运行 `python scripts/configure_build.py --python-editable`,以刷新已安装的 `_core` 扩展。
+
 **前置**
 
 - **Python ≥3.11** —— `python3 --version` 查看。
 - **C++20 编译器 + git。** macOS:`xcode-select --install`(装上 Apple Clang + git)。Linux:`sudo apt install build-essential git`。
 - C++ 核心链接 **SQLite、OpenSSL、libcurl、ICU**,并使用 **nlohmann/json** 与 **GoogleTest** 跑 C++ 测试。Linux 若偏好系统包,安装开发头文件:`sudo apt install libsqlite3-dev libssl-dev libcurl4-openssl-dev libicu-dev`。
 
-到此即可。`from starling import _core`(已绑定的 C++ 核心)与 `starling.Memory` 门面都能用了;`python examples/quickstart.py` 跑一个离线端到端示例。
+完成 editable 安装后,`from starling import _core`(已绑定的 C++ 核心)与 `starling.Memory` 门面可用;`python examples/quickstart.py` 会跑一个离线端到端示例。
 
 **排障**
 
