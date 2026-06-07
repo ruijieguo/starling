@@ -302,3 +302,27 @@ def test_fetchcontent_args_include_existing_sources(tmp_path):
 
     assert f"-DFETCHCONTENT_SOURCE_DIR_JSON={build / '_deps' / 'json-src'}" in args
     assert f"-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST={build / '_deps' / 'googletest-src'}" in args
+
+
+def test_runtime_link_args_add_narrow_libssh2_dir(tmp_path):
+    curl_root = tmp_path / "libcurl-8.9.1-h_0"
+    ssh_root = tmp_path / "libssh2-1.11.1-h_0"
+    (curl_root / "lib").mkdir(parents=True)
+    (curl_root / "lib" / "libcurl.so").write_text("")
+    (ssh_root / "lib").mkdir(parents=True)
+    (ssh_root / "lib" / "libssh2.so").write_text("")
+
+    args = cb.runtime_link_args_for_linux(curl_root / "lib" / "libcurl.so", [tmp_path])
+
+    assert f"-DCMAKE_BUILD_RPATH={ssh_root / 'lib'}" in args
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--disable-new-dtags" in args
+    assert "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--disable-new-dtags" in args
+
+
+def test_runtime_link_args_do_not_add_conda_root_lib(tmp_path):
+    curl = tmp_path / "miniconda3" / "pkgs" / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    curl.parent.mkdir(parents=True)
+    curl.write_text("")
+    args = cb.runtime_link_args_for_linux(curl, [tmp_path / "miniconda3" / "pkgs"])
+
+    assert all(str(tmp_path / "miniconda3" / "lib") not in arg for arg in args)

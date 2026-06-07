@@ -166,6 +166,25 @@ def ordered_dependency_roots(system: str, pkg_roots: Iterable[Path]) -> list[Pat
     return unique
 
 
+def runtime_link_args_for_linux(curl_library: Path, pkg_roots: Iterable[Path]) -> list[str]:
+    if curl_library.suffix != ".so":
+        return []
+    args: list[str] = []
+    for root in pkg_roots:
+        for candidate in conda_pkg_candidates([root], "libssh2"):
+            libdir = candidate / "lib"
+            if (libdir / "libssh2.so").exists():
+                args.extend(
+                    [
+                        f"-DCMAKE_BUILD_RPATH={libdir}",
+                        "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--disable-new-dtags",
+                        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--disable-new-dtags",
+                    ]
+                )
+                return args
+    return args
+
+
 def find_openssl_root(roots: Iterable[Path], system: str) -> tuple[Path, LibraryPair, Path] | None:
     ssl_names = shared_library_names("ssl", system)
     crypto_names = shared_library_names("crypto", system)
@@ -238,6 +257,11 @@ def discover_dependency_hints(
     if curl_pair is not None:
         append_pair_args(args, include_key="CURL_INCLUDE_DIR", library_key="CURL_LIBRARY", pair=curl_pair)
         notes.append(f"libcurl: {curl_pair.library}")
+        if system == "Linux":
+            runtime_args = runtime_link_args_for_linux(curl_pair.library, pkg_roots)
+            if runtime_args:
+                args.extend(runtime_args)
+                notes.append("Linux runtime link: added narrow libssh2 rpath for conda libcurl")
 
     if system != "Darwin":
         icu_pair = find_library_pair(roots, "include/unicode/utypes.h", shared_library_names("icuuc", system))
