@@ -121,6 +121,119 @@ def fetchcontent_source_args(build_dirs: Iterable[Path]) -> list[str]:
     return args
 
 
+def shared_library_names(base: str, system: str) -> tuple[str, ...]:
+    if system == "Darwin":
+        return (f"lib{base}.dylib", f"{base}.dylib")
+    return (f"lib{base}.so", f"{base}.so")
+
+
+def append_pair_args(args: list[str], *, include_key: str, library_key: str, pair: LibraryPair) -> None:
+    args.append(f"-D{include_key}={pair.include_dir}")
+    args.append(f"-D{library_key}={pair.library}")
+
+
+def discover_dependency_hints(
+    *,
+    system: str,
+    pkg_roots: Iterable[Path],
+    build_dirs: Iterable[Path],
+    python: Path,
+) -> DependencyHints:
+    roots: list[Path] = []
+    roots.extend(conda_pkg_candidates(pkg_roots, "sqlite"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "openssl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "libcurl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "curl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "icu"))
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        roots.append(Path(conda_prefix).expanduser())
+    if system == "Darwin":
+        roots.extend(
+            Path(p)
+            for p in (
+                "/opt/homebrew/opt/sqlite",
+                "/opt/homebrew/opt/openssl@3",
+                "/opt/homebrew/opt/curl",
+                "/usr/local/opt/sqlite",
+                "/usr/local/opt/openssl@3",
+                "/usr/local/opt/curl",
+            )
+        )
+
+    args: list[str] = []
+    notes: list[str] = []
+    warnings: list[str] = []
+
+    sqlite_pair: LibraryPair | None = None
+    sqlite_error: BuildConfigError | None = None
+    for root in roots:
+        candidate = find_library_pair([root], "include/sqlite3.h", shared_library_names("sqlite3", system))
+        if candidate is None:
+            continue
+        version = sqlite_header_version(candidate.include_dir / "sqlite3.h")
+        if version is not None and version < MIN_SQLITE:
+            sqlite_error = BuildConfigError(
+                f"SQLite {version[0]}.{version[1]}.{version[2]} found at {candidate.include_dir}; "
+                "Starling requires SQLite >= 3.46. Install a newer sqlite package or pass -DSQLite3_* overrides."
+            )
+            continue
+        sqlite_pair = candidate
+        break
+    if sqlite_pair is None and sqlite_error is not None:
+        raise sqlite_error
+    if sqlite_pair is not None:
+        append_pair_args(args, include_key="SQLite3_INCLUDE_DIR", library_key="SQLite3_LIBRARY", pair=sqlite_pair)
+        notes.append(f"SQLite: {sqlite_pair.library}")
+
+    ssl_pair = find_library_pair(roots, "include/openssl/ssl.h", shared_library_names("ssl", system))
+    crypto_pair = find_library_pair(roots, "include/openssl/ssl.h", shared_library_names("crypto", system))
+    if ssl_pair is not None and crypto_pair is not None:
+        root = ssl_pair.include_dir.parent
+        args.extend(
+            [
+                f"-DOPENSSL_ROOT_DIR={root}",
+                f"-DOPENSSL_INCLUDE_DIR={ssl_pair.include_dir}",
+                f"-DOPENSSL_SSL_LIBRARY={ssl_pair.library}",
+                f"-DOPENSSL_CRYPTO_LIBRARY={crypto_pair.library}",
+            ]
+        )
+        notes.append(f"OpenSSL: {root}")
+
+    curl_pair = find_library_pair(roots, "include/curl/curl.h", shared_library_names("curl", system))
+    if curl_pair is not None:
+        append_pair_args(args, include_key="CURL_INCLUDE_DIR", library_key="CURL_LIBRARY", pair=curl_pair)
+        notes.append(f"libcurl: {curl_pair.library}")
+
+    if system != "Darwin":
+        icu_pair = find_library_pair(roots, "include/unicode/utypes.h", shared_library_names("icuuc", system))
+        if icu_pair is not None:
+            root = icu_pair.include_dir.parent
+            args.extend(
+                [
+                    f"-DICU_ROOT={root}",
+                    f"-DICU_INCLUDE_DIR={icu_pair.include_dir}",
+                    f"-DICU_UC_LIBRARY={icu_pair.library}",
+                    f"-DICU_UC_LIBRARY_RELEASE={icu_pair.library}",
+                ]
+            )
+            notes.append(f"ICU uc: {icu_pair.library}")
+        else:
+            warnings.append(
+                "ICU uc was not found locally; CMake will try system paths. On Debian/Ubuntu install libicu-dev."
+            )
+
+    pybind_dir = pybind11_cmake_dir(python)
+    if pybind_dir is not None:
+        args.append(f"-Dpybind11_DIR={pybind_dir}")
+        notes.append(f"pybind11: {pybind_dir}")
+    else:
+        warnings.append(f"pybind11 is not importable from {python}; install requirements-build.txt in .venv.")
+
+    args.extend(fetchcontent_source_args(build_dirs))
+    return DependencyHints(cmake_args=tuple(args), notes=tuple(notes), warnings=tuple(warnings))
+
+
 def python_executable() -> Path:
     venv_python = REPO_ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     return venv_python if venv_python.exists() else Path(sys.executable)
@@ -128,7 +241,10 @@ def python_executable() -> Path:
 
 def pybind11_cmake_dir(python: Path) -> Path | None:
     code = "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
-    result = subprocess.run([str(python), "-c", code], text=True, capture_output=True, check=False)
+    try:
+        result = subprocess.run([str(python), "-c", code], text=True, capture_output=True, check=False)
+    except OSError:
+        return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
     path = Path(result.stdout.strip())
@@ -219,12 +335,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    python = python_executable()
     try:
         check_stale_cache(args.build_dir, expected_generator="Ninja")
+        hints = discover_dependency_hints(
+            system=platform.system(),
+            pkg_roots=candidate_conda_pkg_roots(),
+            build_dirs=[REPO_ROOT / "build", REPO_ROOT / "build-linux", REPO_ROOT / "build-macos", args.build_dir],
+            python=python,
+        )
     except BuildConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    python = python_executable()
     ninja = REPO_ROOT / ".venv" / ("Scripts/ninja.exe" if os.name == "nt" else "bin/ninja")
     cmd = cmake_configure_command(
         build_dir=args.build_dir,
@@ -234,8 +356,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_python=args.build_python,
         build_tests=args.build_tests,
         allow_network=args.allow_network,
-        extra_args=[],
+        extra_args=hints.cmake_args,
     )
+    for note in hints.notes:
+        print(f"found: {note}")
+    for warning in hints.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
     print("Configure command:")
     print(" ".join(cmd))
     return 0

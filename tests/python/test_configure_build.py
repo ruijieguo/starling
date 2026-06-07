@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from scripts import configure_build as cb
@@ -138,3 +140,69 @@ def test_network_disabled_adds_fetchcontent_disconnected_define(tmp_path):
     )
 
     assert "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" in cmd
+
+
+def test_discover_dependency_hints_from_conda_cache(tmp_path):
+    pkgs = tmp_path / "pkgs"
+    sqlite = pkgs / "sqlite-3.51.0-h_0"
+    openssl = pkgs / "openssl-3.0.18-h_0"
+    curl = pkgs / "libcurl-8.9.1-h_0"
+    icu = pkgs / "icu-73.1-h_0"
+    for root in (sqlite, openssl, curl, icu):
+        (root / "include").mkdir(parents=True)
+        (root / "lib").mkdir()
+    (sqlite / "include" / "sqlite3.h").write_text('#define SQLITE_VERSION "3.51.0"\n')
+    (sqlite / "lib" / "libsqlite3.so").write_text("")
+    (openssl / "include" / "openssl").mkdir()
+    (openssl / "include" / "openssl" / "ssl.h").write_text("")
+    (openssl / "lib" / "libssl.so").write_text("")
+    (openssl / "lib" / "libcrypto.so").write_text("")
+    (curl / "include" / "curl").mkdir()
+    (curl / "include" / "curl" / "curl.h").write_text("")
+    (curl / "lib" / "libcurl.so").write_text("")
+    (icu / "include" / "unicode").mkdir()
+    (icu / "include" / "unicode" / "utypes.h").write_text("")
+    (icu / "lib" / "libicuuc.so").write_text("")
+
+    hints = cb.discover_dependency_hints(
+        system="Linux",
+        pkg_roots=[pkgs],
+        build_dirs=[],
+        python=Path("/venv/bin/python"),
+    )
+
+    args = set(hints.cmake_args)
+    assert f"-DSQLite3_INCLUDE_DIR={sqlite / 'include'}" in args
+    assert f"-DSQLite3_LIBRARY={sqlite / 'lib' / 'libsqlite3.so'}" in args
+    assert f"-DOPENSSL_ROOT_DIR={openssl}" in args
+    assert f"-DCURL_LIBRARY={curl / 'lib' / 'libcurl.so'}" in args
+    assert f"-DICU_ROOT={icu}" in args
+    assert any("SQLite" in note for note in hints.notes)
+
+
+def test_discover_dependency_hints_rejects_old_sqlite(tmp_path):
+    pkgs = tmp_path / "pkgs"
+    sqlite = pkgs / "sqlite-3.45.0-h_0"
+    (sqlite / "include").mkdir(parents=True)
+    (sqlite / "lib").mkdir()
+    (sqlite / "include" / "sqlite3.h").write_text('#define SQLITE_VERSION "3.45.0"\n')
+    (sqlite / "lib" / "libsqlite3.so").write_text("")
+
+    with pytest.raises(cb.BuildConfigError, match="SQLite"):
+        cb.discover_dependency_hints(
+            system="Linux",
+            pkg_roots=[pkgs],
+            build_dirs=[],
+            python=Path("/venv/bin/python"),
+        )
+
+
+def test_fetchcontent_args_include_existing_sources(tmp_path):
+    build = tmp_path / "build"
+    (build / "_deps" / "json-src").mkdir(parents=True)
+    (build / "_deps" / "googletest-src").mkdir(parents=True)
+
+    args = cb.fetchcontent_source_args([build])
+
+    assert f"-DFETCHCONTENT_SOURCE_DIR_JSON={build / '_deps' / 'json-src'}" in args
+    assert f"-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST={build / '_deps' / 'googletest-src'}" in args
