@@ -96,8 +96,10 @@ void emit_event(
     ev.aggregate_id = std::string(aggregate_id);
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id,
+        event_type, aggregate_id, canonical_key,
         /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
@@ -119,6 +121,7 @@ void emit_event(
 struct EventRow {
     std::string event_type;
     std::string primary_id;
+    std::string tenant_id;
     std::int64_t outbox_sequence = 0;
 };
 
@@ -174,16 +177,18 @@ void write_checkpoint(persistence::Connection& conn, std::int64_t new_seq) {
 }
 
 // Look up modality/tenant/deadline columns for a statement.
-StmtMeta read_stmt_meta(persistence::Connection& conn, std::string_view stmt_id) {
+StmtMeta read_stmt_meta(persistence::Connection& conn, std::string_view stmt_id,
+                        std::string_view tenant_id) {
     const char* sql =
         "SELECT modality, tenant_id, event_time_end, observed_at "
-        "FROM statements WHERE id = ?";
+        "FROM statements WHERE id = ? AND tenant_id = ?";
     sqlite3_stmt* raw = nullptr;
     StmtMeta m;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return m;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
     if (sqlite3_step(h.get()) == SQLITE_ROW) {
         m.modality       = col_text(h.get(), 0);
         m.tenant_id      = col_text(h.get(), 1);
@@ -306,20 +311,19 @@ struct CommitmentStateRow {
     std::string tenant_id;
 };
 
-// Read a commitment's current (state, tenant_id) by stmt_id. With the composite
-// (tenant_id, stmt_id) PK a stmt_id is unique per tenant; for the bus events the
-// engine consumes, the originating tenant is whatever owns that stmt_id row. If
-// two tenants share a stmt_id this returns the first; callers pass the resolved
-// tenant_id into the engine so the subsequent transition is correctly scoped.
+// Read a commitment's current (state, tenant_id) by scoped statement id.
 CommitmentStateRow read_commitment_state(persistence::Connection& conn,
-                                         std::string_view stmt_id) {
+                                         std::string_view stmt_id,
+                                         std::string_view tenant_id) {
     CommitmentStateRow r;
-    const char* sql = "SELECT state, tenant_id FROM commitments WHERE stmt_id=?";
+    const char* sql =
+        "SELECT state, tenant_id FROM commitments WHERE stmt_id=? AND tenant_id=?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return r;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
     if (sqlite3_step(h.get()) == SQLITE_ROW) {
         r.state     = col_text(h.get(), 0);
         r.tenant_id = col_text(h.get(), 1);
@@ -351,7 +355,7 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
     std::vector<EventRow> batch;
     {
         const char* sql =
-            "SELECT event_type, primary_id, outbox_sequence "
+            "SELECT event_type, primary_id, tenant_id, outbox_sequence "
             "FROM bus_events WHERE outbox_sequence > ? "
             "ORDER BY outbox_sequence";
         sqlite3_stmt* raw = nullptr;
@@ -363,7 +367,8 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
             EventRow r;
             r.event_type      = col_text(h.get(), 0);
             r.primary_id      = col_text(h.get(), 1);
-            r.outbox_sequence = sqlite3_column_int64(h.get(), 2);
+            r.tenant_id       = col_text(h.get(), 2);
+            r.outbox_sequence = sqlite3_column_int64(h.get(), 3);
             batch.push_back(std::move(r));
         }
     }
@@ -378,7 +383,7 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
         if (ev.outbox_sequence > max_seq) max_seq = ev.outbox_sequence;
 
         if (ev.event_type == "statement.written") {
-            StmtMeta m = read_stmt_meta(conn, ev.primary_id);
+            StmtMeta m = read_stmt_meta(conn, ev.primary_id, ev.tenant_id);
             if (m.found && m.modality == "COMMITS") {
                 // spec §10: explicit event_time_end wins; else observed_at + 默认窗口
                 // (NOT raw observed_at — that's in the past, so the commitment would
@@ -399,11 +404,13 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
             // fulfill() is the SOLE emitter of commitment.fulfilled. Re-processing
             // its own output would re-emit and feedback-loop; only act on a
             // non-terminal commitment (idempotent: already-FULFILLED → skip).
-            const CommitmentStateRow cur = read_commitment_state(conn, ev.primary_id);
+            const CommitmentStateRow cur =
+                read_commitment_state(conn, ev.primary_id, ev.tenant_id);
             if (cur.state == "ACTIVE" || cur.state == "BROKEN")
                 commitment_engine_.fulfill(conn, ev.primary_id, cur.tenant_id, now_iso);
         } else if (ev.event_type == "commitment.withdrawn") {
-            const CommitmentStateRow cur = read_commitment_state(conn, ev.primary_id);
+            const CommitmentStateRow cur =
+                read_commitment_state(conn, ev.primary_id, ev.tenant_id);
             if (cur.state == "ACTIVE" || cur.state == "BROKEN" ||
                 cur.state == "RENEGOTIATED")
                 commitment_engine_.withdraw(conn, ev.primary_id, cur.tenant_id, now_iso);
@@ -457,7 +464,7 @@ PolicyTickStats PolicyEngine::tick(persistence::Connection& conn,
         for (const auto& e : expired) {
             commitment_engine_.on_deadline_expired(conn, e.stmt_id, e.tenant_id,
                                                    now_iso);
-            if (read_commitment_state(conn, e.stmt_id).state == "WITHDRAWN")
+            if (read_commitment_state(conn, e.stmt_id, e.tenant_id).state == "WITHDRAWN")
                 ++stats.auto_withdrawn;
             else
                 ++stats.broken;

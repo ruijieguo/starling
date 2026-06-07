@@ -15,6 +15,7 @@
 #include <sqlite3.h>
 
 #include <cstdio>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -60,13 +61,16 @@ void write_checkpoint(persistence::Connection& conn, int new_seq,
 
 // Look up modality of a statement (default 'believes' if missing).
 std::string lookup_modality(persistence::Connection& conn,
-                            std::string_view stmt_id) {
-    const char* sql = "SELECT modality FROM statements WHERE id = ?";
+                            std::string_view stmt_id,
+                            std::string_view tenant_id) {
+    const char* sql =
+        "SELECT modality FROM statements WHERE id = ? AND tenant_id = ?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return "believes";
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
     if (sqlite3_step(h.get()) == SQLITE_ROW) {
         const auto* txt = sqlite3_column_text(h.get(), 0);
         if (txt) return reinterpret_cast<const char*>(txt);
@@ -74,20 +78,34 @@ std::string lookup_modality(persistence::Connection& conn,
     return "believes";
 }
 
-// Look up tenant_id of a statement (default 'default' if missing).
-std::string lookup_tenant(persistence::Connection& conn,
-                          std::string_view stmt_id) {
-    const char* sql = "SELECT tenant_id FROM statements WHERE id = ?";
+struct TenantLookup {
+    std::string tenant_id;
+    bool found = false;
+    bool ambiguous = false;
+};
+
+// Look up tenant_id of a statement. Missing statements are no-op for the
+// explicit API; ambiguous bare stmt_id must fail closed instead of selecting an
+// arbitrary tenant.
+TenantLookup lookup_tenant(persistence::Connection& conn,
+                           std::string_view stmt_id) {
+    const char* sql =
+        "SELECT DISTINCT tenant_id FROM statements WHERE id = ? LIMIT 2";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return "default";
+        return {};
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
     if (sqlite3_step(h.get()) == SQLITE_ROW) {
         const auto* txt = sqlite3_column_text(h.get(), 0);
-        if (txt) return reinterpret_cast<const char*>(txt);
+        if (!txt) return {};
+        std::string out = reinterpret_cast<const char*>(txt);
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
+            return {.tenant_id = out, .found = true, .ambiguous = true};
+        }
+        return {.tenant_id = out, .found = true, .ambiguous = false};
     }
-    return "default";
+    return {};
 }
 
 struct EventRow {
@@ -170,11 +188,10 @@ EngineStats ReconsolidationEngine::tick_one_batch(
             ev.event_type == "statement.references_existing" ||
             ev.event_type == "belief.conflict") {
             try {
-                const std::string modality = lookup_modality(conn, ev.primary_id);
-                const std::string tenant =
-                    ev.tenant_id.empty()
-                        ? lookup_tenant(conn, ev.primary_id)
-                        : ev.tenant_id;
+                const std::string tenant = ev.tenant_id;
+                if (tenant.empty()) continue;
+                const std::string modality =
+                    lookup_modality(conn, ev.primary_id, tenant);
                 OpenResult res = open_or_append(
                     conn,
                     ev.primary_id,    // stmt_id
@@ -216,7 +233,7 @@ int ReconsolidationEngine::close_due_windows(
     persistence::Connection& conn, std::string_view now_iso) {
 
     // Get list of stmt_ids with expired windows.
-    std::vector<std::string> due;
+    std::vector<DueWindow> due;
     try {
         due = due_windows(conn, now_iso);
     } catch (...) {
@@ -224,28 +241,14 @@ int ReconsolidationEngine::close_due_windows(
     }
 
     int closed = 0;
-    for (const auto& stmt_id : due) {
-        // Lookup tenant_id for this window.
-        std::string tenant;
-        {
-            const char* sql =
-                "SELECT tenant_id FROM reconsolidation_windows WHERE stmt_id = ?";
-            sqlite3_stmt* raw = nullptr;
-            if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) == SQLITE_OK) {
-                StmtHandle h(raw);
-                bind_sv(h.get(), 1, stmt_id);
-                if (sqlite3_step(h.get()) == SQLITE_ROW) {
-                    const auto* txt = sqlite3_column_text(h.get(), 0);
-                    if (txt) tenant = reinterpret_cast<const char*>(txt);
-                }
-            }
-            if (tenant.empty()) tenant = "default";
-        }
+    for (const auto& window : due) {
+        const std::string& stmt_id = window.stmt_id;
+        const std::string& tenant = window.tenant_id;
 
         // TC-A5-002 double-layer fallback:
         // Try arbitration; on any failure, reset stmt to consolidated.
         try {
-            Aggregated agg = aggregate_evidence(conn, stmt_id);
+            Aggregated agg = aggregate_evidence(conn, stmt_id, tenant);
             if (agg.path == ArbitrationPath::Supports) {
                 apply_supports(conn, stmt_id, tenant, agg, now_iso);
             } else if (agg.path == ArbitrationPath::MildContradict) {
@@ -259,11 +262,13 @@ int ReconsolidationEngine::close_due_windows(
             try {
                 const char* sql =
                     "UPDATE statements SET consolidation_state='consolidated' "
-                    "WHERE id=? AND consolidation_state='replaying_reconsolidating'";
+                    "WHERE id=? AND tenant_id=? "
+                    "AND consolidation_state='replaying_reconsolidating'";
                 sqlite3_stmt* raw = nullptr;
                 if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) == SQLITE_OK) {
                     StmtHandle h(raw);
                     bind_sv(h.get(), 1, stmt_id);
+                    bind_sv(h.get(), 2, tenant);
                     sqlite3_step(h.get());
                 }
             } catch (...) {}
@@ -272,11 +277,13 @@ int ReconsolidationEngine::close_due_windows(
         // ALWAYS mark the window closed, regardless of arbitration outcome.
         {
             const char* sql =
-                "UPDATE reconsolidation_windows SET status='closed' WHERE stmt_id=?";
+                "UPDATE reconsolidation_windows SET status='closed' "
+                "WHERE stmt_id=? AND tenant_id=?";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) == SQLITE_OK) {
                 StmtHandle h(raw);
                 bind_sv(h.get(), 1, stmt_id);
+                bind_sv(h.get(), 2, tenant);
                 sqlite3_step(h.get());
             }
         }
@@ -296,13 +303,20 @@ void ReconsolidationEngine::reconsolidate(
     double weight,
     std::string_view now_iso) {
 
-    const std::string modality = lookup_modality(conn, stmt_id);
-    const std::string tenant   = lookup_tenant(conn, stmt_id);
+    const TenantLookup tenant = lookup_tenant(conn, stmt_id);
+    if (!tenant.found) {
+        return;
+    }
+    if (tenant.ambiguous) {
+        throw std::runtime_error(
+            "ReconsolidationEngine::reconsolidate: statement tenant-ambiguous");
+    }
+    const std::string modality = lookup_modality(conn, stmt_id, tenant.tenant_id);
 
     open_or_append(
         conn,
         stmt_id,
-        tenant,
+        tenant.tenant_id,
         payload_hash,   // event_id = payload_hash
         event_type,
         payload_hash,

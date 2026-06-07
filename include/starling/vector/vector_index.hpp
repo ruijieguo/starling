@@ -24,7 +24,8 @@ public:
                         std::string_view tenant_id, const std::vector<float>& vec) = 0;
     virtual std::vector<ScoredId> search_topk(persistence::Connection&,
                         const std::vector<float>& query, int k, const SearchScope&) = 0;
-    virtual void remove(persistence::Connection&, std::string_view stmt_id) = 0;
+    virtual void remove(persistence::Connection&, std::string_view stmt_id,
+                        std::string_view tenant_id) = 0;
 };
 
 // 后端 = statement_vectors.index_vector (BLOB) + 暴力 cosine。
@@ -34,7 +35,8 @@ public:
                 std::string_view tenant_id, const std::vector<float>& vec) override;
     std::vector<ScoredId> search_topk(persistence::Connection&,
                 const std::vector<float>& query, int k, const SearchScope&) override;
-    void remove(persistence::Connection&, std::string_view stmt_id) override;
+    void remove(persistence::Connection&, std::string_view stmt_id,
+                std::string_view tenant_id) override;
 };
 
 }  // namespace starling::vector

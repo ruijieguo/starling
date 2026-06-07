@@ -15,7 +15,8 @@ struct Aggregated {
 
 // 取窗口 pending_evidence 最近 50 条高权重 + 其余背景统计 → 判定路径.
 // 路径阈值 (M0.8): strength < 0.3 → Supports; [0.3,0.7] → MildContradict; > 0.7 → SevereContradict.
-Aggregated aggregate_evidence(persistence::Connection& conn, std::string_view stmt_id);
+Aggregated aggregate_evidence(persistence::Connection& conn, std::string_view stmt_id,
+                              std::string_view tenant_id);
 
 // supports: confidence 上调 → CONSOLIDATED → emit statement.consolidated.
 void apply_supports(persistence::Connection& conn, std::string_view stmt_id,

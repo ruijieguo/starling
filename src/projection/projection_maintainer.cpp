@@ -85,17 +85,19 @@ struct StmtRow {
     bool        found = false;
 };
 
-StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id) {
+StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id,
+                  std::string_view tenant_id) {
     const char* sql =
         "SELECT tenant_id, holder_id, subject_kind, subject_id, predicate, "
         "       consolidation_state, observed_at, salience, modality, review_status "
-        "FROM statements WHERE id = ?";
+        "FROM statements WHERE id = ? AND tenant_id = ?";
     sqlite3_stmt* raw = nullptr;
     StmtRow row;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return row;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
     if (sqlite3_step(h.get()) == SQLITE_ROW) {
         auto get_text = [&](int col) -> std::string {
             const char* t = reinterpret_cast<const char*>(
@@ -121,13 +123,14 @@ StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id) {
 
 // Delete the stmt's rows from the 5 statement-keyed projections.
 void delete_projection_rows(persistence::Connection& conn,
-                            std::string_view stmt_id) {
+                            std::string_view stmt_id,
+                            std::string_view tenant_id) {
     static const char* kDelSqls[] = {
-        "DELETE FROM proj_holder_state_time WHERE stmt_id = ?",
-        "DELETE FROM proj_holder_subgraph     WHERE stmt_id = ?",
-        "DELETE FROM proj_entity_statement    WHERE stmt_id = ?",
-        "DELETE FROM proj_salience_hot        WHERE stmt_id = ?",
-        "DELETE FROM proj_commitment_due      WHERE stmt_id = ?",
+        "DELETE FROM proj_holder_state_time WHERE stmt_id = ? AND tenant_id = ?",
+        "DELETE FROM proj_holder_subgraph     WHERE stmt_id = ? AND tenant_id = ?",
+        "DELETE FROM proj_entity_statement    WHERE stmt_id = ? AND tenant_id = ?",
+        "DELETE FROM proj_salience_hot        WHERE stmt_id = ? AND tenant_id = ?",
+        "DELETE FROM proj_commitment_due      WHERE stmt_id = ? AND tenant_id = ?",
     };
     for (const char* sql : kDelSqls) {
         sqlite3_stmt* raw = nullptr;
@@ -135,6 +138,7 @@ void delete_projection_rows(persistence::Connection& conn,
             continue;
         StmtHandle h(raw);
         bind_sv(h.get(), 1, stmt_id);
+        bind_sv(h.get(), 2, tenant_id);
         sqlite3_step(h.get());
     }
 }
@@ -239,13 +243,14 @@ int upsert_projection_rows(persistence::Connection& conn,
 }
 
 // ── Vector payload projection (M0.9, 7th projection) ─────────────────────────
-// proj_vector_payload is keyed by stmt_id but only materializes rows for
+// proj_vector_payload is keyed by (tenant_id, stmt_id) but only materializes rows for
 // statements that already have an embedded index vector. Driven by the
 // vector.embedded event (and refreshed on statement.* when a vector exists).
 // These helpers run ALONGSIDE the 6 M0.8 SQL projections; they never touch
 // the existing projection tables.
 
-// No-op unless the statement has an embedded vector. UPSERT keyed on stmt_id.
+// No-op unless the statement has an embedded vector. UPSERT keyed on
+// (tenant_id, stmt_id).
 void upsert_vector_payload(persistence::Connection& conn,
                            std::string_view stmt_id,
                            const StmtRow& r) {
@@ -253,12 +258,13 @@ void upsert_vector_payload(persistence::Connection& conn,
     {
         const char* exists_sql =
             "SELECT 1 FROM statement_vectors "
-            "WHERE stmt_id = ? AND status = 'embedded'";
+            "WHERE stmt_id = ? AND tenant_id = ? AND status = 'embedded'";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), exists_sql, -1, &raw, nullptr) != SQLITE_OK)
             return;
         StmtHandle h(raw);
         bind_sv(h.get(), 1, stmt_id);
+        bind_sv(h.get(), 2, r.tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_ROW)
             return;  // no embedded vector yet → do not create a payload row
     }
@@ -267,7 +273,7 @@ void upsert_vector_payload(persistence::Connection& conn,
         "INSERT INTO proj_vector_payload"
         "(tenant_id, holder_id, consolidation_state, modality, review_status, stmt_id)"
         " VALUES(?,?,?,?,?,?)"
-        " ON CONFLICT(stmt_id) DO UPDATE SET"
+        " ON CONFLICT(tenant_id,stmt_id) DO UPDATE SET"
         "   consolidation_state=excluded.consolidation_state,"
         "   review_status=excluded.review_status,"
         "   modality=excluded.modality,"
@@ -291,13 +297,16 @@ void upsert_vector_payload(persistence::Connection& conn,
 
 // Remove the stmt's row from proj_vector_payload (called on retire).
 void delete_vector_payload(persistence::Connection& conn,
-                           std::string_view stmt_id) {
-    const char* sql = "DELETE FROM proj_vector_payload WHERE stmt_id = ?";
+                           std::string_view stmt_id,
+                           std::string_view tenant_id) {
+    const char* sql =
+        "DELETE FROM proj_vector_payload WHERE stmt_id = ? AND tenant_id = ?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
         return;
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
     sqlite3_step(h.get());
 }
 
@@ -307,6 +316,7 @@ struct EventRow {
     std::string event_id;
     std::string event_type;
     std::string primary_id;
+    std::string tenant_id;
     int         outbox_sequence = 0;
 };
 
@@ -327,8 +337,10 @@ void emit_event(
     ev.aggregate_id = std::string(aggregate_id);
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id,
+        event_type, aggregate_id, canonical_key,
         /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
@@ -359,6 +371,7 @@ int64_t count_ground_truth(persistence::Connection& conn,
         return scalar_count(conn,
             "SELECT COUNT(*) FROM statement_vectors v "
             "JOIN statements s ON s.id = v.stmt_id "
+            "AND s.tenant_id = v.tenant_id "
             "WHERE v.status = 'embedded' "
             "AND s.consolidation_state NOT IN ('archived','forgotten')");
     }
@@ -433,7 +446,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
     std::vector<EventRow> batch;
     {
         const char* sql =
-            "SELECT event_id, event_type, primary_id, outbox_sequence "
+            "SELECT event_id, event_type, primary_id, outbox_sequence, tenant_id "
             "FROM bus_events "
             "WHERE outbox_sequence > ? "
             "ORDER BY outbox_sequence";
@@ -453,6 +466,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
             row.event_type      = get_text(1);
             row.primary_id      = get_text(2);
             row.outbox_sequence = sqlite3_column_int(h.get(), 3);
+            row.tenant_id       = get_text(4);
             batch.push_back(std::move(row));
         }
     }
@@ -470,7 +484,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
         // projection is touched here.
         if (ev.event_type == "vector.embedded") {
             stats.events_processed++;
-            StmtRow sr = read_stmt(conn, ev.primary_id);
+            StmtRow sr = read_stmt(conn, ev.primary_id, ev.tenant_id);
             if (!sr.found) continue;
             const bool is_retiring =
                 (sr.consolidation_state == "archived" ||
@@ -488,7 +502,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
         stats.events_processed++;
 
         // Read statement row; skip if gone.
-        StmtRow sr = read_stmt(conn, ev.primary_id);
+        StmtRow sr = read_stmt(conn, ev.primary_id, ev.tenant_id);
         if (!sr.found) continue;
 
         const bool is_retiring =
@@ -496,9 +510,9 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
              sr.consolidation_state == "forgotten");
 
         if (is_retiring) {
-            delete_projection_rows(conn, ev.primary_id);
+            delete_projection_rows(conn, ev.primary_id, sr.tenant_id);
             // Also retire the 7th projection (M0.9).
-            delete_vector_payload(conn, ev.primary_id);
+            delete_vector_payload(conn, ev.primary_id, sr.tenant_id);
         } else {
             stats.rows_upserted +=
                 upsert_projection_rows(conn, ev.primary_id, sr);
@@ -611,7 +625,7 @@ RebuildReport ProjectionMaintainer::do_rebuild(
                     " SELECT s.tenant_id, s.holder_id, s.consolidation_state,"
                     "        s.modality, s.review_status, s.id"
                     " FROM statement_vectors v"
-                    " JOIN statements s ON s.id = v.stmt_id"
+                    " JOIN statements s ON s.id = v.stmt_id AND s.tenant_id = v.tenant_id"
                     " WHERE v.status = 'embedded'"
                     "   AND s.consolidation_state NOT IN ('archived','forgotten')";
                 sqlite3_stmt* raw = nullptr;

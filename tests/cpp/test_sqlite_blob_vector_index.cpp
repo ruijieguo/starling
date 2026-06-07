@@ -7,12 +7,14 @@ using namespace starling::vector;
 using starling::persistence::SqliteAdapter;
 
 namespace {
-void seed_stmt(sqlite3* db, const std::string& id, const std::string& state="consolidated") {
+void seed_stmt(sqlite3* db, const std::string& id,
+               const std::string& state="consolidated",
+               const std::string& tenant="default") {
     std::string s = "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
       "subject_kind,subject_id,predicate,object_kind,object_value,canonical_object_hash,"
       "canonical_object_hash_version,modality,polarity,confidence,observed_at,salience,"
       "affect_json,activation,last_accessed,provenance,consolidation_state,review_status,"
-      "created_at,updated_at) VALUES('"+id+"','default','alice','first_person','cognizer',"
+      "created_at,updated_at) VALUES('"+id+"','"+tenant+"','alice','first_person','cognizer',"
       "'bob','knows','str','x','"+std::string(64,'a')+"','v1','believes','pos',0.9,"
       "'2026-05-30T09:00:00Z',0.5,'{}',0.0,'2026-05-30T09:00:00Z','user_input','"+state+
       "','approved','2026-05-30T09:00:00Z','2026-05-30T09:00:00Z')";
@@ -55,7 +57,27 @@ TEST(SqliteBlobVectorIndex, RemoveDeletesRow) {
     seed_stmt(conn.raw(), "a");
     SqliteBlobVectorIndex idx;
     idx.insert(conn, "a", "default", {1,0,0});
-    idx.remove(conn, "a");
+    idx.remove(conn, "a", "default");
     auto top = idx.search_topk(conn, {1,0,0}, 10, {"default", std::nullopt, std::nullopt, true});
     EXPECT_TRUE(top.empty());
+}
+
+TEST(SqliteBlobVectorIndex, RemoveIsTenantScoped) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_stmt(conn.raw(), "shared", "consolidated", "tenant-a");
+    seed_stmt(conn.raw(), "shared", "consolidated", "tenant-b");
+    SqliteBlobVectorIndex idx;
+    idx.insert(conn, "shared", "tenant-a", {1,0,0});
+    idx.insert(conn, "shared", "tenant-b", {0,1,0});
+
+    idx.remove(conn, "shared", "tenant-a");
+
+    auto a_top = idx.search_topk(conn, {1,0,0}, 10,
+                                 {"tenant-a", std::nullopt, std::nullopt, true});
+    auto b_top = idx.search_topk(conn, {0,1,0}, 10,
+                                 {"tenant-b", std::nullopt, std::nullopt, true});
+    EXPECT_TRUE(a_top.empty());
+    ASSERT_EQ(b_top.size(), 1u);
+    EXPECT_EQ(b_top[0].stmt_id, "shared");
 }

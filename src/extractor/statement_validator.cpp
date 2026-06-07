@@ -82,6 +82,9 @@ ValidationOutcome validate_for_write(
         if (parent_tenant.empty()) {
             return {false, "derived_parent_not_found", parent_id, std::nullopt};
         }
+        if (parent_tenant.rfind("ambiguous:", 0) == 0) {
+            return {false, "derived_parent_ambiguous", parent_id, std::nullopt};
+        }
         if (parent_tenant != s.holder_tenant_id) {
             if (s.provenance_protocol_id.empty()) {
                 return {false, "cross_tenant_derivation_forbidden",

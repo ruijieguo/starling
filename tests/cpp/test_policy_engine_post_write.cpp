@@ -28,14 +28,15 @@ namespace {
 
 // Seed a COMMITS statement (copied from test_commitment_engine.cpp). observed_at
 // doubles as the deadline source (event_time_end is also set here).
-void seed_commits_stmt(sqlite3* db, const std::string& id) {
+void seed_commits_stmt(sqlite3* db, const std::string& id,
+                       const std::string& tenant = "default") {
     std::string s =
         "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
         "subject_kind,subject_id,predicate,object_kind,object_value,canonical_object_hash,"
         "canonical_object_hash_version,modality,polarity,confidence,observed_at,"
         "event_time_end,salience,"
         "affect_json,activation,last_accessed,provenance,consolidation_state,review_status,"
-        "created_at,updated_at) VALUES('" + id + "','default','alice','first_person','cognizer',"
+        "created_at,updated_at) VALUES('" + id + "','" + tenant + "','alice','first_person','cognizer',"
         "'bob','will_send','str','report','" + std::string(64, 'a') + "','v1','COMMITS','pos',0.9,"
         "'2026-05-30T09:00:00Z','2026-05-30T18:00:00Z',0.5,'{}',0.0,'2026-05-30T09:00:00Z','user_input','consolidated',"
         "'approved','2026-05-30T09:00:00Z','2026-05-30T09:00:00Z')";
@@ -140,4 +141,25 @@ TEST(PolicyEnginePostWrite, FulfilledEventDoesNotFeedbackLoop) {
         after_fulfill);  // no feedback growth
     EXPECT_EQ(icol(c.raw(),
         "SELECT COUNT(*) FROM commitments WHERE stmt_id='c1' AND state='FULFILLED'"), 1);
+}
+
+TEST(PolicyEnginePostWrite, StatementWrittenUsesEventTenantForSharedStmtId) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "shared", "tenant-a");
+    seed_commits_stmt(c.raw(), "shared", "tenant-b");
+    append_bus_event(c, "statement.written", "shared", "tenant-b", "{}", "ikey-shared-b");
+
+    PolicyEngine(*a).run_post_write(c, "2026-05-30T10:00:00Z");
+
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM commitments WHERE stmt_id='shared'"), 1);
+    EXPECT_EQ(scol(c.raw(),
+        "SELECT tenant_id FROM commitments WHERE stmt_id='shared'"), "tenant-b");
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM commitment_triggers "
+        "WHERE commitment_stmt_id='shared' AND tenant_id='tenant-b'"), 1);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM commitment_triggers "
+        "WHERE commitment_stmt_id='shared' AND tenant_id='tenant-a'"), 0);
 }

@@ -483,9 +483,24 @@ StatementWriteOutcome Bus::write_impl(
     // M0.7: cross-tenant derived_from gate (§15.3.1 TC-NEG-CROSSTENANT).
     // Build the resolver closure: queries tenant_id of a parent statement by id.
     // Uses StmtHandle RAII; checks prepare_v2 return code per Task 7 quality bar.
-    auto resolve_parent_tenant = [&conn](const std::string& parent_id) -> std::string {
+    auto resolve_parent_tenant =
+        [&conn, &stmt](const std::string& parent_id) -> std::string {
+        const char* same_tenant_sql =
+            "SELECT tenant_id FROM statements WHERE id = ? AND tenant_id = ? LIMIT 1";
+        sqlite3_stmt* same_raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), same_tenant_sql, -1, &same_raw, nullptr) != SQLITE_OK)
+            throw detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant same-tenant prepare");
+        {
+            starling::persistence::StmtHandle h(same_raw);
+            detail::bind_sv(h.get(), 1, parent_id);
+            detail::bind_sv(h.get(), 2, stmt.holder_tenant_id);
+            if (sqlite3_step(h.get()) == SQLITE_ROW) {
+                return stmt.holder_tenant_id;
+            }
+        }
+
         const char* sql =
-            "SELECT tenant_id FROM statements WHERE id = ? LIMIT 1";
+            "SELECT DISTINCT tenant_id FROM statements WHERE id = ? LIMIT 2";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
             throw detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant prepare");
@@ -497,6 +512,9 @@ StatementWriteOutcome Bus::write_impl(
                     sqlite3_column_text(h.get(), 0))) {
                 out = txt;
             }
+        }
+        if (!out.empty() && sqlite3_step(h.get()) == SQLITE_ROW) {
+            return "ambiguous:" + parent_id;
         }
         return out;
     };

@@ -106,8 +106,10 @@ void emit_event(
     ev.aggregate_id = std::string(aggregate_id);
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id,
+        event_type, aggregate_id, canonical_key,
         /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
@@ -130,18 +132,21 @@ double bayesian_update_down(double conf, double strength) {
 
 // ── aggregate_evidence ───────────────────────────────────────────────────────
 
-Aggregated aggregate_evidence(persistence::Connection& conn, std::string_view stmt_id) {
+Aggregated aggregate_evidence(persistence::Connection& conn, std::string_view stmt_id,
+                              std::string_view tenant_id) {
     sqlite3* db = conn.raw();
 
     const char* sql =
         "SELECT weight FROM reconsolidation_pending_evidence "
-        "WHERE window_stmt_id=? ORDER BY weight DESC LIMIT 50";
+        "WHERE window_stmt_id=? AND window_tenant_id=? "
+        "ORDER BY weight DESC LIMIT 50";
 
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "aggregate_evidence: prepare");
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
 
     double sum = 0.0;
     int count = 0;

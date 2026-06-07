@@ -16,14 +16,15 @@ void seed_volatile(sqlite3* db, const std::string& id,
                    const std::string& created_at,
                    double salience = 0.8,
                    int replay_count = 0,
-                   const std::string& provenance = "user_input") {
+                   const std::string& provenance = "user_input",
+                   const std::string& tenant = "default") {
     std::string sql =
         "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
         "subject_kind,subject_id,predicate,object_kind,object_value,"
         "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
         "confidence,observed_at,salience,affect_json,activation,last_accessed,"
         "provenance,consolidation_state,review_status,replay_count,"
-        "created_at,updated_at) VALUES('" + id + "','default','alice','first_person',"
+        "created_at,updated_at) VALUES('" + id + "','" + tenant + "','alice','first_person',"
         "'cognizer','bob','knows','str','x','" + std::string(64,'a') + "','v1',"
         "'assumes','pos',0.9,'2025-01-01T00:00:00Z'," + std::to_string(salience) +
         ",'{}',0.0,'" + created_at + "','" + provenance + "',"
@@ -34,14 +35,15 @@ void seed_volatile(sqlite3* db, const std::string& id,
 
 void seed_consolidated(sqlite3* db, const std::string& id,
                        const std::string& last_accessed,
-                       double salience = 0.0) {
+                       double salience = 0.0,
+                       const std::string& tenant = "default") {
     std::string sql =
         "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
         "subject_kind,subject_id,predicate,object_kind,object_value,"
         "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
         "confidence,observed_at,salience,affect_json,activation,last_accessed,"
         "provenance,consolidation_state,review_status,replay_count,"
-        "created_at,updated_at) VALUES('" + id + "','default','alice','first_person',"
+        "created_at,updated_at) VALUES('" + id + "','" + tenant + "','alice','first_person',"
         "'cognizer','bob','knows','str','x','" + std::string(64,'a') + "','v1',"
         "'assumes','pos',0.9,'2025-01-01T00:00:00Z'," + std::to_string(salience) +
         ",'{}',0.0,'" + last_accessed + "','user_input',"
@@ -213,6 +215,25 @@ TEST(ReplayScheduler, RunDecay_ArchivesOldConsolidated) {
         1);
 }
 
+TEST(ReplayScheduler, RunDecayHandlesSharedStmtIdAcrossTenants) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+
+    seed_consolidated(c.raw(), "shared", "2025-01-01T00:00:00Z", 0.0, "tenant-a");
+    seed_consolidated(c.raw(), "shared", "2025-01-01T00:00:00Z", 0.0, "tenant-b");
+
+    ReplayScheduler sched(*a);
+    const int archived = sched.run_decay(c, {"shared"},
+                                         "2026-05-27T00:00:00Z");
+    EXPECT_EQ(archived, 2);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM statements WHERE id='shared' "
+        "AND consolidation_state='archived'"), 2);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events WHERE event_type='statement.archived' "
+        "AND primary_id='shared'"), 2);
+}
+
 // ── Test 6: run_idle writes a replay_ledger row with mode='idle' ──
 
 TEST(ReplayScheduler, RunIdle_WritesLedger) {
@@ -227,4 +248,26 @@ TEST(ReplayScheduler, RunIdle_WritesLedger) {
     EXPECT_EQ(icol(c.raw(),
         "SELECT COUNT(*) FROM replay_ledger WHERE mode='idle'"),
         1);
+}
+
+TEST(ReplayScheduler, RunIdleCompressesMixedTenantBatch) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+
+    seed_volatile(c.raw(), "vi-a", "2026-05-27T00:00:00Z", 0.9, 0,
+                  "user_input", "tenant-a");
+    seed_volatile(c.raw(), "vi-b", "2026-05-27T00:00:00Z", 0.8, 0,
+                  "user_input", "tenant-b");
+
+    ReplayScheduler sched(*a);
+    auto stats = sched.run_idle(c, "2026-05-27T10:00:00Z");
+
+    EXPECT_EQ(stats.sampled, 2);
+    EXPECT_EQ(stats.compressed, 2);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM statements WHERE consolidation_state='consolidated'"),
+        2);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events WHERE event_type='statement.derived'"),
+        2);
 }

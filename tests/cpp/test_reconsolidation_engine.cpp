@@ -152,6 +152,26 @@ TEST(ReconsolidationEngine, TickRecalledOpensWindow) {
         "open");
 }
 
+TEST(ReconsolidationEngine, TickUsesEventTenantForSharedStmtId) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    ReconsolidationEngine engine(*adapter);
+
+    seed_stmt(conn.raw(), "stmt-shared", "tenant-a");
+    seed_stmt(conn.raw(), "stmt-shared", "tenant-b", "COMMITS");
+    append_bus_event(conn, "statement.recalled", "stmt-shared", "tenant-b",
+                     "{}", "ikey-rec-shared-b");
+
+    auto stats = engine.tick_one_batch(conn, "2026-05-27T10:00:00Z");
+    EXPECT_EQ(stats.events_processed, 1);
+    EXPECT_EQ(stats.windows_opened, 1);
+
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM reconsolidation_windows WHERE stmt_id='stmt-shared'"), 1);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT tenant_id FROM reconsolidation_windows WHERE stmt_id='stmt-shared'"), "tenant-b");
+}
+
 // ── TC-A5-001c: checkpoint idempotency — second tick sees 0 events ──────────
 
 TEST(ReconsolidationEngine, CheckpointAdvancesAndIdempotent) {
@@ -286,6 +306,36 @@ TEST(ReconsolidationEngine, ReconsolidateOpensAndAppends) {
     EXPECT_GE(icol(conn.raw(),
         "SELECT COUNT(*) FROM reconsolidation_pending_evidence "
         "WHERE window_stmt_id='stmt-r'"), 1);
+}
+
+TEST(ReconsolidationEngine, ReconsolidateMissingStatementIsNoOp) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    ReconsolidationEngine engine(*adapter);
+
+    EXPECT_NO_THROW(engine.reconsolidate(conn, "missing", "belief.conflict",
+                                         "hash-missing", 1.0,
+                                         "2026-05-27T10:00:00Z"));
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM reconsolidation_windows WHERE stmt_id='missing'"),
+        0);
+}
+
+TEST(ReconsolidationEngine, ReconsolidateAmbiguousSharedStmtIdFailsClosed) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    ReconsolidationEngine engine(*adapter);
+
+    seed_stmt(conn.raw(), "stmt-shared", "tenant-a");
+    seed_stmt(conn.raw(), "stmt-shared", "tenant-b");
+
+    EXPECT_THROW(engine.reconsolidate(conn, "stmt-shared", "belief.conflict",
+                                      "hash-shared", 1.0,
+                                      "2026-05-27T10:00:00Z"),
+                 std::runtime_error);
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM reconsolidation_windows WHERE stmt_id='stmt-shared'"),
+        0);
 }
 
 // ── Regression: severe arbitration inside an outer SAVEPOINT (pump context) ──

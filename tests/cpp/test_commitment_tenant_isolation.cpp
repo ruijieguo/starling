@@ -66,11 +66,20 @@ TEST(CommitmentTenantIsolation, SharedStmtIdNoCollision) {
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM commitments WHERE stmt_id='x'"), 2);
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='x' AND tenant_id='A'"), "ACTIVE");
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='x' AND tenant_id='B'"), "ACTIVE");
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events "
+        "WHERE event_type='commitment.active_holding' AND primary_id='x'"), 2);
 
     // Fulfilling A's commitment must not touch B's.
     eng.fulfill(c, "x", "A", "2026-05-30T11:00:00Z");
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='x' AND tenant_id='A'"), "FULFILLED");
     EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='x' AND tenant_id='B'"), "ACTIVE");
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events "
+        "WHERE event_type='commitment.fulfilled' AND primary_id='x'"), 1);
+    EXPECT_EQ(icol(c.raw(),
+        "SELECT COUNT(*) FROM bus_events "
+        "WHERE event_type='commitment.released' AND primary_id='x'"), 1);
 
     // Protection rows are tenant-scoped too: one per (tenant, stmt).
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM commitment_protection WHERE protected_stmt_id='x'"), 2);

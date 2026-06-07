@@ -83,12 +83,14 @@ OpenResult open_or_append(persistence::Connection& conn,
     {
         sqlite3_stmt* raw = nullptr;
         const char* sql =
-            "SELECT status FROM reconsolidation_windows WHERE stmt_id = ?1";
+            "SELECT status FROM reconsolidation_windows "
+            "WHERE stmt_id = ?1 AND tenant_id = ?2";
         if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
             throw make_sqlite_error(db, "open_or_append: prepare SELECT");
         }
         StmtHandle h(raw);
         bind_sv(h.get(), 1, stmt_id);
+        bind_sv(h.get(), 2, tenant_id);
         int rc = sqlite3_step(h.get());
         if (rc == SQLITE_ROW) {
             current_status = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
@@ -103,20 +105,21 @@ OpenResult open_or_append(persistence::Connection& conn,
             sqlite3_stmt* raw = nullptr;
             const char* sql =
                 "INSERT INTO reconsolidation_pending_evidence "
-                "(id, window_stmt_id, event_id, event_type, source_stmt_id, "
+                "(id, window_stmt_id, window_tenant_id, event_id, event_type, source_stmt_id, "
                 " payload_hash, weight, arrived_at) "
-                "VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)";
+                "VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)";
             if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
                 throw make_sqlite_error(db, "open_or_append: prepare INSERT evidence");
             }
             StmtHandle h(raw);
             bind_sv(h.get(), 1, evidence_id);
             bind_sv(h.get(), 2, stmt_id);
-            bind_sv(h.get(), 3, event_id);
-            bind_sv(h.get(), 4, event_type);
-            bind_sv(h.get(), 5, payload_hash);
-            sqlite3_bind_double(h.get(), 6, weight);
-            bind_sv(h.get(), 7, now_iso);
+            bind_sv(h.get(), 3, tenant_id);
+            bind_sv(h.get(), 4, event_id);
+            bind_sv(h.get(), 5, event_type);
+            bind_sv(h.get(), 6, payload_hash);
+            sqlite3_bind_double(h.get(), 7, weight);
+            bind_sv(h.get(), 8, now_iso);
             if (sqlite3_step(h.get()) != SQLITE_DONE) {
                 throw make_sqlite_error(db, "open_or_append: INSERT evidence step");
             }
@@ -128,12 +131,13 @@ OpenResult open_or_append(persistence::Connection& conn,
             const char* sql =
                 "UPDATE reconsolidation_windows "
                 "   SET force_close_trigger_count = force_close_trigger_count + 1 "
-                " WHERE stmt_id = ?1";
+                " WHERE stmt_id = ?1 AND tenant_id = ?2";
             if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
                 throw make_sqlite_error(db, "open_or_append: prepare UPDATE trigger_count");
             }
             StmtHandle h(raw);
             bind_sv(h.get(), 1, stmt_id);
+            bind_sv(h.get(), 2, tenant_id);
             if (sqlite3_step(h.get()) != SQLITE_DONE) {
                 throw make_sqlite_error(db, "open_or_append: UPDATE trigger_count step");
             }
@@ -144,12 +148,13 @@ OpenResult open_or_append(persistence::Connection& conn,
             sqlite3_stmt* raw = nullptr;
             const char* sql =
                 "SELECT COUNT(*) FROM reconsolidation_pending_evidence "
-                " WHERE window_stmt_id = ?1";
+                " WHERE window_stmt_id = ?1 AND window_tenant_id = ?2";
             if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
                 throw make_sqlite_error(db, "open_or_append: prepare COUNT evidence");
             }
             StmtHandle h(raw);
             bind_sv(h.get(), 1, stmt_id);
+            bind_sv(h.get(), 2, tenant_id);
             if (sqlite3_step(h.get()) != SQLITE_ROW) {
                 throw make_sqlite_error(db, "open_or_append: COUNT evidence step");
             }
@@ -162,7 +167,7 @@ OpenResult open_or_append(persistence::Connection& conn,
                     "DELETE FROM reconsolidation_pending_evidence "
                     " WHERE id = ("
                     "   SELECT id FROM reconsolidation_pending_evidence "
-                    "    WHERE window_stmt_id = ?1 "
+                    "    WHERE window_stmt_id = ?1 AND window_tenant_id = ?2 "
                     "    ORDER BY arrived_at ASC LIMIT 1"
                     ")";
                 if (sqlite3_prepare_v2(db, del_sql, -1, &raw2, nullptr) != SQLITE_OK) {
@@ -170,6 +175,7 @@ OpenResult open_or_append(persistence::Connection& conn,
                 }
                 StmtHandle h2(raw2);
                 bind_sv(h2.get(), 1, stmt_id);
+                bind_sv(h2.get(), 2, tenant_id);
                 if (sqlite3_step(h2.get()) != SQLITE_DONE) {
                     throw make_sqlite_error(db, "open_or_append: DELETE oldest step");
                 }
@@ -179,12 +185,13 @@ OpenResult open_or_append(persistence::Connection& conn,
                 const char* upd_sql =
                     "UPDATE reconsolidation_windows "
                     "   SET evicted_count = evicted_count + 1 "
-                    " WHERE stmt_id = ?1";
+                    " WHERE stmt_id = ?1 AND tenant_id = ?2";
                 if (sqlite3_prepare_v2(db, upd_sql, -1, &raw3, nullptr) != SQLITE_OK) {
                     throw make_sqlite_error(db, "open_or_append: prepare UPDATE evicted_count");
                 }
                 StmtHandle h3(raw3);
                 bind_sv(h3.get(), 1, stmt_id);
+                bind_sv(h3.get(), 2, tenant_id);
                 if (sqlite3_step(h3.get()) != SQLITE_DONE) {
                     throw make_sqlite_error(db, "open_or_append: UPDATE evicted_count step");
                 }
@@ -196,12 +203,13 @@ OpenResult open_or_append(persistence::Connection& conn,
             sqlite3_stmt* raw = nullptr;
             const char* sql =
                 "SELECT force_close_trigger_count FROM reconsolidation_windows "
-                " WHERE stmt_id = ?1";
+                " WHERE stmt_id = ?1 AND tenant_id = ?2";
             if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
                 throw make_sqlite_error(db, "open_or_append: prepare SELECT trigger_count");
             }
             StmtHandle h(raw);
             bind_sv(h.get(), 1, stmt_id);
+            bind_sv(h.get(), 2, tenant_id);
             if (sqlite3_step(h.get()) == SQLITE_ROW) {
                 int count = sqlite3_column_int(h.get(), 0);
                 if (count >= kForceCloseTriggerCount) {
@@ -209,12 +217,13 @@ OpenResult open_or_append(persistence::Connection& conn,
                     const char* upd_sql =
                         "UPDATE reconsolidation_windows "
                         "   SET status = 'closed' "
-                        " WHERE stmt_id = ?1";
+                        " WHERE stmt_id = ?1 AND tenant_id = ?2";
                     if (sqlite3_prepare_v2(db, upd_sql, -1, &raw2, nullptr) != SQLITE_OK) {
                         throw make_sqlite_error(db, "open_or_append: prepare force close");
                     }
                     StmtHandle h2(raw2);
                     bind_sv(h2.get(), 1, stmt_id);
+                    bind_sv(h2.get(), 2, tenant_id);
                     if (sqlite3_step(h2.get()) != SQLITE_DONE) {
                         throw make_sqlite_error(db, "open_or_append: force close step");
                     }
@@ -257,11 +266,11 @@ OpenResult open_or_append(persistence::Connection& conn,
     }
 }
 
-std::vector<std::string> due_windows(persistence::Connection& conn, std::string_view now_iso) {
+std::vector<DueWindow> due_windows(persistence::Connection& conn, std::string_view now_iso) {
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
     const char* sql =
-        "SELECT stmt_id FROM reconsolidation_windows "
+        "SELECT stmt_id, tenant_id FROM reconsolidation_windows "
         " WHERE status = 'open' AND close_deadline <= ?1";
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "due_windows: prepare");
@@ -269,9 +278,14 @@ std::vector<std::string> due_windows(persistence::Connection& conn, std::string_
     StmtHandle h(raw);
     bind_sv(h.get(), 1, now_iso);
 
-    std::vector<std::string> result;
+    std::vector<DueWindow> result;
     while (sqlite3_step(h.get()) == SQLITE_ROW) {
-        result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0)));
+        const auto* stmt = sqlite3_column_text(h.get(), 0);
+        const auto* tenant = sqlite3_column_text(h.get(), 1);
+        result.push_back({
+            stmt ? reinterpret_cast<const char*>(stmt) : "",
+            tenant ? reinterpret_cast<const char*>(tenant) : "",
+        });
     }
     return result;
 }

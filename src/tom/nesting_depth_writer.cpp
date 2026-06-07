@@ -18,7 +18,7 @@ int compute_nesting_depth(
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db,
-            "SELECT nesting_depth FROM statements WHERE id = ?",
+            "SELECT nesting_depth FROM statements WHERE id = ? AND tenant_id = ?",
             -1, &raw, nullptr) != SQLITE_OK) {
         throw std::runtime_error(
             std::string("nesting_depth_writer: prepare failed: ") +
@@ -26,6 +26,7 @@ int compute_nesting_depth(
     }
     persistence::StmtHandle h(raw);
     sqlite3_bind_text(h.get(), 1, s.object_value.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(h.get(), 2, s.holder_tenant_id.c_str(), -1, SQLITE_TRANSIENT);
 
     const int rc = sqlite3_step(h.get());
     if (rc == SQLITE_ROW) {
@@ -37,7 +38,8 @@ int compute_nesting_depth(
     }
     if (rc == SQLITE_DONE) {
         throw std::runtime_error(
-            "nesting_depth_writer: parent statement not found: " + s.object_value);
+            "nesting_depth_writer: parent statement not found in tenant " +
+            s.holder_tenant_id + ": " + s.object_value);
     }
     throw std::runtime_error(
         std::string("nesting_depth_writer: step failed: ") + sqlite3_errmsg(db));

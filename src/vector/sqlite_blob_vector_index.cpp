@@ -26,7 +26,13 @@ void SqliteBlobVectorIndex::insert(
         "INSERT INTO statement_vectors"
         "(stmt_id,tenant_id,index_vector,raw_embedding,dim,model,status,embedded_at)"
         " VALUES(?,?,?,?,?,'stub','embedded','1970-01-01T00:00:00Z')"
-        " ON CONFLICT(stmt_id) DO UPDATE SET index_vector=excluded.index_vector";
+        " ON CONFLICT(tenant_id,stmt_id) DO UPDATE SET"
+        "   index_vector=excluded.index_vector,"
+        "   raw_embedding=excluded.raw_embedding,"
+        "   dim=excluded.dim,"
+        "   model=excluded.model,"
+        "   status='embedded',"
+        "   embedded_at=excluded.embedded_at";
 
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
@@ -53,7 +59,8 @@ std::vector<ScoredId> SqliteBlobVectorIndex::search_topk(
 {
     const char* sql =
         "SELECT v.stmt_id, v.index_vector"
-        " FROM statement_vectors v JOIN statements s ON s.id = v.stmt_id"
+        " FROM statement_vectors v"
+        " JOIN statements s ON s.id = v.stmt_id AND s.tenant_id = v.tenant_id"
         " WHERE v.tenant_id = ?1 AND v.status = 'embedded'"
         "   AND (?2 = '' OR s.holder_id = ?2)"
         "   AND (?3 = '' OR s.holder_perspective = ?3)"
@@ -100,9 +107,10 @@ std::vector<ScoredId> SqliteBlobVectorIndex::search_topk(
 
 void SqliteBlobVectorIndex::remove(
     persistence::Connection& conn,
-    std::string_view stmt_id)
+    std::string_view stmt_id,
+    std::string_view tenant_id)
 {
-    const char* sql = "DELETE FROM statement_vectors WHERE stmt_id=?";
+    const char* sql = "DELETE FROM statement_vectors WHERE stmt_id=? AND tenant_id=?";
 
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
@@ -110,6 +118,7 @@ void SqliteBlobVectorIndex::remove(
     StmtHandle h(raw);
 
     bind_sv(h.get(), 1, stmt_id);
+    bind_sv(h.get(), 2, tenant_id);
 
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(conn.raw(), "SqliteBlobVectorIndex::remove step");

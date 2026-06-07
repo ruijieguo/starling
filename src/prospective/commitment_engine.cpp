@@ -61,8 +61,10 @@ void emit_event(
     ev.aggregate_id = std::string(aggregate_id);
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id,
+        event_type, aggregate_id, canonical_key,
         /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
@@ -70,7 +72,7 @@ void emit_event(
         ow.append(ev);
     } catch (const persistence::SqliteError& e) {
         // ONLY tolerate the idempotency_key UNIQUE collision: a commitment.* event
-        // with the same (event_type, aggregate_id, primary_id) re-emitted inside
+        // with the same (event_type, aggregate_id, tenant_id, primary_id) re-emitted inside
         // the same window bucket coalesces (the state UPDATE has already committed;
         // the duplicate event is dropped). Any other SQLite error (I/O, busy,
         // schema) is a real failure and must propagate — a broad catch(...) would

@@ -30,7 +30,11 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s);
 // provenance_protocol_id is empty, returns a rejection with
 // error_kind="cross_tenant_derivation_forbidden". If protocol_id is set,
 // returns accepted with review_status_override=REVIEW_REQUESTED.
-// resolve_parent_tenant must return "" when the parent row is not found.
+// resolve_parent_tenant must return:
+//   - the parent tenant when exactly one parent row is found,
+//   - "" when the parent row is not found,
+//   - an error sentinel (for example "ambiguous:<id>") when the bare
+//     StatementRef is not enough to resolve a unique (id, tenant_id) row.
 ValidationOutcome validate_for_write(
     const ExtractedStatement& s,
     const std::function<std::string(const std::string&)>& resolve_parent_tenant);

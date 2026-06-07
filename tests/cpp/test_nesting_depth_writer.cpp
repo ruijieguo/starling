@@ -50,7 +50,8 @@ extractor::ExtractedStatement make_stmt(
 // triggering the writer's own nesting_depth logic).
 void insert_raw_statement(persistence::Connection& conn,
                           const std::string& id,
-                          int nesting_depth) {
+                          int nesting_depth,
+                          const std::string& tenant_id = "t1") {
     sqlite3* db = conn.raw();
     const std::string sql =
         "INSERT INTO statements("
@@ -65,7 +66,7 @@ void insert_raw_statement(persistence::Connection& conn,
         "  nesting_depth,"
         "  created_at, updated_at"
         ") VALUES ("
-        "  ?,  'default', 'alice', 'first_person',"
+        "  ?,  ?, 'alice', 'first_person',"
         "  'cognizer', 'alice', 'knows', 'str', 'math',"
         "  'hash-x', 'v1',"
         "  'believes', 'pos', 0.9, '2026-05-26T00:00:00Z',"
@@ -81,7 +82,8 @@ void insert_raw_statement(persistence::Connection& conn,
         << sqlite3_errmsg(db);
     persistence::StmtHandle h(raw);
     sqlite3_bind_text(h.get(), 1, id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(h.get(), 2, nesting_depth);
+    sqlite3_bind_text(h.get(), 2, tenant_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(h.get(), 3, nesting_depth);
     ASSERT_EQ(sqlite3_step(h.get()), SQLITE_DONE) << sqlite3_errmsg(db);
 }
 
@@ -170,6 +172,20 @@ TEST(NestingDepthWriter, MissingParentThrows) {
 
     // No parent row inserted — must throw runtime_error.
     auto s = make_stmt("statement", "nonexistent-stmt-id");
+    EXPECT_THROW(
+        nesting_depth_writer::compute_nesting_depth(conn, s),
+        std::runtime_error);
+}
+
+TEST(NestingDepthWriter, SameStatementIdInOtherTenantDoesNotSatisfyLookup) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    const std::string parent_id = "shared-parent";
+    insert_raw_statement(conn, parent_id, 0, "other-tenant");
+
+    auto s = make_stmt("statement", parent_id);
+    s.holder_tenant_id = "t1";
     EXPECT_THROW(
         nesting_depth_writer::compute_nesting_depth(conn, s),
         std::runtime_error);

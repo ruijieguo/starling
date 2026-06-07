@@ -75,8 +75,10 @@ void emit_event(
     // No causation parent — replay events are roots.
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id,
+        event_type, aggregate_id, canonical_key,
         /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
@@ -211,18 +213,15 @@ ReplayStats do_compress_and_emit(
     stats.replay_batch_id = random_hex_32();
     stats.sampled = static_cast<int>(rows.size());
 
-    // Collect ids per tenant
-    // For M0.8 simplicity: group all by default tenant (or use per-row tenant)
-    std::vector<std::string> ids;
-    ids.reserve(rows.size());
-    for (const auto& r : rows) ids.push_back(r.id);
+    std::map<std::string, std::vector<std::string>> by_tenant;
+    for (const auto& r : rows) {
+        by_tenant[r.tenant_id].push_back(r.id);
+    }
 
-    // Use first row's tenant_id — all rows from the same :memory: DB are 'default'
-    // For multi-tenant: group by tenant and call op_compress per group.
-    const std::string tenant_id = rows.empty() ? "default" : rows[0].tenant_id;
-
-    auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
-    stats.compressed = res.affected;
+    for (const auto& [tenant_id, ids] : by_tenant) {
+        auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
+        stats.compressed += res.affected;
+    }
 
     // Emit statement.derived for each compressed stmt
     for (const auto& r : rows) {
@@ -403,18 +402,19 @@ int ReplayScheduler::run_decay(persistence::Connection& conn,
     for (const auto& id : deduped) {
         const char* sql =
             "SELECT id, holder_id, tenant_id, consolidation_state "
-            "FROM statements WHERE id=? LIMIT 1";
+            "FROM statements WHERE id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) continue;
         StmtHandle h(raw);
         bind_sv(h.get(), 1, id);
-        if (sqlite3_step(h.get()) != SQLITE_ROW) continue;
-        CandInfo ci;
-        ci.id        = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
-        ci.holder_id = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));
-        ci.tenant_id = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 2));
-        ci.state     = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 3));
-        info.push_back(std::move(ci));
+        while (sqlite3_step(h.get()) == SQLITE_ROW) {
+            CandInfo ci;
+            ci.id        = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
+            ci.holder_id = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));
+            ci.tenant_id = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 2));
+            ci.state     = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 3));
+            info.push_back(std::move(ci));
+        }
     }
 
     // Group by tenant for op_decay call

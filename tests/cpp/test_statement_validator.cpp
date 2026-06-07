@@ -165,4 +165,15 @@ TEST(StatementValidator, AcceptsConfidenceAtMaximum) {
     EXPECT_EQ(outcome.review_status_override, std::nullopt);
 }
 
+TEST(StatementValidator, RejectsAmbiguousDerivedParent) {
+    auto s = valid_first_person();
+    s.derived_from = {"shared-parent"};
+
+    auto outcome = validate_for_write(
+        s, [](const std::string&) { return std::string("ambiguous:shared-parent"); });
+
+    EXPECT_FALSE(outcome.ok());
+    EXPECT_EQ(outcome.error_kind, "derived_parent_ambiguous");
+}
+
 }  // namespace starling::extractor

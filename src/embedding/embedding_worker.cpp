@@ -79,8 +79,10 @@ void emit_event(persistence::Connection& conn, std::string_view event_type,
     ev.aggregate_id = std::string(aggregate_id);
     const std::string window_bucket =
         compute_window_bucket(event_type, std::chrono::system_clock::now());
+    const std::string canonical_key =
+        std::string(tenant_id) + ":" + std::string(primary_id);
     ev.idempotency_key = compute_idempotency_key(
-        event_type, aggregate_id, primary_id, /*causation_root=*/"", window_bucket);
+        event_type, aggregate_id, canonical_key, /*causation_root=*/"", window_bucket);
     ev.payload_json = std::move(payload_json);
     OutboxWriter ow(conn);
     ow.append(ev);
@@ -108,7 +110,7 @@ void mark_failed(persistence::Connection& conn, const PendingRow& row,
         "INSERT INTO statement_vectors"
         "(stmt_id,tenant_id,dim,model,status,retry_count,last_attempt_at)"
         " VALUES(?,?,?,?,'failed',1,?)"
-        " ON CONFLICT(stmt_id) DO UPDATE SET"
+        " ON CONFLICT(tenant_id,stmt_id) DO UPDATE SET"
         "   status='failed',"
         "   retry_count=retry_count+1,"
         "   last_attempt_at=excluded.last_attempt_at";
@@ -138,7 +140,7 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
             "SELECT s.id, s.tenant_id, s.subject_id, s.predicate, s.object_value, "
             "       COALESCE(v.retry_count,0) "
             "FROM statements s "
-            "LEFT JOIN statement_vectors v ON v.stmt_id = s.id "
+            "LEFT JOIN statement_vectors v ON v.stmt_id = s.id AND v.tenant_id = s.tenant_id "
             "WHERE s.consolidation_state NOT IN ('archived','forgotten') "
             "  AND (v.stmt_id IS NULL OR (v.status='failed' AND v.retry_count < ?)) "
             "LIMIT ?";
@@ -187,12 +189,14 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
         for (const auto& sc : scored) {
             if (sc.stmt_id == row.id) continue;  // exclude self
             const char* nsql =
-                "SELECT index_vector FROM statement_vectors WHERE stmt_id=?";
+                "SELECT index_vector FROM statement_vectors "
+                "WHERE stmt_id=? AND tenant_id=?";
             sqlite3_stmt* nraw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), nsql, -1, &nraw, nullptr) != SQLITE_OK)
                 throw make_sqlite_error(conn.raw(), "embedding_worker: neighbor fetch prepare");
             StmtHandle nh(nraw);
             bind_sv(nh.get(), 1, sc.stmt_id);
+            bind_sv(nh.get(), 2, row.tenant_id);
             if (sqlite3_step(nh.get()) == SQLITE_ROW) {
                 const void* bp = sqlite3_column_blob(nh.get(), 0);
                 int bn = sqlite3_column_bytes(nh.get(), 0);
@@ -218,7 +222,7 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
                     "INSERT INTO statement_vectors"
                     "(stmt_id,tenant_id,index_vector,raw_embedding,dim,model,status,retry_count,embedded_at)"
                     " VALUES(?,?,?,?,?,?,'embedded',0,?)"
-                    " ON CONFLICT(stmt_id) DO UPDATE SET"
+                    " ON CONFLICT(tenant_id,stmt_id) DO UPDATE SET"
                     "   index_vector=excluded.index_vector,"
                     "   raw_embedding=excluded.raw_embedding,"
                     "   dim=excluded.dim,"
