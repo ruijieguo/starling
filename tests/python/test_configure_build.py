@@ -142,6 +142,34 @@ def test_network_disabled_adds_fetchcontent_disconnected_define(tmp_path):
     assert "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" in cmd
 
 
+def test_planned_commands_include_configure_build_and_ctest(tmp_path):
+    commands = cb.planned_commands(
+        configure_cmd=["cmake", "-S", ".", "-B", str(tmp_path / "build")],
+        build_dir=tmp_path / "build",
+        build=True,
+        test=True,
+    )
+
+    assert commands == [
+        ["cmake", "-S", ".", "-B", str(tmp_path / "build")],
+        ["cmake", "--build", str(tmp_path / "build")],
+        ["ctest", "--test-dir", str(tmp_path / "build"), "--output-on-failure"],
+    ]
+
+
+def test_python_editable_command_passes_cmake_defines(tmp_path):
+    cmd = cb.python_editable_command(
+        build_dir=tmp_path / "build-linux",
+        cmake_args=("-DSQLite3_LIBRARY=/sqlite/libsqlite3.so", "-DSTARLING_BUILD_TESTS=ON"),
+    )
+
+    assert cmd[:4] == [str(cb.python_executable()), "-m", "pip", "install"]
+    assert "-e" in cmd
+    assert "--no-build-isolation" in cmd
+    assert f"--config-settings=build-dir={tmp_path / 'build-linux'}" in cmd
+    assert "--config-settings=cmake.define.SQLite3_LIBRARY=/sqlite/libsqlite3.so" in cmd
+
+
 def test_ordered_dependency_roots_prefers_conda_prefix_before_pkg_cache(tmp_path, monkeypatch):
     prefix = tmp_path / "env"
     pkgs = tmp_path / "pkgs"

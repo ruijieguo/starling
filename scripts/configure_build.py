@@ -350,6 +350,44 @@ def run(cmd: Sequence[str], *, cwd: Path = REPO_ROOT) -> None:
     subprocess.run(list(map(str, cmd)), cwd=cwd, check=True)
 
 
+def planned_commands(
+    *,
+    configure_cmd: Sequence[str],
+    build_dir: Path,
+    build: bool,
+    test: bool,
+) -> list[list[str]]:
+    commands = [list(configure_cmd)]
+    if build:
+        commands.append(["cmake", "--build", str(build_dir)])
+    if test:
+        commands.append(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
+    return commands
+
+
+def python_editable_command(*, build_dir: Path, cmake_args: Sequence[str]) -> list[str]:
+    cmd = [
+        str(python_executable()),
+        "-m",
+        "pip",
+        "install",
+        "-e",
+        ".[dev]",
+        "--no-build-isolation",
+        f"--config-settings=build-dir={build_dir}",
+    ]
+    for arg in cmake_args:
+        if not arg.startswith("-D"):
+            continue
+        key_value = arg[2:]
+        cmd.append(f"--config-settings=cmake.define.{key_value}")
+    return cmd
+
+
+def install_build_tools(python: Path) -> None:
+    run([str(python), "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements-build.txt")])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=default_build_dir())
@@ -370,6 +408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     python = python_executable()
+    if args.install_build_tools:
+        install_build_tools(python)
     try:
         check_stale_cache(args.build_dir, expected_generator="Ninja")
         hints = discover_dependency_hints(
@@ -382,7 +422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     ninja = REPO_ROOT / ".venv" / ("Scripts/ninja.exe" if os.name == "nt" else "bin/ninja")
-    cmd = cmake_configure_command(
+    configure_cmd = cmake_configure_command(
         build_dir=args.build_dir,
         build_type=args.build_type,
         python=python,
@@ -396,8 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"found: {note}")
     for warning in hints.warnings:
         print(f"warning: {warning}", file=sys.stderr)
-    print("Configure command:")
-    print(" ".join(cmd))
+    if args.python_editable:
+        run(python_editable_command(build_dir=args.build_dir, cmake_args=hints.cmake_args))
+        return 0
+    for cmd in planned_commands(configure_cmd=configure_cmd, build_dir=args.build_dir, build=args.build, test=args.test):
+        run(cmd)
     return 0
 
 
