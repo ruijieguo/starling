@@ -59,27 +59,54 @@ C++20 · raw SQLite (≥3.46) · libcurl · nlohmann/json · OpenSSL · pybind11
 
 ## Build & test
 
-**Prerequisites:** a C++20 compiler, CMake ≥3.27, Ninja, SQLite ≥3.46, OpenSSL, libcurl, and Python ≥3.11. (`nlohmann/json` is auto-fetched if not found.) On macOS/Homebrew: `brew install cmake ninja sqlite openssl@3 curl`.
+Follow these steps in order — copy-paste each block from the repo root. **You do NOT need a system-wide CMake or Ninja**: they are installed as pip wheels into the virtualenv in step 2. The only system requirement is a C++ compiler (and git).
 
-**How the build system works:** [scikit-build-core](https://scikit-build-core.readthedocs.io/) is the Python build backend (declared in `pyproject.toml`). It drives a CMake + Ninja build that compiles the C++ core and the `pybind11` extension module `starling._core` (CMake flag `-DSTARLING_BUILD_PYTHON=ON`). The SQL files under `migrations/` are embedded into the core at build time, so the schema travels with the binary — there is no separate migration step at runtime. `pip install -e ".[dev]"` produces an *editable* install whose import hook can auto-rebuild the extension; the C++ targets can also be built directly with CMake (below) for `ctest`.
+**Prerequisites**
+- **Python ≥3.11** — check with `python3 --version`.
+- **A C++20 compiler + git.** macOS: `xcode-select --install` (installs Apple Clang + git). Linux: `sudo apt install build-essential git`.
+- The C++ core links **SQLite, OpenSSL, libcurl**. These are usually already present (macOS: via the Xcode Command Line Tools). On Linux install the dev headers: `sudo apt install libsqlite3-dev libssl-dev libcurl4-openssl-dev`. `nlohmann/json` is auto-fetched during the build. If the build later errors on a missing header, install that one dev package.
 
-**C++ core + tests:**
+**Step 1 — create and activate a virtualenv**
 
 ```bash
-cmake -S . -B build -G Ninja
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+```
+
+**Step 2 — install the build toolchain into the venv**
+
+CMake, Ninja, the build backend and pybind11 are Python packages here (real prebuilt binaries shipped on PyPI) — not system tools:
+
+```bash
+pip install cmake ninja scikit-build-core pybind11
+```
+
+**Step 3 — build the C++ core + the editable Python package (one command)**
+
+`--config-settings=build-dir=build` keeps a persistent `build/` directory so `ctest` (and the C++ rebuild loop) can use it:
+
+```bash
+pip install -e ".[dev]" --no-build-isolation --config-settings=build-dir=build
+```
+
+**Step 4 — run the tests**
+
+```bash
+ctest --test-dir build     # C++ (GoogleTest), ~500 tests
+pytest                     # Python, ~540 tests
+```
+
+That's the whole setup. `from starling import _core` (the bound C++ core) and the `starling.Memory` facade now work; `python examples/quickstart.py` runs an offline end-to-end demo.
+
+**After you change C++ sources / `migrations/` / bindings**, recompile and refresh the editable extension (otherwise pytest may load a stale `_core.so`):
+
+```bash
 cmake --build build
-ctest --test-dir build
+cmake --install build --prefix ".venv/lib/python$(python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
 ```
 
-**Python bindings + tests:**
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"          # scikit-build compiles the _core extension
-pytest tests/python
-```
-
-> Note: after changing C++ sources, migrations, or bindings, refresh the editable extension with `cmake --build build && cmake --install build --prefix .venv/lib/python<ver>/site-packages` before re-running pytest — `pip install -e .` alone can leave a stale `_core.so` due to scikit-build glob caching.
+**How it works:** [scikit-build-core](https://scikit-build-core.readthedocs.io/) (the build backend declared in `pyproject.toml`) drives the CMake + Ninja build of the C++ core and the `pybind11` module `starling._core`. The `migrations/*.sql` are embedded into the binary at build time, so the schema travels with the core — there is no runtime migration step. Step 3 produces both the persistent `build/` (for `ctest` and the refresh loop) and the editable install (for `import starling`).
 
 The Python surface is the bound C++ core: `from starling import _core`, with the application-facing `starling.Memory` facade on top (`open` / `remember` / `recall` / `tick` / `render_working_set` / `close`). See [`tests/python/`](tests/python/) and [`examples/`](examples/) for runnable examples of writing statements, retrieval, replay, reconsolidation, and the commitment lifecycle.
 
