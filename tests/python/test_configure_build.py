@@ -113,16 +113,18 @@ def test_runtime_link_cache_values_read_existing_flags(tmp_path):
                 "CMAKE_BUILD_RPATH:STRING=/existing/a;/existing/b",
                 "CMAKE_EXE_LINKER_FLAGS:STRING=-Wl,-z,relro",
                 "CMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,-O1",
+                "CMAKE_MODULE_LINKER_FLAGS:STRING=-Wl,-z,now",
             ]
         ),
         encoding="utf-8",
     )
 
-    build_rpath, exe_flags, shared_flags = cb.runtime_link_cache_values(build_dir)
+    build_rpath, exe_flags, shared_flags, module_flags = cb.runtime_link_cache_values(build_dir)
 
     assert build_rpath == ("/existing/a", "/existing/b")
     assert exe_flags == "-Wl,-z,relro"
     assert shared_flags == "-Wl,-O1"
+    assert module_flags == "-Wl,-z,now"
 
 
 def test_cmake_configure_command_contains_core_flags(tmp_path):
@@ -191,7 +193,7 @@ def test_python_editable_command_passes_cmake_defines(tmp_path):
     assert "--config-settings=cmake.define.SQLite3_LIBRARY=/sqlite/libsqlite3.so" in cmd
 
 
-def test_ordered_dependency_roots_prefers_conda_prefix_before_pkg_cache(tmp_path, monkeypatch):
+def test_ordered_dependency_roots_prefers_package_cache_before_conda_prefix(tmp_path, monkeypatch):
     prefix = tmp_path / "env"
     pkgs = tmp_path / "pkgs"
     sqlite_cache = pkgs / "sqlite-3.51.0-h_0"
@@ -203,7 +205,7 @@ def test_ordered_dependency_roots_prefers_conda_prefix_before_pkg_cache(tmp_path
 
     roots = cb.ordered_dependency_roots("Linux", [pkgs])
 
-    assert roots[:3] == [prefix, sqlite_cache, openssl_cache]
+    assert roots[:3] == [sqlite_cache, openssl_cache, prefix]
 
 
 def test_discover_dependency_hints_from_conda_cache(tmp_path, monkeypatch):
@@ -291,6 +293,57 @@ def test_discover_dependency_hints_skips_old_conda_prefix_sqlite_for_cache(tmp_p
     assert f"-DSQLite3_LIBRARY={new_sqlite / 'lib' / 'libsqlite3.so'}" in args
 
 
+def test_discover_dependency_hints_prefers_package_cache_over_broad_conda_root_libs(tmp_path, monkeypatch):
+    conda = tmp_path / "miniconda3"
+    pkgs = conda / "pkgs"
+    (conda / "include" / "openssl").mkdir(parents=True)
+    (conda / "include" / "curl").mkdir(parents=True)
+    (conda / "include" / "unicode").mkdir(parents=True)
+    (conda / "lib").mkdir()
+    (conda / "include" / "openssl" / "ssl.h").write_text("")
+    (conda / "include" / "curl" / "curl.h").write_text("")
+    (conda / "include" / "unicode" / "utypes.h").write_text("")
+    (conda / "lib" / "libssl.so").write_text("")
+    (conda / "lib" / "libcrypto.so").write_text("")
+    (conda / "lib" / "libcurl.so").write_text("")
+    (conda / "lib" / "libicuuc.so").write_text("")
+
+    sqlite = pkgs / "sqlite-3.51.0-h_0"
+    openssl = pkgs / "openssl-3.0.18-h_0"
+    curl = pkgs / "libcurl-8.9.1-h_0"
+    icu = pkgs / "icu-73.1-h_0"
+    for root in (sqlite, openssl, curl, icu):
+        (root / "include").mkdir(parents=True)
+        (root / "lib").mkdir()
+    (sqlite / "include" / "sqlite3.h").write_text('#define SQLITE_VERSION "3.51.0"\n')
+    (sqlite / "lib" / "libsqlite3.so").write_text("")
+    (openssl / "include" / "openssl").mkdir()
+    (openssl / "include" / "openssl" / "ssl.h").write_text("")
+    (openssl / "lib" / "libssl.so").write_text("")
+    (openssl / "lib" / "libcrypto.so").write_text("")
+    (curl / "include" / "curl").mkdir()
+    (curl / "include" / "curl" / "curl.h").write_text("")
+    (curl / "lib" / "libcurl.so").write_text("")
+    (icu / "include" / "unicode").mkdir()
+    (icu / "include" / "unicode" / "utypes.h").write_text("")
+    (icu / "lib" / "libicuuc.so").write_text("")
+    monkeypatch.setenv("CONDA_PREFIX", str(conda))
+    monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
+
+    hints = cb.discover_dependency_hints(
+        system="Linux",
+        pkg_roots=[pkgs],
+        build_dirs=[],
+        python=Path("/venv/bin/python"),
+    )
+
+    args = set(hints.cmake_args)
+    assert f"-DOPENSSL_ROOT_DIR={openssl}" in args
+    assert f"-DCURL_LIBRARY={curl / 'lib' / 'libcurl.so'}" in args
+    assert f"-DICU_UC_LIBRARY={icu / 'lib' / 'libicuuc.so'}" in args
+    assert all(str(conda / "lib") not in arg for arg in args)
+
+
 def test_discover_dependency_hints_requires_coherent_openssl_root(tmp_path, monkeypatch):
     monkeypatch.delenv("CONDA_PREFIX", raising=False)
     monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
@@ -338,6 +391,7 @@ def test_runtime_link_args_add_narrow_libssh2_dir(tmp_path):
     assert f"-DCMAKE_BUILD_RPATH={ssh_root / 'lib'}" in args
     assert "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--disable-new-dtags" in args
     assert "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--disable-new-dtags" in args
+    assert "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,--disable-new-dtags" in args
 
 
 def test_runtime_link_args_do_not_add_conda_root_lib(tmp_path):
@@ -347,6 +401,94 @@ def test_runtime_link_args_do_not_add_conda_root_lib(tmp_path):
     args = cb.runtime_link_args_for_linux(curl, [tmp_path / "miniconda3" / "pkgs"])
 
     assert all(str(tmp_path / "miniconda3" / "lib") not in arg for arg in args)
+
+
+def test_runtime_link_args_filter_existing_broad_conda_root_rpath(tmp_path, monkeypatch):
+    conda = tmp_path / "miniconda3"
+    pkgs = conda / "pkgs"
+    curl = pkgs / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    ssh = pkgs / "libssh2-1.11.1-h_0" / "lib" / "libssh2.so"
+    keep = tmp_path / "custom" / "lib"
+    curl.parent.mkdir(parents=True)
+    ssh.parent.mkdir(parents=True)
+    keep.mkdir(parents=True)
+    curl.write_text("")
+    ssh.write_text("")
+    monkeypatch.setenv("CONDA_PREFIX", str(conda))
+
+    args = cb.runtime_link_args_for_linux(
+        curl,
+        [pkgs],
+        existing_build_rpath=[conda / "lib", keep],
+    )
+
+    assert f"-DCMAKE_BUILD_RPATH={keep};{ssh.parent}" in args
+    assert all(str(conda / "lib") not in arg for arg in args)
+
+
+def test_runtime_link_args_filter_dependency_broad_conda_root_rpath(tmp_path, monkeypatch):
+    conda = tmp_path / "miniconda3"
+    pkgs = conda / "pkgs"
+    curl = pkgs / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    stdcxx = pkgs / "libstdcxx-15.2.0-h_0" / "lib" / "libstdc++.so.6"
+    for path in (curl, stdcxx):
+        path.parent.mkdir(parents=True)
+        path.write_text("")
+    monkeypatch.setenv("CONDA_PREFIX", str(conda))
+
+    args = cb.runtime_link_args_for_linux(
+        curl,
+        [pkgs],
+        dependency_library_dirs=[conda / "lib", curl.parent],
+    )
+
+    expected_rpath = f"{curl.parent};{stdcxx.parent}"
+    assert f"-DCMAKE_BUILD_RPATH={expected_rpath}" in args
+    assert f"-DCMAKE_INSTALL_RPATH={expected_rpath}" in args
+    assert all(str(conda / "lib") not in arg for arg in args)
+
+
+def test_runtime_link_args_add_install_rpath_with_dependency_and_stdlib_dirs(tmp_path):
+    pkgs = tmp_path / "pkgs"
+    curl = pkgs / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    ssh = pkgs / "libssh2-1.11.1-h_0" / "lib" / "libssh2.so"
+    stdcxx = pkgs / "libstdcxx-15.2.0-h_0" / "lib" / "libstdc++.so.6"
+    openssl_lib = pkgs / "openssl-3.0.18-h_0" / "lib"
+    sqlite_lib = pkgs / "sqlite-3.51.0-h_0" / "lib"
+    for path in (curl, ssh, stdcxx):
+        path.parent.mkdir(parents=True)
+        path.write_text("")
+    openssl_lib.mkdir(parents=True)
+    sqlite_lib.mkdir(parents=True)
+
+    args = cb.runtime_link_args_for_linux(
+        curl,
+        [pkgs],
+        dependency_library_dirs=[openssl_lib, sqlite_lib, curl.parent],
+    )
+
+    expected_rpath = f"{openssl_lib};{sqlite_lib};{curl.parent};{ssh.parent};{stdcxx.parent}"
+    assert f"-DCMAKE_BUILD_RPATH={expected_rpath}" in args
+    assert f"-DCMAKE_INSTALL_RPATH={expected_rpath}" in args
+
+
+def test_runtime_link_args_add_stdlib_rpath_without_libssh2(tmp_path):
+    pkgs = tmp_path / "pkgs"
+    curl = pkgs / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    stdcxx = pkgs / "libstdcxx-15.2.0-h_0" / "lib" / "libstdc++.so.6"
+    for path in (curl, stdcxx):
+        path.parent.mkdir(parents=True)
+        path.write_text("")
+
+    args = cb.runtime_link_args_for_linux(
+        curl,
+        [pkgs],
+        dependency_library_dirs=[curl.parent],
+    )
+
+    expected_rpath = f"{curl.parent};{stdcxx.parent}"
+    assert f"-DCMAKE_BUILD_RPATH={expected_rpath}" in args
+    assert f"-DCMAKE_INSTALL_RPATH={expected_rpath}" in args
 
 
 def test_runtime_link_args_ignore_system_custom_libcurl(tmp_path):
@@ -390,9 +532,11 @@ def test_runtime_link_args_preserve_existing_values_and_deduplicate(tmp_path):
         existing_build_rpath=[existing_rpath],
         existing_exe_linker_flags="-Wl,-z,relro -Wl,--disable-new-dtags",
         existing_shared_linker_flags="-Wl,-O1",
+        existing_module_linker_flags="-Wl,-z,now",
     )
 
     assert f"-DCMAKE_BUILD_RPATH={existing_rpath};{ssh_root / 'lib'}" in args
     assert "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,relro -Wl,--disable-new-dtags" in args
     assert "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-O1 -Wl,--disable-new-dtags" in args
-    assert sum("--disable-new-dtags" in arg for arg in args) == 2
+    assert "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-z,now -Wl,--disable-new-dtags" in args
+    assert sum("--disable-new-dtags" in arg for arg in args) == 3

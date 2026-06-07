@@ -134,9 +134,6 @@ def append_pair_args(args: list[str], *, include_key: str, library_key: str, pai
 
 def ordered_dependency_roots(system: str, pkg_roots: Iterable[Path]) -> list[Path]:
     roots: list[Path] = []
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
-        roots.append(Path(conda_prefix).expanduser())
     if system == "Darwin":
         roots.extend(
             Path(p)
@@ -149,11 +146,18 @@ def ordered_dependency_roots(system: str, pkg_roots: Iterable[Path]) -> list[Pat
                 "/usr/local/opt/curl",
             )
         )
+
+    # Prefer package-specific conda cache prefixes over the broad active
+    # environment prefix; adding all of CONDA_PREFIX/lib to link paths can pull
+    # in incompatible runtime libraries such as libstdc++ on Linux.
     roots.extend(conda_pkg_candidates(pkg_roots, "sqlite"))
     roots.extend(conda_pkg_candidates(pkg_roots, "openssl"))
     roots.extend(conda_pkg_candidates(pkg_roots, "libcurl"))
     roots.extend(conda_pkg_candidates(pkg_roots, "curl"))
     roots.extend(conda_pkg_candidates(pkg_roots, "icu"))
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        roots.append(Path(conda_prefix).expanduser())
 
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -199,6 +203,35 @@ def unique_cmake_list(values: Iterable[str | Path]) -> list[str]:
     return result
 
 
+def broad_conda_lib_dirs(pkg_roots: Iterable[Path]) -> set[str]:
+    dirs: list[Path] = []
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        dirs.append(Path(conda_prefix).expanduser() / "lib")
+    for pkg_root in pkg_roots:
+        root = Path(pkg_root).expanduser()
+        if root.name == "pkgs":
+            dirs.append(root.parent / "lib")
+
+    broad: set[str] = set()
+    for libdir in dirs:
+        if libdir.is_absolute():
+            broad.add(str(absolute_path(libdir)))
+    return broad
+
+
+def filter_broad_conda_rpaths(values: Iterable[str | Path], pkg_roots: Iterable[Path]) -> list[str]:
+    broad = broad_conda_lib_dirs(pkg_roots)
+    result: list[str] = []
+    for item in unique_cmake_list(values):
+        path = Path(item)
+        key = str(absolute_path(path)) if path.is_absolute() else None
+        if key is not None and key in broad:
+            continue
+        result.append(item)
+    return result
+
+
 def append_linker_flag(existing_flags: str, flag: str) -> str:
     flags = existing_flags.strip()
     if flag in flags.split():
@@ -206,38 +239,57 @@ def append_linker_flag(existing_flags: str, flag: str) -> str:
     return f"{flags} {flag}".strip()
 
 
+def conda_pkg_library_dir(pkg_root: Path, prefixes: Sequence[str], library_names: Sequence[str]) -> Path | None:
+    for prefix in prefixes:
+        for candidate in conda_pkg_candidates([pkg_root], prefix):
+            for libdir in (candidate / "lib", candidate / "lib64"):
+                if any((libdir / name).exists() for name in library_names):
+                    return libdir
+    return None
+
+
 def runtime_link_args_for_linux(
     curl_library: Path,
     pkg_roots: Iterable[Path],
     *,
+    dependency_library_dirs: Iterable[str | Path] = (),
     existing_build_rpath: Iterable[str | Path] = (),
     existing_exe_linker_flags: str = "",
     existing_shared_linker_flags: str = "",
+    existing_module_linker_flags: str = "",
 ) -> list[str]:
     if curl_library.suffix != ".so":
         return []
-    pkg_root = conda_pkg_root_for_curl_library(curl_library, pkg_roots)
+    pkg_root_list = list(pkg_roots)
+    pkg_root = conda_pkg_root_for_curl_library(curl_library, pkg_root_list)
     if pkg_root is None:
         return []
-    args: list[str] = []
-    for candidate in conda_pkg_candidates([pkg_root], "libssh2"):
-        libdir = candidate / "lib"
-        if (libdir / "libssh2.so").exists():
-            rpath = unique_cmake_list(existing_build_rpath)
-            libdir_text = str(libdir)
-            if libdir_text not in rpath:
-                rpath.append(libdir_text)
-            exe_flags = append_linker_flag(existing_exe_linker_flags, "-Wl,--disable-new-dtags")
-            shared_flags = append_linker_flag(existing_shared_linker_flags, "-Wl,--disable-new-dtags")
-            args.extend(
-                [
-                    f"-DCMAKE_BUILD_RPATH={';'.join(rpath)}",
-                    f"-DCMAKE_EXE_LINKER_FLAGS={exe_flags}",
-                    f"-DCMAKE_SHARED_LINKER_FLAGS={shared_flags}",
-                ]
-            )
-            return args
-    return args
+    rpath = filter_broad_conda_rpaths(dependency_library_dirs, pkg_root_list)
+    for item in filter_broad_conda_rpaths(existing_build_rpath, pkg_root_list):
+        if item not in rpath:
+            rpath.append(item)
+    for runtime_dir in (
+        conda_pkg_library_dir(pkg_root, ("libssh2",), ("libssh2.so",)),
+        conda_pkg_library_dir(pkg_root, ("libstdcxx", "libstdcxx-ng"), ("libstdc++.so.6",)),
+    ):
+        if runtime_dir is None:
+            continue
+        runtime_dir_text = str(runtime_dir)
+        if runtime_dir_text not in rpath:
+            rpath.append(runtime_dir_text)
+    if not rpath:
+        return []
+    exe_flags = append_linker_flag(existing_exe_linker_flags, "-Wl,--disable-new-dtags")
+    shared_flags = append_linker_flag(existing_shared_linker_flags, "-Wl,--disable-new-dtags")
+    module_flags = append_linker_flag(existing_module_linker_flags, "-Wl,--disable-new-dtags")
+    rpath_arg = ";".join(rpath)
+    return [
+        f"-DCMAKE_BUILD_RPATH={rpath_arg}",
+        f"-DCMAKE_INSTALL_RPATH={rpath_arg}",
+        f"-DCMAKE_EXE_LINKER_FLAGS={exe_flags}",
+        f"-DCMAKE_SHARED_LINKER_FLAGS={shared_flags}",
+        f"-DCMAKE_MODULE_LINKER_FLAGS={module_flags}",
+    ]
 
 
 def find_openssl_root(roots: Iterable[Path], system: str) -> tuple[Path, LibraryPair, Path] | None:
@@ -270,6 +322,7 @@ def discover_dependency_hints(
     existing_build_rpath: Iterable[str | Path] = (),
     existing_exe_linker_flags: str = "",
     existing_shared_linker_flags: str = "",
+    existing_module_linker_flags: str = "",
 ) -> DependencyHints:
     pkg_root_list = list(pkg_roots)
     roots = ordered_dependency_roots(system, pkg_root_list)
@@ -316,18 +369,8 @@ def discover_dependency_hints(
     if curl_pair is not None:
         append_pair_args(args, include_key="CURL_INCLUDE_DIR", library_key="CURL_LIBRARY", pair=curl_pair)
         notes.append(f"libcurl: {curl_pair.library}")
-        if system == "Linux":
-            runtime_args = runtime_link_args_for_linux(
-                curl_pair.library,
-                pkg_root_list,
-                existing_build_rpath=existing_build_rpath,
-                existing_exe_linker_flags=existing_exe_linker_flags,
-                existing_shared_linker_flags=existing_shared_linker_flags,
-            )
-            if runtime_args:
-                args.extend(runtime_args)
-                notes.append("Linux runtime link: added narrow libssh2 rpath for conda libcurl")
 
+    icu_pair: LibraryPair | None = None
     if system != "Darwin":
         icu_pair = find_library_pair(roots, "include/unicode/utypes.h", shared_library_names("icuuc", system))
         if icu_pair is not None:
@@ -345,6 +388,29 @@ def discover_dependency_hints(
             warnings.append(
                 "ICU uc was not found locally; CMake will try system paths. On Debian/Ubuntu install libicu-dev."
             )
+
+    if system == "Linux" and curl_pair is not None:
+        dependency_library_dirs: list[Path] = []
+        if openssl is not None:
+            _, ssl_pair, crypto = openssl
+            dependency_library_dirs.extend((ssl_pair.library.parent, crypto.parent))
+        if sqlite_pair is not None:
+            dependency_library_dirs.append(sqlite_pair.library.parent)
+        dependency_library_dirs.append(curl_pair.library.parent)
+        if icu_pair is not None:
+            dependency_library_dirs.append(icu_pair.library.parent)
+        runtime_args = runtime_link_args_for_linux(
+            curl_pair.library,
+            pkg_root_list,
+            dependency_library_dirs=dependency_library_dirs,
+            existing_build_rpath=existing_build_rpath,
+            existing_exe_linker_flags=existing_exe_linker_flags,
+            existing_shared_linker_flags=existing_shared_linker_flags,
+            existing_module_linker_flags=existing_module_linker_flags,
+        )
+        if runtime_args:
+            args.extend(runtime_args)
+            notes.append("Linux runtime link: added narrow conda runtime rpath for libcurl dependencies")
 
     pybind_dir = pybind11_cmake_dir(python)
     if pybind_dir is not None:
@@ -380,15 +446,16 @@ def cache_value(cache_text: str, key: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def runtime_link_cache_values(build_dir: Path) -> tuple[tuple[str, ...], str, str]:
+def runtime_link_cache_values(build_dir: Path) -> tuple[tuple[str, ...], str, str, str]:
     cache = build_dir / "CMakeCache.txt"
     if not cache.exists():
-        return (), "", ""
+        return (), "", "", ""
     text = cache.read_text(encoding="utf-8", errors="ignore")
     build_rpath = tuple(unique_cmake_list((cache_value(text, "CMAKE_BUILD_RPATH") or "",)))
     exe_flags = cache_value(text, "CMAKE_EXE_LINKER_FLAGS") or ""
     shared_flags = cache_value(text, "CMAKE_SHARED_LINKER_FLAGS") or ""
-    return build_rpath, exe_flags, shared_flags
+    module_flags = cache_value(text, "CMAKE_MODULE_LINKER_FLAGS") or ""
+    return build_rpath, exe_flags, shared_flags, module_flags
 
 
 def check_stale_cache(build_dir: Path, expected_generator: str) -> None:
@@ -512,7 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         install_build_tools(python)
     try:
         check_stale_cache(args.build_dir, expected_generator="Ninja")
-        build_rpath, exe_linker_flags, shared_linker_flags = runtime_link_cache_values(args.build_dir)
+        build_rpath, exe_linker_flags, shared_linker_flags, module_linker_flags = runtime_link_cache_values(args.build_dir)
         hints = discover_dependency_hints(
             system=platform.system(),
             pkg_roots=candidate_conda_pkg_roots(),
@@ -521,6 +588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             existing_build_rpath=build_rpath,
             existing_exe_linker_flags=exe_linker_flags,
             existing_shared_linker_flags=shared_linker_flags,
+            existing_module_linker_flags=module_linker_flags,
         )
     except BuildConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
