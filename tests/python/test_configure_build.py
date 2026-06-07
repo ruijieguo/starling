@@ -123,3 +123,18 @@ def test_cmake_configure_command_contains_core_flags(tmp_path):
     assert f"-DPython_EXECUTABLE={python}" in cmd
     assert f"-DCMAKE_MAKE_PROGRAM={ninja}" in cmd
     assert "-DSQLite3_INCLUDE_DIR=/sqlite/include" in cmd
+
+
+def test_network_disabled_adds_fetchcontent_disconnected_define(tmp_path):
+    cmd = cb.cmake_configure_command(
+        build_dir=tmp_path / "build-linux",
+        build_type="Release",
+        python=tmp_path / "python",
+        ninja=None,
+        build_python=True,
+        build_tests=True,
+        extra_args=[],
+        allow_network=False,
+    )
+
+    assert "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" in cmd
