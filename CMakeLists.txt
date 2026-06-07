@@ -8,6 +8,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/StarlingOptions.cmake)
 
+function(starling_dependency_hint name hint)
+    message(STATUS "Starling dependency ${name}: ${hint}")
+endfunction()
+
 # OpenSSL discovery — Homebrew on Apple Silicon installs at /opt/homebrew.
 # Provide a fallback hint before find_package so a bare `cmake -S . -B build`
 # works without the caller passing -DOPENSSL_ROOT_DIR.
@@ -17,6 +21,7 @@ if(APPLE AND NOT DEFINED OPENSSL_ROOT_DIR)
     endif()
 endif()
 find_package(OpenSSL REQUIRED)
+starling_dependency_hint("OpenSSL" "${OPENSSL_VERSION} include=${OPENSSL_INCLUDE_DIR}")
 
 # SQLite3 — Homebrew on Apple Silicon installs at /opt/homebrew/opt/sqlite.
 # The system framework on macOS is older than 3.46; prefer Homebrew when present.
@@ -27,11 +32,24 @@ if(APPLE AND NOT DEFINED SQLite3_ROOT)
     endif()
 endif()
 find_package(SQLite3 3.46 REQUIRED)
+starling_dependency_hint("SQLite3" "${SQLite3_VERSION} include=${SQLite3_INCLUDE_DIRS}")
 
 find_package(CURL REQUIRED)
+starling_dependency_hint("CURL" "${CURL_VERSION_STRING} include=${CURL_INCLUDE_DIRS}")
+if(NOT APPLE)
+    find_package(ICU REQUIRED COMPONENTS uc)
+    starling_dependency_hint("ICU uc" "${ICU_VERSION} include=${ICU_INCLUDE_DIRS}")
+endif()
 find_package(nlohmann_json 3.11 QUIET)
-if(NOT nlohmann_json_FOUND)
+if(nlohmann_json_FOUND)
+    starling_dependency_hint("nlohmann_json" "package config")
+else()
     include(FetchContent)
+    if(DEFINED FETCHCONTENT_SOURCE_DIR_JSON)
+        starling_dependency_hint("nlohmann_json" "local source ${FETCHCONTENT_SOURCE_DIR_JSON}")
+    else()
+        starling_dependency_hint("nlohmann_json" "FetchContent network fallback")
+    endif()
     FetchContent_Declare(json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG v3.11.3)
@@ -39,6 +57,7 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 add_library(starling_core STATIC)
+set_target_properties(starling_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(starling_core PUBLIC include)
 target_sources(starling_core PRIVATE
     src/preflight.cpp
@@ -116,11 +135,20 @@ target_sources(starling_core PRIVATE
     src/retrieval/pattern_completor.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
-target_link_libraries(starling_core PUBLIC OpenSSL::Crypto SQLite::SQLite3
+if(TARGET SQLite3::SQLite3)
+    set(STARLING_SQLITE_TARGET SQLite3::SQLite3)
+elseif(TARGET SQLite::SQLite3)
+    set(STARLING_SQLITE_TARGET SQLite::SQLite3)
+else()
+    message(FATAL_ERROR "SQLite3 target not found after find_package(SQLite3). Pass -DSQLite3_INCLUDE_DIR and -DSQLite3_LIBRARY if CMake cannot locate SQLite >= 3.46.")
+endif()
+target_link_libraries(starling_core PUBLIC OpenSSL::Crypto ${STARLING_SQLITE_TARGET}
     CURL::libcurl
     nlohmann_json::nlohmann_json)
 if(APPLE)
     target_link_libraries(starling_core PUBLIC "-framework CoreFoundation")
+else()
+    target_link_libraries(starling_core PUBLIC ICU::uc)
 endif()
 
 # Embed migration SQL into a header. Re-run cmake configure when files change.
@@ -160,6 +188,7 @@ target_include_directories(starling_core PRIVATE "${CMAKE_BINARY_DIR}/generated"
 # graph (CI scanner + preflight enforce that prod profiles never pull this
 # target in).
 add_library(starling_testing_marker STATIC src/testing/testing_marker.cpp)
+set_target_properties(starling_testing_marker PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(starling_testing_marker PUBLIC include)
 target_link_libraries(starling_testing_marker PUBLIC starling_core)
 

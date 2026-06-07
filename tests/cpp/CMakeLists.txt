@@ -1,4 +1,9 @@
 include(FetchContent)
+if(DEFINED FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+    message(STATUS "Starling dependency GoogleTest: local source ${FETCHCONTENT_SOURCE_DIR_GOOGLETEST}")
+else()
+    message(STATUS "Starling dependency GoogleTest: FetchContent network fallback")
+endif()
 FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
@@ -123,6 +128,9 @@ add_executable(starling_tests
     test_common_ground_read.cpp
     test_commitment_pending.cpp
 )
+target_include_directories(starling_tests BEFORE PRIVATE
+    "${gtest_SOURCE_DIR}/include"
+    "${gtest_SOURCE_DIR}")
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
 include(GoogleTest)
