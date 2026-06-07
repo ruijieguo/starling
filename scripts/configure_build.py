@@ -132,19 +132,8 @@ def append_pair_args(args: list[str], *, include_key: str, library_key: str, pai
     args.append(f"-D{library_key}={pair.library}")
 
 
-def discover_dependency_hints(
-    *,
-    system: str,
-    pkg_roots: Iterable[Path],
-    build_dirs: Iterable[Path],
-    python: Path,
-) -> DependencyHints:
+def ordered_dependency_roots(system: str, pkg_roots: Iterable[Path]) -> list[Path]:
     roots: list[Path] = []
-    roots.extend(conda_pkg_candidates(pkg_roots, "sqlite"))
-    roots.extend(conda_pkg_candidates(pkg_roots, "openssl"))
-    roots.extend(conda_pkg_candidates(pkg_roots, "libcurl"))
-    roots.extend(conda_pkg_candidates(pkg_roots, "curl"))
-    roots.extend(conda_pkg_candidates(pkg_roots, "icu"))
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         roots.append(Path(conda_prefix).expanduser())
@@ -160,6 +149,52 @@ def discover_dependency_hints(
                 "/usr/local/opt/curl",
             )
         )
+    roots.extend(conda_pkg_candidates(pkg_roots, "sqlite"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "openssl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "libcurl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "curl"))
+    roots.extend(conda_pkg_candidates(pkg_roots, "icu"))
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        key = root.resolve() if root.exists() else root
+        if key in seen:
+            continue
+        unique.append(root)
+        seen.add(key)
+    return unique
+
+
+def find_openssl_root(roots: Iterable[Path], system: str) -> tuple[Path, LibraryPair, Path] | None:
+    ssl_names = shared_library_names("ssl", system)
+    crypto_names = shared_library_names("crypto", system)
+    for root in roots:
+        ssl_pair = find_library_pair([root], "include/openssl/ssl.h", ssl_names)
+        if ssl_pair is None:
+            continue
+        crypto = next(
+            (
+                libdir / libname
+                for libdir in (root / "lib", root / "lib64")
+                for libname in crypto_names
+                if (libdir / libname).exists()
+            ),
+            None,
+        )
+        if crypto is not None:
+            return root, ssl_pair, crypto
+    return None
+
+
+def discover_dependency_hints(
+    *,
+    system: str,
+    pkg_roots: Iterable[Path],
+    build_dirs: Iterable[Path],
+    python: Path,
+) -> DependencyHints:
+    roots = ordered_dependency_roots(system, pkg_roots)
 
     args: list[str] = []
     notes: list[str] = []
@@ -186,16 +221,15 @@ def discover_dependency_hints(
         append_pair_args(args, include_key="SQLite3_INCLUDE_DIR", library_key="SQLite3_LIBRARY", pair=sqlite_pair)
         notes.append(f"SQLite: {sqlite_pair.library}")
 
-    ssl_pair = find_library_pair(roots, "include/openssl/ssl.h", shared_library_names("ssl", system))
-    crypto_pair = find_library_pair(roots, "include/openssl/ssl.h", shared_library_names("crypto", system))
-    if ssl_pair is not None and crypto_pair is not None:
-        root = ssl_pair.include_dir.parent
+    openssl = find_openssl_root(roots, system)
+    if openssl is not None:
+        root, ssl_pair, crypto = openssl
         args.extend(
             [
                 f"-DOPENSSL_ROOT_DIR={root}",
                 f"-DOPENSSL_INCLUDE_DIR={ssl_pair.include_dir}",
                 f"-DOPENSSL_SSL_LIBRARY={ssl_pair.library}",
-                f"-DOPENSSL_CRYPTO_LIBRARY={crypto_pair.library}",
+                f"-DOPENSSL_CRYPTO_LIBRARY={crypto}",
             ]
         )
         notes.append(f"OpenSSL: {root}")

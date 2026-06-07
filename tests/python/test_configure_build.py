@@ -142,7 +142,24 @@ def test_network_disabled_adds_fetchcontent_disconnected_define(tmp_path):
     assert "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" in cmd
 
 
-def test_discover_dependency_hints_from_conda_cache(tmp_path):
+def test_ordered_dependency_roots_prefers_conda_prefix_before_pkg_cache(tmp_path, monkeypatch):
+    prefix = tmp_path / "env"
+    pkgs = tmp_path / "pkgs"
+    sqlite_cache = pkgs / "sqlite-3.51.0-h_0"
+    openssl_cache = pkgs / "openssl-3.0.18-h_0"
+    prefix.mkdir()
+    sqlite_cache.mkdir(parents=True)
+    openssl_cache.mkdir()
+    monkeypatch.setenv("CONDA_PREFIX", str(prefix))
+
+    roots = cb.ordered_dependency_roots("Linux", [pkgs])
+
+    assert roots[:3] == [prefix, sqlite_cache, openssl_cache]
+
+
+def test_discover_dependency_hints_from_conda_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
     pkgs = tmp_path / "pkgs"
     sqlite = pkgs / "sqlite-3.51.0-h_0"
     openssl = pkgs / "openssl-3.0.18-h_0"
@@ -180,7 +197,9 @@ def test_discover_dependency_hints_from_conda_cache(tmp_path):
     assert any("SQLite" in note for note in hints.notes)
 
 
-def test_discover_dependency_hints_rejects_old_sqlite(tmp_path):
+def test_discover_dependency_hints_rejects_old_sqlite(tmp_path, monkeypatch):
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
     pkgs = tmp_path / "pkgs"
     sqlite = pkgs / "sqlite-3.45.0-h_0"
     (sqlite / "include").mkdir(parents=True)
@@ -195,6 +214,55 @@ def test_discover_dependency_hints_rejects_old_sqlite(tmp_path):
             build_dirs=[],
             python=Path("/venv/bin/python"),
         )
+
+
+def test_discover_dependency_hints_skips_old_conda_prefix_sqlite_for_cache(tmp_path, monkeypatch):
+    prefix = tmp_path / "env"
+    cache = tmp_path / "pkgs"
+    old_sqlite = prefix
+    new_sqlite = cache / "sqlite-3.51.0-h_0"
+    for root in (old_sqlite, new_sqlite):
+        (root / "include").mkdir(parents=True)
+        (root / "lib").mkdir()
+        (root / "lib" / "libsqlite3.so").write_text("")
+    (old_sqlite / "include" / "sqlite3.h").write_text('#define SQLITE_VERSION "3.45.0"\n')
+    (new_sqlite / "include" / "sqlite3.h").write_text('#define SQLITE_VERSION "3.51.0"\n')
+    monkeypatch.setenv("CONDA_PREFIX", str(prefix))
+    monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
+
+    hints = cb.discover_dependency_hints(
+        system="Linux",
+        pkg_roots=[cache],
+        build_dirs=[],
+        python=Path("/venv/bin/python"),
+    )
+
+    args = set(hints.cmake_args)
+    assert f"-DSQLite3_INCLUDE_DIR={new_sqlite / 'include'}" in args
+    assert f"-DSQLite3_LIBRARY={new_sqlite / 'lib' / 'libsqlite3.so'}" in args
+
+
+def test_discover_dependency_hints_requires_coherent_openssl_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.setattr(cb, "pybind11_cmake_dir", lambda python: None)
+    pkgs = tmp_path / "pkgs"
+    ssl_only = pkgs / "openssl-3.0.18-hssl_0"
+    crypto_only = pkgs / "openssl-3.0.17-hcrypto_0"
+    for root in (ssl_only, crypto_only):
+        (root / "include" / "openssl").mkdir(parents=True)
+        (root / "lib").mkdir()
+        (root / "include" / "openssl" / "ssl.h").write_text("")
+    (ssl_only / "lib" / "libssl.so").write_text("")
+    (crypto_only / "lib" / "libcrypto.so").write_text("")
+
+    hints = cb.discover_dependency_hints(
+        system="Linux",
+        pkg_roots=[pkgs],
+        build_dirs=[],
+        python=Path("/venv/bin/python"),
+    )
+
+    assert not any(arg.startswith("-DOPENSSL_") for arg in hints.cmake_args)
 
 
 def test_fetchcontent_args_include_existing_sources(tmp_path):
