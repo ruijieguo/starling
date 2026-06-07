@@ -59,56 +59,57 @@ C++20 · raw SQLite (≥3.46) · libcurl · nlohmann/json · OpenSSL · pybind11
 
 ## Build & test
 
-Follow these steps in order — copy-paste each block from the repo root. **You do NOT need a system-wide CMake or Ninja**: they are installed as pip wheels into the virtualenv in step 2. The only system requirement is a C++ compiler (and git).
-
-**Prerequisites**
-- **Python ≥3.11** — check with `python3 --version`.
-- **A C++20 compiler + git.** macOS: `xcode-select --install` (installs Apple Clang + git). Linux: `sudo apt install build-essential git`.
-- The C++ core links **SQLite, OpenSSL, libcurl**. These are usually already present (macOS: via the Xcode Command Line Tools). On Linux install the dev headers: `sudo apt install libsqlite3-dev libssl-dev libcurl4-openssl-dev`. `nlohmann/json` is auto-fetched during the build. If the build later errors on a missing header, install that one dev package.
-
-**Step 1 — create and activate a virtualenv**
+Recommended path from the repo root:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-```
-
-**Step 2 — install the build toolchain into the venv**
-
-CMake, Ninja, the build backend and pybind11 are Python packages here (real prebuilt binaries shipped on PyPI) — not system tools. Install them from the pinned file:
-
-```bash
 pip install -r requirements-build.txt
+python scripts/configure_build.py --build --test
 ```
 
-> One-shot alternative: `pip install -r requirements-dev.txt` installs the build toolchain **plus** the dev + dashboard deps in a single command; then run step 3 as `pip install -e . --no-build-isolation --config-settings=build-dir=build` (no `[dev,dashboard]` extras needed).
+`python scripts/configure_build.py --build --test` configures first, then builds and runs C++ tests. The script is local-first: it reuses tools and dependency sources from `.venv`, an active conda environment, conda package caches, Homebrew, system packages, and existing `build/_deps` sources before letting CMake `FetchContent` use the network for missing nlohmann/json or GoogleTest.
 
-**Step 3 — build the C++ core + the editable Python package (one command)**
-
-`--config-settings=build-dir=build` keeps a persistent `build/` directory so `ctest` (and the C++ rebuild loop) can use it:
+Direct CMake users can run:
 
 ```bash
-pip install -e ".[dev]" --no-build-isolation --config-settings=build-dir=build
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
 ```
 
-**Step 4 — run the tests**
+Python editable install:
 
 ```bash
-ctest --test-dir build     # C++ (GoogleTest), ~500 tests
-pytest                     # Python, ~540 tests
+python scripts/configure_build.py --python-editable
 ```
+
+After changing C++ sources, `migrations/`, or bindings, rebuild the C++ tree:
+
+```bash
+cmake --build build-linux   # Linux default from the script
+cmake --build build-macos   # macOS default from the script
+```
+
+**Prerequisites**
+
+- **Python ≥3.11** — check with `python3 --version`.
+- **A C++20 compiler + git.** macOS: `xcode-select --install` (installs Apple Clang + git). Linux: `sudo apt install build-essential git`.
+- The C++ core links **SQLite, OpenSSL, libcurl, ICU**, and uses **nlohmann/json** plus **GoogleTest** for C++ tests. On Linux, install the dev headers when system packages are preferred: `sudo apt install libsqlite3-dev libssl-dev libcurl4-openssl-dev libicu-dev`.
 
 That's the whole setup. `from starling import _core` (the bound C++ core) and the `starling.Memory` facade now work; `python examples/quickstart.py` runs an offline end-to-end demo.
 
-**After you change C++ sources / `migrations/` / bindings**, recompile and refresh the editable extension (otherwise pytest may load a stale `_core.so`):
+**Troubleshooting**
 
-```bash
-cmake --build build
-cmake --install build --prefix ".venv/lib/python$(python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
-```
+- Stale `build/`: use `build-linux`, `build-macos`, or another fresh build dir.
+- SQLite: Starling requires SQLite >= 3.46.
+- Linux ICU: install `libicu-dev` or provide ICU CMake variables.
+- Offline FetchContent: rerun after a prior successful download or pass `-DFETCHCONTENT_SOURCE_DIR_JSON=...` and `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=...`.
+- Conda linker wrappers: avoid CMake caches containing `compiler_compat`.
+- Conda libstdc++ conflicts: do not add all of `~/miniconda3/lib` to rpath.
 
-**How it works:** [scikit-build-core](https://scikit-build-core.readthedocs.io/) (the build backend declared in `pyproject.toml`) drives the CMake + Ninja build of the C++ core and the `pybind11` module `starling._core`. The `migrations/*.sql` are embedded into the binary at build time, so the schema travels with the core — there is no runtime migration step. Step 3 produces both the persistent `build/` (for `ctest` and the refresh loop) and the editable install (for `import starling`).
+**How it works:** `scripts/configure_build.py` drives the CMake + Ninja build with explicit local dependency hints, while scikit-build-core remains the build backend declared in `pyproject.toml` for Python editable installs. The `migrations/*.sql` are embedded into the binary at build time, so the schema travels with the core — there is no runtime migration step.
 
 The Python surface is the bound C++ core: `from starling import _core`, with the application-facing `starling.Memory` facade on top (`open` / `remember` / `recall` / `tick` / `render_working_set` / `close`). See [`tests/python/`](tests/python/) and [`examples/`](examples/) for runnable examples of writing statements, retrieval, replay, reconsolidation, and the commitment lifecycle.
 
