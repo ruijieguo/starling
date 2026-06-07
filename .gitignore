@@ -6,10 +6,10 @@
 __pycache__/
 *.py[cod]
 build/
-build-dev/
-build-release/
-build-linux/
-build-macos/
+/build-dev/
+/build-release/
+/build-linux/
+/build-macos/
 dist/
 *.egg-info/
 node_modules/

@@ -64,11 +64,21 @@
     },
     {
       "name": "linux-local",
-      "configurePreset": "linux-local"
+      "configurePreset": "linux-local",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
     },
     {
       "name": "macos-local",
-      "configurePreset": "macos-local"
+      "configurePreset": "macos-local",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
     }
   ],
   "testPresets": [
@@ -89,6 +99,11 @@
     {
       "name": "linux-local",
       "configurePreset": "linux-local",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "output": {
         "outputOnFailure": true
       }
@@ -96,6 +111,11 @@
     {
       "name": "macos-local",
       "configurePreset": "macos-local",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
       "output": {
         "outputOnFailure": true
       }
