@@ -9,7 +9,6 @@ import platform
 import re
 import subprocess
 import sys
-import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -90,7 +89,11 @@ def candidate_conda_pkg_roots() -> list[Path]:
     roots: list[Path] = []
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
-        roots.append(Path(conda_prefix).expanduser().parent / "pkgs")
+        prefix = Path(conda_prefix).expanduser()
+        if prefix.parent.name == "envs":
+            roots.append(prefix.parent.parent / "pkgs")
+        else:
+            roots.append(prefix / "pkgs")
     for base in ("~/miniconda3/pkgs", "~/anaconda3/pkgs", "~/mambaforge/pkgs", "~/micromamba/pkgs"):
         roots.append(Path(base).expanduser())
     seen: set[Path] = set()

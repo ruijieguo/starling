@@ -1,7 +1,3 @@
-from pathlib import Path
-
-import pytest
-
 from scripts import configure_build as cb
 
 
@@ -19,6 +15,27 @@ def test_conda_pkg_candidates_prefer_highest_version(tmp_path):
 
     assert candidates[0] == new
     assert candidates[1] == old
+
+
+def test_candidate_conda_pkg_roots_include_base_prefix_cache(tmp_path, monkeypatch):
+    base = tmp_path / "miniforge3"
+    expected = base / "pkgs"
+    monkeypatch.setenv("CONDA_PREFIX", str(base))
+
+    roots = cb.candidate_conda_pkg_roots()
+
+    assert expected in roots
+
+
+def test_candidate_conda_pkg_roots_include_named_env_base_cache(tmp_path, monkeypatch):
+    base = tmp_path / "miniforge3"
+    prefix = base / "envs" / "dev"
+    expected = base / "pkgs"
+    monkeypatch.setenv("CONDA_PREFIX", str(prefix))
+
+    roots = cb.candidate_conda_pkg_roots()
+
+    assert expected in roots
 
 
 def test_find_library_pair_requires_include_and_library(tmp_path):
