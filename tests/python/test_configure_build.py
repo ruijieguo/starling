@@ -104,6 +104,27 @@ def test_check_stale_cache_rejects_generator_mismatch(tmp_path):
         cb.check_stale_cache(build_dir, expected_generator="Ninja")
 
 
+def test_runtime_link_cache_values_read_existing_flags(tmp_path):
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "\n".join(
+            [
+                "CMAKE_BUILD_RPATH:STRING=/existing/a;/existing/b",
+                "CMAKE_EXE_LINKER_FLAGS:STRING=-Wl,-z,relro",
+                "CMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,-O1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    build_rpath, exe_flags, shared_flags = cb.runtime_link_cache_values(build_dir)
+
+    assert build_rpath == ("/existing/a", "/existing/b")
+    assert exe_flags == "-Wl,-z,relro"
+    assert shared_flags == "-Wl,-O1"
+
+
 def test_cmake_configure_command_contains_core_flags(tmp_path):
     python = tmp_path / "python"
     ninja = tmp_path / "ninja"
@@ -326,3 +347,52 @@ def test_runtime_link_args_do_not_add_conda_root_lib(tmp_path):
     args = cb.runtime_link_args_for_linux(curl, [tmp_path / "miniconda3" / "pkgs"])
 
     assert all(str(tmp_path / "miniconda3" / "lib") not in arg for arg in args)
+
+
+def test_runtime_link_args_ignore_system_custom_libcurl(tmp_path):
+    curl = tmp_path / "usr" / "local" / "lib" / "libcurl.so"
+    ssh_root = tmp_path / "pkgs" / "libssh2-1.11.1-h_0"
+    curl.parent.mkdir(parents=True)
+    curl.write_text("")
+    (ssh_root / "lib").mkdir(parents=True)
+    (ssh_root / "lib" / "libssh2.so").write_text("")
+
+    args = cb.runtime_link_args_for_linux(curl, [tmp_path / "pkgs"])
+
+    assert args == []
+
+
+def test_runtime_link_args_require_libssh2_from_same_pkg_root(tmp_path):
+    curl = tmp_path / "pkgs-a" / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    ssh_root = tmp_path / "pkgs-b" / "libssh2-1.11.1-h_0"
+    curl.parent.mkdir(parents=True)
+    curl.write_text("")
+    (ssh_root / "lib").mkdir(parents=True)
+    (ssh_root / "lib" / "libssh2.so").write_text("")
+
+    args = cb.runtime_link_args_for_linux(curl, [tmp_path / "pkgs-a", tmp_path / "pkgs-b"])
+
+    assert args == []
+
+
+def test_runtime_link_args_preserve_existing_values_and_deduplicate(tmp_path):
+    curl = tmp_path / "pkgs" / "libcurl-8.9.1-h_0" / "lib" / "libcurl.so"
+    ssh_root = tmp_path / "pkgs" / "libssh2-1.11.1-h_0"
+    existing_rpath = tmp_path / "existing" / "lib"
+    curl.parent.mkdir(parents=True)
+    curl.write_text("")
+    (ssh_root / "lib").mkdir(parents=True)
+    (ssh_root / "lib" / "libssh2.so").write_text("")
+
+    args = cb.runtime_link_args_for_linux(
+        curl,
+        [tmp_path / "pkgs"],
+        existing_build_rpath=[existing_rpath],
+        existing_exe_linker_flags="-Wl,-z,relro -Wl,--disable-new-dtags",
+        existing_shared_linker_flags="-Wl,-O1",
+    )
+
+    assert f"-DCMAKE_BUILD_RPATH={existing_rpath};{ssh_root / 'lib'}" in args
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,relro -Wl,--disable-new-dtags" in args
+    assert "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-O1 -Wl,--disable-new-dtags" in args
+    assert sum("--disable-new-dtags" in arg for arg in args) == 2
