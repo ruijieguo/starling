@@ -1,0 +1,23 @@
+# Starling Memory — build toolchain (one-click).
+#
+#   pip install -r requirements-build.txt
+#
+# The C++ core is compiled by scikit-build-core via CMake + Ninja. These four
+# packages are the build toolchain; cmake/ninja here are pip wheels (real
+# prebuilt binaries shipped on PyPI) — you do NOT need a system-wide cmake or
+# ninja. The only system requirement is a C++ compiler (Apple Clang on macOS via
+# `xcode-select --install`; `build-essential` on Linux).
+#
+# Install this BEFORE the editable build when using --no-build-isolation, e.g.:
+#   pip install -e ".[dev,dashboard]" --no-build-isolation --config-settings=build-dir=build
+# (that flag keeps a persistent build/ dir, which `ctest` and the C++ rebuild
+# loop need). Under default build isolation, scikit-build-core auto-provisions
+# cmake+ninja and this file is optional — but you won't get a reusable build/.
+#
+# Lower bounds match pyproject.toml (build-system.requires + tool.scikit-build).
+# Last verified 2026-06 with: cmake 4.3.2, ninja 1.13.0, scikit-build-core 0.12.2, pybind11 2.13.
+
+cmake>=3.27
+ninja>=1.11
+scikit-build-core>=0.10
+pybind11>=2.13

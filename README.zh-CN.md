@@ -76,11 +76,13 @@ python -m pip install -U pip
 
 **第 2 步 —— 把构建工具链装进 venv**
 
-CMake、Ninja、构建后端、pybind11 在这里都是 Python 包(PyPI 上发布的、捆绑了各平台预编译二进制),不是系统工具:
+CMake、Ninja、构建后端、pybind11 在这里都是 Python 包(PyPI 上发布的、捆绑了各平台预编译二进制),不是系统工具。从锁定的文件一键装:
 
 ```bash
-pip install cmake ninja scikit-build-core pybind11
+pip install -r requirements-build.txt
 ```
+
+> 一把梭备选:`pip install -r requirements-dev.txt` 一条命令把**构建工具链 + dev + dashboard 依赖**全装上;之后第 3 步用 `pip install -e . --no-build-isolation --config-settings=build-dir=build`(不用再带 `[dev,dashboard]` extras)。
 
 **第 3 步 —— 一条命令构建 C++ 核心 + editable Python 包**
 

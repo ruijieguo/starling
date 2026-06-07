@@ -76,11 +76,13 @@ python -m pip install -U pip
 
 **Step 2 — install the build toolchain into the venv**
 
-CMake, Ninja, the build backend and pybind11 are Python packages here (real prebuilt binaries shipped on PyPI) — not system tools:
+CMake, Ninja, the build backend and pybind11 are Python packages here (real prebuilt binaries shipped on PyPI) — not system tools. Install them from the pinned file:
 
 ```bash
-pip install cmake ninja scikit-build-core pybind11
+pip install -r requirements-build.txt
 ```
+
+> One-shot alternative: `pip install -r requirements-dev.txt` installs the build toolchain **plus** the dev + dashboard deps in a single command; then run step 3 as `pip install -e . --no-build-isolation --config-settings=build-dir=build` (no `[dev,dashboard]` extras needed).
 
 **Step 3 — build the C++ core + the editable Python package (one command)**
 

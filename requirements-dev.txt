@@ -1,0 +1,27 @@
+# Starling Memory — all Python dependencies for development, one-shot.
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-dev.txt
+#   pip install -e . --no-build-isolation --config-settings=build-dir=build   # build the C++ core
+#   ctest --test-dir build && pytest
+#
+# This installs the build toolchain + the dev + dashboard runtime deps. The
+# project itself ([project].dependencies in pyproject.toml) has NO runtime
+# Python deps — the core is C++; the `starling.Memory` facade uses only the
+# stdlib + the compiled `starling._core`.
+#
+# The lists below MIRROR pyproject.toml [project.optional-dependencies]
+# (dev / dashboard) — keep them in sync. The canonical, drift-free alternative
+# is `pip install -e ".[dev,dashboard]"` (after the build toolchain is present).
+
+-r requirements-build.txt
+
+# --- dev (testing) ---
+pytest>=8
+pytest-mock>=3.12
+jsonschema>=4.26
+
+# --- dashboard (FastAPI engine-API; optional) ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
