@@ -11,6 +11,7 @@ export default defineConfig({
 		globals: true,
 		restoreMocks: true,
 		setupFiles: ['@testing-library/svelte/vitest'],
+		include: [...(configDefaults.include ?? []), '**/*.test.svelte.ts'],
 		// Playwright e2e specs run under `playwright test`, not vitest.
 		exclude: [...configDefaults.exclude, 'e2e/**']
 	}
