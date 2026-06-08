@@ -1,52 +1,165 @@
 <script lang="ts">
-	import { api } from '$lib/api';
-	import { llmConfigured } from '$lib/config-store';
+	import { api, ApiError } from '$lib/api';
+	import { llmConfigured, embedderConfigured } from '$lib/health';
+	import { getToken, setToken } from '$lib/token';
+	import { toast } from '$lib/ui/toast';
+	import { missingFields } from '$lib/ui/validate';
+	import { Button, IconButton, Input, Field, Card, CopyButton, ConfirmDialog } from '$lib/components/ui';
+
 	type Prov = { model: string; base_url: string; key_set?: boolean; dim?: number };
 	let llm = $state<Prov>({ model: '', base_url: '' });
 	let llmKey = $state('');
+	let showLlmKey = $state(false);
 	let emb = $state<Prov>({ model: '', base_url: '', dim: 1024 });
 	let embKey = $state('');
-	let msg = $state('');
+	let showEmbKey = $state(false);
+	let saving = $state(false);
+	let errors = $state<Record<string, boolean>>({});
+	let confirmOpen = $state(false);
+	let embBaseline = $state('');
+
+	let token = $state(getToken());
+
 	$effect(() => {
-		api.get<{ llm: Prov; embedder: Prov }>('/api/config')
-			.then((c) => { llm = c.llm; emb = c.embedder; }).catch((e) => (msg = String(e)));
+		api
+			.get<{ llm: Prov; embedder: Prov }>('/api/config')
+			.then((c) => {
+				llm = c.llm;
+				emb = c.embedder;
+				embBaseline = JSON.stringify({ m: c.embedder.model, b: c.embedder.base_url, d: c.embedder.dim });
+			})
+			.catch((e) => toast.error(String((e as ApiError).message)));
 	});
-	async function save() {
+
+	let embChanged = $derived(
+		embBaseline !== JSON.stringify({ m: emb.model, b: emb.base_url, d: emb.dim }) || !!embKey
+	);
+
+	function validate(): boolean {
+		const miss = [
+			...missingFields(llm, { keyRequired: true, keySet: !!llm.key_set, keyInput: llmKey }).map(
+				(f) => `llm.${f}`
+			),
+			...missingFields(emb, { keyRequired: false, keySet: !!emb.key_set, keyInput: embKey }).map(
+				(f) => `emb.${f}`
+			)
+		];
+		errors = Object.fromEntries(miss.map((k) => [k, true]));
+		return miss.length === 0;
+	}
+
+	function onSaveClick() {
+		if (!validate()) {
+			toast.error('请补全必填字段');
+			return;
+		}
+		if (embChanged) confirmOpen = true;
+		else void doSave();
+	}
+
+	async function doSave() {
+		saving = true;
 		try {
-			const payload: Record<string, unknown> = {
+			const payload = {
 				llm: { model: llm.model, base_url: llm.base_url, ...(llmKey ? { api_key: llmKey } : {}) },
-				embedder: { model: emb.model, base_url: emb.base_url, dim: emb.dim,
-					...(embKey ? { api_key: embKey } : {}) }
+				embedder: {
+					model: emb.model,
+					base_url: emb.base_url,
+					dim: emb.dim,
+					...(embKey ? { api_key: embKey } : {})
+				}
 			};
 			const c = await api.post<{ llm: Prov; embedder: Prov }>('/api/config', payload);
-			llm = c.llm; emb = c.embedder; llmKey = ''; embKey = ''; msg = '已保存';
+			llm = c.llm;
+			emb = c.embedder;
+			llmKey = '';
+			embKey = '';
+			embBaseline = JSON.stringify({ m: c.embedder.model, b: c.embedder.base_url, d: c.embedder.dim });
 			llmConfigured.set(c.llm.key_set ?? null);
-		} catch (e) { msg = String(e); }
+			embedderConfigured.set(c.embedder.key_set ?? null);
+			toast.success('已保存');
+		} catch (e) {
+			toast.error(String((e as ApiError).message));
+		} finally {
+			saving = false;
+		}
+	}
+
+	function saveToken() {
+		setToken(token);
+		toast.success('Token 已更新');
 	}
 </script>
-<h1 class="text-xl font-semibold mb-4">设置</h1>
-<div class="space-y-6 max-w-xl">
-	<section class="space-y-2">
-		<h2 class="text-sm font-semibold text-zinc-500">LLM（抽取用）{#if llm.key_set}<span class="text-green-600 text-xs"> · 已配置</span>{/if}</h2>
-		<label for="llm-model" class="block text-xs text-zinc-500">model</label>
-		<input id="llm-model" bind:value={llm.model} placeholder="model（如 gpt-4o-mini）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<label for="llm-base-url" class="block text-xs text-zinc-500">base_url</label>
-		<input id="llm-base-url" bind:value={llm.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<label for="llm-api-key" class="block text-xs text-zinc-500">api_key</label>
-		<input id="llm-api-key" bind:value={llmKey} type="password" placeholder={llm.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-	</section>
-	<section class="space-y-2">
-		<h2 class="text-sm font-semibold text-zinc-500">Embedder（召回用）{#if emb.key_set}<span class="text-green-600 text-xs"> · 已配置</span>{/if}</h2>
-		<label for="emb-model" class="block text-xs text-zinc-500">model</label>
-		<input id="emb-model" bind:value={emb.model} placeholder="model（如 text-embedding-v3）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<label for="emb-base-url" class="block text-xs text-zinc-500">base_url</label>
-		<input id="emb-base-url" bind:value={emb.base_url} placeholder="base_url（可选）" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<label for="emb-dim" class="block text-xs text-zinc-500">dim</label>
-		<input id="emb-dim" bind:value={emb.dim} type="number" placeholder="dim" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<label for="emb-api-key" class="block text-xs text-zinc-500">api_key</label>
-		<input id="emb-api-key" bind:value={embKey} type="password" placeholder={emb.key_set ? 'api_key（留空不改）' : 'api_key'} class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm" />
-		<p class="text-xs text-zinc-400">改 embedder 会重嵌已有记忆（dim 变化）。</p>
-	</section>
-	<button onclick={save} class="px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm">保存</button>
-	<span class="text-xs text-zinc-500 ml-2">{msg}</span>
+
+<h1 class="mb-4 text-xl font-semibold text-fg">设置</h1>
+<div class="max-w-xl space-y-5">
+	<Card title="LLM（抽取用）">
+		<div class="space-y-3">
+			<Field label="model" for="llm-model" error={errors['llm.model'] ? 'model 必填' : ''}>
+				<Input id="llm-model" bind:value={llm.model} invalid={errors['llm.model']} placeholder="如 gpt-4o-mini" />
+			</Field>
+			<Field label="base_url" for="llm-base" hint="留空用默认 OpenAI 端点">
+				<Input id="llm-base" bind:value={llm.base_url} placeholder="https://api.openai.com/v1" />
+			</Field>
+			<Field label="api_key" for="llm-key" error={errors['llm.api_key'] ? 'api_key 必填' : ''}>
+				<div class="flex gap-2">
+					<Input
+						id="llm-key"
+						type={showLlmKey ? 'text' : 'password'}
+						bind:value={llmKey}
+						invalid={errors['llm.api_key']}
+						placeholder={llm.key_set ? '已设置 · 留空不改' : 'api_key'}
+					/>
+					<IconButton aria-label="显示/隐藏" onclick={() => (showLlmKey = !showLlmKey)}>{showLlmKey ? '🙈' : '👁'}</IconButton>
+				</div>
+			</Field>
+		</div>
+	</Card>
+
+	<Card title="Embedder（召回用）">
+		<div class="space-y-3">
+			<Field label="model" for="emb-model">
+				<Input id="emb-model" bind:value={emb.model} placeholder="如 text-embedding-3-small" />
+			</Field>
+			<Field label="base_url" for="emb-base" hint="留空用默认端点">
+				<Input id="emb-base" bind:value={emb.base_url} placeholder="https://api.openai.com/v1" />
+			</Field>
+			<Field label="dim" for="emb-dim" hint="改 dim 会按新配置重嵌已有记忆">
+				<Input id="emb-dim" type="number" bind:value={emb.dim} />
+			</Field>
+			<Field label="api_key" for="emb-key" hint="留空则用离线 stub(召回不可用)">
+				<div class="flex gap-2">
+					<Input
+						id="emb-key"
+						type={showEmbKey ? 'text' : 'password'}
+						bind:value={embKey}
+						placeholder={emb.key_set ? '已设置 · 留空不改' : 'api_key（可空）'}
+					/>
+					<IconButton aria-label="显示/隐藏" onclick={() => (showEmbKey = !showEmbKey)}>{showEmbKey ? '🙈' : '👁'}</IconButton>
+				</div>
+			</Field>
+		</div>
+	</Card>
+
+	<Button loading={saving} onclick={onSaveClick}>保存</Button>
+
+	<Card title="Access">
+		<div class="space-y-3">
+			<Field label="API Token" for="tok" hint="粘贴 #token=… 登录 URL，或在此直接输入">
+				<div class="flex gap-2">
+					<Input id="tok" bind:value={token} placeholder="bearer token" />
+					<CopyButton text={token} />
+				</div>
+			</Field>
+			<Button variant="secondary" onclick={saveToken}>保存 Token</Button>
+		</div>
+	</Card>
 </div>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title="确认更改 Embedder？"
+	description="改 embedder 配置会按新设置重嵌已有记忆，可能耗时。继续？"
+	confirmLabel="继续保存"
+	onconfirm={doSave}
+/>
