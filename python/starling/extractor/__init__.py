@@ -24,6 +24,10 @@ StatementProvenance   = _core.StatementProvenance
 OpenAIAdapterConfig   = _core.OpenAIAdapterConfig
 OpenAIAdapter         = _core.OpenAIAdapter
 
+# P2.l: AnthropicAdapter binding (native Messages API)
+AnthropicAdapterConfig = _core.AnthropicAdapterConfig
+AnthropicAdapter       = _core.AnthropicAdapter
+
 __all__ = [
     "compute_extraction_span_key",
     "Extractor",
@@ -37,4 +41,6 @@ __all__ = [
     "StatementProvenance",
     "OpenAIAdapterConfig",
     "OpenAIAdapter",
+    "AnthropicAdapterConfig",
+    "AnthropicAdapter",
 ]

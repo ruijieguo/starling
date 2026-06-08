@@ -48,6 +48,7 @@
 #include "starling/extractor/extractor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/openai_adapter.hpp"
+#include "starling/extractor/anthropic_adapter.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/retrieval/basic_retriever.hpp"
@@ -672,8 +673,17 @@ PYBIND11_MODULE(_core, m) {
         .def_readwrite("ok",      &starling::extractor::LLMResponse::ok)
         .def_readwrite("error",   &starling::extractor::LLMResponse::error);
 
-    // Abstract base — register so pybind knows FakeLLMAdapter / OpenAIAdapter share it.
-    py::class_<starling::extractor::LLMAdapter>(m, "LLMAdapter");
+    // Abstract base — register so pybind knows FakeLLMAdapter / OpenAIAdapter /
+    // AnthropicAdapter share it. `extract` is bound here on the base so EVERY
+    // adapter exposes it to Python (the dashboard /api/config/test probe calls
+    // it on real OpenAI/Anthropic adapters, not just FakeLLMAdapter).
+    py::class_<starling::extractor::LLMAdapter>(m, "LLMAdapter")
+        .def("extract",
+             [](starling::extractor::LLMAdapter& self, const std::string& prompt,
+                const std::string& prompt_input_hash) {
+                 return self.extract(prompt, prompt_input_hash);
+             },
+             py::arg("prompt"), py::arg("prompt_input_hash") = "");
 
     py::class_<starling::extractor::FakeLLMAdapter, starling::extractor::LLMAdapter>(m, "FakeLLMAdapter")
         .def(py::init<>())
@@ -707,6 +717,22 @@ PYBIND11_MODULE(_core, m) {
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
+    }
+
+    // ----- P2.l: AnthropicAdapter (native Messages API) -----
+    {
+        using starling::extractor::AnthropicAdapter;
+        py::class_<AnthropicAdapter::Config>(m, "AnthropicAdapterConfig")
+            .def(py::init<>())
+            .def_readwrite("base_url",    &AnthropicAdapter::Config::base_url)
+            .def_readwrite("model",       &AnthropicAdapter::Config::model)
+            .def_readwrite("api_version", &AnthropicAdapter::Config::api_version)
+            .def_readwrite("timeout_ms",  &AnthropicAdapter::Config::timeout_ms)
+            .def_readwrite("max_retries", &AnthropicAdapter::Config::max_retries)
+            .def_readwrite("max_tokens",  &AnthropicAdapter::Config::max_tokens)
+            .def_static("from_env",       &AnthropicAdapter::Config::from_env);
+        py::class_<AnthropicAdapter, starling::extractor::LLMAdapter>(m, "AnthropicAdapter")
+            .def(py::init<AnthropicAdapter::Config>());
     }
 
     // ----- M0.4: ExtractionRunResult -----
@@ -1257,7 +1283,12 @@ PYBIND11_MODULE(_core, m) {
     // ── M0.9: Embedding / Vector / Worker / SemanticRetriever ─────────────
 
     // Abstract bases (no init) so derived-to-base-ref passing works.
-    py::class_<starling::embedding::EmbeddingAdapter>(m, "EmbeddingAdapter");
+    py::class_<starling::embedding::EmbeddingAdapter>(m, "EmbeddingAdapter")
+        .def("embed",
+             [](starling::embedding::EmbeddingAdapter& self, const std::string& text) {
+                 return self.embed(text).vector;  // list[float]; len == dim. Real call → connectivity probe.
+             },
+             py::arg("text"));
     py::class_<starling::vector::VectorIndex>(m, "VectorIndex");
 
     py::class_<starling::embedding::StubEmbeddingAdapter,
