@@ -41,23 +41,22 @@
 	--row-py: 0.5rem;
 }
 
-/* 深色随 OS 偏好(明暗等价,无手动开关——开关留 P2.m) */
-@media (prefers-color-scheme: dark) {
-	:root {
-		--bg: #09090b;
-		--surface: #0c0c0f;
-		--card: #18181b;
-		--fg: #fafafa;
-		--muted: #a1a1aa;
-		--subtle: #71717a;
-		--border: #27272a;
-		--brand: #6366f1;
-		--brand-fg: #ffffff;
-		--success: #22c55e;
-		--warn: #f59e0b;
-		--danger: #ef4444;
-		--info: #3b82f6;
-	}
+/* 深色 token。主题由 <html data-theme> 决定:theme.ts(+ app.html 预渲染脚本)
+   把 system 解析成 light/dark 显式写到 data-theme,故 CSS 不重复、无 FOUC。 */
+:root[data-theme='dark'] {
+	--bg: #09090b;
+	--surface: #0c0c0f;
+	--card: #18181b;
+	--fg: #fafafa;
+	--muted: #a1a1aa;
+	--subtle: #71717a;
+	--border: #27272a;
+	--brand: #6366f1;
+	--brand-fg: #ffffff;
+	--success: #22c55e;
+	--warn: #f59e0b;
+	--danger: #ef4444;
+	--info: #3b82f6;
 }
 
 /* 密度模式:容器上 data-density="compact" 收紧表格行 */

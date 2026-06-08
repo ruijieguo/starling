@@ -5,7 +5,7 @@
 	import { api } from '$lib/api';
 	import { connectWs } from '$lib/ws';
 	import { wsConn, llmConfigured, embedderConfigured, lastWsEvent } from '$lib/health';
-	import { StatusDot, IconButton, Toaster } from '$lib/components/ui';
+	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
 
 	const GROUPS = [
 		{
@@ -77,6 +77,7 @@
 			<StatusDot tone={connTone} label={connLabel} />
 			<StatusDot tone={cfgTone($llmConfigured)} label={$llmConfigured === false ? 'LLM 未配' : 'LLM'} />
 			<StatusDot tone={cfgTone($embedderConfigured)} label={$embedderConfigured === false ? 'Embedder 未配' : 'Embedder'} />
+			<ThemeToggle />
 		</div>
 	</header>
 

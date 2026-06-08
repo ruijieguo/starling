@@ -3,6 +3,15 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script>
+			// Pre-paint theme: set <html data-theme> from the saved choice (system→OS)
+			// before first render to avoid a flash of the wrong theme.
+			try {
+				var t = localStorage.getItem('starling_theme') || 'system';
+				var d = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+				document.documentElement.dataset.theme = d ? 'dark' : 'light';
+			} catch (e) {}
+		</script>
 %sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
