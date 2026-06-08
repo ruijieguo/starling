@@ -14,6 +14,6 @@
 
 <button
 	onclick={copy}
-	class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-fg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+	class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-fg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
 	>{copied ? '已复制' : label}</button
 >
