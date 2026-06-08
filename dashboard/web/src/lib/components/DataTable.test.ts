@@ -36,4 +36,12 @@ describe('DataTable', () => {
 		await fireEvent.input(getByPlaceholderText('筛选…'), { target: { value: 'zzz' } });
 		expect(getByText('无匹配结果')).toBeTruthy();
 	});
+	it('fires onRowClick with the clicked row', async () => {
+		let clicked: Record<string, unknown> | null = null;
+		const { getByText } = render(DataTable, {
+			props: { rows: [{ a: 'alpha' }], columns: ['a'], filterable: false, onRowClick: (r) => (clicked = r) }
+		});
+		await fireEvent.click(getByText('alpha'));
+		expect(clicked).toEqual({ a: 'alpha' });
+	});
 });

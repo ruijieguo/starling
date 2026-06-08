@@ -9,7 +9,8 @@
 		loading = false,
 		emptyText = '无数据',
 		pageSize = 12,
-		filterable = true
+		filterable = true,
+		onRowClick
 	}: {
 		rows?: Record<string, unknown>[];
 		columns: string[];
@@ -17,6 +18,7 @@
 		emptyText?: string;
 		pageSize?: number;
 		filterable?: boolean;
+		onRowClick?: (row: Record<string, unknown>) => void;
 	} = $props();
 
 	let sortCol = $state('');
@@ -94,7 +96,20 @@
 				</thead>
 				<tbody>
 					{#each pageRows as r}
-						<tr class="border-t border-border/60">
+						<tr
+							class="border-t border-border/60 {onRowClick ? 'cursor-pointer hover:bg-surface' : ''}"
+							role={onRowClick ? 'button' : undefined}
+							tabindex={onRowClick ? 0 : undefined}
+							onclick={onRowClick ? () => onRowClick(r) : undefined}
+							onkeydown={onRowClick
+								? (e) => {
+										if (e.key === 'Enter' || e.key === ' ') {
+											e.preventDefault();
+											onRowClick(r);
+										}
+									}
+								: undefined}
+						>
 							{#each columns as c}<td class="px-3" style="padding-block: var(--row-py)">{fmt(r[c])}</td>{/each}
 						</tr>
 					{/each}
