@@ -1,7 +1,11 @@
 <script lang="ts">
 	type Node = { id: string; label: string };
 	type Edge = { a: string; b: string };
-	let { nodes, edges }: { nodes: Node[]; edges: Edge[] } = $props();
+	let {
+		nodes,
+		edges,
+		onNodeClick
+	}: { nodes: Node[]; edges: Edge[]; onNodeClick?: (id: string) => void } = $props();
 	const R = 140,
 		CX = 200,
 		CY = 170;
@@ -15,7 +19,12 @@
 	);
 </script>
 
-<svg viewBox="0 0 400 340" class="w-full max-w-lg" aria-hidden="true">
+<svg
+	viewBox="0 0 400 340"
+	class="w-full max-w-lg"
+	role={onNodeClick ? 'group' : 'img'}
+	aria-label={onNodeClick ? 'Cognizer 关系图，点击节点看详情' : 'Cognizer 关系图'}
+>
 	{#each edges as e}
 		{@const a = pos.get(e.a)}
 		{@const b = pos.get(e.b)}
@@ -26,10 +35,30 @@
 	{#each nodes as n}
 		{@const p = pos.get(n.id)}
 		{#if p}
-			<g transform={`translate(${p.x},${p.y})`}>
-				<circle r="6" fill="currentColor" />
-				<text x="9" y="4" font-size="10" fill="currentColor">{n.label}</text>
-			</g>
+			{#if onNodeClick}
+				<g
+					transform={`translate(${p.x},${p.y})`}
+					role="button"
+					tabindex="0"
+					aria-label={n.label}
+					style="cursor:pointer"
+					onclick={() => onNodeClick(n.id)}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' || e.key === ' ') {
+							e.preventDefault();
+							onNodeClick(n.id);
+						}
+					}}
+				>
+					<circle r="6" fill="currentColor" />
+					<text x="9" y="4" font-size="10" fill="currentColor">{n.label}</text>
+				</g>
+			{:else}
+				<g transform={`translate(${p.x},${p.y})`}>
+					<circle r="6" fill="currentColor" />
+					<text x="9" y="4" font-size="10" fill="currentColor">{n.label}</text>
+				</g>
+			{/if}
 		{/if}
 	{/each}
 </svg>
