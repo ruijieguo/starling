@@ -68,6 +68,27 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
     return _core.OpenAIAdapter(cfg)
 
 
+def make_anthropic_llm(*, model: str = "", base_url: str = "",
+                       timeout_ms: int = 0, max_retries: int = 0):
+    """Production Anthropic LLM adapter (`_core.AnthropicAdapter`).
+
+    The API key is read from the environment (`ANTHROPIC_API_KEY`) by the C++
+    adapter — never accepted as a parameter, logged, or hardcoded here. Starts
+    from `AnthropicAdapterConfig.from_env()`, then overrides only the fields the
+    caller explicitly set.
+    """
+    cfg = _core.AnthropicAdapterConfig.from_env()
+    if model:
+        cfg.model = model
+    if base_url:
+        cfg.base_url = base_url
+    if timeout_ms:
+        cfg.timeout_ms = timeout_ms
+    if max_retries:
+        cfg.max_retries = max_retries
+    return _core.AnthropicAdapter(cfg)
+
+
 @dataclass
 class RememberResult:
     engram_ref: str
