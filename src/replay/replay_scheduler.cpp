@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <format>
 #include <map>
 #include <random>
 #include <sstream>
@@ -327,11 +328,10 @@ int ReplayScheduler::sweep_volatile_ttl(persistence::Connection& conn,
     const std::time_t cutoff_epoch = now_epoch - static_cast<std::time_t>(kVolatileTtlDays) * 86400;
     std::tm cutoff_tm{};
     gmtime_r(&cutoff_epoch, &cutoff_tm);
-    char cutoff_buf[32];
-    std::snprintf(cutoff_buf, sizeof(cutoff_buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  cutoff_tm.tm_year+1900, cutoff_tm.tm_mon+1, cutoff_tm.tm_mday,
-                  cutoff_tm.tm_hour, cutoff_tm.tm_min, cutoff_tm.tm_sec);
-    const std::string cutoff_iso(cutoff_buf);
+    const std::string cutoff_iso =
+        std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                    cutoff_tm.tm_year + 1900, cutoff_tm.tm_mon + 1, cutoff_tm.tm_mday,
+                    cutoff_tm.tm_hour, cutoff_tm.tm_min, cutoff_tm.tm_sec);
 
     // Collect affected volatile stmts older than cutoff
     const char* sel_sql =

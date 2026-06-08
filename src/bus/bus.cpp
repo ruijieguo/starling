@@ -545,7 +545,9 @@ StatementWriteOutcome Bus::write_impl(
 
     if (match.has_value()) {
         const std::string new_stmt_id =
-            std::visit([](auto&& v) -> std::string { return v.stmt_id; }, outcome);
+            std::visit([](auto&& write_outcome) -> std::string {
+                return write_outcome.stmt_id;
+            }, outcome);
 
         switch (match->kind) {
             case ConflictKind::DirectContradiction:

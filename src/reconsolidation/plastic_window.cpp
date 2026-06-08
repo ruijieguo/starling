@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <format>
 #include <random>
 #include <string>
 
@@ -45,11 +46,9 @@ std::string add_minutes_to_iso(std::string_view iso, int minutes) {
     epoch += static_cast<std::time_t>(minutes) * 60;
     std::tm tm{};
     gmtime_r(&epoch, &tm);
-    char buf[21];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                  tm.tm_hour, tm.tm_min, tm.tm_sec);
-    return std::string(buf);
+    return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                       tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 }  // namespace

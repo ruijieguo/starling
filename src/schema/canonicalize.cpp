@@ -4,7 +4,7 @@
 // tests/python/test_canonicalize_parity.py.
 //
 // Platform note: NFC + lowercase + whitespace folding uses macOS Core
-// Foundation. The linux build will need ICU; not addressed in M0.1.
+// Foundation on Apple platforms and ICU elsewhere.
 
 #include "starling/schema/canonicalize.hpp"
 #include "starling/crypto/sha256.hpp"
@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -23,7 +24,9 @@
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #else
-#error "M0.1 currently macOS-only — linux build needs an ICU NFC/lowercase shim"
+#include <unicode/unorm2.h>
+#include <unicode/ustring.h>
+#include <unicode/utypes.h>
 #endif
 
 namespace starling::schema {
@@ -41,6 +44,146 @@ bool is_python_whitespace(char32_t c) {
     return c == U' ' || c == U'\t' || c == U'\n'
         || c == U'\r' || c == U'\f' || c == U'\v';
 }
+
+std::string strip_and_fold_ascii_whitespace(const std::string& lower) {
+    // Strip + fold whitespace. We only need to identify the ASCII whitespace
+    // set, which is single-byte in UTF-8 and never appears inside a multibyte
+    // sequence's continuation bytes (continuation bytes have the high bit set,
+    // outside our whitespace set). So byte iteration is safe.
+    std::string out;
+    out.reserve(lower.size());
+    std::size_t i = 0;
+    const std::size_t n = lower.size();
+
+    // Skip leading whitespace.
+    while (i < n && is_python_whitespace(static_cast<char32_t>(static_cast<unsigned char>(lower[i])))) {
+        ++i;
+    }
+    bool in_ws_run = false;
+    while (i < n) {
+        const unsigned char b = static_cast<unsigned char>(lower[i]);
+        if (is_python_whitespace(static_cast<char32_t>(b))) {
+            in_ws_run = true;
+            ++i;
+            continue;
+        }
+        if (in_ws_run) {
+            out.push_back(' ');
+            in_ws_run = false;
+        }
+        out.push_back(static_cast<char>(b));
+        ++i;
+    }
+    // Trailing whitespace run (in_ws_run true) is dropped — equivalent to strip().
+    return out;
+}
+
+#if !defined(__APPLE__)
+int32_t checked_icu_length(std::size_t size) {
+    constexpr auto kMax = static_cast<std::size_t>(std::numeric_limits<int32_t>::max());
+    if (size > kMax) {
+        throw std::invalid_argument("schema_invalid: string too large");
+    }
+    return static_cast<int32_t>(size);
+}
+
+bool needs_output_buffer(UErrorCode status) {
+    return status == U_BUFFER_OVERFLOW_ERROR;
+}
+
+void throw_icu_error(const char* operation, UErrorCode status) {
+    throw std::runtime_error(
+        std::string("schema_invalid: ") + operation + " failed: " + u_errorName(status));
+}
+
+std::vector<UChar> utf8_to_utf16(const std::string& input) {
+    const int32_t src_len = checked_icu_length(input.size());
+    int32_t required = 0;
+    UErrorCode status = U_ZERO_ERROR;
+    u_strFromUTF8(nullptr, 0, &required, input.data(), src_len, &status);
+    if (status == U_INVALID_CHAR_FOUND || status == U_TRUNCATED_CHAR_FOUND) {
+        throw std::invalid_argument("schema_invalid: invalid UTF-8 string");
+    }
+    if (U_FAILURE(status) && !needs_output_buffer(status)) {
+        throw_icu_error("u_strFromUTF8", status);
+    }
+
+    std::vector<UChar> out(static_cast<std::size_t>(required));
+    status = U_ZERO_ERROR;
+    u_strFromUTF8(out.data(), required, nullptr, input.data(), src_len, &status);
+    if (status == U_INVALID_CHAR_FOUND || status == U_TRUNCATED_CHAR_FOUND) {
+        throw std::invalid_argument("schema_invalid: invalid UTF-8 string");
+    }
+    if (U_FAILURE(status)) {
+        throw_icu_error("u_strFromUTF8", status);
+    }
+    return out;
+}
+
+std::vector<UChar> normalize_nfc(const std::vector<UChar>& input) {
+    UErrorCode status = U_ZERO_ERROR;
+    const UNormalizer2* nfc = unorm2_getNFCInstance(&status);
+    if (U_FAILURE(status)) {
+        throw_icu_error("unorm2_getNFCInstance", status);
+    }
+
+    const auto src_len = checked_icu_length(input.size());
+    int32_t required = 0;
+    status = U_ZERO_ERROR;
+    required = unorm2_normalize(nfc, input.data(), src_len, nullptr, 0, &status);
+    if (U_FAILURE(status) && !needs_output_buffer(status)) {
+        throw_icu_error("unorm2_normalize", status);
+    }
+
+    std::vector<UChar> out(static_cast<std::size_t>(required));
+    status = U_ZERO_ERROR;
+    const int32_t written =
+        unorm2_normalize(nfc, input.data(), src_len, out.data(), required, &status);
+    if (U_FAILURE(status)) {
+        throw_icu_error("unorm2_normalize", status);
+    }
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
+std::vector<UChar> lower_root_locale(const std::vector<UChar>& input) {
+    const auto src_len = checked_icu_length(input.size());
+    int32_t required = 0;
+    UErrorCode status = U_ZERO_ERROR;
+    required = u_strToLower(nullptr, 0, input.data(), src_len, "", &status);
+    if (U_FAILURE(status) && !needs_output_buffer(status)) {
+        throw_icu_error("u_strToLower", status);
+    }
+
+    std::vector<UChar> out(static_cast<std::size_t>(required));
+    status = U_ZERO_ERROR;
+    const int32_t written =
+        u_strToLower(out.data(), required, input.data(), src_len, "", &status);
+    if (U_FAILURE(status)) {
+        throw_icu_error("u_strToLower", status);
+    }
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
+std::string utf16_to_utf8(const std::vector<UChar>& input) {
+    const auto src_len = checked_icu_length(input.size());
+    int32_t required = 0;
+    UErrorCode status = U_ZERO_ERROR;
+    u_strToUTF8(nullptr, 0, &required, input.data(), src_len, &status);
+    if (U_FAILURE(status) && !needs_output_buffer(status)) {
+        throw_icu_error("u_strToUTF8", status);
+    }
+
+    std::string out(static_cast<std::size_t>(required), '\0');
+    status = U_ZERO_ERROR;
+    u_strToUTF8(out.data(), required, nullptr, input.data(), src_len, &status);
+    if (U_FAILURE(status)) {
+        throw_icu_error("u_strToUTF8", status);
+    }
+    return out;
+}
+#endif
 
 // NFC-normalize, lowercase, strip leading/trailing whitespace, fold runs of
 // whitespace to a single ASCII space. Mirrors:
@@ -86,36 +229,15 @@ std::string canonicalize_string(const std::string& input) {
 
     const std::string lower(buf.data(), static_cast<std::size_t>(used));
 
-    // Strip + fold whitespace. We only need to identify the ASCII whitespace
-    // set, which is single-byte in UTF-8 and never appears inside a multibyte
-    // sequence's continuation bytes (continuation bytes have the high bit set,
-    // outside our whitespace set). So byte iteration is safe.
-    std::string out;
-    out.reserve(lower.size());
-    std::size_t i = 0;
-    const std::size_t n = lower.size();
-
-    // Skip leading whitespace.
-    while (i < n && is_python_whitespace(static_cast<char32_t>(static_cast<unsigned char>(lower[i])))) {
-        ++i;
+    return strip_and_fold_ascii_whitespace(lower);
+#else
+    if (input.empty()) {
+        return "";
     }
-    bool in_ws_run = false;
-    while (i < n) {
-        const unsigned char b = static_cast<unsigned char>(lower[i]);
-        if (is_python_whitespace(static_cast<char32_t>(b))) {
-            in_ws_run = true;
-            ++i;
-            continue;
-        }
-        if (in_ws_run) {
-            out.push_back(' ');
-            in_ws_run = false;
-        }
-        out.push_back(static_cast<char>(b));
-        ++i;
-    }
-    // Trailing whitespace run (in_ws_run true) is dropped — equivalent to strip().
-    return out;
+    const std::vector<UChar> utf16 = utf8_to_utf16(input);
+    const std::vector<UChar> nfc = normalize_nfc(utf16);
+    const std::vector<UChar> lower = lower_root_locale(nfc);
+    return strip_and_fold_ascii_whitespace(utf16_to_utf8(lower));
 #endif
 }
 

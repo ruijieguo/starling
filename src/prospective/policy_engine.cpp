@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <format>
 #include <random>
 #include <string>
 #include <string_view>
@@ -59,11 +60,9 @@ std::string add_minutes_to_iso(const std::string& iso, int minutes) {
     std::time_t epoch = timegm(&tm) + static_cast<std::time_t>(minutes) * 60;
     std::tm out{};
     gmtime_r(&epoch, &out);
-    char buf[21];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  out.tm_year + 1900, out.tm_mon + 1, out.tm_mday,
-                  out.tm_hour, out.tm_min, out.tm_sec);
-    return std::string(buf);
+    return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                       out.tm_year + 1900, out.tm_mon + 1, out.tm_mday,
+                       out.tm_hour, out.tm_min, out.tm_sec);
 }
 
 // 32 random hex chars for new trigger ids (mirrors arbitration.cpp).

@@ -44,6 +44,11 @@ TEST(Canonicalize, StringNFCAndLowerAndFold) {
     EXPECT_EQ(r.canonical, "hello world");
 }
 
+TEST(Canonicalize, StringDecomposedAccentNormalizesToNFC) {
+    auto r = canonicalize_object(std::string("Cafe\xCC\x81"));
+    EXPECT_EQ(r.canonical, std::string("caf\xC3\xA9"));
+}
+
 TEST(Canonicalize, StringCJKUnchanged) {
     auto r = canonicalize_object(std::string("北京"));
     EXPECT_EQ(r.canonical, "北京");

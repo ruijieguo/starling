@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <ctime>
+#include <format>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -60,11 +61,9 @@ std::time_t parse_iso_epoch(std::string_view iso) {
 std::string epoch_to_iso(std::time_t t) {
     std::tm tm{};
     gmtime_r(&t, &tm);
-    char buf[21];
-    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                  tm.tm_hour, tm.tm_min, tm.tm_sec);
-    return std::string(buf);
+    return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                       tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 // Insert a grounding_acts audit row.

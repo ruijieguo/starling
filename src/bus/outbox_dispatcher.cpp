@@ -226,6 +226,7 @@ DispatchStats OutboxDispatcher::run_once() {
             // Payload is just the original event_id; downstream consumers can
             // load the full failed row from bus_events if they need more.
             BusEvent failure_evt{
+                .event_id = "",
                 .tenant_id = ev.tenant_id,
                 .event_type = "system.delivery_failed",
                 .primary_id = ev.event_id,
@@ -234,6 +235,7 @@ DispatchStats OutboxDispatcher::run_once() {
                 .idempotency_key = ev.idempotency_key + ":delivery_failed",
                 .payload_json = std::string("{\"failed_event_id\":\"")
                                 + ev.event_id + "\"}",
+                .created_at = "",
             };
             writer.append_already_delivered(failure_evt);
             g.commit();
