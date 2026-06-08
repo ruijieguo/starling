@@ -24,8 +24,13 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 	headers.set('Content-Type', 'application/json');
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+	// caller 传入的 signal 链到内部 controller:保证 15s 超时始终生效,且 caller 取消也能传播。
+	if (init.signal) {
+		if (init.signal.aborted) ctrl.abort();
+		else init.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+	}
 	try {
-		const res = await fetch(path, { ...init, headers, signal: init.signal ?? ctrl.signal });
+		const res = await fetch(path, { ...init, headers, signal: ctrl.signal });
 		if (!res.ok) {
 			let detail = res.statusText;
 			try {

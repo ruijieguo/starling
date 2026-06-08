@@ -44,17 +44,24 @@
 			? rows.filter((r) => columns.some((c) => fmt(r[c]).toLowerCase().includes(filter.toLowerCase())))
 			: rows
 	);
+	// 自然排序:数字列按数值比(localeCompare numeric),"10" 排在 "2" 之后,
+	// 不再字典序错排;字符串与 ISO 日期照常正确。
 	let sorted = $derived(
 		sortCol
-			? [...filtered].sort((a, b) => {
-					const av = fmt(a[sortCol]);
-					const bv = fmt(b[sortCol]);
-					return av < bv ? -sortDir : av > bv ? sortDir : 0;
-				})
+			? [...filtered].sort(
+					(a, b) =>
+						sortDir * fmt(a[sortCol]).localeCompare(fmt(b[sortCol]), undefined, { numeric: true })
+				)
 			: filtered
 	);
 	let pageCount = $derived(Math.max(1, Math.ceil(sorted.length / pageSize)));
 	let pageRows = $derived(sorted.slice(page * pageSize, page * pageSize + pageSize));
+
+	// 外部数据(rows 引用)变化时回到第 1 页,避免停在越界空页。
+	$effect(() => {
+		void rows;
+		page = 0;
+	});
 </script>
 
 {#if loading}
@@ -66,38 +73,42 @@
 {:else}
 	{#if filterable}
 		<div class="mb-2 max-w-xs">
-			<Input bind:value={filter} placeholder="筛选…" oninput={() => (page = 0)} />
+			<Input bind:value={filter} placeholder="筛选…" aria-label="筛选" oninput={() => (page = 0)} />
 		</div>
 	{/if}
-	<div class="overflow-x-auto rounded-lg border border-border">
-		<table class="w-full text-sm">
-			<thead class="bg-surface text-left">
-				<tr>
-					{#each columns as c}
-						<th scope="col" aria-sort={sortCol === c ? (sortDir === 1 ? 'ascending' : 'descending') : 'none'} class="px-3 py-2 font-medium text-muted">
-							<button class="inline-flex items-center gap-1 hover:text-fg" onclick={() => toggleSort(c)}>
-								{c}{#if sortCol === c}<span aria-hidden="true">{sortDir === 1 ? '↑' : '↓'}</span>{/if}
-							</button>
-						</th>
-					{/each}
-				</tr>
-			</thead>
-			<tbody>
-				{#each pageRows as r}
-					<tr class="border-t border-border/60">
-						{#each columns as c}<td class="px-3" style="padding-block: var(--row-py)">{fmt(r[c])}</td>{/each}
+	{#if sorted.length === 0}
+		<p class="px-1 py-2 text-sm text-subtle">无匹配结果</p>
+	{:else}
+		<div class="overflow-x-auto rounded-lg border border-border">
+			<table class="w-full text-sm">
+				<thead class="bg-surface text-left">
+					<tr>
+						{#each columns as c}
+							<th scope="col" aria-sort={sortCol === c ? (sortDir === 1 ? 'ascending' : 'descending') : 'none'} class="px-3 py-2 font-medium text-muted">
+								<button class="inline-flex items-center gap-1 hover:text-fg" onclick={() => toggleSort(c)}>
+									{c}{#if sortCol === c}<span aria-hidden="true">{sortDir === 1 ? '↑' : '↓'}</span>{/if}
+								</button>
+							</th>
+						{/each}
 					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-	{#if pageCount > 1}
-		<div class="mt-2 flex items-center justify-between text-xs text-muted">
-			<span>{sorted.length} 行 · 第 {page + 1}/{pageCount} 页</span>
-			<div class="flex gap-1">
-				<button class="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={page === 0} onclick={() => (page = Math.max(0, page - 1))}>上一页</button>
-				<button class="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={page >= pageCount - 1} onclick={() => (page = Math.min(pageCount - 1, page + 1))}>下一页</button>
-			</div>
+				</thead>
+				<tbody>
+					{#each pageRows as r}
+						<tr class="border-t border-border/60">
+							{#each columns as c}<td class="px-3" style="padding-block: var(--row-py)">{fmt(r[c])}</td>{/each}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		</div>
+		{#if pageCount > 1}
+			<div class="mt-2 flex items-center justify-between text-xs text-muted">
+				<span>{sorted.length} 行 · 第 {page + 1}/{pageCount} 页</span>
+				<div class="flex gap-1">
+					<button class="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={page === 0} onclick={() => (page = Math.max(0, page - 1))}>上一页</button>
+					<button class="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={page >= pageCount - 1} onclick={() => (page = Math.min(pageCount - 1, page + 1))}>下一页</button>
+				</div>
+			</div>
+		{/if}
 	{/if}
 {/if}

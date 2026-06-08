@@ -11,3 +11,4 @@ export { default as EmptyState } from './EmptyState.svelte';
 export { default as CopyButton } from './CopyButton.svelte';
 export { default as Toaster } from './Toaster.svelte';
 export { default as ConfirmDialog } from './ConfirmDialog.svelte';
+export { default as SecretInput } from './SecretInput.svelte';

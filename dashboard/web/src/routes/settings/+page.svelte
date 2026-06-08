@@ -4,15 +4,13 @@
 	import { getToken, setToken } from '$lib/token';
 	import { toast } from '$lib/ui/toast';
 	import { missingFields } from '$lib/ui/validate';
-	import { Button, IconButton, Input, Field, Card, CopyButton, ConfirmDialog } from '$lib/components/ui';
+	import { Button, Input, Field, Card, CopyButton, ConfirmDialog, SecretInput } from '$lib/components/ui';
 
 	type Prov = { model: string; base_url: string; key_set?: boolean; dim?: number };
 	let llm = $state<Prov>({ model: '', base_url: '' });
 	let llmKey = $state('');
-	let showLlmKey = $state(false);
 	let emb = $state<Prov>({ model: '', base_url: '', dim: 1024 });
 	let embKey = $state('');
-	let showEmbKey = $state(false);
 	let saving = $state(false);
 	let errors = $state<Record<string, boolean>>({});
 	let confirmOpen = $state(false);
@@ -102,16 +100,7 @@
 				<Input id="llm-base" bind:value={llm.base_url} placeholder="https://api.openai.com/v1" />
 			</Field>
 			<Field label="api_key" for="llm-key" error={errors['llm.api_key'] ? 'api_key 必填' : ''}>
-				<div class="flex gap-2">
-					<Input
-						id="llm-key"
-						type={showLlmKey ? 'text' : 'password'}
-						bind:value={llmKey}
-						invalid={errors['llm.api_key']}
-						placeholder={llm.key_set ? '已设置 · 留空不改' : 'api_key'}
-					/>
-					<IconButton aria-label="显示/隐藏" onclick={() => (showLlmKey = !showLlmKey)}>{showLlmKey ? '🙈' : '👁'}</IconButton>
-				</div>
+				<SecretInput id="llm-key" bind:value={llmKey} invalid={errors['llm.api_key']} placeholder={llm.key_set ? '已设置 · 留空不改' : 'api_key'} />
 			</Field>
 		</div>
 	</Card>
@@ -128,15 +117,7 @@
 				<Input id="emb-dim" type="number" bind:value={emb.dim} />
 			</Field>
 			<Field label="api_key" for="emb-key" hint="留空则用离线 stub(召回不可用)">
-				<div class="flex gap-2">
-					<Input
-						id="emb-key"
-						type={showEmbKey ? 'text' : 'password'}
-						bind:value={embKey}
-						placeholder={emb.key_set ? '已设置 · 留空不改' : 'api_key（可空）'}
-					/>
-					<IconButton aria-label="显示/隐藏" onclick={() => (showEmbKey = !showEmbKey)}>{showEmbKey ? '🙈' : '👁'}</IconButton>
-				</div>
+				<SecretInput id="emb-key" bind:value={embKey} placeholder={emb.key_set ? '已设置 · 留空不改' : 'api_key（可空）'} />
 			</Field>
 		</div>
 	</Card>
@@ -147,7 +128,7 @@
 		<div class="space-y-3">
 			<Field label="API Token" for="tok" hint="粘贴 #token=… 登录 URL，或在此直接输入">
 				<div class="flex gap-2">
-					<Input id="tok" bind:value={token} placeholder="bearer token" />
+					<SecretInput id="tok" bind:value={token} placeholder="bearer token" />
 					<CopyButton text={token} />
 				</div>
 			</Field>

@@ -18,7 +18,7 @@
 	};
 </script>
 
-<div class="rounded-xl border border-border bg-card p-4" title={hint}>
+<div class="rounded-xl border border-border bg-card p-4" title={hint || undefined}>
 	<div class="text-xs uppercase tracking-wide text-muted">{label}</div>
 	<div class="mt-1 flex items-baseline gap-2">
 		<span class="text-2xl font-semibold text-fg">{value}</span>

@@ -20,4 +20,15 @@ describe('createQuery', () => {
 		expect(q.error?.message).toContain('boom');
 		expect(q.data).toBe(null);
 	});
+	it('drops a stale refetch — only the latest result wins', async () => {
+		let resolveFirst!: (v: number) => void;
+		const first = new Promise<number>((r) => (resolveFirst = r));
+		let call = 0;
+		const q = createQuery(() => (call++ === 0 ? first : Promise.resolve(2)));
+		const p1 = q.refetch(); // gen 1, pends on `first`
+		await q.refetch(); // gen 2, resolves to 2
+		resolveFirst(1); // resolve the stale gen-1 fetch afterwards
+		await p1;
+		expect(q.data).toBe(2); // stale 1 dropped
+	});
 });

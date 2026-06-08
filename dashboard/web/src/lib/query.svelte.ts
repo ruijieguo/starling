@@ -16,16 +16,22 @@ export function createQuery<T>(fetcher: () => Promise<T>): QueryState<T> {
 	let data = $state<T | null>(null);
 	let error = $state<ApiError | null>(null);
 	let loading = $state(false);
+	// 单调代号:并发 refetch 时只让最新一次结果落地,丢弃过期(乱序)响应。
+	let gen = 0;
 
 	async function refetch() {
+		const myGen = ++gen;
 		loading = true;
 		try {
-			data = await fetcher();
+			const d = await fetcher();
+			if (myGen !== gen) return; // 已被更晚的 refetch 取代
+			data = d;
 			error = null;
 		} catch (e) {
+			if (myGen !== gen) return;
 			error = e instanceof ApiError ? e : new ApiError(0, '', String(e));
 		} finally {
-			loading = false;
+			if (myGen === gen) loading = false;
 		}
 	}
 
