@@ -83,3 +83,40 @@ def test_config_test_no_key_is_failure(ctx):
     _, _, client, _ = ctx
     r = client.post("/api/config/test", json={"kind": "llm", "provider": "openai"})
     assert r.status_code == 200 and r.json()["ok"] is False
+
+
+def test_config_test_never_sends_stored_key_to_overridden_base_url(ctx, monkeypatch):
+    # SECURITY: the persisted api_key must never be sent to a caller-supplied
+    # endpoint (credential exfiltration). Overriding base_url without a fresh key
+    # is refused; the stored key may only probe its own stored base_url; a fresh
+    # caller key may probe a caller URL (the caller's own key, not the secret).
+    cfg, eng, client, _ = ctx
+    cfg.llm["api_key"] = "sk-stored-secret"
+    cfg.llm["base_url"] = "https://api.openai.com/v1"
+    built = {}
+
+    def fake_build(c):
+        built["base_url"] = c.get("base_url")
+        built["api_key"] = c.get("api_key")
+        f = _core.FakeLLMAdapter()
+        f.set_default_response("[]", True, "")
+        return f
+
+    monkeypatch.setattr(engmod, "_build_chat_adapter", fake_build)
+
+    # 1. override base_url, no fresh key → refused; builder never invoked → secret never left.
+    r = client.post("/api/config/test", json={"kind": "llm", "base_url": "https://evil.example"})
+    assert r.json()["ok"] is False
+    assert built == {}
+
+    # 2. probe the STORED endpoint with the stored key → allowed.
+    r2 = client.post("/api/config/test", json={"kind": "llm", "base_url": "https://api.openai.com/v1"})
+    assert r2.json()["ok"] is True
+    assert built["api_key"] == "sk-stored-secret" and built["base_url"] == "https://api.openai.com/v1"
+
+    # 3. a fresh caller key may go to a caller URL — it's the caller's own key, not the secret.
+    built.clear()
+    r3 = client.post("/api/config/test",
+                     json={"kind": "llm", "base_url": "https://my.proxy", "api_key": "sk-mine"})
+    assert r3.json()["ok"] is True
+    assert built["api_key"] == "sk-mine"

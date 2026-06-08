@@ -78,21 +78,33 @@ def build_config_router(require_token) -> APIRouter:
         Builds a transient adapter from (saved config overlaid with the body)
         and issues one minimal live call. Never saves, never returns/logs the
         key; detail carries only a status/error code, never secret material.
+
+        SECURITY: the PERSISTED api_key is never sent to a caller-supplied
+        endpoint. A caller-supplied key may go to a caller-supplied base_url
+        (their own risk), but the stored secret may only probe its own stored
+        base_url — any base_url override (or a provider with no stored key)
+        requires a fresh api_key in the body. Blocks credential exfiltration via
+        a redirected probe.
         """
         import time
         from starling.dashboard.engine import _build_chat_adapter, _build_embed_adapter
         cfg = request.app.state.config
         src = cfg.embedder if body.kind == "embedder" else cfg.llm
         probe = dict(src)
-        for k in ("provider", "model", "base_url", "api_key", "dim"):
+        for k in ("provider", "model", "base_url", "dim"):
             v = getattr(body, k, None)
             if v is None:
                 continue
             if k == "dim" and (not isinstance(v, int) or v <= 0):
                 continue
             probe[k] = v
-        if not probe.get("api_key"):
-            return {"ok": False, "latency_ms": 0, "detail": "api_key 未设置"}
+        if body.api_key:
+            probe["api_key"] = body.api_key  # caller key may go to caller URL (their own risk)
+        else:
+            overrides_endpoint = body.base_url is not None and body.base_url != src.get("base_url", "")
+            if overrides_endpoint or not src.get("api_key"):
+                return {"ok": False, "latency_ms": 0,
+                        "detail": "需提供 api_key（改了 base_url 时不复用已存密钥）"}
         t0 = time.monotonic()
         try:
             if body.kind == "embedder":
