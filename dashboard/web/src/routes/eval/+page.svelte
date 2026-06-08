@@ -1,24 +1,29 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { createQuery } from '$lib/query.svelte';
+	import CodeBlock from '$lib/components/CodeBlock.svelte';
+	import { EmptyState } from '$lib/components/ui';
 
 	type Reports = { reports: { name: string; markdown: string }[] };
-	let data = $state<Reports | null>(null);
-	let err = $state('');
+	const q = createQuery(() => api.get<Reports>('/api/eval'));
 	$effect(() => {
-		api
-			.get<Reports>('/api/eval')
-			.then((d) => (data = d))
-			.catch((e) => (err = String(e)));
+		q.refetch();
 	});
+	let reports = $derived([...(q.data?.reports ?? [])].reverse());
 </script>
 
-<h1 class="text-xl font-semibold mb-4">Eval 报告</h1>
-{#if err}<p class="text-red-500 text-sm">{err}</p>{/if}
-{#if data}
-	{#each data.reports as r}
-		<details class="mb-3 rounded-lg border border-zinc-200 dark:border-zinc-800 p-3" open>
-			<summary class="cursor-pointer font-medium">{r.name}</summary>
-			<pre class="mt-2 text-xs whitespace-pre-wrap font-mono">{r.markdown}</pre>
-		</details>
-	{/each}
+<h1 class="mb-4 text-xl font-semibold text-fg">Eval 报告</h1>
+{#if q.error}
+	<EmptyState title="加载失败" description={q.error.message} />
+{:else if reports.length === 0}
+	<EmptyState title="暂无报告" />
+{:else}
+	<div class="space-y-3">
+		{#each reports as r}
+			<div>
+				<div class="mb-1 text-sm font-medium text-fg">{r.name}</div>
+				<CodeBlock content={r.markdown} language="text" collapsible />
+			</div>
+		{/each}
+	</div>
 {/if}

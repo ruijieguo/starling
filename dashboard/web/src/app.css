@@ -1,3 +1,75 @@
-@import "tailwindcss";
-:root { color-scheme: light dark; }
-body { @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100; }
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+/* 语义 token → Tailwind 工具类(@theme inline:工具类在使用点解析变量,
+   故下面的明暗/媒体查询覆盖会被工具类自动跟随)。 */
+@theme inline {
+	--color-bg: var(--bg);
+	--color-surface: var(--surface);
+	--color-card: var(--card);
+	--color-fg: var(--fg);
+	--color-muted: var(--muted);
+	--color-subtle: var(--subtle);
+	--color-border: var(--border);
+	--color-brand: var(--brand);
+	--color-brand-fg: var(--brand-fg);
+	--color-success: var(--success);
+	--color-warn: var(--warn);
+	--color-danger: var(--danger);
+	--color-info: var(--info);
+	--font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+	--radius-card: 0.75rem;
+}
+
+/* 浅色(默认) */
+:root {
+	--bg: #fafafa;
+	--surface: #ffffff;
+	--card: #ffffff;
+	--fg: #18181b;
+	--muted: #52525b;
+	--subtle: #71717a;
+	--border: #e4e4e7;
+	--brand: #4f46e5;
+	--brand-fg: #ffffff;
+	--success: #16a34a;
+	--warn: #d97706;
+	--danger: #dc2626;
+	--info: #2563eb;
+	--row-py: 0.5rem;
+}
+
+/* 深色随 OS 偏好(明暗等价,无手动开关——开关留 P2.m) */
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #09090b;
+		--surface: #0c0c0f;
+		--card: #18181b;
+		--fg: #fafafa;
+		--muted: #a1a1aa;
+		--subtle: #71717a;
+		--border: #27272a;
+		--brand: #6366f1;
+		--brand-fg: #ffffff;
+		--success: #22c55e;
+		--warn: #f59e0b;
+		--danger: #ef4444;
+		--info: #3b82f6;
+	}
+}
+
+/* 密度模式:容器上 data-density="compact" 收紧表格行 */
+[data-density='compact'] {
+	--row-py: 0.25rem;
+}
+
+:root {
+	color-scheme: light dark;
+}
+body {
+	background: var(--bg);
+	color: var(--fg);
+	font-family: var(--font-sans);
+}

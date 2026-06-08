@@ -1,58 +1,36 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
+	import { Button, EmptyState, Input } from '$lib/components/ui';
 
 	let predicate = $state('');
 	let perspective = $state('');
-	let rows = $state<Record<string, unknown>[]>([]);
-	let err = $state('');
-
-	async function load() {
-		try {
-			const q = new URLSearchParams();
-			if (predicate) q.set('predicate', predicate);
-			if (perspective) q.set('perspective', perspective);
-			const d = await api.get<{ rows: Record<string, unknown>[] }>(`/api/statements?${q}`);
-			rows = d.rows;
-			err = '';
-		} catch (e) {
-			err = String(e);
-		}
+	function url() {
+		const p = new URLSearchParams();
+		if (predicate) p.set('predicate', predicate);
+		if (perspective) p.set('perspective', perspective);
+		return `/api/statements?${p}`;
 	}
-
+	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>(url()));
 	$effect(() => {
-		load();
+		q.refetch();
 	});
 </script>
 
-<h1 class="text-xl font-semibold mb-4">Statements</h1>
-<div class="flex gap-2 mb-3">
-	<input
-		bind:value={predicate}
-		placeholder="predicate"
-		class="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm"
-	/>
-	<input
-		bind:value={perspective}
-		placeholder="perspective"
-		class="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm"
-	/>
-	<button
-		onclick={load}
-		class="px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm"
-		>筛选</button
-	>
+<h1 class="mb-4 text-xl font-semibold text-fg">Statements</h1>
+<div class="mb-3 flex gap-2">
+	<Input bind:value={predicate} placeholder="predicate" class="max-w-40" />
+	<Input bind:value={perspective} placeholder="perspective" class="max-w-40" />
+	<Button variant="secondary" onclick={() => q.refetch()}>筛选</Button>
 </div>
-{#if err}<p class="text-red-500 text-sm mb-2">{err}</p>{/if}
-<DataTable
-	{rows}
-	columns={[
-		'holder_id',
-		'holder_perspective',
-		'subject_id',
-		'predicate',
-		'object_value',
-		'modality',
-		'polarity'
-	]}
-/>
+{#if q.error}
+	<EmptyState title="加载失败" description={q.error.message} />
+{:else}
+	<DataTable
+		rows={q.data?.rows ?? []}
+		loading={q.loading}
+		emptyText="无 statements"
+		columns={['holder_id', 'holder_perspective', 'subject_id', 'predicate', 'object_value', 'modality', 'polarity']}
+	/>
+{/if}
