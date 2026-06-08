@@ -1,28 +1,26 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
+	import { Badge } from '$lib/components/ui';
 
-	type ConflictData = {
-		by_kind: Record<string, number>;
-		conflicts: Record<string, unknown>[];
-	};
-	let d = $state<ConflictData | null>(null);
-	let err = $state('');
-
-	async function load() {
-		try { d = await api.get<ConflictData>('/api/conflicts'); err = ''; }
-		catch (e) { err = String(e); }
-	}
-	$effect(() => { load(); });
+	type ConflictData = { by_kind: Record<string, number>; conflicts: Record<string, unknown>[] };
+	const q = createQuery(() => api.get<ConflictData>('/api/conflicts'));
+	$effect(() => {
+		q.refetch();
+	});
 </script>
 
-<h1 class="text-xl font-semibold mb-4">ConflictProbe</h1>
-{#if err}<p class="text-red-500 text-sm mb-2">{err}</p>{/if}
-{#if d}
-	<div class="flex gap-2 mb-4 text-xs flex-wrap">
-		{#each Object.entries(d.by_kind) as [k, v]}
-			<span class="px-2 py-1 rounded-lg border border-zinc-200 dark:border-zinc-800">{k}: {v}</span>
-		{/each}
+<h1 class="mb-4 text-xl font-semibold text-fg">ConflictProbe</h1>
+{#if q.error}<p class="mb-2 text-sm text-danger">{q.error.message}</p>{/if}
+{#if q.data}
+	<div class="mb-4 flex flex-wrap gap-2">
+		{#each Object.entries(q.data.by_kind) as [k, v]}<Badge tone={v ? 'warn' : 'neutral'}>{k}: {v}</Badge>{/each}
 	</div>
-	<DataTable rows={d.conflicts} columns={['src_id', 'dst_id', 'edge_kind', 'weight']} />
 {/if}
+<DataTable
+	rows={q.data?.conflicts ?? []}
+	loading={q.loading}
+	emptyText="无冲突"
+	columns={['src_id', 'dst_id', 'edge_kind', 'weight']}
+/>
