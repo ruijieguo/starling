@@ -32,15 +32,20 @@ def _now_iso() -> str:
 
 
 @contextmanager
-def _env_swap(api_key: str, base_url: str):
-    """Temporarily set OPENAI_API_KEY/BASE_URL so from_env() captures them."""
-    saved = {k: os.environ.get(k) for k in ("OPENAI_API_KEY", "OPENAI_BASE_URL")}
+def _env_swap(api_key: str, base_url: str, *,
+              key_env: str = "OPENAI_API_KEY", base_env: str = "OPENAI_BASE_URL"):
+    """Temporarily set <key_env>/<base_env> so the adapter's from_env() captures them.
+
+    Parametric over the env-var names so the Anthropic path can inject
+    ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL through the same transient swap.
+    """
+    saved = {k: os.environ.get(k) for k in (key_env, base_env)}
     try:
-        os.environ["OPENAI_API_KEY"] = api_key
+        os.environ[key_env] = api_key
         if base_url:
-            os.environ["OPENAI_BASE_URL"] = base_url
+            os.environ[base_env] = base_url
         else:
-            os.environ.pop("OPENAI_BASE_URL", None)  # clear stale value
+            os.environ.pop(base_env, None)  # clear stale value
         yield
     finally:
         for k, v in saved.items():
@@ -51,6 +56,19 @@ def _env_swap(api_key: str, base_url: str):
 
 
 def _build_chat_adapter(llm_cfg: dict):
+    """Provider factory: anthropic → AnthropicAdapter (native Messages API),
+    everything else → OpenAIAdapter (OpenAI-compatible: openai/azure/ollama/
+    groq/deepseek/openrouter/vllm/lmstudio/custom). Key injected via env-swap."""
+    provider = (llm_cfg.get("provider") or "openai").lower()
+    if provider == "anthropic":
+        with _env_swap(llm_cfg["api_key"], llm_cfg.get("base_url", ""),
+                       key_env="ANTHROPIC_API_KEY", base_env="ANTHROPIC_BASE_URL"):
+            cfg = _core.AnthropicAdapterConfig.from_env()
+            if llm_cfg.get("model"):
+                cfg.model = llm_cfg["model"]
+            if llm_cfg.get("base_url"):
+                cfg.base_url = llm_cfg["base_url"]
+            return _core.AnthropicAdapter(cfg)
     with _env_swap(llm_cfg["api_key"], llm_cfg.get("base_url", "")):
         cfg = _core.OpenAIAdapterConfig.from_env()
         if llm_cfg.get("model"):

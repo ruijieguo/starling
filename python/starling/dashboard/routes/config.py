@@ -6,10 +6,15 @@ from pydantic import BaseModel
 
 
 class ProviderBody(BaseModel):
+    provider: str | None = None
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     dim: int | None = None
+
+
+class TestBody(ProviderBody):
+    kind: str = "llm"  # "llm" | "embedder"
 
 
 class ConfigBody(BaseModel):
@@ -18,7 +23,8 @@ class ConfigBody(BaseModel):
 
 
 def _mask(d: dict) -> dict:
-    out = {"model": d.get("model", ""), "base_url": d.get("base_url", ""),
+    out = {"provider": d.get("provider", "openai"),
+           "model": d.get("model", ""), "base_url": d.get("base_url", ""),
            "key_set": bool(d.get("api_key"))}
     if "dim" in d:
         out["dim"] = d["dim"]
@@ -33,7 +39,7 @@ def _public(cfg) -> dict:
 def _merge(dst: dict, body) -> None:
     if body is None:
         return
-    for k in ("model", "base_url", "api_key", "dim"):
+    for k in ("provider", "model", "base_url", "api_key", "dim"):
         v = getattr(body, k, None)
         if v is None:
             continue
@@ -64,5 +70,39 @@ def build_config_router(require_token) -> APIRouter:
             if emb_changed:
                 eng.rebuild_embedder(cfg.embedder)   # rebuild + re-embed
         return _public(cfg)
+
+    @router.post("/config/test")
+    async def test_config(body: TestBody, request: Request):
+        """Probe a candidate provider config WITHOUT persisting it.
+
+        Builds a transient adapter from (saved config overlaid with the body)
+        and issues one minimal live call. Never saves, never returns/logs the
+        key; detail carries only a status/error code, never secret material.
+        """
+        import time
+        from starling.dashboard.engine import _build_chat_adapter, _build_embed_adapter
+        cfg = request.app.state.config
+        src = cfg.embedder if body.kind == "embedder" else cfg.llm
+        probe = dict(src)
+        for k in ("provider", "model", "base_url", "api_key", "dim"):
+            v = getattr(body, k, None)
+            if v is None:
+                continue
+            if k == "dim" and (not isinstance(v, int) or v <= 0):
+                continue
+            probe[k] = v
+        if not probe.get("api_key"):
+            return {"ok": False, "latency_ms": 0, "detail": "api_key 未设置"}
+        t0 = time.monotonic()
+        try:
+            if body.kind == "embedder":
+                vec = _build_embed_adapter(probe).embed("ping")
+                ok, detail = True, f"dim={len(vec)}"
+            else:
+                r = _build_chat_adapter(probe).extract("ping", "")
+                ok, detail = bool(r.ok), ("ok" if r.ok else (r.error or "failed"))
+            return {"ok": ok, "latency_ms": int((time.monotonic() - t0) * 1000), "detail": detail}
+        except Exception as e:  # noqa: BLE001 — surface any build/probe failure as a failed test
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000), "detail": str(e)}
 
     return router

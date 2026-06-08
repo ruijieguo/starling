@@ -26,11 +26,11 @@ _SERIALIZABLE = (
 
 
 def _default_llm() -> dict:
-    return {"model": "", "base_url": "", "api_key": ""}
+    return {"provider": "openai", "model": "", "base_url": "", "api_key": ""}
 
 
 def _default_embedder() -> dict:
-    return {"model": "", "base_url": "", "api_key": "", "dim": 1024}
+    return {"provider": "openai", "model": "", "base_url": "", "api_key": "", "dim": 1024}
 
 
 @dataclass
@@ -117,6 +117,7 @@ def _env_overlay(cfg: DashboardConfig) -> None:
     if e("STARLING_DASH_CORS_ORIGINS"):
         cfg.cors_origins = [o.strip() for o in e("STARLING_DASH_CORS_ORIGINS").split(",") if o.strip()]
     if not cfg.llm.get("api_key") and e("OPENAI_API_KEY"):
-        cfg.llm = {"model": e("OPENAI_MODEL", cfg.llm.get("model", "")),
+        cfg.llm = {"provider": cfg.llm.get("provider", "openai"),
+                   "model": e("OPENAI_MODEL", cfg.llm.get("model", "")),
                    "base_url": e("OPENAI_BASE_URL", cfg.llm.get("base_url", "")),
                    "api_key": e("OPENAI_API_KEY")}
