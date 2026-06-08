@@ -69,9 +69,9 @@ pip install -r requirements-build.txt
 python scripts/configure_build.py --build --test
 ```
 
-`python scripts/configure_build.py --build --test` configures first, then builds and runs C++ tests. It does not install the Python package. The script is local-first: it reuses tools and dependency sources from `.venv`, an active conda environment, conda package caches, Homebrew, system packages, and existing `build/_deps` sources before letting CMake `FetchContent` use the network for missing nlohmann/json or GoogleTest.
+`python scripts/configure_build.py --build --test` configures first, then builds and runs C++ tests. It does not install the Python package. The script is local-first: it reuses tools and dependency sources from `.venv`, conda package caches, Homebrew, system packages, existing `build/_deps` sources, and finally the active conda environment as a fallback before letting CMake `FetchContent` use the network for missing nlohmann/json or GoogleTest. On Linux it uses `build-linux` by default; on macOS it uses `build-macos`.
 
-Direct CMake users can run:
+Direct CMake users can run the generic development preset:
 
 ```bash
 cmake --preset dev
@@ -79,7 +79,19 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-This direct CMake path does not use the script's local-first dependency hints. Use it when CMake can already find SQLite >= 3.46, OpenSSL, libcurl, Linux ICU, pybind11, Ninja, and the other build inputs; otherwise use `python scripts/configure_build.py`.
+Or use the platform-specific build directory presets:
+
+```bash
+cmake --preset linux-local        # Linux
+cmake --build --preset linux-local
+ctest --preset linux-local
+
+cmake --preset macos-local        # macOS
+cmake --build --preset macos-local
+ctest --preset macos-local
+```
+
+These direct CMake paths do not use the script's local-first dependency hints. The `linux-local` and `macos-local` presets select `build-linux` / `build-macos` and a Release build, but still rely on CMake's normal dependency discovery. Use them when CMake can already find SQLite >= 3.46, OpenSSL, libcurl, Linux ICU, pybind11, Ninja, and the other build inputs; otherwise use `python scripts/configure_build.py`.
 
 Python editable install, required for `from starling import _core`, examples such as `python examples/quickstart.py`, and the Dashboard's Python package prerequisite:
 
@@ -90,8 +102,11 @@ python scripts/configure_build.py --python-editable
 After changing C++ sources, `migrations/`, or bindings, rebuild the C++ tree:
 
 ```bash
-cmake --build build-linux   # Linux default from the script
-cmake --build build-macos   # macOS default from the script
+python scripts/configure_build.py --build
+
+# Or, after configuring with a direct CMake preset:
+cmake --build --preset linux-local   # Linux
+cmake --build --preset macos-local   # macOS
 ```
 
 If you use Python editable imports, examples, or the Dashboard, rerun `python scripts/configure_build.py --python-editable` after C++/migration/binding changes so the installed `_core` extension is refreshed.
@@ -111,7 +126,7 @@ After the editable install, `from starling import _core` (the bound C++ core) an
 - Linux ICU: install `libicu-dev` or provide ICU CMake variables.
 - Offline FetchContent: rerun after a prior successful download or pass `-DFETCHCONTENT_SOURCE_DIR_JSON=...` and `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=...`.
 - Conda linker wrappers: avoid CMake caches containing `compiler_compat`.
-- Conda libstdc++ conflicts: do not add all of `~/miniconda3/lib` to rpath.
+- Conda libstdc++ conflicts: the helper script filters broad conda root rpaths and, for conda libcurl on Linux, adds narrow package-cache runtime paths. If configuring manually, do not add all of `CONDA_PREFIX/lib` or `~/miniconda3/lib` to rpath.
 
 **How it works:** `scripts/configure_build.py` drives the CMake + Ninja build with explicit local dependency hints, while scikit-build-core remains the build backend declared in `pyproject.toml` for Python editable installs. The `migrations/*.sql` are embedded into the binary at build time, so the schema travels with the core — there is no runtime migration step.
 

@@ -69,9 +69,9 @@ pip install -r requirements-build.txt
 python scripts/configure_build.py --build --test
 ```
 
-`python scripts/configure_build.py --build --test` 会先 configure,再 build 并运行 C++ 测试。它不会安装 Python 包。这个脚本优先复用本机依赖: `.venv`、当前 conda 环境、conda package cache、Homebrew、系统包、以及已有的 `build/_deps` 源码。只有本机找不到 nlohmann/json 或 GoogleTest 时,才交给 CMake `FetchContent` 尝试联网兜底。
+`python scripts/configure_build.py --build --test` 会先 configure,再 build 并运行 C++ 测试。它不会安装 Python 包。这个脚本优先复用本机依赖: `.venv` 工具、conda package cache、Homebrew、系统包、已有的 `build/_deps` 源码,最后才把当前 conda 环境作为补充 fallback。只有本机找不到 nlohmann/json 或 GoogleTest 时,才交给 CMake `FetchContent` 尝试联网兜底。Linux 默认使用 `build-linux`,macOS 默认使用 `build-macos`。
 
-直接使用 CMake:
+直接使用 CMake 的通用开发 preset:
 
 ```bash
 cmake --preset dev
@@ -79,7 +79,19 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-这条直接 CMake 路径不会使用脚本的本机依赖 hints。它适合 CMake 已经能找到 SQLite >= 3.46、OpenSSL、libcurl、Linux ICU、pybind11、Ninja 和其它构建输入的环境;否则请用 `python scripts/configure_build.py`。
+也可以使用平台构建目录 preset:
+
+```bash
+cmake --preset linux-local        # Linux
+cmake --build --preset linux-local
+ctest --preset linux-local
+
+cmake --preset macos-local        # macOS
+cmake --build --preset macos-local
+ctest --preset macos-local
+```
+
+这些直接 CMake 路径不会使用脚本的本机依赖 hints。`linux-local` / `macos-local` 只选择 `build-linux` / `build-macos` 和 Release 配置;依赖仍走 CMake 常规发现。它们适合 CMake 已经能找到 SQLite >= 3.46、OpenSSL、libcurl、Linux ICU、pybind11、Ninja 和其它构建输入的环境;否则请用 `python scripts/configure_build.py`。
 
 Python editable 安装;若要 `from starling import _core`、运行 `python examples/quickstart.py` 等示例,或满足 Dashboard 的 Python 包前置,需要执行它:
 
@@ -90,8 +102,11 @@ python scripts/configure_build.py --python-editable
 改了 C++ 源码、`migrations/` 或绑定之后,重建 C++ 构建目录:
 
 ```bash
-cmake --build build-linux   # Linux 默认目录
-cmake --build build-macos   # macOS 默认目录
+python scripts/configure_build.py --build
+
+# 或者,已用直接 CMake preset 配置过时:
+cmake --build --preset linux-local   # Linux
+cmake --build --preset macos-local   # macOS
 ```
 
 如果你使用 Python editable import、示例或 Dashboard,改了 C++/migration/binding 后还要重新运行 `python scripts/configure_build.py --python-editable`,以刷新已安装的 `_core` 扩展。
@@ -111,7 +126,7 @@ cmake --build build-macos   # macOS 默认目录
 - Linux ICU: 安装 `libicu-dev`,或手动传 ICU CMake 变量。
 - 离线 FetchContent: 复用已有下载,或传 `-DFETCHCONTENT_SOURCE_DIR_JSON=...` 和 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=...`。
 - conda linker wrapper: 避免复用带 `compiler_compat` 的 CMake cache。
-- conda libstdc++ 冲突: 不要把整个 `~/miniconda3/lib` 加进 rpath。
+- conda libstdc++ 冲突: 辅助脚本会过滤宽泛的 conda root rpath;Linux 上若检测到 conda libcurl,会补充更窄的 package-cache 运行时路径。若手动配置,不要把整个 `CONDA_PREFIX/lib` 或 `~/miniconda3/lib` 加进 rpath。
 
 **原理:** `scripts/configure_build.py` 使用明确的本机依赖 hints 驱动 CMake + Ninja 构建;Python editable 安装仍由 `pyproject.toml` 声明的 scikit-build-core 构建后端负责。`migrations/*.sql` 在编译期内嵌进二进制,故 schema 随核心走——运行时没有单独的 migration 步骤。
 
