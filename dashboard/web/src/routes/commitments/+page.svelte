@@ -1,29 +1,27 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
+	import { Badge } from '$lib/components/ui';
 
 	const STATES = ['created', 'ACTIVE', 'FULFILLED', 'BROKEN', 'RENEGOTIATED', 'WITHDRAWN'];
-	let rows = $state<Record<string, unknown>[]>([]);
-	let err = $state('');
-
-	async function load() {
-		try { const d = await api.get<{ rows: Record<string, unknown>[] }>('/api/commitments'); rows = d.rows; err = ''; }
-		catch (e) { err = String(e); }
-	}
-	$effect(() => { load(); });
-
-	let byState = $derived(STATES.map((s) => ({ s, n: rows.filter((r) => r.state === s).length })));
+	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>('/api/commitments'));
+	$effect(() => {
+		q.refetch();
+	});
+	let byState = $derived(
+		STATES.map((s) => ({ s, n: (q.data?.rows ?? []).filter((r) => r.state === s).length }))
+	);
 </script>
 
-<h1 class="text-xl font-semibold mb-4">Commitment 五态机</h1>
-{#if err}<p class="text-red-500 text-sm mb-2">{err}</p>{/if}
-<div class="flex gap-2 mb-4 text-xs flex-wrap">
-	{#each byState as b}
-		<span class="px-2 py-1 rounded-lg border border-zinc-200 dark:border-zinc-800">{b.s}: {b.n}</span
-		>
-	{/each}
+<h1 class="mb-4 text-xl font-semibold text-fg">Commitment 五态机</h1>
+{#if q.error}<p class="mb-2 text-sm text-danger">{q.error.message}</p>{/if}
+<div class="mb-4 flex flex-wrap gap-2">
+	{#each byState as b}<Badge tone={b.n ? 'brand' : 'neutral'}>{b.s}: {b.n}</Badge>{/each}
 </div>
 <DataTable
-	{rows}
+	rows={q.data?.rows ?? []}
+	loading={q.loading}
+	emptyText="无 commitment"
 	columns={['state', 'subject_id', 'predicate', 'object_value', 'broken_count', 'deadline', 'updated_at']}
 />
