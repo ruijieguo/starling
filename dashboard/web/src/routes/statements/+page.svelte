@@ -2,7 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
-	import { Button, Input } from '$lib/components/ui';
+	import { Button, EmptyState, Input } from '$lib/components/ui';
 
 	let predicate = $state('');
 	let perspective = $state('');
@@ -24,10 +24,13 @@
 	<Input bind:value={perspective} placeholder="perspective" class="max-w-40" />
 	<Button variant="secondary" onclick={() => q.refetch()}>筛选</Button>
 </div>
-{#if q.error}<p class="mb-2 text-sm text-danger">{q.error.message}</p>{/if}
-<DataTable
-	rows={q.data?.rows ?? []}
-	loading={q.loading}
-	emptyText="无 statements"
-	columns={['holder_id', 'holder_perspective', 'subject_id', 'predicate', 'object_value', 'modality', 'polarity']}
-/>
+{#if q.error}
+	<EmptyState title="加载失败" description={q.error.message} />
+{:else}
+	<DataTable
+		rows={q.data?.rows ?? []}
+		loading={q.loading}
+		emptyText="无 statements"
+		columns={['holder_id', 'holder_perspective', 'subject_id', 'predicate', 'object_value', 'modality', 'polarity']}
+	/>
+{/if}

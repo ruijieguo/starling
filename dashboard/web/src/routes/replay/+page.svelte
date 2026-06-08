@@ -3,7 +3,7 @@
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import CodeBlock from '$lib/components/CodeBlock.svelte';
-	import { Card } from '$lib/components/ui';
+	import { Card, EmptyState } from '$lib/components/ui';
 
 	type ReplayData = {
 		scheduler: Record<string, unknown>;
@@ -17,8 +17,9 @@
 </script>
 
 <h1 class="mb-4 text-xl font-semibold text-fg">Replay / Reconsolidation</h1>
-{#if q.error}<p class="mb-2 text-sm text-danger">{q.error.message}</p>{/if}
-{#if q.data}
+{#if q.error}
+	<EmptyState title="加载失败" description={q.error.message} />
+{:else if q.data}
 	<div class="space-y-4">
 		<Card title="调度器">
 			<CodeBlock content={JSON.stringify(q.data.scheduler)} language="json" collapsible />

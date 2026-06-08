@@ -13,8 +13,9 @@
 </script>
 
 <h1 class="mb-4 text-xl font-semibold text-fg">Eval 报告</h1>
-{#if q.error}<p class="mb-2 text-sm text-danger">{q.error.message}</p>{/if}
-{#if q.data && reports.length === 0}
+{#if q.error}
+	<EmptyState title="加载失败" description={q.error.message} />
+{:else if reports.length === 0}
 	<EmptyState title="暂无报告" />
 {:else}
 	<div class="space-y-3">
