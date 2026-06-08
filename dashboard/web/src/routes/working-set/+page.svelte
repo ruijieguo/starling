@@ -1,5 +1,8 @@
 <script lang="ts">
-	import { api } from '$lib/api';
+	import { api, ApiError } from '$lib/api';
+	import { toast } from '$lib/ui/toast';
+	import CodeBlock from '$lib/components/CodeBlock.svelte';
+	import { Button, Input, Badge, CopyButton, EmptyState } from '$lib/components/ui';
 
 	let interlocutor = $state('Alice');
 	let goal = $state('');
@@ -8,45 +11,39 @@
 		blocks: { label: string; content: string; tokens: number }[];
 		truncated: string[];
 	} | null>(null);
-	let err = $state('');
+	let busy = $state(false);
 
 	async function load() {
+		busy = true;
 		try {
 			const q = new URLSearchParams({ interlocutor });
 			if (goal) q.set('goal', goal);
 			ws = await api.get(`/api/working_set?${q}`);
-			err = '';
 		} catch (e) {
-			err = String(e);
+			toast.error(String((e as ApiError).message));
+		} finally {
+			busy = false;
 		}
 	}
+	let totalTokens = $derived((ws?.blocks ?? []).reduce((s, b) => s + b.tokens, 0));
 </script>
 
-<h1 class="text-xl font-semibold mb-4">Working Set</h1>
-<div class="flex gap-2 mb-3">
-	<input
-		bind:value={interlocutor}
-		class="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm"
-		placeholder="interlocutor"
-	/>
-	<input
-		bind:value={goal}
-		class="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent p-2 text-sm"
-		placeholder="goal (optional)"
-	/>
-	<button
-		onclick={load}
-		class="px-3 py-1.5 rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 text-sm"
-		>渲染</button
-	>
+<h1 class="mb-4 text-xl font-semibold text-fg">Working Set</h1>
+<div class="mb-3 flex gap-2">
+	<Input bind:value={interlocutor} placeholder="interlocutor" class="max-w-40" />
+	<Input bind:value={goal} placeholder="goal (optional)" class="max-w-60" />
+	<Button loading={busy} onclick={load}>渲染</Button>
 </div>
-{#if err}<p class="text-red-500 text-sm mb-2">{err}</p>{/if}
 {#if ws}
-	<div class="text-xs text-zinc-500 mb-2">
-		blocks: {ws.blocks.map((b) => `${b.label}(${b.tokens})`).join(' · ')}{ws.truncated.length
-			? ` · truncated: ${ws.truncated.join(',')}`
-			: ''}
+	<div class="space-y-3">
+		<div class="flex flex-wrap items-center gap-2">
+			{#each ws.blocks as b}<Badge tone="neutral">{b.label} · {b.tokens}</Badge>{/each}
+			<span class="text-xs text-muted">共 {totalTokens} tokens</span>
+			{#if ws.truncated.length}<Badge tone="warn">truncated: {ws.truncated.join(',')}</Badge>{/if}
+			<div class="ml-auto"><CopyButton text={ws.render} label="复制为 prompt" /></div>
+		</div>
+		<CodeBlock content={ws.render} language="text" />
 	</div>
-	<pre
-		class="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3 text-xs whitespace-pre-wrap font-mono">{ws.render}</pre>
+{:else if !busy}
+	<EmptyState title="尚未渲染" description="填入 interlocutor 与 goal 后点渲染" />
 {/if}
