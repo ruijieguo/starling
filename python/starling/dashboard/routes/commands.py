@@ -15,6 +15,7 @@ def _now_iso() -> str:
 class RememberBody(BaseModel):
     text: str
     holder: str | None = None
+    interlocutor: str | None = None
     now: str | None = None
 
 
@@ -51,7 +52,8 @@ def build_commands_router(require_token) -> APIRouter:
         from starling.dashboard.engine import _LLMNotConfigured
         eng = _engine(request)
         try:
-            r = eng.remember(body.text, holder=body.holder, now=body.now)
+            r = eng.remember(body.text, holder=body.holder,
+                             interlocutor=body.interlocutor, now=body.now)
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")

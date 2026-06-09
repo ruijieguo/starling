@@ -162,8 +162,14 @@ def conflicts(db_path: str, tenant: str) -> dict:
         )
         edges = _rows(
             conn,
-            "SELECT src_id, dst_id, edge_kind, weight, metadata_json FROM statement_edges "
-            "WHERE tenant_id=? AND edge_kind='CONFLICTS_WITH' LIMIT 500",
+            "SELECT e.src_id, e.dst_id, e.edge_kind, e.weight, e.metadata_json, "
+            "s.subject_id AS src_subject, s.predicate AS src_predicate, s.object_value AS src_object, "
+            "d.subject_id AS dst_subject, d.predicate AS dst_predicate, d.object_value AS dst_object "
+            "FROM statement_edges e "
+            "LEFT JOIN statements s ON s.id = e.src_id AND s.tenant_id = e.tenant_id "
+            "LEFT JOIN statements d ON d.id = e.dst_id AND d.tenant_id = e.tenant_id "
+            "WHERE e.tenant_id=? AND e.edge_kind='CONFLICTS_WITH' "
+            "ORDER BY e.weight DESC LIMIT 500",
             (tenant,),
         )
         return {"by_kind": {r["edge_kind"]: r["n"] for r in by_kind}, "conflicts": edges}

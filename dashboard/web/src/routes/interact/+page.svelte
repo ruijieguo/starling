@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
-	import DataTable from '$lib/components/DataTable.svelte';
-	import { Button, Textarea, Input, Badge, Card } from '$lib/components/ui';
+	import { Button, Textarea, Input, Badge, Card, Select } from '$lib/components/ui';
 
 	let text = $state('');
+	let holder = $state('');
+	let interlocutor = $state('');
 	let query = $state('');
+	let mode = $state('semantic');
 	let remembered = $state<string[]>([]);
 	let outcome = $state('');
-	let results = $state<Record<string, unknown>[]>([]);
+	let results = $state<{ subject: string; predicate: string; object: string; score: number }[]>([]);
 	let recalled = $state(false);
 	let busyR = $state(false);
 	let busyQ = $state(false);
@@ -16,7 +18,10 @@
 	async function remember() {
 		busyR = true;
 		try {
-			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', { text });
+			const body: Record<string, unknown> = { text };
+			if (holder) body.holder = holder;
+			if (interlocutor) body.interlocutor = interlocutor;
+			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', body);
 			remembered = r.statement_ids;
 			outcome = r.outcome;
 			toast.success(`outcome: ${r.outcome} · ${r.statement_ids.length} statements`);
@@ -29,7 +34,7 @@
 	async function recall() {
 		busyQ = true;
 		try {
-			const r = await api.post<{ results: Record<string, unknown>[] }>('/api/recall', { query });
+			const r = await api.post<{ results: typeof results }>('/api/recall', { query, mode });
 			results = r.results;
 			recalled = true;
 		} catch (e) {
@@ -38,6 +43,7 @@
 			busyQ = false;
 		}
 	}
+	const pct = (s: number) => Math.max(2, Math.min(100, s * 100));
 </script>
 
 <h1 class="mb-4 text-xl font-semibold text-fg">交互</h1>
@@ -45,25 +51,62 @@
 	<Card title="Remember">
 		<div class="space-y-2">
 			<Textarea bind:value={text} rows={3} placeholder="记一段话…" />
+			<div class="flex flex-wrap gap-2">
+				<Input bind:value={holder} placeholder="holder (默认 self)" class="max-w-44" />
+				<Input bind:value={interlocutor} placeholder="interlocutor (可选)" class="max-w-44" />
+			</div>
 			<div class="flex items-center gap-3">
-				<Button loading={busyR} onclick={remember}>记住</Button>
-				{#if remembered.length}<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>{/if}
+				<Button loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
+				{#if remembered.length || outcome}
+					<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>
+				{/if}
 			</div>
 			{#if remembered.length}
 				<div class="flex flex-wrap gap-1">
-					{#each remembered as id}<Badge tone="brand">{id}</Badge>{/each}
+					{#each remembered as id}
+						<a href="/statements" title={id}><Badge tone="brand">{id.slice(0, 8)}…</Badge></a>
+					{/each}
 				</div>
 			{/if}
 		</div>
 	</Card>
 	<Card title="Recall">
-		<div class="space-y-2">
-			<div class="flex gap-2">
-				<Input bind:value={query} placeholder="query" />
-				<Button loading={busyQ} variant="secondary" onclick={recall}>检索</Button>
+		<div class="space-y-3">
+			<div class="flex flex-wrap gap-2">
+				<Input bind:value={query} placeholder="query" class="min-w-48 flex-1" />
+				<Select
+					bind:value={mode}
+					class="max-w-40"
+					aria-label="recall 模式"
+					options={[
+						{ value: 'semantic', label: '语义检索' },
+						{ value: 'completion', label: '模式补全' }
+					]}
+				/>
+				<Button loading={busyQ} disabled={!query.trim()} variant="secondary" onclick={recall}>
+					检索
+				</Button>
 			</div>
 			{#if recalled}
-				<DataTable rows={results} emptyText="无召回结果" columns={['subject', 'predicate', 'object', 'score']} />
+				{#if results.length === 0}
+					<p class="text-sm text-muted">无召回结果</p>
+				{:else}
+					<ul class="space-y-2">
+						{#each results as r}
+							<li class="rounded-lg border border-border bg-surface px-3 py-2">
+								<div class="flex items-center justify-between gap-2">
+									<span class="text-sm text-fg">
+										{r.subject} <span class="text-subtle">{r.predicate}</span> {r.object}
+									</span>
+									<span class="shrink-0 text-xs tabular-nums text-muted">{r.score.toFixed(3)}</span>
+								</div>
+								<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-bg">
+									<div class="h-full rounded-full bg-brand" style="width: {pct(r.score)}%"></div>
+								</div>
+							</li>
+						{/each}
+					</ul>
+				{/if}
 			{/if}
 		</div>
 	</Card>

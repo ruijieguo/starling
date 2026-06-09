@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
-	import { Badge, Card, EmptyState, Skeleton } from '$lib/components/ui';
+	import { Badge, Card, EmptyState, Skeleton, Input, Drawer } from '$lib/components/ui';
 
 	type CommitmentRow = {
+		stmt_id: string;
 		state: string;
 		subject_id: string;
 		predicate: string;
@@ -11,25 +12,61 @@
 		broken_count: number;
 		deadline?: string | null;
 		updated_at: string;
-		fired?: boolean;
 	};
+	type Trigger = { commitment_stmt_id: string; status: string };
 
 	const STATES = ['created', 'ACTIVE', 'FULFILLED', 'BROKEN', 'RENEGOTIATED', 'WITHDRAWN'];
 
-	const q = createQuery(() => api.get<{ rows: CommitmentRow[] }>('/api/commitments'));
+	const q = createQuery(() =>
+		api.get<{ rows: CommitmentRow[]; triggers: Trigger[] }>('/api/commitments')
+	);
 	$effect(() => {
 		q.refetch();
 	});
 
+	let filter = $state('');
+	let firedSet = $derived(
+		new Set(
+			(q.data?.triggers ?? [])
+				.filter((t) => t.status === 'fired')
+				.map((t) => t.commitment_stmt_id)
+		)
+	);
+	let rows = $derived(
+		(q.data?.rows ?? [])
+			.map((r) => ({ ...r, fired: firedSet.has(r.stmt_id) }))
+			.filter((r) => {
+				const f = filter.trim().toLowerCase();
+				if (!f) return true;
+				return (
+					(r.subject_id ?? '').toLowerCase().includes(f) ||
+					(r.predicate ?? '').toLowerCase().includes(f) ||
+					(r.object_value ?? '').toLowerCase().includes(f)
+				);
+			})
+	);
 	let byState = $derived(
 		STATES.map((s) => ({
 			s,
-			rows: (q.data?.rows ?? []).filter((r) => r.state === s)
+			rows: rows
+				.filter((r) => r.state === s)
+				.sort((a, b) => (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999'))
 		}))
 	);
+
+	let detailOpen = $state(false);
+	let detail = $state<(CommitmentRow & { fired: boolean }) | null>(null);
+	function openDetail(r: CommitmentRow & { fired: boolean }) {
+		detail = r;
+		detailOpen = true;
+	}
+	const fmtv = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Commitment 五态机</h1>
+<h1 class="mb-3 text-xl font-semibold text-fg">Commitment 五态机</h1>
+<div class="mb-4 max-w-xs">
+	<Input bind:value={filter} placeholder="筛选 subject / predicate / object…" aria-label="筛选承诺" />
+</div>
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
@@ -46,19 +83,26 @@
 				{:else}
 					<ul class="space-y-2">
 						{#each lane.rows as r}
-							<li class="rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-								<div class="flex items-start justify-between gap-2">
-									<span class="font-medium text-fg">{r.subject_id}</span>
-									{#if r.fired}
-										<Badge tone="warn">⚠ DUE</Badge>
+							<li>
+								<button
+									type="button"
+									onclick={() => openDetail(r)}
+									class="w-full rounded-lg border border-border bg-surface px-3 py-2 text-left text-xs transition hover:border-brand/40"
+								>
+									<div class="flex items-start justify-between gap-2">
+										<span class="font-medium text-fg">{r.subject_id}</span>
+										<div class="flex shrink-0 gap-1">
+											{#if r.broken_count > 0}<Badge tone="danger">×{r.broken_count}</Badge>{/if}
+											{#if r.fired}<Badge tone="warn">⚠ DUE</Badge>{/if}
+										</div>
+									</div>
+									<div class="mt-0.5 text-muted">
+										{r.predicate} <span class="text-subtle">→</span> {r.object_value}
+									</div>
+									{#if r.deadline}
+										<div class="mt-1 text-subtle">deadline: {r.deadline}</div>
 									{/if}
-								</div>
-								<div class="mt-0.5 text-muted">
-									{r.predicate} <span class="text-subtle">→</span> {r.object_value}
-								</div>
-								{#if r.deadline}
-									<div class="mt-1 text-subtle">deadline: {r.deadline}</div>
-								{/if}
+								</button>
 							</li>
 						{/each}
 					</ul>
@@ -67,3 +111,16 @@
 		{/each}
 	</div>
 {/if}
+
+<Drawer bind:open={detailOpen} title="承诺详情">
+	{#if detail}
+		<dl class="space-y-2 text-sm">
+			{#each Object.entries(detail) as [k, v]}
+				<div>
+					<dt class="text-xs uppercase tracking-wide text-subtle">{k}</dt>
+					<dd class="break-words text-fg">{fmtv(v)}</dd>
+				</div>
+			{/each}
+		</dl>
+	{/if}
+</Drawer>

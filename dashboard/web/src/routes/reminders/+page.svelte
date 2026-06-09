@@ -1,26 +1,78 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
-	import DataTable from '$lib/components/DataTable.svelte';
-	import { EmptyState } from '$lib/components/ui';
+	import { Badge, EmptyState, Skeleton } from '$lib/components/ui';
 
-	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>('/api/commitments'));
+	type Row = {
+		stmt_id: string;
+		state: string;
+		subject_id: string;
+		predicate: string;
+		object_value: string;
+		deadline?: string | null;
+	};
+	type Trigger = { commitment_stmt_id: string; status: string };
+
+	const q = createQuery(() => api.get<{ rows: Row[]; triggers: Trigger[] }>('/api/commitments'));
 	$effect(() => {
 		q.refetch();
 	});
-	let rows = $derived(
-		(q.data?.rows ?? []).filter((r) => r.state === 'ACTIVE' || r.state === 'created')
+
+	const nowIso = new Date().toISOString();
+	let firedSet = $derived(
+		new Set(
+			(q.data?.triggers ?? [])
+				.filter((t) => t.status === 'fired')
+				.map((t) => t.commitment_stmt_id)
+		)
+	);
+	let pending = $derived(
+		(q.data?.rows ?? [])
+			.filter((r) => r.state === 'ACTIVE' || r.state === 'created')
+			.map((r) => ({
+				...r,
+				fired: firedSet.has(r.stmt_id),
+				overdue: !!r.deadline && r.deadline < nowIso
+			}))
+			.sort((a, b) => (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999'))
 	);
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">承诺提醒（pending / ACTIVE）</h1>
+<h1 class="mb-1 text-xl font-semibold text-fg">承诺提醒</h1>
+<p class="mb-4 text-sm text-muted">待办承诺（active / created），按截止日期升序；逾期与 fired 醒目标注。</p>
+
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
+{:else if q.loading && !q.data}
+	<div class="space-y-2">{#each Array(3) as _}<Skeleton class="h-16 w-full" />{/each}</div>
+{:else if pending.length === 0}
+	<EmptyState title="无待办承诺" description="没有处于 active 或 created 状态的承诺。" />
 {:else}
-	<DataTable
-		{rows}
-		loading={q.loading}
-		emptyText="无待办承诺"
-		columns={['state', 'subject_id', 'predicate', 'object_value', 'deadline']}
-	/>
+	<ul class="space-y-2">
+		{#each pending as r}
+			<li
+				class="flex items-start gap-3 rounded-lg border bg-card px-4 py-3 {r.overdue
+					? 'border-danger/40'
+					: 'border-border'}"
+			>
+				<div class="min-w-0 flex-1">
+					<div class="flex flex-wrap items-center gap-x-2">
+						<span class="font-medium text-fg">{r.subject_id}</span>
+						<span class="text-sm text-muted">
+							{r.predicate} <span class="text-subtle">→</span> {r.object_value}
+						</span>
+					</div>
+					{#if r.deadline}
+						<div class="mt-1 text-xs {r.overdue ? 'text-danger' : 'text-subtle'}">
+							截止 {r.deadline}{r.overdue ? ' · 已逾期' : ''}
+						</div>
+					{/if}
+				</div>
+				<div class="flex shrink-0 items-center gap-1">
+					<Badge tone={r.state === 'ACTIVE' ? 'info' : 'neutral'}>{r.state}</Badge>
+					{#if r.fired}<Badge tone="warn">⚠ DUE</Badge>{/if}
+				</div>
+			</li>
+		{/each}
+	</ul>
 {/if}
