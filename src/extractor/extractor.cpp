@@ -287,11 +287,21 @@ ExtractionRunResult Extractor::run(
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteAccepted>(outcome).stmt_id);
                 // Record per-statement success so future runs can noop-short-circuit.
-                ledger.record_attempt(run_id, span_key, attempt,
-                                      ExtractionStatus::Success,
-                                      /*raw_output=*/{},
-                                      /*error=*/{});
-                written_span_keys.insert(span_key);
+                // Guard against intra-run span_key collisions: span_key omits
+                // subject/polarity, so two statements with the same predicate+object
+                // but different subject/polarity collide (e.g. "Carol responsible_for
+                // billing" POS + "Bob responsible_for billing" NEG from one hearsay
+                // sentence). When neither is `approved` the StatementWriter can't
+                // dedupe them to ChunkDuplicate, so both land here. The first
+                // statement's Success row already covers the span for cross-run
+                // idempotency; recording a second would duplicate
+                // (run_id, span_key, attempt) and throw the UNIQUE constraint.
+                if (written_span_keys.insert(span_key).second) {
+                    ledger.record_attempt(run_id, span_key, attempt,
+                                          ExtractionStatus::Success,
+                                          /*raw_output=*/{},
+                                          /*error=*/{});
+                }
             } else {
                 // StatementWriteChunkDuplicate: statement written (review_requested),
                 // but span_key already has a success row from the first duplicate —

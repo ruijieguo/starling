@@ -138,4 +138,43 @@ TEST(ExtractorOrchestrator, IdempotencyOnRerun) {
     EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.noop'"), 1);
 }
 
+// Regression: one chunk yielding two statements that share predicate+object but
+// differ in subject/polarity. extraction_span_key omits subject/polarity, so
+// both map to the SAME span_key. Both are HEARSAY -> validator forces
+// INFERRED_UNREVIEWED (not approved), so the StatementWriter cannot dedupe them
+// to ChunkDuplicate and both reach the Accepted branch. Before the per-span
+// record_attempt guard, the second statement re-inserted
+// (pipeline_run_id, extraction_span_key, attempt_number) and threw
+// "UNIQUE constraint failed: ... extraction_attempt ...", which 500'd the
+// dashboard remember. Mirrors the live input "Carol told me she has taken over
+// billing from Bob ... Carol is now responsible for billing, not Bob."
+TEST(ExtractorOrchestrator, DualStatementSharedSpanKeyDoesNotDuplicateAttempt) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    // Same predicate ("responsible_for") + same object ("billing") -> identical
+    // canonical_object_hash -> identical extraction_span_key. Different subject
+    // (Carol/Bob) and polarity (POS/NEG).
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"self","holder_perspective":"HEARSAY","subject":"Carol","predicate":"responsible_for","object":"billing","modality":"BELIEVES","polarity":"POS","nesting_depth":0},)JSON"
+            R"JSON({"holder":"self","holder_perspective":"HEARSAY","subject":"Bob","predicate":"responsible_for","object":"billing","modality":"BELIEVES","polarity":"NEG","nesting_depth":0}])JSON",
+        .ok = true});
+
+    // Before the fix this line threw the UNIQUE-constraint RuntimeError.
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(r.accepted_statement_ids.size(), 2u);   // both statements kept
+    EXPECT_EQ(row_count(conn, "statements"), 2);
+    // Exactly one Success attempt row for the shared span_key (the second is
+    // intentionally not re-recorded), so no UNIQUE clash. The first statement's
+    // row still covers the span for cross-run idempotency.
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='success'"), 1);
+    EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
+}
+
 }  // namespace starling::extractor
