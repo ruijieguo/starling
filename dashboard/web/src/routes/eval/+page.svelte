@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { Card, EmptyState, Skeleton } from '$lib/components/ui';
@@ -10,7 +11,12 @@
 		q.refetch();
 	});
 	let reports = $derived([...(q.data?.reports ?? [])].reverse());
-	const render = (md: string) => marked.parse(md ?? '', { async: false }) as string;
+	// Eval reports can embed model-generated transcripts (untrusted), so sanitize
+	// the parsed HTML before {@html} — strips <script>, event handlers, and
+	// javascript: URLs while keeping safe markdown markup. Prevents token-stealing
+	// XSS in the dashboard.
+	const render = (md: string) =>
+		DOMPurify.sanitize(marked.parse(md ?? '', { async: false }) as string);
 </script>
 
 <h1 class="mb-4 text-xl font-semibold text-fg">Eval 报告</h1>
