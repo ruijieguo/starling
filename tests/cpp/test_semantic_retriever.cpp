@@ -151,6 +151,37 @@ TEST(SemanticRetriever, HiddenStatementsExcluded) {
     EXPECT_TRUE(vis_found) << "visible consolidated/approved statement must be returned";
 }
 
+TEST(SemanticRetriever, EmbedderFailureDegradesInsteadOfThrowing) {
+    // Regression for the "degraded hardcoded false" gap (roadmap M0.9
+    // follow-up): a query-embed failure must return degraded=true with empty
+    // rows — not propagate and fail the whole recall.
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed_stmt(db, "s1", "cats");
+
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+    EmbeddingWorker(*adapter, emb, idx).tick_one_batch(conn, "2026-06-10T10:00:00Z");
+    SemanticRetriever sr(*adapter, emb, idx);
+
+    SemanticRetrieverParams p;
+    p.tenant_id  = "default";
+    p.holder_id  = "alice";
+    p.k          = 3;
+    p.query_text = "bob knows cats";
+
+    emb.fail_next("bob knows cats");   // the QUERY embed throws once
+    auto res = sr.vector_recall(conn, p);
+    EXPECT_TRUE(res.degraded);
+    EXPECT_TRUE(res.rows.empty());
+
+    // fail_next is one-shot: the next recall recovers, not degraded.
+    auto res2 = sr.vector_recall(conn, p);
+    EXPECT_FALSE(res2.degraded);
+    EXPECT_GE(res2.rows.size(), 1u);
+}
+
 TEST(SemanticRetriever, CarriesAffectJson) {
     auto adapter = SqliteAdapter::open(":memory:");
     Connection& conn = adapter->connection();

@@ -35,8 +35,20 @@ constexpr const char* kSelectByIdSql =
 
 SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
                                                  const SemanticRetrieverParams& params) {
-    // Step 1: embed the query text.
-    auto er = embedder_.embed(params.query_text);
+    // Step 1: embed the query text. An embedder failure (network error,
+    // permanent 4xx, missing backend) must DEGRADE, not fail the recall:
+    // vector-layer spec "DEGRADED 行为" — vector_recall returns an empty
+    // degraded=true result while basic_retrieve and all writes stay normal.
+    // Catches std::exception because the embedding adapter raises both
+    // EmbeddingError (retryable) and std::runtime_error (permanent).
+    embedding::EmbeddingResult er;
+    try {
+        er = embedder_.embed(params.query_text);
+    } catch (const std::exception&) {
+        SemanticResult degraded;
+        degraded.degraded = true;
+        return degraded;
+    }
     const auto& q = er.vector;
 
     // Step 2: build SearchScope — privacy predicates are enforced inside search_topk.
