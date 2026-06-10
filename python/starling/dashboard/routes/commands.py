@@ -1,8 +1,16 @@
-"""Command routes — go through the DashboardEngine (single writer)."""
+"""Command routes — go through the DashboardEngine (single writer).
+
+Engine calls run real network I/O (LLM extraction / embedding, with C++-side
+retry backoff up to tens of seconds), so handlers offload them to a worker
+thread via anyio.to_thread — running them inline on the event loop would
+freeze every other request and the WS heartbeat for the whole call.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import partial
 
+from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
@@ -52,8 +60,9 @@ def build_commands_router(require_token) -> APIRouter:
         from starling.dashboard.engine import _LLMNotConfigured
         eng = _engine(request)
         try:
-            r = eng.remember(body.text, holder=body.holder,
-                             interlocutor=body.interlocutor, now=body.now)
+            r = await to_thread.run_sync(partial(
+                eng.remember, body.text, holder=body.holder,
+                interlocutor=body.interlocutor, now=body.now))
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")
@@ -63,7 +72,8 @@ def build_commands_router(require_token) -> APIRouter:
     @router.post("/recall")
     async def recall(body: RecallBody, request: Request):
         eng = _engine(request)
-        hits = eng.recall(body.query, perspective=body.perspective, k=body.k, mode=body.mode)
+        hits = await to_thread.run_sync(partial(
+            eng.recall, body.query, perspective=body.perspective, k=body.k, mode=body.mode))
         out = [{"subject": h["row"].subject_id, "predicate": h["row"].predicate,
                 "object": h["row"].object_value, "score": h["score"]} for h in hits]
         await _broadcast(request, "recall", {"n": len(out)})
@@ -72,7 +82,7 @@ def build_commands_router(require_token) -> APIRouter:
     @router.post("/tick")
     async def tick(body: TickBody, request: Request):
         eng = _engine(request)
-        payload = eng.tick(body.now or _now_iso())
+        payload = await to_thread.run_sync(eng.tick, body.now or _now_iso())
         await _broadcast(request, "tick", payload)
         if payload["fired"]:
             await _broadcast(request, "commitment_fired", {"fired": payload["fired"]})
@@ -82,7 +92,8 @@ def build_commands_router(require_token) -> APIRouter:
     async def working_set(request: Request, interlocutor: str, goal: str | None = None,
                           token_budget: int = 2000):
         eng = _engine(request)
-        return eng.working_set(interlocutor, goal=goal, token_budget=token_budget)
+        return await to_thread.run_sync(partial(
+            eng.working_set, interlocutor, goal=goal, token_budget=token_budget))
 
     return router
 

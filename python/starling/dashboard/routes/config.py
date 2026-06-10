@@ -1,6 +1,7 @@
 """Config routes — read (masked) and update LLM/embedder config + hot-swap."""
 from __future__ import annotations
 
+from anyio import to_thread
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
@@ -65,10 +66,14 @@ def build_config_router(require_token) -> APIRouter:
         _merge(cfg.embedder, body.embedder)
         cfg.save()                                   # persist starling.json (0600)
         if eng is not None:
-            if llm_changed:
-                eng.set_llm(cfg.llm)
-            if emb_changed:
-                eng.rebuild_embedder(cfg.embedder)   # rebuild + re-embed
+            # rebuild_embedder(reembed=True) re-embeds every statement over the
+            # network — must not run on the event loop.
+            def _apply() -> None:
+                if llm_changed:
+                    eng.set_llm(cfg.llm)
+                if emb_changed:
+                    eng.rebuild_embedder(cfg.embedder)   # rebuild + re-embed
+            await to_thread.run_sync(_apply)
         return _public(cfg)
 
     @router.post("/config/test")
@@ -105,14 +110,18 @@ def build_config_router(require_token) -> APIRouter:
             if overrides_endpoint or not src.get("api_key"):
                 return {"ok": False, "latency_ms": 0,
                         "detail": "需提供 api_key（改了 base_url 时不复用已存密钥）"}
-        t0 = time.monotonic()
-        try:
+        def _probe() -> tuple[bool, str]:
+            # Live network call with C++-side retry backoff — runs in a worker
+            # thread so the probe can't freeze the event loop.
             if body.kind == "embedder":
                 vec = _build_embed_adapter(probe).embed("ping")
-                ok, detail = True, f"dim={len(vec)}"
-            else:
-                r = _build_chat_adapter(probe).extract("ping", "")
-                ok, detail = bool(r.ok), ("ok" if r.ok else (r.error or "failed"))
+                return True, f"dim={len(vec)}"
+            r = _build_chat_adapter(probe).extract("ping", "")
+            return bool(r.ok), ("ok" if r.ok else (r.error or "failed"))
+
+        t0 = time.monotonic()
+        try:
+            ok, detail = await to_thread.run_sync(_probe)
             return {"ok": ok, "latency_ms": int((time.monotonic() - t0) * 1000), "detail": detail}
         except Exception as e:  # noqa: BLE001 — surface any build/probe failure as a failed test
             return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000), "detail": str(e)}
