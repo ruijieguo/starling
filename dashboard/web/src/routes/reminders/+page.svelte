@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { byDeadline, deriveFired, isOverdue } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { Badge, EmptyState, Skeleton } from '$lib/components/ui';
 
@@ -18,24 +19,19 @@
 		q.refetch();
 	});
 
-	const nowIso = new Date().toISOString();
-	let firedSet = $derived(
-		new Set(
-			(q.data?.triggers ?? [])
-				.filter((t) => t.status === 'fired')
-				.map((t) => t.commitment_stmt_id)
-		)
-	);
-	let pending = $derived(
-		(q.data?.rows ?? [])
+	let firedSet = $derived(deriveFired(q.data?.triggers));
+	let pending = $derived.by(() => {
+		// now 在 derived 内取值:数据每次刷新都重算,长开页面的逾期判定不过期。
+		const nowIso = new Date().toISOString();
+		return (q.data?.rows ?? [])
 			.filter((r) => r.state === 'ACTIVE' || r.state === 'created')
 			.map((r) => ({
 				...r,
 				fired: firedSet.has(r.stmt_id),
-				overdue: !!r.deadline && r.deadline < nowIso
+				overdue: isOverdue(r.deadline, nowIso)
 			}))
-			.sort((a, b) => (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999'))
-	);
+			.sort(byDeadline);
+	});
 </script>
 
 <h1 class="mb-1 text-xl font-semibold text-fg">承诺提醒</h1>

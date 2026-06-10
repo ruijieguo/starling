@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { byDeadline, deriveFired } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Input, Drawer } from '$lib/components/ui';
 
@@ -25,13 +26,7 @@
 	});
 
 	let filter = $state('');
-	let firedSet = $derived(
-		new Set(
-			(q.data?.triggers ?? [])
-				.filter((t) => t.status === 'fired')
-				.map((t) => t.commitment_stmt_id)
-		)
-	);
+	let firedSet = $derived(deriveFired(q.data?.triggers));
 	let rows = $derived(
 		(q.data?.rows ?? [])
 			.map((r) => ({ ...r, fired: firedSet.has(r.stmt_id) }))
@@ -48,9 +43,7 @@
 	let byState = $derived(
 		STATES.map((s) => ({
 			s,
-			rows: rows
-				.filter((r) => r.state === s)
-				.sort((a, b) => (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999'))
+			rows: rows.filter((r) => r.state === s).sort(byDeadline)
 		}))
 	);
 
