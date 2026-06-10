@@ -1,9 +1,11 @@
 """DashboardEngine — a configurable, partially-hot-swappable engine stack.
 
-Mirrors the thin command logic of `starling.Memory` but builds the chat LLM and
-the embedder from `DashboardConfig` (both UI-configurable), so the embedder used
-to WRITE vectors (EmbeddingWorker) and READ them (SemanticRetriever) stay the
-same. `starling.Memory` is left untouched.
+The remember / recall / tick / working-set command logic lives in
+`starling._memory_core.MemoryCore` (single implementation shared with
+`starling.Memory`, so the two surfaces cannot drift). This engine keeps only
+the dashboard-specific policy: the chat LLM and the embedder are built from
+`DashboardConfig` (both UI-configurable), so the embedder used to WRITE vectors
+(EmbeddingWorker) and READ them (SemanticRetriever) stay the same.
 
 The SQLite runtime/connection is built ONCE at construction (db_path is fixed)
 and never rebuilt — config changes only swap the llm and/or rebuild the
@@ -14,7 +16,6 @@ captures it at build), so chat and embedder may use different providers/keys.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import sqlite3
 import threading
@@ -24,17 +25,16 @@ from pathlib import Path
 
 from starling import _core
 from starling import runtime as _runtime
-from starling.evidence.inputs import for_user_input
-from starling.extractor.prompts import EXTRACTION_PROMPT
+from starling._memory_core import LLMNotConfigured, MemoryCore
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-# Routes now run engine calls in worker threads (anyio to_thread), so the
-# transient os.environ mutation below needs mutual exclusion or two concurrent
-# adapter builds could capture each other's keys.
+# Routes run engine calls in worker threads (anyio to_thread), so the transient
+# os.environ mutation below needs mutual exclusion or two concurrent adapter
+# builds could capture each other's keys.
 _ENV_SWAP_LOCK = threading.Lock()
 
 
@@ -109,33 +109,34 @@ class DashboardEngine:
         # RLock because working_set() re-enters recall().
         self._lock = threading.RLock()
         self._cfg = config
-        self._tenant = config.tenant
-        self._agent = config.agent
         self._db_path = config.db_path
-        self._rt = _runtime._build_local_store_sqlite_runtime(Path(config.db_path))
-        self._rt.start()
-        self._conn = self._rt.adapter.connection()
-        self._idx = _core.SqliteBlobVectorIndex()
-        self._policy = _core.PolicyEngine(self._rt.adapter)
-        self.llm = None
-        self._emb = None
-        self._semantic = None
-        self._completor = None
-        self._worker = None
+        rt = _runtime._build_local_store_sqlite_runtime(Path(config.db_path))
+        rt.start()
+        self._core = MemoryCore(rt, agent=config.agent, tenant_id=config.tenant,
+                                adapter_name="dashboard", source_prefix="dash-")
         self.set_llm(config.llm)
         self.rebuild_embedder(config.embedder, reembed=False)
 
+    # `engine.llm` stays read/write: tests and offline harnesses inject a
+    # FakeLLMAdapter directly (`eng.llm = fake`).
+    @property
+    def llm(self):
+        return self._core.llm
+
+    @llm.setter
+    def llm(self, value) -> None:
+        self._core.llm = value
+
     def set_llm(self, llm_cfg: dict) -> None:
         with self._lock:
-            self.llm = _build_chat_adapter(llm_cfg) if llm_cfg.get("api_key") else None
+            self._core.llm = (_build_chat_adapter(llm_cfg)
+                              if llm_cfg.get("api_key") else None)
 
     def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> None:
         with self._lock:
-            self._emb = (_build_embed_adapter(emb_cfg) if emb_cfg.get("api_key")
-                         else _core.StubEmbeddingAdapter(8))
-            self._semantic = _core.SemanticRetriever(self._rt.adapter, self._emb, self._idx)
-            self._completor = _core.PatternCompletor(self._rt.adapter, self._semantic)
-            self._worker = _core.EmbeddingWorker(self._rt.adapter, self._emb, self._idx)
+            emb = (_build_embed_adapter(emb_cfg) if emb_cfg.get("api_key")
+                   else _core.StubEmbeddingAdapter(8))
+            self._core.set_embedder(emb)
             if reembed:
                 self._reembed()
 
@@ -145,101 +146,42 @@ class DashboardEngine:
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("DELETE FROM statement_vectors WHERE tenant_id = ?",
-                         (self._tenant,))
+                         (self._core.tenant,))
             conn.commit()
         finally:
             conn.close()
-        self._worker.tick_one_batch(_now_iso())
+        self._core.worker.tick_one_batch(_now_iso())
 
     @property
     def llm_configured(self) -> bool:
-        return self.llm is not None
+        return self._core.llm is not None
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         with self._lock:
-            if self.llm is None:
-                raise _LLMNotConfigured()
-            holder = holder or self._agent
-            payload = text.encode("utf-8")
-            created_at = _parse_now(now)
-            inp = for_user_input(
-                tenant_id=self._tenant, adapter_name="dashboard", adapter_version="1",
-                source_item_id="dash-" + hashlib.sha256(payload).hexdigest()[:16], source_version="1",
-                payload_bytes=payload, privacy_class=_core.PrivacyClass.INTERNAL,
-                retention_mode=_core.EngramRetentionMode.AUDIT_RETAIN, created_at=created_at,
-            )
-            out = self._rt.bus.append_evidence(inp, None)
-            kind = out["kind"]
-            if kind not in ("accepted", "idempotent"):
-                return {"engram_ref": "", "statement_ids": [], "outcome": kind}
-            engram_ref = out["engram_ref"].id
-            r = _core.Extractor(self._conn, self.llm, EXTRACTION_PROMPT).run(engram_ref, payload, holder, self._tenant, {}, interlocutor or "")
-            return {"engram_ref": engram_ref, "statement_ids": list(r.accepted_statement_ids),
-                    "outcome": kind}
+            return self._core.remember(text, holder=holder,
+                                       interlocutor=interlocutor, now=now)
 
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic") -> list:
         with self._lock:
-            if mode == "completion":
-                res = self._completor.complete(_core.PatternCompletionParams(
-                    tenant_id=self._tenant, holder_id=self._agent,
-                    holder_perspective=perspective, cue_text=query, result_k=k))
-                return [{"row": s.row, "score": s.activation} for s in res.rows]
-            res = self._semantic.vector_recall(_core.SemanticRetrieverParams(
-                tenant_id=self._tenant, holder_id=self._agent,
-                holder_perspective=perspective, query_text=query, k=k))
-            return [{"row": s.row, "score": s.score} for s in res.rows]
+            return self._core.recall(query, perspective=perspective, k=k, mode=mode)
 
     def tick(self, now: str) -> dict:
         with self._lock:
-            es = self._worker.tick_one_batch(now)
-            ps = self._policy.tick(now)
-            _core._common_ground_tick(self._rt.adapter, now)   # P2.j: flush grounding 滞后事件（与 Memory.tick 对称）
-            embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
-            return {"embedded": embedded, "fired": ps.fired, "broken": ps.broken,
-                    "auto_withdrawn": ps.auto_withdrawn}
+            return self._core.tick(now)
 
     def working_set(self, interlocutor, *, goal=None, token_budget=2000) -> dict:
         """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""
-        from starling import working_set as _ws
         with self._lock:
-            adapter = self._rt.adapter
-            sections = {}
-            pv = _core.PersonaContainer(adapter).read(self._tenant, self._agent)
-            if pv.found and pv.dimensions:
-                sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
-            _pair = sorted([self._agent, interlocutor])
-            cg = _core.CommonGroundContainer(adapter).read(self._tenant, f"{_pair[0]}::{_pair[1]}")
-            if cg.found and cg.grounded:
-                sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
-            hits = self.recall(goal, mode="semantic", k=5) if goal else []
-            if hits:
-                sections["relevant_memories"] = "\n".join(
-                    "- " + f"{h['row'].subject_id} {h['row'].predicate} {h['row'].object_value}" for h in hits)
-            pend = _core.CommitmentEngine(adapter).pending(self._tenant, self._agent, interlocutor)
-            if pend:
-                lines = []
-                for c in pend:
-                    tag = "⚠ DUE: " if c.fired else ""
-                    lines.append(f"- {tag}{c.subject_id} {c.predicate} {c.object_value}"
-                                 + (f" (by {c.deadline})" if c.deadline else ""))
-                sections["pending_commitments"] = "\n".join(lines)
-            cb = _ws.assemble(sections, token_budget)
+            cb = self._core.build_working_set(interlocutor, goal=goal,
+                                              token_budget=token_budget)
             return {"render": cb.render(),
-                    "blocks": [{"label": b.label, "content": b.content, "tokens": b.token_estimate}
-                               for b in cb.blocks],
+                    "blocks": [{"label": b.label, "content": b.content,
+                                "tokens": b.token_estimate} for b in cb.blocks],
                     "truncated": cb.truncated}
 
     def close(self) -> None:
-        self._conn = None
+        self._core.close()
 
 
-class _LLMNotConfigured(RuntimeError):
-    pass
-
-
-def _parse_now(now):
-    if now is None:
-        return datetime.now(timezone.utc)
-    s = now.replace("Z", "+00:00") if now.endswith("Z") else now
-    dt = datetime.fromisoformat(s)
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+# Back-compat alias: routes and tests import the underscore name from here.
+_LLMNotConfigured = LLMNotConfigured

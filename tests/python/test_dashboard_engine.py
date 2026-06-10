@@ -39,3 +39,29 @@ def test_set_llm_enables_remember_offline_stub(engine):
 def test_working_set_renders(engine):
     ws = engine.working_set("Alice")
     assert "render" in ws and "blocks" in ws and "truncated" in ws
+
+
+def test_working_set_includes_affect_section(engine):
+    """Parity regression: the engine working set must carry the affect section
+    (it drifted away from Memory.render_working_set before the MemoryCore
+    consolidation)."""
+    import sqlite3
+    from starling import _core
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response(_STUB_JSON, True, "")
+    engine.llm = fake
+    engine.remember("Bob owns auth")
+    # Stamp affect + consolidate the extracted statement (engine connection
+    # idle): vector recall only surfaces consolidated/archived rows, and fresh
+    # extractions are volatile.
+    conn = sqlite3.connect(engine._db_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("UPDATE statements SET affect_json='{\"valence\":0.8,\"arousal\":0.6}',"
+                 " consolidation_state='consolidated'")
+    conn.commit()
+    conn.close()
+    engine.tick("2026-06-10T10:00:00Z")          # embed via stub embedder
+    ws = engine.working_set("Alice", goal="auth")
+    labels = [b["label"] for b in ws["blocks"]]
+    assert "relevant_memories" in labels
+    assert "affect" in labels, "engine working set lost the affect section"
