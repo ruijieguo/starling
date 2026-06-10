@@ -2,7 +2,7 @@
 
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
@@ -74,17 +74,17 @@ bool mark_consolidated(
             "WHERE id=? AND tenant_id=? AND consolidation_state='volatile'";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
-            throw starling::bus::detail::make_sqlite_error(
+            throw starling::persistence::detail::make_sqlite_error(
                 conn.raw(), "mark_consolidated: update prepare");
         }
         starling::persistence::StmtHandle h(raw);
-        const std::string now_iso = starling::bus::detail::iso8601_utc(
+        const std::string now_iso = starling::persistence::detail::iso8601_utc(
             std::chrono::system_clock::now());
-        starling::bus::detail::bind_sv(h.get(), 1, now_iso);
-        starling::bus::detail::bind_sv(h.get(), 2, stmt_id);
-        starling::bus::detail::bind_sv(h.get(), 3, tenant_id);
+        starling::persistence::detail::bind_sv(h.get(), 1, now_iso);
+        starling::persistence::detail::bind_sv(h.get(), 2, stmt_id);
+        starling::persistence::detail::bind_sv(h.get(), 3, tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_DONE) {
-            throw starling::bus::detail::make_sqlite_error(
+            throw starling::persistence::detail::make_sqlite_error(
                 conn.raw(), "mark_consolidated: update step");
         }
         changed = (sqlite3_changes(conn.raw()) == 1);
@@ -155,15 +155,15 @@ bool mark_evidence_erased(
             "WHERE id=?2 AND tenant_id=?3 AND erased_at IS NULL";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
-            throw starling::bus::detail::make_sqlite_error(
+            throw starling::persistence::detail::make_sqlite_error(
                 conn.raw(), "mark_evidence_erased: update prepare");
         }
         starling::persistence::StmtHandle h(raw);
-        starling::bus::detail::bind_sv(h.get(), 1, erased_at_iso8601);
-        starling::bus::detail::bind_sv(h.get(), 2, engram_id);
-        starling::bus::detail::bind_sv(h.get(), 3, tenant_id);
+        starling::persistence::detail::bind_sv(h.get(), 1, erased_at_iso8601);
+        starling::persistence::detail::bind_sv(h.get(), 2, engram_id);
+        starling::persistence::detail::bind_sv(h.get(), 3, tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_DONE) {
-            throw starling::bus::detail::make_sqlite_error(
+            throw starling::persistence::detail::make_sqlite_error(
                 conn.raw(), "mark_evidence_erased: update step");
         }
         changed = (sqlite3_changes(conn.raw()) == 1);

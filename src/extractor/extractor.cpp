@@ -3,7 +3,7 @@
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/bus/pipeline_ledger.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/bus/statement_writer.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/extractor/extraction_span_key.hpp"
@@ -106,11 +106,11 @@ bool extraction_span_key_already_succeeded(
             "SELECT 1 FROM extraction_attempt "
             "WHERE extraction_span_key = ? AND status = 'success' LIMIT 1",
             -1, &raw, nullptr) != SQLITE_OK) {
-        throw starling::bus::detail::make_sqlite_error(
+        throw starling::persistence::detail::make_sqlite_error(
             db, "extraction_span_key_already_succeeded: prepare");
     }
     starling::persistence::StmtHandle h(raw);
-    starling::bus::detail::bind_sv(h.get(), 1, span_key);
+    starling::persistence::detail::bind_sv(h.get(), 1, span_key);
     return sqlite3_step(h.get()) == SQLITE_ROW;
 }
 

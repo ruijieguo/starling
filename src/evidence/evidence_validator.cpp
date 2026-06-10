@@ -1,6 +1,6 @@
 #include "starling/evidence/evidence_validator.hpp"
 #include "starling/evidence/ingest_policy_resolver.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <set>
@@ -63,8 +63,8 @@ ValidationOutcome EvidenceValidator::validate(
     }
 
     // 4. Source-identity idempotency lookup within the caller's transaction.
-    using starling::bus::detail::bind_sv;
-    using starling::bus::detail::make_sqlite_error;
+    using starling::persistence::detail::bind_sv;
+    using starling::persistence::detail::make_sqlite_error;
     using starling::persistence::StmtHandle;
 
     sqlite3* const db = conn.raw();

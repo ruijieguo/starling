@@ -4,7 +4,7 @@
 
 #include "belief_tracker_internal.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
@@ -18,8 +18,8 @@
 
 namespace starling::tom::belief_tracker::detail {
 
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::iso8601_utc;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::iso8601_utc;
 using starling::persistence::StmtHandle;
 
 // ---------------------------------------------------------------------------

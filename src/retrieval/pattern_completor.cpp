@@ -8,14 +8,14 @@
 #include <utility>
 #include <vector>
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 namespace starling::retrieval {
 
 namespace {
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 // per-kind 乘子;P2.d 全部传播边默认 1.0(MAY_OVERLAP_WITH 用存储余弦权)。

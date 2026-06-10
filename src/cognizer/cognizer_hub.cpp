@@ -1,6 +1,6 @@
 #include "starling/cognizer/cognizer_hub.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/cognizer/alias_normalizer.hpp"
 #include "starling/cognizer/uuid5.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
@@ -19,9 +19,9 @@ namespace starling::cognizer {
 
 namespace {
 
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::iso8601_utc;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::iso8601_utc;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 std::string compose_uuid5_name(CognizerKind kind, std::string_view external_id) {

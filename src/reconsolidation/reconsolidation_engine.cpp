@@ -8,7 +8,7 @@
 #include "starling/reconsolidation/arbitration.hpp"
 #include "starling/reconsolidation/plastic_window.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
@@ -23,8 +23,8 @@ namespace starling::reconsolidation {
 
 namespace {
 
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 // Read the current reconsolidation checkpoint value.

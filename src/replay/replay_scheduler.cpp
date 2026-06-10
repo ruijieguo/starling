@@ -2,7 +2,7 @@
 #include "starling/affect/affect_vector.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/replay/swr_sampler.hpp"
@@ -25,9 +25,9 @@ using starling::bus::BusEvent;
 using starling::bus::OutboxWriter;
 using starling::bus::compute_idempotency_key;
 using starling::bus::compute_window_bucket;
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::iso8601_utc;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::iso8601_utc;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 using starling::persistence::TransactionGuard;
 

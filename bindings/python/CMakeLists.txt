@@ -18,7 +18,21 @@ endif()
 
 find_package(pybind11 CONFIG REQUIRED)
 
-pybind11_add_module(_core MODULE module.cpp)
+pybind11_add_module(_core MODULE
+    module.cpp
+    bind_01_core.cpp
+    bind_02_persistence.cpp
+    bind_03_evidence.cpp
+    bind_04_bus.cpp
+    bind_05_retrieval.cpp
+    bind_06_extractor.cpp
+    bind_07_cognizer.cpp
+    bind_08_tom.cpp
+    bind_09_brain_dynamics.cpp
+    bind_10_embedding.cpp
+    bind_11_neocortex.cpp
+    bind_12_prospective.cpp
+)
 target_link_libraries(_core PRIVATE starling_core)
 target_compile_options(_core PRIVATE ${STARLING_WARNING_FLAGS})
 

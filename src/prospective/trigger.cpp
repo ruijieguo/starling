@@ -4,7 +4,7 @@
 
 #include "starling/prospective/trigger.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <nlohmann/json.hpp>
@@ -18,8 +18,8 @@ namespace starling::prospective {
 
 namespace {
 
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 // Whitelisted statement column names for the state kind.

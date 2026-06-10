@@ -1,6 +1,6 @@
 #include "starling/vector/vector_index.hpp"
 #include "starling/vector/vector_math.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/connection.hpp"
 
@@ -12,8 +12,8 @@
 
 namespace starling::vector {
 
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 void SqliteBlobVectorIndex::insert(

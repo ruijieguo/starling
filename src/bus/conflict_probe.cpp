@@ -2,7 +2,7 @@
 
 #include "starling/bus/conflict_key.hpp"
 #include "starling/bus/normalized_interval.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/statement_enums.hpp"
 
@@ -109,24 +109,24 @@ std::vector<CandidateRow> fetch_candidates(
 
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
-        throw detail::make_sqlite_error(conn.raw(), "ConflictProbe::scan prepare candidates");
+        throw persistence::detail::make_sqlite_error(conn.raw(), "ConflictProbe::scan prepare candidates");
     }
     starling::persistence::StmtHandle h(raw);
 
-    detail::bind_sv(h.get(), 1, s.holder_tenant_id);
-    detail::bind_sv(h.get(), 2, s.holder_id);
-    detail::bind_sv(h.get(), 3, starling::schema::to_string(s.modality));
-    detail::bind_sv(h.get(), 4, s.subject_kind);
-    detail::bind_sv(h.get(), 5, s.subject_id);
-    detail::bind_sv(h.get(), 6, s.predicate);
-    detail::bind_sv(h.get(), 7, s.canonical_object_hash);
+    persistence::detail::bind_sv(h.get(), 1, s.holder_tenant_id);
+    persistence::detail::bind_sv(h.get(), 2, s.holder_id);
+    persistence::detail::bind_sv(h.get(), 3, starling::schema::to_string(s.modality));
+    persistence::detail::bind_sv(h.get(), 4, s.subject_kind);
+    persistence::detail::bind_sv(h.get(), 5, s.subject_id);
+    persistence::detail::bind_sv(h.get(), 6, s.predicate);
+    persistence::detail::bind_sv(h.get(), 7, s.canonical_object_hash);
 
     std::vector<CandidateRow> rows;
     while (true) {
         const int rc = sqlite3_step(h.get());
         if (rc == SQLITE_DONE) break;
         if (rc != SQLITE_ROW) {
-            throw detail::make_sqlite_error(conn.raw(), "ConflictProbe::scan step candidates");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "ConflictProbe::scan step candidates");
         }
         const auto col = [&](int i) {
             const auto* p = sqlite3_column_text(h.get(), i);

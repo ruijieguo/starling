@@ -4,7 +4,7 @@
 #include "starling/bus/conflict_probe.hpp"
 #include "starling/bus/normalized_interval.hpp"
 #include "starling/bus/outbox_writer.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/bus/statement_writer.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/evidence/engram_store.hpp"
@@ -160,22 +160,22 @@ void insert_statement_edge(
         "VALUES (?, ?, ?, ?, ?, ?, ?)";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge prepare");
+        throw persistence::detail::make_sqlite_error(conn.raw(), "insert_statement_edge prepare");
     starling::persistence::StmtHandle h(raw);
     const std::string edge_id = random_edge_id();
-    const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
-    detail::bind_sv(h.get(), 1, edge_id);
-    detail::bind_sv(h.get(), 2, tenant_id);
-    detail::bind_sv(h.get(), 3, src_id);
-    detail::bind_sv(h.get(), 4, dst_id);
-    detail::bind_sv(h.get(), 5, edge_kind);
+    const std::string now_iso = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
+    persistence::detail::bind_sv(h.get(), 1, edge_id);
+    persistence::detail::bind_sv(h.get(), 2, tenant_id);
+    persistence::detail::bind_sv(h.get(), 3, src_id);
+    persistence::detail::bind_sv(h.get(), 4, dst_id);
+    persistence::detail::bind_sv(h.get(), 5, edge_kind);
     if (canonical_conflict_key.has_value()) {
         sqlite3_bind_text(h.get(), 6,
                           canonical_conflict_key->c_str(), -1, SQLITE_STATIC);
     } else {
         sqlite3_bind_null(h.get(), 6);
     }
-    detail::bind_sv(h.get(), 7, now_iso);
+    persistence::detail::bind_sv(h.get(), 7, now_iso);
     const int rc = sqlite3_step(h.get());
     if (rc == SQLITE_DONE) return;
     if (rc == SQLITE_CONSTRAINT && canonical_conflict_key.has_value()) {
@@ -189,7 +189,7 @@ void insert_statement_edge(
             std::string(tenant_id).c_str());
         return;
     }
-    throw detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
+    throw persistence::detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
 }
 
 std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_id) {
@@ -222,10 +222,10 @@ void apply_mild_correction(
             "WHERE id = ? AND tenant_id = ?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw detail::make_sqlite_error(conn.raw(), "mild_correction: fetch s_old prepare");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "mild_correction: fetch s_old prepare");
         starling::persistence::StmtHandle h(raw);
-        detail::bind_sv(h.get(), 1, match.matched_statement_id);
-        detail::bind_sv(h.get(), 2, match.matched_tenant_id);
+        persistence::detail::bind_sv(h.get(), 1, match.matched_statement_id);
+        persistence::detail::bind_sv(h.get(), 2, match.matched_tenant_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             old_confidence = sqlite3_column_double(h.get(), 0);
             const auto* txt = sqlite3_column_text(h.get(), 1);
@@ -235,7 +235,7 @@ void apply_mild_correction(
 
     // Build the appended confidence_history_json.
     // Append {"old_confidence":<v>,"ts":"<iso>","evidence_engram_ref":<eid>} to array.
-    const std::string ts = detail::iso8601_utc(std::chrono::system_clock::now());
+    const std::string ts = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
     // Strip trailing ']'; we'll re-close after appending. We only emit this column
     // ourselves (compact, no whitespace), so the last non-']' char is either '['
     // for an empty array or the closing '}' of the previous entry.
@@ -266,15 +266,15 @@ void apply_mild_correction(
             "WHERE id = ? AND tenant_id = ?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old prepare");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old prepare");
         starling::persistence::StmtHandle h(raw);
         sqlite3_bind_double(h.get(), 1, updated_confidence);
-        detail::bind_sv(h.get(), 2, history_json);
-        detail::bind_sv(h.get(), 3, ts);
-        detail::bind_sv(h.get(), 4, match.matched_statement_id);
-        detail::bind_sv(h.get(), 5, match.matched_tenant_id);
+        persistence::detail::bind_sv(h.get(), 2, history_json);
+        persistence::detail::bind_sv(h.get(), 3, ts);
+        persistence::detail::bind_sv(h.get(), 4, match.matched_statement_id);
+        persistence::detail::bind_sv(h.get(), 5, match.matched_tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old step");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old step");
     }
 }
 
@@ -309,14 +309,14 @@ void apply_supersedes_atomic(
             "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old prepare");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old prepare");
         starling::persistence::StmtHandle h(raw);
-        const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
-        detail::bind_sv(h.get(), 1, now_iso);
-        detail::bind_sv(h.get(), 2, match.matched_statement_id);
-        detail::bind_sv(h.get(), 3, match.matched_tenant_id);
+        const std::string now_iso = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
+        persistence::detail::bind_sv(h.get(), 1, now_iso);
+        persistence::detail::bind_sv(h.get(), 2, match.matched_statement_id);
+        persistence::detail::bind_sv(h.get(), 3, match.matched_tenant_id);
         if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old step");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old step");
         if (sqlite3_changes(conn.raw()) != 1) {
             throw std::runtime_error(
                 "supersedes_path: S_old row missing or wrong state at archive time");
@@ -489,11 +489,11 @@ StatementWriteOutcome Bus::write_impl(
             "SELECT tenant_id FROM statements WHERE id = ? AND tenant_id = ? LIMIT 1";
         sqlite3_stmt* same_raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), same_tenant_sql, -1, &same_raw, nullptr) != SQLITE_OK)
-            throw detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant same-tenant prepare");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant same-tenant prepare");
         {
             starling::persistence::StmtHandle h(same_raw);
-            detail::bind_sv(h.get(), 1, parent_id);
-            detail::bind_sv(h.get(), 2, stmt.holder_tenant_id);
+            persistence::detail::bind_sv(h.get(), 1, parent_id);
+            persistence::detail::bind_sv(h.get(), 2, stmt.holder_tenant_id);
             if (sqlite3_step(h.get()) == SQLITE_ROW) {
                 return stmt.holder_tenant_id;
             }
@@ -503,9 +503,9 @@ StatementWriteOutcome Bus::write_impl(
             "SELECT DISTINCT tenant_id FROM statements WHERE id = ? LIMIT 2";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant prepare");
+            throw persistence::detail::make_sqlite_error(conn.raw(), "Bus::write resolve_parent_tenant prepare");
         starling::persistence::StmtHandle h(raw);
-        detail::bind_sv(h.get(), 1, parent_id);
+        persistence::detail::bind_sv(h.get(), 1, parent_id);
         std::string out;
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             if (const char* txt = reinterpret_cast<const char*>(
@@ -638,7 +638,7 @@ StatementWriteOutcome Bus::write_impl(
     tx.commit();
 
     // 统一 post-write 泵: 5 subscriber 各 SAVEPOINT 隔离 (spec §11).
-    const std::string now_iso = detail::iso8601_utc(std::chrono::system_clock::now());
+    const std::string now_iso = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
     SubscriberPump::run_post_write(adapter_, conn, now_iso);
 
     return outcome;

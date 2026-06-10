@@ -1,5 +1,5 @@
 #include "starling/bus/consumer_state.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <chrono>
@@ -8,9 +8,9 @@
 
 namespace starling::bus {
 
-using detail::bind_sv;
-using detail::iso8601_utc;
-using detail::make_sqlite_error;
+using persistence::detail::bind_sv;
+using persistence::detail::iso8601_utc;
+using persistence::detail::make_sqlite_error;
 
 int64_t ConsumerCheckpoint::last_delivered(std::string_view consumer_id) {
     sqlite3* const db = conn_.raw();

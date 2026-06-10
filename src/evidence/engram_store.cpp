@@ -1,6 +1,6 @@
 #include "starling/evidence/engram_store.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/crypto/null_kms.hpp"
 #include "starling/evidence/engram.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
@@ -99,8 +99,8 @@ Engram EngramStore::put(
     e.created_at_iso8601       = input.created_at_iso8601;
     e.erased_at_iso8601        = std::nullopt;
 
-    using starling::bus::detail::bind_sv;
-    using starling::bus::detail::make_sqlite_error;
+    using starling::persistence::detail::bind_sv;
+    using starling::persistence::detail::make_sqlite_error;
     using starling::persistence::StmtHandle;
 
     sqlite3* const db = conn.raw();
@@ -168,8 +168,8 @@ std::optional<Engram> EngramStore::get(
     std::string_view tenant_id,
     starling::persistence::Connection& conn) {
 
-    using starling::bus::detail::bind_sv;
-    using starling::bus::detail::make_sqlite_error;
+    using starling::persistence::detail::bind_sv;
+    using starling::persistence::detail::make_sqlite_error;
     using starling::persistence::StmtHandle;
 
     sqlite3* const db = conn.raw();

@@ -1,12 +1,12 @@
 #include "starling/replay/consolidation_ops.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/replay/forgetting_curve.hpp"
 #include <stdexcept>
 
 namespace starling::replay {
-using starling::bus::detail::bind_sv;
-using starling::bus::detail::make_sqlite_error;
+using starling::persistence::detail::bind_sv;
+using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 std::string_view to_string(ConsolidationOp op) {

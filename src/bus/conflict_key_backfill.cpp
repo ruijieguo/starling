@@ -2,7 +2,7 @@
 
 #include "starling/bus/conflict_key.hpp"
 #include "starling/bus/normalized_interval.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
@@ -65,7 +65,7 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                 "SELECT last_processed_edge_id FROM conflict_key_backfill_state WHERE id = 1";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw detail::make_sqlite_error(conn.raw(), "backfill: fetch cursor prepare");
+                throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: fetch cursor prepare");
             persistence::StmtHandle h(raw);
             if (sqlite3_step(h.get()) == SQLITE_ROW) {
                 if (sqlite3_column_type(h.get(), 0) != SQLITE_NULL) {
@@ -89,10 +89,10 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                 "LIMIT ?";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw detail::make_sqlite_error(conn.raw(), "backfill: select batch prepare");
+                throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: select batch prepare");
             persistence::StmtHandle h(raw);
-            detail::bind_sv(h.get(), 1, last_id);
-            detail::bind_sv(h.get(), 2, last_id);
+            persistence::detail::bind_sv(h.get(), 1, last_id);
+            persistence::detail::bind_sv(h.get(), 2, last_id);
             sqlite3_bind_int(h.get(), 3, batch_size);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 EdgeRow row;
@@ -111,19 +111,19 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
         if (batch.empty()) {
             // All edges processed — mark complete.
             const std::string now =
-                detail::iso8601_utc(std::chrono::system_clock::now());
+                persistence::detail::iso8601_utc(std::chrono::system_clock::now());
             {
                 const char* sql =
                     "UPDATE conflict_key_backfill_state "
                     "SET completed_at = ?, last_updated_at = ? WHERE id = 1";
                 sqlite3_stmt* raw = nullptr;
                 if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                    throw detail::make_sqlite_error(conn.raw(), "backfill: mark complete prepare");
+                    throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: mark complete prepare");
                 persistence::StmtHandle h(raw);
-                detail::bind_sv(h.get(), 1, now);
-                detail::bind_sv(h.get(), 2, now);
+                persistence::detail::bind_sv(h.get(), 1, now);
+                persistence::detail::bind_sv(h.get(), 2, now);
                 if (sqlite3_step(h.get()) != SQLITE_DONE)
-                    throw detail::make_sqlite_error(conn.raw(), "backfill: mark complete step");
+                    throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: mark complete step");
             }
             conn.exec("RELEASE SAVEPOINT conflict_key_backfill");
             stats.completed_now = true;
@@ -153,10 +153,10 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                     "LIMIT 1";
                 sqlite3_stmt* raw = nullptr;
                 if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                    throw detail::make_sqlite_error(conn.raw(), "backfill: fetch stmt prepare");
+                    throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: fetch stmt prepare");
                 persistence::StmtHandle h(raw);
-                detail::bind_sv(h.get(), 1, edge.src_id);
-                detail::bind_sv(h.get(), 2, edge.tenant_id);
+                persistence::detail::bind_sv(h.get(), 1, edge.src_id);
+                persistence::detail::bind_sv(h.get(), 2, edge.tenant_id);
                 if (sqlite3_step(h.get()) == SQLITE_ROW) {
                     found = true;
                     auto get_text = [&](int col) -> std::string {
@@ -214,10 +214,10 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                     "WHERE id = ?";
                 sqlite3_stmt* raw = nullptr;
                 if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                    throw detail::make_sqlite_error(conn.raw(), "backfill: update edge prepare");
+                    throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: update edge prepare");
                 persistence::StmtHandle h(raw);
-                detail::bind_sv(h.get(), 1, key);
-                detail::bind_sv(h.get(), 2, edge.id);
+                persistence::detail::bind_sv(h.get(), 1, key);
+                persistence::detail::bind_sv(h.get(), 2, edge.id);
                 const int rc = sqlite3_step(h.get());
                 if (rc == SQLITE_DONE) {
                     new_backfilled++;
@@ -227,17 +227,17 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                         "DELETE FROM statement_edges WHERE id = ?";
                     sqlite3_stmt* del_raw = nullptr;
                     if (sqlite3_prepare_v2(conn.raw(), del_sql, -1, &del_raw, nullptr) != SQLITE_OK)
-                        throw detail::make_sqlite_error(conn.raw(), "backfill: delete dup prepare");
+                        throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: delete dup prepare");
                     persistence::StmtHandle dh(del_raw);
-                    detail::bind_sv(dh.get(), 1, edge.id);
+                    persistence::detail::bind_sv(dh.get(), 1, edge.id);
                     if (sqlite3_step(dh.get()) != SQLITE_DONE)
-                        throw detail::make_sqlite_error(conn.raw(), "backfill: delete dup step");
+                        throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: delete dup step");
                     new_deduped++;
                     std::fprintf(stderr,
                         "[conflict_key_backfill] WARN dedup: edge %s key=%s\n",
                         edge.id.c_str(), key.c_str());
                 } else {
-                    throw detail::make_sqlite_error(conn.raw(), "backfill: update edge step");
+                    throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: update edge step");
                 }
             }
         }
@@ -245,7 +245,7 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
         // Update state row.
         {
             const std::string now =
-                detail::iso8601_utc(std::chrono::system_clock::now());
+                persistence::detail::iso8601_utc(std::chrono::system_clock::now());
             const char* sql =
                 "UPDATE conflict_key_backfill_state "
                 "SET last_processed_edge_id = ?, "
@@ -255,14 +255,14 @@ TickStats tick_one_batch(persistence::Connection& conn, int batch_size) {
                 "WHERE id = 1";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw detail::make_sqlite_error(conn.raw(), "backfill: update state prepare");
+                throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: update state prepare");
             persistence::StmtHandle h(raw);
-            detail::bind_sv(h.get(), 1, new_last_id);
+            persistence::detail::bind_sv(h.get(), 1, new_last_id);
             sqlite3_bind_int(h.get(), 2, new_backfilled);
             sqlite3_bind_int(h.get(), 3, new_deduped);
-            detail::bind_sv(h.get(), 4, now);
+            persistence::detail::bind_sv(h.get(), 4, now);
             if (sqlite3_step(h.get()) != SQLITE_DONE)
-                throw detail::make_sqlite_error(conn.raw(), "backfill: update state step");
+                throw persistence::detail::make_sqlite_error(conn.raw(), "backfill: update state step");
         }
 
         conn.exec("RELEASE SAVEPOINT conflict_key_backfill");

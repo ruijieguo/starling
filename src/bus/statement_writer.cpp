@@ -2,7 +2,7 @@
 
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/statement_enums.hpp"
 #include "starling/tom/nesting_depth_writer.hpp"
@@ -15,9 +15,9 @@
 
 namespace starling::bus {
 
-using detail::bind_sv;
-using detail::iso8601_utc;
-using detail::make_sqlite_error;
+using persistence::detail::bind_sv;
+using persistence::detail::iso8601_utc;
+using persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
 namespace {

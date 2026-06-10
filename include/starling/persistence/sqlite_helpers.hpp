@@ -9,7 +9,7 @@
 #include <string>
 #include <string_view>
 
-namespace starling::bus::detail {
+namespace starling::persistence::detail {
 
 // Build a SqliteError tagged with the connection's last extended error code
 // + a context-specific prefix. Use after a sqlite3_prepare_v2 returns non-OK
@@ -42,4 +42,4 @@ inline std::string iso8601_utc(std::chrono::system_clock::time_point t) {
     return oss.str();
 }
 
-}  // namespace starling::bus::detail
+}  // namespace starling::persistence::detail

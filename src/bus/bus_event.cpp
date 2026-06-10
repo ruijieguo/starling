@@ -1,5 +1,5 @@
 #include "starling/bus/bus_event.hpp"
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
@@ -40,7 +40,7 @@ std::vector<std::string> compute_child_chain(
     const std::string& parent_event_id) {
     if (parent_event_id.empty()) return {};
 
-    using detail::make_sqlite_error;
+    using persistence::detail::make_sqlite_error;
     using starling::persistence::StmtHandle;
 
     sqlite3* const db = conn.raw();

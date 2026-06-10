@@ -7,7 +7,7 @@
 
 #include "belief_tracker_internal.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/cognizer/cognizer_hub.hpp"
 #include "starling/cognizer/knowledge_frontier.hpp"
 #include "starling/persistence/connection.hpp"
@@ -24,7 +24,7 @@ namespace starling::tom::belief_tracker {
 
 namespace {
 
-using starling::bus::detail::bind_sv;
+using starling::persistence::detail::bind_sv;
 using starling::persistence::StmtHandle;
 
 struct EventRow {
@@ -66,7 +66,7 @@ TickStats tick_one_batch(
                 "FROM tom_belief_tracker_checkpoint WHERE id = 1";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw starling::bus::detail::make_sqlite_error(
+                throw starling::persistence::detail::make_sqlite_error(
                     conn.raw(), "belief_tracker: read checkpoint prepare");
             StmtHandle h(raw);
             if (sqlite3_step(h.get()) == SQLITE_ROW) {
@@ -86,7 +86,7 @@ TickStats tick_one_batch(
                 "LIMIT ?";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw starling::bus::detail::make_sqlite_error(
+                throw starling::persistence::detail::make_sqlite_error(
                     conn.raw(), "belief_tracker: select events prepare");
             StmtHandle h(raw);
             sqlite3_bind_int(h.get(), 1, last_seq);
@@ -159,15 +159,15 @@ TickStats tick_one_batch(
                 "WHERE id = 1";
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                throw starling::bus::detail::make_sqlite_error(
+                throw starling::persistence::detail::make_sqlite_error(
                     conn.raw(), "belief_tracker: update checkpoint prepare");
             StmtHandle h(raw);
             sqlite3_bind_int(h.get(), 1, max_seq);
             const std::string now =
-                starling::bus::detail::iso8601_utc(std::chrono::system_clock::now());
+                starling::persistence::detail::iso8601_utc(std::chrono::system_clock::now());
             bind_sv(h.get(), 2, now);
             if (sqlite3_step(h.get()) != SQLITE_DONE)
-                throw starling::bus::detail::make_sqlite_error(
+                throw starling::persistence::detail::make_sqlite_error(
                     conn.raw(), "belief_tracker: update checkpoint step");
         }
 

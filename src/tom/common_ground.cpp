@@ -1,6 +1,6 @@
 #include "starling/tom/common_ground.hpp"
 
-#include "starling/bus/sqlite_helpers.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 
 #include <sqlite3.h>
@@ -8,7 +8,7 @@
 namespace starling::tom::common_ground {
 
 namespace {
-using starling::bus::detail::bind_sv;
+using starling::persistence::detail::bind_sv;
 using starling::persistence::StmtHandle;
 }  // namespace
 
