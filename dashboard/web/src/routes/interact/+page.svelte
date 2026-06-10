@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Textarea, Input, Badge, Card, Select } from '$lib/components/ui';
 
 	let text = $state('');
@@ -46,9 +47,9 @@
 	const pct = (s: number) => Math.max(2, Math.min(100, s * 100));
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">交互</h1>
+<PageHeader title="交互" subtitle="控制台:remember 写入与 recall 检索。" />
 <div class="max-w-2xl space-y-4">
-	<Card title="Remember">
+	<Card title="Remember" description="自然语言写入,抽取为 statements。">
 		<div class="space-y-2">
 			<Textarea bind:value={text} rows={3} placeholder="记一段话…" />
 			<div class="flex flex-wrap gap-2">
@@ -56,7 +57,7 @@
 				<Input bind:value={interlocutor} placeholder="interlocutor (可选)" class="max-w-44" />
 			</div>
 			<div class="flex items-center gap-3">
-				<Button loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
+				<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
 				{#if remembered.length || outcome}
 					<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>
 				{/if}
@@ -70,7 +71,7 @@
 			{/if}
 		</div>
 	</Card>
-	<Card title="Recall">
+	<Card title="Recall" description="语义检索或模式补全,按相似度打分。">
 		<div class="space-y-3">
 			<div class="flex flex-wrap gap-2">
 				<Input bind:value={query} placeholder="query" class="min-w-48 flex-1" />
@@ -83,7 +84,7 @@
 						{ value: 'completion', label: '模式补全' }
 					]}
 				/>
-				<Button loading={busyQ} disabled={!query.trim()} variant="secondary" onclick={recall}>
+				<Button loading={busyQ} disabled={!query.trim()} variant="soft" onclick={recall}>
 					检索
 				</Button>
 			</div>
@@ -93,7 +94,7 @@
 				{:else}
 					<ul class="space-y-2">
 						{#each results as r}
-							<li class="rounded-lg border border-border bg-surface px-3 py-2">
+							<li class="rounded-control border border-border bg-surface px-3 py-2">
 								<div class="flex items-center justify-between gap-2">
 									<span class="text-sm text-fg">
 										{r.subject} <span class="text-subtle">{r.predicate}</span> {r.object}

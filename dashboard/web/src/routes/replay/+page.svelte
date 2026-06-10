@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, EmptyState, Skeleton } from '$lib/components/ui';
 
 	type ReplayData = {
@@ -26,14 +27,14 @@
 	const fmt = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Replay / Reconsolidation</h1>
+<PageHeader title="Replay / Reconsolidation" subtitle="回放与再巩固:调度器状态、批次与窗口。" />
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else if q.loading && !q.data}
 	<Skeleton class="h-40 w-full" />
 {:else if q.data}
 	<div class="space-y-4">
-		<Card title="调度器状态">
+		<Card title="调度器状态" description="在线 / 空闲 / 睡眠通道的最近运行。">
 			{#if schedEntries.length === 0}
 				<p class="text-sm text-muted">无调度器状态</p>
 			{:else}

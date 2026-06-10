@@ -3,6 +3,7 @@
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import CodeBlock from '$lib/components/CodeBlock.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, EmptyState, Input, Select, Drawer } from '$lib/components/ui';
 
 	let predicate = $state('');
@@ -47,28 +48,40 @@
 	const fmtv = (v: unknown) => (v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Statements</h1>
-<div class="mb-3 flex flex-wrap gap-2">
-	<Input bind:value={predicate} placeholder="predicate" class="max-w-40" />
-	<Input bind:value={perspective} placeholder="perspective" class="max-w-40" />
-	<Button variant="secondary" onclick={() => q.refetch()}>筛选</Button>
-	<Select
-		bind:value={modality}
-		class="max-w-44"
-		aria-label="modality"
-		options={modalities.map((m) => ({ value: m, label: m || '全部 modality' }))}
-	/>
-	<Select
-		bind:value={polarity}
-		class="max-w-36"
-		aria-label="polarity"
-		options={polarities.map((p) => ({ value: p, label: p || '全部 polarity' }))}
-	/>
+<PageHeader title="Statements" subtitle="记忆原子:谁、以何样态与极性、对什么持有判断。" />
+<div class="mb-4 flex flex-wrap items-end gap-3">
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">predicate</span>
+		<Input bind:value={predicate} placeholder="如 responsible_for" class="w-44" />
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">perspective</span>
+		<Input bind:value={perspective} placeholder="如 first_person" class="w-44" />
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">modality</span>
+		<Select
+			bind:value={modality}
+			class="w-40"
+			aria-label="modality"
+			options={modalities.map((m) => ({ value: m, label: m || '全部' }))}
+		/>
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">polarity</span>
+		<Select
+			bind:value={polarity}
+			class="w-32"
+			aria-label="polarity"
+			options={polarities.map((p) => ({ value: p, label: p || '全部' }))}
+		/>
+	</label>
+	<Button variant="soft" onclick={() => q.refetch()}>筛选</Button>
+	<span class="ml-auto pb-1.5 text-xs text-subtle">{rows.length} 条 · 点击行看详情</span>
 </div>
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else}
-	<p class="mb-2 text-xs text-subtle">{rows.length} 条 · 点击行看详情</p>
 	<DataTable
 		{rows}
 		loading={q.loading}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Drawer } from '$lib/components/ui';
 
 	type Conflict = {
@@ -46,7 +47,7 @@
 	}
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">ConflictProbe</h1>
+<PageHeader title="ConflictProbe" subtitle="互斥语句对,按冲突权重降序。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
@@ -115,14 +116,14 @@
 					<div class="text-fg">{reason(detail.metadata_json)}</div>
 				</div>
 			{/if}
-			<div class="rounded-lg border border-border bg-surface p-3">
+			<div class="rounded-control border border-border bg-surface p-3">
 				<div class="text-xs uppercase tracking-wide text-subtle">语句 A（src）</div>
 				<div class="mt-1 text-fg">
 					{label(detail.src_subject, detail.src_predicate, detail.src_object, '（已删除或缺失）')}
 				</div>
 				<div class="mt-1 break-all font-mono text-xs text-subtle">{detail.src_id}</div>
 			</div>
-			<div class="rounded-lg border border-border bg-surface p-3">
+			<div class="rounded-control border border-border bg-surface p-3">
 				<div class="text-xs uppercase tracking-wide text-subtle">语句 B（dst）</div>
 				<div class="mt-1 text-fg">
 					{label(detail.dst_subject, detail.dst_predicate, detail.dst_object, '（已删除或缺失）')}

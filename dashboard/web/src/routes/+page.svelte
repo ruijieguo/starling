@@ -2,8 +2,9 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
-	import { Card, Skeleton, EmptyState } from '$lib/components/ui';
+	import { Card, Skeleton, EmptyState, Badge } from '$lib/components/ui';
 
 	type Overview = {
 		counts: Record<string, number>;
@@ -33,45 +34,53 @@
 			feed = [entry, ...feed].slice(0, 12);
 		}
 	});
+
+	// 承诺状态的语义色:醒目但不滥用——只有 BROKEN 红、ACTIVE 品牌色。
+	const laneTone = (k: string) =>
+		k === 'BROKEN' ? 'danger' : k === 'ACTIVE' ? 'brand' : 'default';
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">总览</h1>
+<PageHeader title="总览" subtitle="记忆体状态、关键计数与实时活动。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else if q.loading && !q.data}
-	<div class="grid grid-cols-2 gap-3 md:grid-cols-3">
-		{#each Array(6) as _}<Skeleton class="h-20 w-full" />{/each}
+	<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
+		{#each Array(5) as _}<Skeleton class="h-24 w-full" />{/each}
 	</div>
 {:else if q.data}
-	<div class="space-y-6">
-		<Card title="最近活动">
+	<div class="space-y-5">
+		<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
+			{#each Object.entries(q.data.counts) as [k, v]}<StatCard label={k} value={v} />{/each}
+		</div>
+		<div class="grid gap-5 lg:grid-cols-2">
+			<Card title="承诺分态" description="六态机当前分布。">
+				<div class="grid grid-cols-3 gap-3">
+					{#each Object.entries(q.data.commitments_by_state) as [k, v]}
+						<StatCard label={k} value={v} tone={laneTone(k)} />
+					{/each}
+				</div>
+			</Card>
+			<Card title="队列状态" description="outbox 派发与向量嵌入。">
+				<div class="grid grid-cols-2 gap-3">
+					{#each Object.entries(q.data.queue_by_status) as [k, v]}<StatCard label={k} value={v} />{/each}
+				</div>
+			</Card>
+		</div>
+		<Card title="最近活动" description="经 /ws 的 tick 与 statement_added 实时增量。">
 			{#if feed.length === 0}
-				<p class="text-sm text-muted">等待事件…(tick / statement_added)</p>
+				<p class="text-sm text-subtle">等待事件…(tick / statement_added)</p>
 			{:else}
-				<ul class="space-y-1">
+				<ul class="space-y-1.5">
 					{#each feed as entry}
 						<li class="flex items-baseline gap-2 text-xs">
-							<span class="text-fg">•</span>
-							<span class="flex-1 text-fg">{entry.msg}</span>
-							<span class="shrink-0 text-subtle">{entry.t}</span>
+							<Badge tone="brand">{entry.msg.split(' · ')[0]}</Badge>
+							<span class="flex-1 truncate text-muted">{entry.msg.split(' · ').slice(1).join(' · ')}</span>
+							<span class="shrink-0 font-mono text-subtle">{entry.t}</span>
 						</li>
 					{/each}
 				</ul>
 			{/if}
-		</Card>
-		<div class="grid grid-cols-2 gap-3 md:grid-cols-3">
-			{#each Object.entries(q.data.counts) as [k, v]}<StatCard label={k} value={v} />{/each}
-		</div>
-		<Card title="承诺分态">
-			<div class="grid grid-cols-3 gap-3 md:grid-cols-6">
-				{#each Object.entries(q.data.commitments_by_state) as [k, v]}<StatCard label={k} value={v} />{/each}
-			</div>
-		</Card>
-		<Card title="队列状态">
-			<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-				{#each Object.entries(q.data.queue_by_status) as [k, v]}<StatCard label={k} value={v} />{/each}
-			</div>
 		</Card>
 	</div>
 {/if}

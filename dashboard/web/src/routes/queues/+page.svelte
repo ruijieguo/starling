@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, Badge, Button, Skeleton, EmptyState } from '$lib/components/ui';
 	import { toast } from '$lib/ui/toast';
 
@@ -42,10 +43,11 @@
 	let backlogInfo = $derived(q.data != null ? getBacklogInfo(q.data.embedding_backlog) : null);
 </script>
 
-<div class="mb-4 flex items-center justify-between gap-2">
-	<h1 class="text-xl font-semibold text-fg">队列 / 运维</h1>
-	<Button variant="secondary" loading={ticking} onclick={tick}>手动 Tick</Button>
-</div>
+<PageHeader title="队列 / 运维" subtitle="队列健康:outbox 派发、嵌入积压与向量状态。">
+	{#snippet actions()}
+		<Button variant="soft" loading={ticking} onclick={tick}>手动 Tick</Button>
+	{/snippet}
+</PageHeader>
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
@@ -63,12 +65,12 @@
 				{/if}
 			</div>
 		</Card>
-		<Card title="Outbox dispatch">
+		<Card title="Outbox dispatch" description="outbox 事件按派发状态计数。">
 			<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
 				{#each Object.entries(q.data.dispatch) as [k, v]}<StatCard label={k} value={v} />{/each}
 			</div>
 		</Card>
-		<Card title="向量状态">
+		<Card title="向量状态" description="嵌入向量按状态计数。">
 			<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
 				{#each Object.entries(q.data.vectors_by_status) as [k, v]}<StatCard label={k} value={v} />{/each}
 			</div>

@@ -5,6 +5,7 @@ export { default as Textarea } from './Textarea.svelte';
 export { default as Field } from './Field.svelte';
 export { default as Card } from './Card.svelte';
 export { default as Badge } from './Badge.svelte';
+export { default as Chip } from './Chip.svelte';
 export { default as StatusDot } from './StatusDot.svelte';
 export { default as Skeleton } from './Skeleton.svelte';
 export { default as EmptyState } from './EmptyState.svelte';

@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { byDeadline, deriveFired, isOverdue } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, EmptyState, Skeleton } from '$lib/components/ui';
 
 	type Row = {
@@ -34,8 +35,7 @@
 	});
 </script>
 
-<h1 class="mb-1 text-xl font-semibold text-fg">承诺提醒</h1>
-<p class="mb-4 text-sm text-muted">待办承诺（active / created），按截止日期升序；逾期与 fired 醒目标注。</p>
+<PageHeader title="承诺提醒" subtitle="待办承诺（active / created），按截止日期升序；逾期与 fired 醒目标注。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
@@ -47,7 +47,7 @@
 	<ul class="space-y-2">
 		{#each pending as r}
 			<li
-				class="flex items-start gap-3 rounded-lg border bg-card px-4 py-3 {r.overdue
+				class="flex items-start gap-3 rounded-control border bg-card px-4 py-3 {r.overdue
 					? 'border-danger/40'
 					: 'border-border'}"
 			>

@@ -3,6 +3,7 @@
 	import { createQuery } from '$lib/query.svelte';
 	import Graph from '$lib/components/Graph.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, EmptyState, Drawer } from '$lib/components/ui';
 
 	type Cognizer = { id: string; canonical_name: string; kind: string; last_seen_at: string };
@@ -31,7 +32,7 @@
 	}
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Cognizer 社会图</h1>
+<PageHeader title="Cognizer 社会图" subtitle="社会图:cognizer 节点、关系与在场记录。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />

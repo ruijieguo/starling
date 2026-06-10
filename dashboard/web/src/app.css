@@ -3,7 +3,15 @@
 @import '@fontsource-variable/jetbrains-mono';
 
 /* 语义 token → Tailwind 工具类(@theme inline:工具类在使用点解析变量,
-   故下面的明暗/媒体查询覆盖会被工具类自动跟随)。 */
+   故下面的明暗覆盖会被工具类自动跟随)。
+
+   P2.n 品味对齐(参照 OpenClaw Control UI 实测值):
+   - 品牌色改椋鸟翠绿(teal),并引入「tint 水洗」三件套:
+     brand-tint(~8% 填充)/ brand-tint-strong(~16% 激活)/ brand-border(品牌调边框)
+     —— 激活导航、soft 按钮、选中 chip 一律用 tint,不再用灰 hover。
+   - 中性阶暖化分层:bg(暖纸感)≠ surface(侧栏/凹槽)≠ card(纯白),
+     暗色对应 #0e1015 / #13161c / #181b22。
+   - radius 阶:card 14px / control 10px。 */
 @theme inline {
 	--color-bg: var(--bg);
 	--color-surface: var(--surface);
@@ -14,26 +22,33 @@
 	--color-border: var(--border);
 	--color-brand: var(--brand);
 	--color-brand-fg: var(--brand-fg);
+	--color-brand-tint: var(--brand-tint);
+	--color-brand-tint-strong: var(--brand-tint-strong);
+	--color-brand-border: var(--brand-border);
 	--color-success: var(--success);
 	--color-warn: var(--warn);
 	--color-danger: var(--danger);
 	--color-info: var(--info);
 	--font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
 	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
-	--radius-card: 0.75rem;
+	--radius-card: 0.875rem; /* 14px */
+	--radius-control: 0.625rem; /* 10px */
 }
 
 /* 浅色(默认) */
 :root {
-	--bg: #fafafa;
-	--surface: #ffffff;
+	--bg: #f8f9fa;
+	--surface: #f1f3f5;
 	--card: #ffffff;
-	--fg: #18181b;
-	--muted: #52525b;
-	--subtle: #71717a;
-	--border: #e4e4e7;
-	--brand: #4f46e5;
+	--fg: #1a1a1e;
+	--muted: #3c3c43;
+	--subtle: #6e6e76;
+	--border: #e5e5ea;
+	--brand: #0f766e;
 	--brand-fg: #ffffff;
+	--brand-tint: color-mix(in srgb, var(--brand) 8%, transparent);
+	--brand-tint-strong: color-mix(in srgb, var(--brand) 16%, transparent);
+	--brand-border: color-mix(in srgb, var(--brand) 32%, transparent);
 	--success: #16a34a;
 	--warn: #d97706;
 	--danger: #dc2626;
@@ -44,15 +59,18 @@
 /* 深色 token。主题由 <html data-theme> 决定:theme.ts(+ app.html 预渲染脚本)
    把 system 解析成 light/dark 显式写到 data-theme,故 CSS 不重复、无 FOUC。 */
 :root[data-theme='dark'] {
-	--bg: #09090b;
-	--surface: #0c0c0f;
-	--card: #18181b;
-	--fg: #fafafa;
-	--muted: #a1a1aa;
-	--subtle: #71717a;
-	--border: #27272a;
-	--brand: #6366f1;
-	--brand-fg: #ffffff;
+	--bg: #0e1015;
+	--surface: #13161c;
+	--card: #181b22;
+	--fg: #f2f3f5;
+	--muted: #a6a9b0;
+	--subtle: #71747c;
+	--border: #262a33;
+	--brand: #2dd4bf;
+	--brand-fg: #052e2b;
+	--brand-tint: color-mix(in srgb, var(--brand) 10%, transparent);
+	--brand-tint-strong: color-mix(in srgb, var(--brand) 18%, transparent);
+	--brand-border: color-mix(in srgb, var(--brand) 36%, transparent);
 	--success: #22c55e;
 	--warn: #f59e0b;
 	--danger: #ef4444;

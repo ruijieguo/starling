@@ -5,6 +5,7 @@
 	import { toast } from '$lib/ui/toast';
 	import { missingFields } from '$lib/ui/validate';
 	import { CHAT_PROVIDERS, EMBED_PROVIDERS, chatPreset, embedPreset } from '$lib/providers';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import {
 		Button, Input, Field, Card, CopyButton, ConfirmDialog, SecretInput, Select, StatusDot
 	} from '$lib/components/ui';
@@ -150,7 +151,7 @@
 	}
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">设置</h1>
+<PageHeader title="设置" subtitle="LLM 与 Embedder 提供商、密钥与连通性测试。" />
 <div class="max-w-xl space-y-5">
 	<Card title="LLM（抽取用）">
 		<div class="space-y-3">
@@ -173,7 +174,7 @@
 				<SecretInput id="llm-key" bind:value={llmKey} invalid={errors['llm.api_key']} placeholder={llm.key_set ? '已设置 · 留空不改' : 'api_key'} />
 			</Field>
 			<div class="flex flex-wrap items-center gap-3">
-				<Button variant="secondary" loading={testingLlm} onclick={testLlm}>测试连接</Button>
+				<Button variant="soft" loading={testingLlm} onclick={testLlm}>测试连接</Button>
 				{#if llmTest}
 					<StatusDot tone={llmTest.ok ? 'ok' : 'down'} label={llmTest.ok ? `连通 · ${llmTest.ms}ms` : `失败: ${llmTest.detail}`} />
 				{/if}
@@ -200,7 +201,7 @@
 				<SecretInput id="emb-key" bind:value={embKey} placeholder={emb.key_set ? '已设置 · 留空不改' : 'api_key（可空）'} />
 			</Field>
 			<div class="flex flex-wrap items-center gap-3">
-				<Button variant="secondary" loading={testingEmb} onclick={testEmb}>测试连接</Button>
+				<Button variant="soft" loading={testingEmb} onclick={testEmb}>测试连接</Button>
 				{#if embTest}
 					<StatusDot tone={embTest.ok ? 'ok' : 'down'} label={embTest.ok ? `连通 · ${embTest.detail}` : `失败: ${embTest.detail}`} />
 				{/if}
@@ -221,7 +222,7 @@
 					<CopyButton text={token} />
 				</div>
 			</Field>
-			<Button variant="secondary" onclick={saveToken}>保存 Token</Button>
+			<Button variant="soft" onclick={saveToken}>保存 Token</Button>
 		</div>
 	</Card>
 </div>

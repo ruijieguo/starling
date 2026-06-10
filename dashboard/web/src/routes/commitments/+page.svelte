@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { byDeadline, deriveFired } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Input, Drawer } from '$lib/components/ui';
 
 	type CommitmentRow = {
@@ -56,7 +57,7 @@
 	const fmtv = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 </script>
 
-<h1 class="mb-3 text-xl font-semibold text-fg">Commitment 五态机</h1>
+<PageHeader title="Commitment 五态机" subtitle="承诺状态机:created → ACTIVE → 终态;⚠ DUE 与逾期醒目。" />
 <div class="mb-4 max-w-xs">
 	<Input bind:value={filter} placeholder="筛选 subject / predicate / object…" aria-label="筛选承诺" />
 </div>
@@ -80,7 +81,7 @@
 								<button
 									type="button"
 									onclick={() => openDetail(r)}
-									class="w-full rounded-lg border border-border bg-surface px-3 py-2 text-left text-xs transition hover:border-brand/40"
+									class="w-full rounded-control border border-border bg-surface px-3 py-2 text-left text-xs transition hover:border-brand/40"
 								>
 									<div class="flex items-start justify-between gap-2">
 										<span class="font-medium text-fg">{r.subject_id}</span>

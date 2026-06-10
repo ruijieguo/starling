@@ -3,6 +3,7 @@
 	import DOMPurify from 'dompurify';
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, EmptyState, Skeleton } from '$lib/components/ui';
 
 	type Report = { name: string; markdown: string; [k: string]: unknown };
@@ -19,7 +20,7 @@
 		DOMPurify.sanitize(marked.parse(md ?? '', { async: false }) as string);
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Eval 报告</h1>
+<PageHeader title="Eval 报告" subtitle="准入 eval 的 markdown 输出,最新优先。" />
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else if q.loading && !q.data}

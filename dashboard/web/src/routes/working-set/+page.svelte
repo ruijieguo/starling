@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Input, Badge, CopyButton, EmptyState } from '$lib/components/ui';
 
 	let interlocutor = $state('Alice');
@@ -38,12 +39,12 @@
 		b.label === 'pending_commitments' && b.content.includes('⚠');
 </script>
 
-<h1 class="mb-4 text-xl font-semibold text-fg">Working Set</h1>
+<PageHeader title="Working Set" subtitle="提示词工作集:按 token 预算组装的上下文分区。" />
 <div class="mb-3 flex flex-wrap items-end gap-2">
 	<Input bind:value={interlocutor} placeholder="interlocutor" class="max-w-40" />
 	<Input bind:value={goal} placeholder="goal (optional)" class="max-w-60" />
 	<Input type="number" bind:value={budget} placeholder="token budget" class="max-w-32" />
-	<Button loading={busy} onclick={load}>渲染</Button>
+	<Button variant="soft" loading={busy} onclick={load}>渲染</Button>
 </div>
 {#if ws}
 	<div class="space-y-3">
@@ -64,9 +65,9 @@
 			<div class="space-y-2">
 				{#each ws.blocks as b}
 					<section
-						class="rounded-lg border-l-4 bg-card py-2 pl-3 pr-3 {hasDue(b)
+						class="rounded-control border-l-4 bg-card py-2 pl-3 pr-3 {hasDue(b)
 							? 'border-l-warn'
-							: 'border-l-brand/50'}"
+							: 'border-l-brand-border'}"
 					>
 						<div class="mb-1 flex items-center justify-between">
 							<span
