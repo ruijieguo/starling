@@ -176,4 +176,40 @@ TEST(StatementValidator, RejectsAmbiguousDerivedParent) {
     EXPECT_EQ(outcome.error_kind, "derived_parent_ambiguous");
 }
 
+// ── controlled predicate set (system_design §3.3, P2 lightweight tier) ──────
+
+TEST(StatementValidator, CorePredicateStaysApproved) {
+    // All ten prompt-vocabulary predicates pass with no override.
+    for (const char* p : {"believes", "doubts", "forbids", "knows", "located_at",
+                          "member_of", "prefers", "promises", "requires",
+                          "responsible_for"}) {
+        auto s = valid_first_person();
+        s.predicate = p;
+        auto outcome = validate_extracted_statement(s);
+        EXPECT_TRUE(outcome.ok()) << p;
+        EXPECT_EQ(outcome.review_status_override, std::nullopt) << p;
+    }
+}
+
+TEST(StatementValidator, UnregisteredPredicateDowngradedNotRejected) {
+    auto s = valid_first_person();
+    s.predicate = "is_handling";   // LLM-invented free-form predicate
+    auto outcome = validate_extracted_statement(s);
+    EXPECT_TRUE(outcome.ok()) << "out-of-set predicate must be accepted, not dropped";
+    ASSERT_TRUE(outcome.review_status_override.has_value());
+    EXPECT_EQ(*outcome.review_status_override, schema::ReviewStatus::REVIEW_REQUESTED);
+}
+
+TEST(StatementValidator, UnregisteredPredicateOutranksWeakInference) {
+    // HEARSAY alone → INFERRED_UNREVIEWED; non-core predicate escalates to
+    // REVIEW_REQUESTED (human-action signal outranks the inference flag).
+    auto s = valid_first_person();
+    s.holder_perspective = schema::Perspective::HEARSAY;
+    s.predicate = "took_over";
+    auto outcome = validate_extracted_statement(s);
+    EXPECT_TRUE(outcome.ok());
+    ASSERT_TRUE(outcome.review_status_override.has_value());
+    EXPECT_EQ(*outcome.review_status_override, schema::ReviewStatus::REVIEW_REQUESTED);
+}
+
 }  // namespace starling::extractor

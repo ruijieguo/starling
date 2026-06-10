@@ -6,6 +6,11 @@ is filled by LITERAL replacement (str.replace), NOT str.format — so the JSON
 examples below use plain single braces and both consumers send byte-identical
 text. Output is a JSON array of statement objects: {holder, holder_perspective,
 subject, predicate, object, modality, polarity, nesting_depth}.
+
+The "predicate must be one of: ..." vocabulary below is the controlled core
+predicate set — keep it in sync with
+include/starling/extractor/predicate_registry.hpp (the validator downgrades
+out-of-set predicates to review_requested).
 """
 from __future__ import annotations
 

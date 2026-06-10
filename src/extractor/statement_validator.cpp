@@ -4,6 +4,8 @@
 #include <set>
 #include <string>
 
+#include "starling/extractor/predicate_registry.hpp"
+
 namespace starling::extractor {
 
 namespace {
@@ -63,6 +65,15 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
     out.accepted = true;
     if (is_weak_inference(s)) {
         out.review_status_override = schema::ReviewStatus::INFERRED_UNREVIEWED;
+    }
+    // Controlled predicate set (system_design §3.3, P2 lightweight tier): an
+    // unregistered (LLM-invented) predicate is accepted but downgraded to
+    // REVIEW_REQUESTED — it outranks INFERRED_UNREVIEWED (human-action signal,
+    // same precedence rule as validate_for_write's cross-tenant gate). The core
+    // set mirrors the EXTRACTION_PROMPT vocabulary; raw-SQL/engine seeds bypass
+    // this validator, so only the extraction path is gated.
+    if (!is_core_predicate(s.predicate)) {
+        out.review_status_override = schema::ReviewStatus::REVIEW_REQUESTED;
     }
     return out;
 }
