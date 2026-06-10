@@ -27,7 +27,7 @@
 	const fmt = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 </script>
 
-<PageHeader title="Replay / Reconsolidation" subtitle="回放与再巩固:调度器状态、批次与窗口。" />
+<PageHeader title="回放与再巩固" subtitle="Replay / Reconsolidation:调度器状态、批次与窗口。" />
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else if q.loading && !q.data}

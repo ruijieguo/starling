@@ -32,7 +32,7 @@
 	}
 </script>
 
-<PageHeader title="Cognizer 社会图" subtitle="社会图:cognizer 节点、关系与在场记录。" />
+<PageHeader title="认知体社会图" subtitle="Cognizer 节点、关系与在场记录。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />

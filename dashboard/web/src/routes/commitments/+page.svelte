@@ -57,7 +57,7 @@
 	const fmtv = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 </script>
 
-<PageHeader title="Commitment 五态机" subtitle="承诺状态机:created → ACTIVE → 终态;⚠ DUE 与逾期醒目。" />
+<PageHeader title="承诺状态机" subtitle="Commitment:created → ACTIVE → 终态;⚠ DUE 与逾期醒目。" />
 <div class="mb-4 max-w-xs">
 	<Input bind:value={filter} placeholder="筛选 subject / predicate / object…" aria-label="筛选承诺" />
 </div>

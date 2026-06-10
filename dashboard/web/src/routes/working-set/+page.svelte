@@ -39,7 +39,7 @@
 		b.label === 'pending_commitments' && b.content.includes('⚠');
 </script>
 
-<PageHeader title="Working Set" subtitle="提示词工作集:按 token 预算组装的上下文分区。" />
+<PageHeader title="工作集" subtitle="Working Set:按 token 预算组装的提示词上下文分区。" />
 <div class="mb-3 flex flex-wrap items-end gap-2">
 	<Input bind:value={interlocutor} placeholder="interlocutor" class="max-w-40" />
 	<Input bind:value={goal} placeholder="goal (optional)" class="max-w-60" />

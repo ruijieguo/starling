@@ -20,7 +20,7 @@
 		DOMPurify.sanitize(marked.parse(md ?? '', { async: false }) as string);
 </script>
 
-<PageHeader title="Eval 报告" subtitle="准入 eval 的 markdown 输出,最新优先。" />
+<PageHeader title="评测报告" subtitle="准入 eval 的 markdown 输出,最新优先。" />
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />
 {:else if q.loading && !q.data}

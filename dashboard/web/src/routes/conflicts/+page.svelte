@@ -47,7 +47,7 @@
 	}
 </script>
 
-<PageHeader title="ConflictProbe" subtitle="互斥语句对,按冲突权重降序。" />
+<PageHeader title="冲突探针" subtitle="ConflictProbe:互斥语句对,按冲突权重降序。" />
 
 {#if q.error}
 	<EmptyState title="加载失败" description={q.error.message} />

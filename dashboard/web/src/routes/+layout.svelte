@@ -1,46 +1,30 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { connectWs } from '$lib/ws';
 	import { wsConn, llmConfigured, embedderConfigured, lastWsEvent } from '$lib/health';
+	import { ALL_NAV_ITEMS, NAV_GROUPS } from '$lib/nav';
+	import NavIcon from '$lib/components/NavIcon.svelte';
 	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
 
-	const GROUPS = [
-		{
-			title: '观测',
-			items: [
-				{ href: '/', label: '总览' },
-				{ href: '/statements', label: 'Statements' },
-				{ href: '/cognizers', label: 'Cognizers' },
-				{ href: '/commitments', label: 'Commitments' }
-			]
-		},
-		{
-			title: '交互',
-			items: [
-				{ href: '/interact', label: '交互' },
-				{ href: '/working-set', label: 'Working Set' },
-				{ href: '/reminders', label: '承诺提醒' }
-			]
-		},
-		{
-			title: '诊断',
-			items: [
-				{ href: '/queues', label: 'Queues' },
-				{ href: '/conflicts', label: 'Conflicts' },
-				{ href: '/replay', label: 'Replay' },
-				{ href: '/eval', label: 'Eval' }
-			]
-		},
-		{ title: '设置', items: [{ href: '/settings', label: '设置' }] }
-	];
-	const ALL_ITEMS = GROUPS.flatMap((g) => g.items.map((i) => ({ ...i, group: g.title })));
+	const ALL_ITEMS = ALL_NAV_ITEMS;
 
 	let { children } = $props();
 	let mobileOpen = $state(false);
+
+	// 分组折叠(持久化):分组眉标是可交互的展开/收起,与条目拉开层级。
+	const COLLAPSE_KEY = 'starling_nav_collapsed';
+	let collapsed = $state<Record<string, boolean>>(
+		browser ? JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}') : {}
+	);
+	function toggleGroup(title: string) {
+		collapsed = { ...collapsed, [title]: !collapsed[title] };
+		if (browser) localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
+	}
 
 	const isActive = (href: string) => page.url.pathname === href;
 	// 面包屑:Starling › 组 › 页(当前页品牌色)。
@@ -136,21 +120,48 @@
 			</span>
 		</a>
 		<div class="flex-1 overflow-y-auto px-3 py-2">
-			{#each GROUPS as g}
-				<div class="mb-4">
-					<div class="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
+			{#each NAV_GROUPS as g}
+				<div class="mb-3">
+					<button
+						type="button"
+						onclick={() => toggleGroup(g.title)}
+						aria-expanded={!collapsed[g.title]}
+						class="flex w-full items-center justify-between rounded-control px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-subtle transition hover:text-fg"
+					>
 						{g.title}
-					</div>
-					{#each g.items as n}
-						<a
-							href={n.href}
-							aria-current={isActive(n.href) ? 'page' : undefined}
-							onclick={() => (mobileOpen = false)}
-							class="mb-0.5 block rounded-control px-2.5 py-1.5 text-sm transition {isActive(n.href)
-								? 'bg-brand-tint-strong font-medium text-brand'
-								: 'text-muted hover:bg-brand-tint hover:text-fg'}">{n.label}</a
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							aria-hidden="true"
+							class="transition-transform {collapsed[g.title] ? '-rotate-90' : ''}"
 						>
-					{/each}
+							<path d="m6 9 6 6 6-6" />
+						</svg>
+					</button>
+					{#if !collapsed[g.title]}
+						<div class="mt-0.5">
+							{#each g.items as n}
+								<a
+									href={n.href}
+									aria-current={isActive(n.href) ? 'page' : undefined}
+									onclick={() => (mobileOpen = false)}
+									class="mb-0.5 flex items-center gap-2.5 rounded-control px-2.5 py-1.5 text-sm transition {isActive(
+										n.href
+									)
+										? 'bg-brand-tint-strong font-medium text-brand'
+										: 'text-muted hover:bg-brand-tint hover:text-fg'}"
+								>
+									<NavIcon name={n.icon} />{n.label}
+								</a>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/each}
 		</div>

@@ -48,7 +48,7 @@
 	const fmtv = (v: unknown) => (v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 </script>
 
-<PageHeader title="Statements" subtitle="记忆原子:谁、以何样态与极性、对什么持有判断。" />
+<PageHeader title="语句" subtitle="记忆原子 Statement:谁、以何样态与极性、对什么持有判断。" />
 <div class="mb-4 flex flex-wrap items-end gap-3">
 	<label class="block">
 		<span class="mb-1 block text-xs text-muted">predicate</span>
