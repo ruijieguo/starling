@@ -85,6 +85,7 @@ target_sources(starling_core PRIVATE
     src/evidence/evidence_validator.cpp
     src/evidence/engram_store.cpp
     src/bus/bus.cpp
+    src/net/http_post_json.cpp
     src/extractor/extraction_span_key.cpp
     src/extractor/fake_llm_adapter.cpp
     src/extractor/openai_adapter.cpp
