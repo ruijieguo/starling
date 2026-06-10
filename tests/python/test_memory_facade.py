@@ -61,6 +61,38 @@ def test_openai_adapter_constructs_into_extractor(tmp_path):
     assert ext is not None
 
 
+def test_remember_dedupes_across_processes(tmp_path):
+    """Regression: source_item_id must be content-derived (sha256), not Python
+    hash(). hash() is randomized per process (PYTHONHASHSEED), so the same text
+    remembered from a second process would miss the idempotency inbox and create
+    a duplicate engram. Two subprocesses with different hash seeds pin this.
+    """
+    import os
+    import subprocess
+    import sys
+
+    db = str(tmp_path / "xproc.db")
+    script = tmp_path / "remember_once.py"
+    script.write_text(
+        "import sys\n"
+        "import starling\n"
+        f"CANNED = '{CANNED_JSON}'\n"
+        "llm = starling.make_stub_llm(default_response=CANNED)\n"
+        "mem = starling.Memory.open(sys.argv[1], agent='alice', llm=llm)\n"
+        "print(mem.remember('Bob owns the auth module').outcome)\n"
+        "mem.close()\n"
+    )
+    outcomes = []
+    for seed in ("1", "2"):   # force different hash() randomization per process
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        p = subprocess.run([sys.executable, str(script), db],
+                           capture_output=True, text=True, env=env, check=True)
+        outcomes.append(p.stdout.strip().splitlines()[-1])
+    assert outcomes[0] == "accepted"
+    assert outcomes[1] == "idempotent", (
+        "same text from a second process must dedupe via the content-derived key")
+
+
 def test_recall_and_tick(tmp_path):
     llm = starling.make_stub_llm(default_response=CANNED_JSON)
     mem = starling.Memory.open(str(tmp_path / "m3.db"), agent="alice", llm=llm)

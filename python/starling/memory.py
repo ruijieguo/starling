@@ -13,6 +13,7 @@ real `_core.OpenAIAdapter`; its API key is sourced from the environment only
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -149,7 +150,12 @@ class Memory:
             tenant_id=self._tenant,
             adapter_name="facade",
             adapter_version="1",
-            source_item_id="mem-" + str(abs(hash(text))),
+            # sha256 (not Python hash()): hash() is randomized per process via
+            # PYTHONHASHSEED, so the engram idempotency key — derived from
+            # source_item_id — would never dedupe the same text across
+            # processes, and an abs(hash()) collision would silently DROP a
+            # different text as "idempotent". Mirrors DashboardEngine.remember.
+            source_item_id="mem-" + hashlib.sha256(payload).hexdigest()[:16],
             source_version="1",
             payload_bytes=payload,
             privacy_class=_core.PrivacyClass.INTERNAL,        # enum member (no NORMAL)
