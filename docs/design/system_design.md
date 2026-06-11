@@ -114,6 +114,8 @@ Starling 核心采用现代 C++（C++20 起步）实现，理由：
 
 #### 多语言绑定
 
+> **边界规范（2026-06-11 裁定）**：核心功能一律实现于 C++ 内核；任何语言绑定层（含 Python）只承担**应用适配**——绑定转发、签名归一（datetime/None 等惯用法）、DTO 构造默认值、受控测试镜像（带 parity 钉测）、只读检视查询与 prompt 等配置数据。绑定层不得持有核心语义（算法、预算/裁剪策略、状态机、管线编排规则）。先例：Working Set 的预算分配/截断/渲染曾落在 `python/starling/working_set.py`，2026-06-11 归位至 `src/hippocampus/working_set.cpp`，Python 仅剩转发。新功能评审时以「换一种绑定语言是否需要重写该逻辑」为越界判据。
+
 | 语言 | 绑定方式 | 形态 | 典型用例 |
 |---|---|---|---|
 | Python | pybind11 | `pip install starling-memory` | agent runtime、研究脚本、迁移工具 |
@@ -2185,6 +2187,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| 2026-06-11 边界裁定 | §2.0 多语言绑定新增边界规范（核心语义必须居于 C++，绑定层只做应用适配）；Working Set 自 Python 归位 C++ `src/hippocampus/`（海马体首个代码模块）；§05_bus 补生产侧幂等去重契约（审计/通知事件 OR IGNORE vs 业务事件 fail-loud，record_attempt 同构） |
 | v24.1 → 2026-06-10 审计对齐 | P1/P2 全部完成后实现现状回写：§2.1 存储标注（raw SQLite + BLOB 向量为实际落地，seekdb/dist-store 顺延 P3.b）、§2.4 补 Dashboard 子系统、§2.3/§3.5 decay 与 Commitment 保护改为 CAS/表实现的等价机制、§3.1.2 KnowledgeFrontier 计算视图 + proj_*/statement_vectors 补记、§3.3 scope_parties_json/last_replay_batch_id 列与 predicate 分级注册表、§3.6 子类无 type 列 + Commitment 扩展表、§3.7 Persona 两锚仲裁、§3.10 commitment.* 改 P2 + 实现新增事件表 + evidence.redacted/erased producer 现状、§14/§15.1 XML→JSON 抽取 + TypeScript 绑定降级、§15 P2 收官、§16.5 Prospective Loop/ToMDepthEstimator 已交付与 RuntimeHealth 背压归 P3.c、配置文件名统一 ~/.starling/starling.json |
 | v24 → v24.1 | P1 验收门槛重组：CRITICAL 标签元规则、9 用例迁出至 §16.3/§16.4、3 条新 CRITICAL、§3.5 T7 P1 路径明文化 |
 | v23 → v24 | 统一编码前主版本：子系统数量校正、P1 语言栈与存储栈统一、Projection Index 阶段纠偏、历史链接刷新 |
