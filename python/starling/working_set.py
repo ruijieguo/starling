@@ -1,51 +1,22 @@
-"""Working Set — assemble a prompt-ready ContextBlock from memory (P2.e)."""
+"""Working Set — 绑定转发(2026-06-11 边界归位)。
+
+核心实现已迁入 C++ `starling::hippocampus::working_set`
+(include/starling/hippocampus/working_set.hpp):优先级预算分配、码点级
+截断、ContextBlock 渲染都在核心层。本模块仅为既有 Python 调用方保留
+同名入口;新代码请直接用 `_core.working_set_assemble` /
+`_core.build_working_set`。
+"""
 from __future__ import annotations
-from dataclasses import dataclass, field
 
-def _est(text: str) -> int:        # approximate token = char // 4
-    return max(1, len(text) // 4)
+from starling import _core
 
-@dataclass
-class WorkingBlock:
-    label: str
-    content: str
-    token_estimate: int = 0
-    def __post_init__(self):
-        if not self.token_estimate:
-            self.token_estimate = _est(self.content)
+# 数据类型与渲染语义见 C++ 头文件;这里是同一对象的绑定别名。
+WorkingBlock = _core.WorkingBlock
+ContextBlock = _core.ContextBlock
 
-@dataclass
-class ContextBlock:
-    blocks: list = field(default_factory=list)
-    truncated: list = field(default_factory=list)
-    def render(self) -> str:
-        titles = {"persona": "## About me", "common_ground": "## What we share",
-                  "relevant_memories": "## Relevant memories",
-                  "pending_commitments": "## Pending commitments", "affect": "## Current tone"}
-        parts = []
-        for b in self.blocks:
-            if b.content.strip():
-                parts.append(titles.get(b.label, "## " + b.label) + "\n" + b.content)
-        return "\n\n".join(parts)
 
-# Priority: action-critical first; memories take the bulk of the remainder.
-_PRIORITY = ["pending_commitments", "persona", "common_ground", "relevant_memories", "affect"]
-
-def assemble(sections: dict, token_budget: int) -> ContextBlock:
-    """sections: label -> content str. Allocate budget by priority; truncate overflow (by char), record in truncated."""
-    cb = ContextBlock()
-    remaining = token_budget
-    for label in _PRIORITY:
-        content = sections.get(label, "")
-        if not content:
-            continue
-        est = _est(content)
-        if est <= remaining:
-            cb.blocks.append(WorkingBlock(label, content))
-            remaining -= est
-        else:
-            keep_chars = max(0, remaining) * 4
-            cb.blocks.append(WorkingBlock(label, content[:keep_chars]))
-            cb.truncated.append(label)
-            remaining = 0
-    return cb
+def assemble(sections: dict, token_budget: int) -> "_core.ContextBlock":
+    """sections: label -> content。优先级 pending_commitments > persona >
+    common_ground > relevant_memories > affect;超预算按码点截断并记入
+    `truncated`。转发到 C++ 实现。"""
+    return _core.working_set_assemble(sections, token_budget)

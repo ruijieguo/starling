@@ -137,47 +137,17 @@ class MemoryCore:
         """Assemble the prompt-ready ContextBlock (P2.e): persona /
         common_ground / relevant_memories / pending_commitments / affect under
         an approximate token budget. A `fired` commitment surfaces as a ⚠ DUE
-        reminder (B3 closure)."""
-        from starling import working_set as _ws
-        adapter = self.rt.adapter
-        sections = {}
-        # persona
-        pv = _core.PersonaContainer(adapter).read(self.tenant, self.agent)
-        if pv.found and pv.dimensions:
-            sections["persona"] = "; ".join(f"{k}: {v}" for k, v in pv.dimensions.items())
-        # common ground
-        _pair = sorted([self.agent, interlocutor])
-        cg = _core.CommonGroundContainer(adapter).read(self.tenant, f"{_pair[0]}::{_pair[1]}")
-        if cg.found and cg.grounded:
-            sections["common_ground"] = "\n".join("- " + g for g in cg.grounded)
-        # relevant memories
-        hits = self.recall(goal, mode="semantic", k=5) if goal else []
-        if hits:
-            sections["relevant_memories"] = "\n".join(
-                "- " + f"{h['row'].subject_id} {h['row'].predicate} {h['row'].object_value}"
-                for h in hits)
-        # pending commitments (fired → ⚠)
-        pend = _core.CommitmentEngine(adapter).pending(self.tenant, self.agent, interlocutor)
-        if pend:
-            lines = []
-            for c in pend:
-                tag = "⚠ DUE: " if c.fired else ""
-                lines.append(f"- {tag}{c.subject_id} {c.predicate} {c.object_value}"
-                             + (f" (by {c.deadline})" if c.deadline else ""))
-            sections["pending_commitments"] = "\n".join(lines)
-        # affect (peak salience among relevant memories)
-        peak = 0.0
-        have = False
-        for h in hits:
-            aj = h["row"].affect_json
-            if aj and aj != "{}":
-                av = _core.affect_parse_json(aj)
-                s = _core.affect_salience(av, 1.0)
-                if s > peak:
-                    peak, have = s, True
-        if have:
-            sections["affect"] = f"salience {peak:.2f}"
-        return _ws.assemble(sections, token_budget)
+        reminder (B3 closure).
+
+        核心逻辑(五源汇集 + 预算分配 + 截断 + 渲染)在 C++
+        `starling::hippocampus::build_working_set`(2026-06-11 边界归位);
+        这里只是绑定转发——Python 层不持有 Working Set 语义。
+        """
+        return _core.build_working_set(
+            self.rt.adapter, self.semantic,
+            tenant_id=self.tenant, agent_id=self.agent,
+            interlocutor=interlocutor, goal=goal or "",
+            token_budget=token_budget)
 
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing

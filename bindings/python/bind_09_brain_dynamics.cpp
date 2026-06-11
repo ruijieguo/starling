@@ -10,6 +10,7 @@
 #include "starling/reconsolidation/reconsolidation_engine.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/hippocampus/working_set.hpp"
 
 namespace starling::bindings {
 
@@ -126,6 +127,43 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
                      s.connection(), name, injected, now);
              },
              py::arg("projection_name"), py::arg("injected_rebuilt"), py::arg("now_iso"));
+
+    // ── P2.e Working Set(2026-06-11 边界归位:核心逻辑自 python/starling/
+    //    working_set.py 迁入 src/hippocampus/working_set.cpp,Python 只剩转发)──
+
+    py::class_<starling::hippocampus::WorkingBlock>(m, "WorkingBlock")
+        .def_readonly("label",          &starling::hippocampus::WorkingBlock::label)
+        .def_readonly("content",        &starling::hippocampus::WorkingBlock::content)
+        .def_readonly("token_estimate", &starling::hippocampus::WorkingBlock::token_estimate);
+
+    py::class_<starling::hippocampus::ContextBlock>(m, "ContextBlock")
+        .def_readonly("blocks",    &starling::hippocampus::ContextBlock::blocks)
+        .def_readonly("truncated", &starling::hippocampus::ContextBlock::truncated)
+        .def("render",             &starling::hippocampus::ContextBlock::render);
+
+    m.def("working_set_assemble",
+          &starling::hippocampus::assemble,
+          py::arg("sections"), py::arg("token_budget"));
+
+    m.def("build_working_set",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::retrieval::SemanticRetriever& retriever,
+             const std::string& tenant_id, const std::string& agent_id,
+             const std::string& interlocutor, const std::string& goal,
+             int token_budget, int recall_k) {
+              starling::hippocampus::WorkingSetParams p;
+              p.tenant_id    = tenant_id;
+              p.agent_id     = agent_id;
+              p.interlocutor = interlocutor;
+              p.goal         = goal;
+              p.token_budget = token_budget;
+              p.recall_k     = recall_k;
+              return starling::hippocampus::build_working_set(adapter, retriever, p);
+          },
+          py::arg("adapter"), py::arg("retriever"),
+          py::arg("tenant_id"), py::arg("agent_id"), py::arg("interlocutor"),
+          py::arg("goal") = std::string(),
+          py::arg("token_budget") = 2000, py::arg("recall_k") = 5);
 }
 
 }  // namespace starling::bindings
