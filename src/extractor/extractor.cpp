@@ -236,8 +236,11 @@ ExtractionRunResult Extractor::run(
         bool any_rejected_this_attempt = false;
         bool wrote_anything_this_attempt = false;
         bool noop_short_circuited = false;
-        std::set<std::string> written_span_keys;  // tracks intra-run writes
-        std::set<std::string> nooped_span_keys;   // tracks intra-run noop records
+        // Routes intra-run duplicates: a span written earlier in THIS loop goes
+        // to StatementWriter (ChunkDuplicate path) instead of the cross-run
+        // noop branch. The (run, span, attempt) ledger dedup itself lives
+        // inside PipelineLedger::record_attempt (INSERT OR IGNORE).
+        std::set<std::string> written_span_keys;
         for (auto& stmt : parsed.statements) {
             stmt.holder_id        = std::string(holder_id);
             stmt.holder_tenant_id = std::string(holder_tenant_id);
@@ -272,19 +275,16 @@ ExtractionRunResult Extractor::run(
             // constraint on the attempt row.
             if (written_span_keys.find(span_key) == written_span_keys.end()
                     && extraction_span_key_already_succeeded(conn_, span_key)) {
-                // Record the noop ONCE per span per run: one parse can yield two
-                // statements sharing a span_key (same predicate+object, different
-                // subject/polarity — e.g. "Dana/Bob responsible_for rate limiter"
-                // from one hearsay sentence). On a re-remember BOTH hit this
-                // branch; a second record_attempt would collide on
-                // (run_id, span_key, attempt_number) — the same UNIQUE blowup
-                // already fixed on the Accepted branch — and the duplicate
-                // extraction.noop event would collide on its idempotency key.
-                if (nooped_span_keys.insert(span_key).second) {
-                    ledger.record_attempt(run_id, span_key, attempt,
+                // One parse can yield two statements sharing a span_key (same
+                // predicate+object, different subject/polarity); on a
+                // re-remember BOTH reach this branch. record_attempt dedupes
+                // (run, span, attempt) internally — the second call returns
+                // nullopt, and the extraction.noop event is gated on the same
+                // outcome so it fires exactly once per span per run.
+                if (ledger.record_attempt(run_id, span_key, attempt,
                                           ExtractionStatus::Noop,
                                           /*raw_output=*/{},
-                                          /*error=*/"noop:extraction_span_key_hit");
+                                          /*error=*/"noop:extraction_span_key_hit")) {
                     emit_extraction_event(conn_, "extraction.noop",
                                           holder_tenant_id, run_id, span_key,
                                           run_started_event_id);
@@ -298,25 +298,19 @@ ExtractionRunResult Extractor::run(
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteAccepted>(outcome).stmt_id);
                 // Record per-statement success so future runs can noop-short-circuit.
-                // Guard against intra-run span_key collisions: span_key omits
-                // subject/polarity, so two statements with the same predicate+object
-                // but different subject/polarity collide (e.g. "Carol responsible_for
-                // billing" POS + "Bob responsible_for billing" NEG from one hearsay
-                // sentence). When neither is `approved` the StatementWriter can't
-                // dedupe them to ChunkDuplicate, so both land here. The first
-                // statement's Success row already covers the span for cross-run
-                // idempotency; recording a second would duplicate
-                // (run_id, span_key, attempt) and throw the UNIQUE constraint.
-                if (written_span_keys.insert(span_key).second) {
-                    ledger.record_attempt(run_id, span_key, attempt,
-                                          ExtractionStatus::Success,
-                                          /*raw_output=*/{},
-                                          /*error=*/{});
-                }
+                // Two same-span Accepted statements in one parse (same
+                // predicate+object, different subject/polarity, neither approved
+                // → no ChunkDuplicate) yield ONE Success row: the dedup lives in
+                // record_attempt (INSERT OR IGNORE), the duplicate returns nullopt.
+                written_span_keys.insert(span_key);
+                ledger.record_attempt(run_id, span_key, attempt,
+                                      ExtractionStatus::Success,
+                                      /*raw_output=*/{},
+                                      /*error=*/{});
             } else {
-                // StatementWriteChunkDuplicate: statement written (review_requested),
-                // but span_key already has a success row from the first duplicate —
-                // skip record_attempt to avoid UNIQUE constraint violation.
+                // StatementWriteChunkDuplicate: statement written (review_requested);
+                // the span's Success row already exists from the first duplicate —
+                // nothing worth recording (the ledger would drop it anyway).
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteChunkDuplicate>(outcome).stmt_id);
             }

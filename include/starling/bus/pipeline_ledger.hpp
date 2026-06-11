@@ -1,6 +1,7 @@
 #pragma once
 #include "starling/persistence/connection.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -38,16 +39,21 @@ public:
     // SQL level only — the helper does not validate the enum value.
     void finish_run(std::string_view run_id, PipelineStatus terminal);
 
-    // INSERTs an extraction_attempt row. The (pipeline_run_id, span_key,
-    // attempt_number) triple is unique per migration 0002; a duplicate raises
-    // starling::persistence::SqliteError with the SQLite extended error code.
-    // raw_output and error are stored as NULL when their string_views are empty.
-    std::string record_attempt(std::string_view run_id,
-                               std::string_view extraction_span_key,
-                               int attempt_number,
-                               ExtractionStatus status,
-                               std::string_view raw_output = {},
-                               std::string_view error = {});
+    // INSERTs an extraction_attempt row. The dedup invariant lives HERE:
+    // (pipeline_run_id, span_key, attempt_number) is unique (migration 0002),
+    // and a duplicate is dropped silently (INSERT OR IGNORE, first write wins)
+    // — returns the new row id when recorded, std::nullopt when dropped, and
+    // never throws on a duplicate. Callers gate side effects (e.g. the
+    // extraction.noop event) on the return value instead of maintaining their
+    // own dedup sets; four production 500s came from callers each re-deriving
+    // this invariant (extractor Accepted 双写 / noop 重记 / 重忆重放). raw_output
+    // and error are stored as NULL when their string_views are empty.
+    std::optional<std::string> record_attempt(std::string_view run_id,
+                                              std::string_view extraction_span_key,
+                                              int attempt_number,
+                                              ExtractionStatus status,
+                                              std::string_view raw_output = {},
+                                              std::string_view error = {});
 
 private:
     starling::persistence::Connection& conn_;

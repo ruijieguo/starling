@@ -41,15 +41,20 @@ TEST(PipelineLedger, StartFinishRoundTrip) {
 }
 
 TEST(PipelineLedger, AttemptUniquePerSpanAndAttemptNumber) {
+    // 行为反转(去重不变式收进写入层):重复 (run, span, attempt) 不再抛
+    // SqliteError——四次生产 500 都来自调用方各自补防重;现在 record_attempt
+    // 用 INSERT OR IGNORE 首写胜出,重复返回 nullopt,行数不变。
     auto c = fresh_db();
     PipelineLedger l(c);
     const auto run_id = l.start_run("t1", "msg-uri-1");
-    l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Success, "<xml/>");
-    EXPECT_THROW(
-        l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Success, "<xml/>"),
-        SqliteError);
-    l.record_attempt(run_id, "span-1", 2, ExtractionStatus::PartialSuccess);
-    l.record_attempt(run_id, "span-2", 1, ExtractionStatus::Success);
+    const auto first = l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Success, "<xml/>");
+    EXPECT_TRUE(first.has_value());
+    const auto dup = l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Success, "<xml/>");
+    EXPECT_FALSE(dup.has_value());
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt"), 1);
+    // 不同 attempt / 不同 span 正常落行。
+    EXPECT_TRUE(l.record_attempt(run_id, "span-1", 2, ExtractionStatus::PartialSuccess).has_value());
+    EXPECT_TRUE(l.record_attempt(run_id, "span-2", 1, ExtractionStatus::Success).has_value());
     EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt"), 3);
 }
 

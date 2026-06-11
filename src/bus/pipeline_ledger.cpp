@@ -107,7 +107,7 @@ void PipelineLedger::finish_run(std::string_view run_id, PipelineStatus terminal
     }
 }
 
-std::string PipelineLedger::record_attempt(
+std::optional<std::string> PipelineLedger::record_attempt(
         std::string_view run_id,
         std::string_view extraction_span_key,
         int attempt_number,
@@ -118,9 +118,12 @@ std::string PipelineLedger::record_attempt(
     const std::string id = random_id();
     const std::string ts = iso8601_utc(std::chrono::system_clock::now());
 
+    // INSERT OR IGNORE: at most one row per (run, span, attempt) — the writer
+    // owns the dedup invariant (first write wins); a duplicate reports nullopt
+    // instead of surfacing the UNIQUE violation to callers.
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO extraction_attempt("
+            "INSERT OR IGNORE INTO extraction_attempt("
             "id,pipeline_run_id,extraction_span_key,attempt_number,"
             "status,raw_output,error,created_at) VALUES(?,?,?,?,?,?,?,?)",
             -1, &raw, nullptr) != SQLITE_OK) {
@@ -139,6 +142,9 @@ std::string PipelineLedger::record_attempt(
     bind_sv(h.get(), 8, ts);
     if (sqlite3_step(h.get()) != SQLITE_DONE) {
         throw make_sqlite_error(db, "PipelineLedger::record_attempt: INSERT step failed");
+    }
+    if (sqlite3_changes(db) == 0) {
+        return std::nullopt;  // duplicate (run, span, attempt) dropped
     }
     return id;
 }
