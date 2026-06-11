@@ -177,4 +177,31 @@ TEST(ExtractorOrchestrator, DualStatementSharedSpanKeyDoesNotDuplicateAttempt) {
     EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
 }
 
+// Regression: a second-order (nesting_depth=2) emission — the prompt's own
+// HEARSAY/nested examples teach the model to produce these — must complete the
+// run. The old parser mapped depth>=2 to object_kind="statement", whose writer
+// contract requires an existing parent UUID; free-text objects then aborted the
+// whole run ("nesting_depth_writer: parent statement not found" → dashboard
+// /api/remember 500).
+TEST(ExtractorOrchestrator, SecondOrderNestedEmissionDoesNotAbortRun) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Frank","predicate":"believes","object":"the database migration risk is manageable","modality":"BELIEVES","polarity":"POS","nesting_depth":2}])JSON",
+        .ok = true});
+
+    // Before the fix this threw RuntimeError out of the run.
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(r.accepted_statement_ids.size(), 1u);
+    EXPECT_EQ(row_count(conn, "statements", "object_kind='str'"), 1);
+    EXPECT_EQ(row_count(conn, "statements", "nesting_depth=0"), 1);  // flat-text in P2
+}
+
 }  // namespace starling::extractor

@@ -22,9 +22,9 @@
 			const body: Record<string, unknown> = { text };
 			if (holder) body.holder = holder;
 			if (interlocutor) body.interlocutor = interlocutor;
-			// 真模型抽取实测 20-45s,放宽到 120s(后端有自己的重试与超时)。
+			// 真模型抽取实测 20-110s(长文本更慢),放宽到 180s(后端有自己的重试与超时)。
 			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', body, {
-				timeoutMs: 120_000
+				timeoutMs: 180_000
 			});
 			remembered = r.statement_ids;
 			outcome = r.outcome;

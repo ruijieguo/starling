@@ -29,7 +29,12 @@ TEST(JsonParser, ParsesSemanticCoreAndFillsBookkeeping) {
     EXPECT_FALSE(s.observed_at.empty());
 }
 
-TEST(JsonParser, NestedBeliefMapsToStatementObjectKind) {
+TEST(JsonParser, NestedBeliefStaysTextObjectKind) {
+    // Regression(原行为反转): depth>=2 曾映射 object_kind="statement",但
+    // NestingDepthWriter 要求该 kind 的 object_value 是已存在语句 UUID——LLM
+    // 给的是自由文本,导致任何二阶嵌套抽取整 run 抛
+    // "parent statement not found"(dashboard remember 500)。抽取路径一律
+    // "str";"statement" kind 留给程序化 ToM 写入。
     ExistingRefMap refs;
     const std::string raw =
         R"([{"holder":"self","holder_perspective":"INFERRED","subject":"Alice",)"
@@ -38,7 +43,7 @@ TEST(JsonParser, NestedBeliefMapsToStatementObjectKind) {
     ParseResult r = parse_extractor_json(raw, refs);
     ASSERT_TRUE(r.errors.empty());
     ASSERT_EQ(r.statements.size(), 1u);
-    EXPECT_EQ(r.statements[0].object_kind, "statement");
+    EXPECT_EQ(r.statements[0].object_kind, "str");
 }
 
 TEST(JsonParser, StripsCodeFence) {

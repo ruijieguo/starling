@@ -97,11 +97,17 @@ ParseResult parse_extractor_json(
             s.subject_id   = el.value("subject", std::string());
             s.predicate    = el.value("predicate", std::string());
             s.object_value = el.value("object", std::string());
-            // nesting_depth>=2 -> object_kind="statement", else "str".
-            // value<int> coerces a JSON float (2.0->2) and defaults a non-number
-            // (string/bool/absent) to 0 -> "str", the safe default.
-            const int nesting_depth = el.value("nesting_depth", 0);
-            s.object_kind  = (nesting_depth >= 2) ? "statement" : "str";
+            // LLM-extracted objects are ALWAYS free text -> object_kind="str".
+            // object_kind=="statement" is the programmatic ToM contract:
+            // NestingDepthWriter resolves object_value as an EXISTING statement
+            // UUID and throws when absent. The model cannot reference UUIDs, so
+            // the old mapping (nesting_depth>=2 -> "statement") made every
+            // second-order extraction — including the prompt's own depth-2
+            // examples — abort the whole run with "parent statement not found"
+            // (dashboard /api/remember 500). Nested emissions are stored as
+            // flat text in P2; the depth-2 runtime that materializes inner
+            // propositions as real parent statements is P3.a scope.
+            s.object_kind = "str";
             if (s.subject_id.empty() || s.predicate.empty() || s.object_value.empty()) {
                 continue;  // lenient: skip incomplete element
             }
