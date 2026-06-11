@@ -287,6 +287,8 @@ idempotency_key = hash(
 
 Bus outbox 与 Subscriber inbox 均持久化该 key；重复投递直接 ACK。inbox idempotency_key 保留期：7 天，超期清理，Subscriber 启动时从 outbox sequence checkpoint 恢复。
 
+**生产侧去重（2026-06-11 加固）**：同一 key 也守护发射端。审计/通知类事件（`evidence.idempotent_hit` / `evidence.no_store_audit` / dispatcher 失败 ping，经 `OutboxWriter::append_already_delivered`）的重复发射由写入层 `INSERT OR IGNORE` 静默丢弃——key + 窗口桶就是它们的去重契约，重复通知不得让调用方失败（修复：同窗口重忆同文本曾 500）。业务事件走 `append`，撞键视为上游逻辑错误，保持 fail-loud。同构地，`PipelineLedger::record_attempt` 对 `(run, span, attempt)` 持有同一不变式（首写胜出、重复返回 nullopt），调用方不再各自维护防重集合。
+
 **业务幂等冻结默认值**：
 
 P1 只冻结两个产生用户可见重复副作用的键：

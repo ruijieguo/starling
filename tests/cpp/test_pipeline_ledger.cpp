@@ -58,6 +58,19 @@ TEST(PipelineLedger, AttemptUniquePerSpanAndAttemptNumber) {
     EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt"), 3);
 }
 
+TEST(PipelineLedger, DuplicateAttemptFirstWriteWins) {
+    // OR IGNORE 与 UPSERT 的本质区别:重复键即便状态不同也不覆盖——首写胜出,
+    // 第一行的 status 保持不变(审计账本不可被后到的记录改写)。
+    auto c = fresh_db();
+    PipelineLedger l(c);
+    const auto run_id = l.start_run("t1", "msg-uri-1");
+    EXPECT_TRUE(l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Noop).has_value());
+    EXPECT_FALSE(l.record_attempt(run_id, "span-1", 1, ExtractionStatus::Success).has_value());
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt"), 1);
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt WHERE status='noop'"), 1);
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM extraction_attempt WHERE status='success'"), 0);
+}
+
 TEST(PipelineLedger, AttemptStatusEnumStrings) {
     auto c = fresh_db();
     PipelineLedger l(c);

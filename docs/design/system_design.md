@@ -1791,7 +1791,7 @@ P1 阶段共 13 条 CRITICAL 用例，**全部由 P1 已交付的 Bus / Validato
 - 冲突共存（partial_overlap / adjacent）：注入两条不同 holder 的矛盾 Statement → 两条共存 → 检索 / Context Pack 标 CONFLICT，不得静默挑边覆盖（区别于 TC-NEW-CONFLICT-SEVERE 的 direct_contradiction 路径）。
 - 证据擦除：触发 `crypto_erasure` 后 → `basic_retrieve` 仍可返回 Statement 元数据，但 evidence 标注"部分证据已擦除"且 verbatim 不可恢复。
 - 幂等写入：同一 Engram 重复抽取 → `extraction_span_key` 去重 → 不产生重复 Statement。
-- 运行回执：成功写入与 no-op 抽取都必须产生 ExtractionAttempt；basic_retrieve 必须返回最小 RetrievalReceipt。
+- 运行回执：成功写入与 no-op 抽取都必须产生 ExtractionAttempt；basic_retrieve 必须返回最小 RetrievalReceipt。（2026-06-11 起，`(run, span, attempt)` 至多一行的去重不变式由 PipelineLedger 写入层持有——重复记录 INSERT OR IGNORE 首写胜出、返回 nullopt，不再上抛 UNIQUE 异常；调用方据返回值门控副作用如 extraction.noop 事件。）
 - Profile preflight（其他能力）：关闭 `transactional_outbox` / `tenant_isolation` 之外的次要能力（如 `vector_index`）→ 系统进入 DEGRADED 而非 UNREADY，前台读写降级运行（与 TC-NEW-PREFLIGHT 测试的 fail-closed 路径互补）。
 - 自污染防护：RetrievalReceipt / PipelineRun trace 作为输入重放 → `source_kind=system_internal` 默认 NO_STORE，不得产生用户画像 Statement。
 - chunk 级幂等：同一 chunk 内同 (predicate, canonical_object) 重复抽取，第一条接受，第二条标 REVIEW_REQUESTED，不自动覆盖。
@@ -2119,7 +2119,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 - Hippocampus：快记忆子系统，承担 VOLATILE Statement。
 - holder：Statement 字段，认知主体引用。不一定等于说话人或 subject。
 - holder_perspective：FIRST_PERSON / QUOTED / INFERRED / HEARSAY 四值。Extractor 基于源文本上下文填写，不可随意默认 FIRST_PERSON。
-- idempotency_key：幂等键，公式 hash(event_type, aggregate_id, canonical_key, causation_chain_root, window_bucket)。
+- idempotency_key：幂等键，公式 hash(event_type, aggregate_id, canonical_key, causation_chain_root, window_bucket)。消费侧重复投递直接 ACK；生产侧审计/通知事件重复发射由写入层静默去重（INSERT OR IGNORE），业务事件撞键 fail-loud（见 05_bus.md 生产侧去重）。
 - INFERRED：holder_perspective 之一，LLM 推断。填写后进入 INFERRED_UNREVIEWED 审核状态。
 - INFERRED_UNREVIEWED：review_status 之一。LLM 推断产出的 Statement 默认初始状态。
 - KnowledgeFrontier：Cognizer 知识边界 Container。检索时用于遮蔽超出视角范围的信息。
