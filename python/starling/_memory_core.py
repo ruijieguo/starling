@@ -13,12 +13,10 @@ the embedded facade is single-user by contract.
 """
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
 from starling import _core
-from starling.evidence.inputs import for_user_input
 from starling.extractor.prompts import EXTRACTION_PROMPT
 
 
@@ -77,37 +75,21 @@ class MemoryCore:
         self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
+        """标准写管线在 C++ `memoryops::remember`(2026-06-11 边界归位):
+        幂等键派生(sha256)、入库策略默认值、「先 engram 后抽取、仅
+        accepted/idempotent 才抽取」的顺序规则都在核心层,且 LLM 网络期间
+        释放 GIL。这里只剩前置校验与 datetime→ISO 签名归一。"""
         if self.llm is None:
             raise LLMNotConfigured(
                 "remember requires an llm adapter "
                 "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
-        holder = holder or self.agent
-        payload = text.encode("utf-8")
-        created_at = parse_now(now)
-        inp = for_user_input(
-            tenant_id=self.tenant,
-            adapter_name=self.adapter_name,
-            adapter_version="1",
-            # sha256 (not Python hash()): hash() is randomized per process via
-            # PYTHONHASHSEED — the idempotency key derived from source_item_id
-            # must be content-deterministic across processes.
-            source_item_id=self.source_prefix + hashlib.sha256(payload).hexdigest()[:16],
-            source_version="1",
-            payload_bytes=payload,
-            privacy_class=_core.PrivacyClass.INTERNAL,
-            retention_mode=_core.EngramRetentionMode.AUDIT_RETAIN,
-            created_at=created_at,
-        )
-        out = self.rt.bus.append_evidence(inp, None)
-        kind = out["kind"]
-        if kind not in ("accepted", "idempotent"):
-            return {"engram_ref": "", "statement_ids": [], "outcome": kind}
-        engram_ref = out["engram_ref"].id
-        r = _core.Extractor(self.conn, self.llm, EXTRACTION_PROMPT).run(
-            engram_ref, payload, holder, self.tenant, {}, interlocutor or "")
-        return {"engram_ref": engram_ref,
-                "statement_ids": list(r.accepted_statement_ids),
-                "outcome": kind}
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _core.memory_remember(
+            self.rt.adapter, self.llm, EXTRACTION_PROMPT,
+            tenant_id=self.tenant, holder_id=holder or self.agent,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, payload=text.encode("utf-8"))
 
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic") -> list:
@@ -125,13 +107,9 @@ class MemoryCore:
 
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +
-        flush grounding 滞后事件 (P2.j)."""
-        es = self.worker.tick_one_batch(now)
-        ps = self.policy.tick(now)
-        _core._common_ground_tick(self.rt.adapter, now)
-        embedded = es.embedded if hasattr(es, "embedded") else (es if isinstance(es, int) else 0)
-        return {"embedded": embedded, "fired": ps.fired, "broken": ps.broken,
-                "auto_withdrawn": ps.auto_withdrawn}
+        flush grounding 滞后事件 (P2.j)。三连组合在 C++ `memoryops::tick_all`
+        (嵌入网络期间释放 GIL);这里只剩绑定转发。"""
+        return _core.memory_tick_all(self.rt.adapter, self.worker, self.policy, now)
 
     def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble the prompt-ready ContextBlock (P2.e): persona /

@@ -25,4 +25,5 @@ PYBIND11_MODULE(_core, m) {
     starling::bindings::bind_10_embedding(m);
     starling::bindings::bind_11_neocortex(m);
     starling::bindings::bind_12_prospective(m);
+    starling::bindings::bind_13_memory_ops(m);
 }

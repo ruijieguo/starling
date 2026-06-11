@@ -27,7 +27,9 @@ void bind_10_embedding(pybind11::module_& m) {
              [](starling::embedding::EmbeddingAdapter& self, const std::string& text) {
                  return self.embed(text).vector;  // list[float]; len == dim. Real call → connectivity probe.
              },
-             py::arg("text"));
+             py::arg("text"),
+             // 真 embedder 网络调用期间释放 GIL(/api/config/test 探测路径)。
+             py::call_guard<py::gil_scoped_release>());
     py::class_<starling::vector::VectorIndex>(m, "VectorIndex");
 
     py::class_<starling::embedding::StubEmbeddingAdapter,
@@ -78,7 +80,9 @@ void bind_10_embedding(pybind11::module_& m) {
              [](starling::embedding::EmbeddingWorker& s, std::string now) {
                  return s.tick_one_batch(s.connection(), now);
              },
-             py::arg("now_iso"));
+             py::arg("now_iso"),
+             // 批量嵌入逐条走网络:释放 GIL,手动 Tick 期间面板不冻结。
+             py::call_guard<py::gil_scoped_release>());
 
     py::class_<starling::retrieval::SemanticRetrieverParams>(
             m, "SemanticRetrieverParams")

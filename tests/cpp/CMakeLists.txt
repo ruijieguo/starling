@@ -131,6 +131,7 @@ add_executable(starling_tests
     test_commitment_pending.cpp
     test_persistence_stmt.cpp
     test_working_set.cpp
+    test_memory_ops.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

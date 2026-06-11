@@ -32,6 +32,7 @@ pybind11_add_module(_core MODULE
     bind_10_embedding.cpp
     bind_11_neocortex.cpp
     bind_12_prospective.cpp
+    bind_13_memory_ops.cpp
 )
 target_link_libraries(_core PRIVATE starling_core)
 target_compile_options(_core PRIVATE ${STARLING_WARNING_FLAGS})

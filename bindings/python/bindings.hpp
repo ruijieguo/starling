@@ -19,5 +19,6 @@ void bind_09_brain_dynamics(pybind11::module_& m);
 void bind_10_embedding(pybind11::module_& m);
 void bind_11_neocortex(pybind11::module_& m);
 void bind_12_prospective(pybind11::module_& m);
+void bind_13_memory_ops(pybind11::module_& m);
 
 }  // namespace starling::bindings

@@ -123,7 +123,9 @@ void bind_06_extractor(pybind11::module_& m) {
                 const std::string& prompt_input_hash) {
                  return self.extract(prompt, prompt_input_hash);
              },
-             py::arg("prompt"), py::arg("prompt_input_hash") = "");
+             py::arg("prompt"), py::arg("prompt_input_hash") = "",
+             // 真模型探测(/api/config/test)走这里:网络期间释放 GIL。
+             py::call_guard<py::gil_scoped_release>());
 
     py::class_<starling::extractor::FakeLLMAdapter, starling::extractor::LLMAdapter>(m, "FakeLLMAdapter")
         .def(py::init<>())
@@ -227,6 +229,9 @@ void bind_06_extractor(pybind11::module_& m) {
                 const std::string& interlocutor) {
                  std::string s = payload;
                  std::vector<std::uint8_t> v(s.begin(), s.end());
+                 // LLM 网络调用(含重试退避)期间释放 GIL:否则 anyio 线程
+                 // 持锁,事件循环照样冻结(完成 P0「脱离事件循环」的另一半)。
+                 py::gil_scoped_release release;
                  return self.run(engram_ref_id, v, holder_id, holder_tenant_id, existing_ref_map, interlocutor);
              },
              py::arg("engram_ref_id"),

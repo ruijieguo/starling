@@ -122,6 +122,7 @@ target_sources(starling_core PRIVATE
     src/neocortex/persona_container.cpp
     src/neocortex/common_ground_container.cpp
     src/hippocampus/working_set.cpp
+    src/memory/memory_ops.cpp
     src/projection/projection_maintainer.cpp
     src/bus/subscriber_pump.cpp
     src/vector/vector_math.cpp
