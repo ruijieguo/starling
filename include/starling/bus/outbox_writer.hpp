@@ -23,11 +23,15 @@ public:
 
     // Recursion-guard variant: writes with dispatch_status='delivered' so the
     // dispatcher never picks it up. Used by the dispatcher's own
-    // system.delivery_failed emit path (M0.2 Task 7).
+    // system.delivery_failed emit path (M0.2 Task 7) and the Bus's audit
+    // notifications (evidence.idempotent_hit / no_store_audit). Duplicate
+    // idempotency_key within a window bucket is dropped silently (INSERT OR
+    // IGNORE) — these events' dedup contract IS the key, and a re-emission
+    // must not fail the caller (QA: rapid re-remember 500'd /api/remember).
     void append_already_delivered(BusEvent& ev);
 
 private:
-    void append_impl(BusEvent& ev, const char* dispatch_status);
+    void append_impl(BusEvent& ev, const char* dispatch_status, bool or_ignore);
     int64_t claim_next_sequence();
 
     starling::persistence::Connection& conn_;

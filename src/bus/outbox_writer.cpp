@@ -86,14 +86,23 @@ int64_t OutboxWriter::claim_next_sequence() {
 }
 
 void OutboxWriter::append(BusEvent& ev) {
-    append_impl(ev, "pending");
+    append_impl(ev, "pending", /*or_ignore=*/false);
 }
 
 void OutboxWriter::append_already_delivered(BusEvent& ev) {
-    append_impl(ev, "delivered");
+    // Fire-and-forget audit/notification events (evidence.idempotent_hit /
+    // no_store_audit / dispatch-failure pings): the idempotency_key + 60s
+    // window bucket IS their dedup contract, so a second identical emission
+    // within one window is dropped silently instead of failing the caller.
+    // QA repro that motivated this: re-remember the same text twice within
+    // 60s — the second evidence.idempotent_hit collided on
+    // bus_events.idempotency_key UNIQUE and 500'd /api/remember.
+    // (A claimed outbox_sequence is wasted on the dropped row; consumers
+    // checkpoint by last-processed sequence, gaps are fine.)
+    append_impl(ev, "delivered", /*or_ignore=*/true);
 }
 
-void OutboxWriter::append_impl(BusEvent& ev, const char* dispatch_status) {
+void OutboxWriter::append_impl(BusEvent& ev, const char* dispatch_status, bool or_ignore) {
     if (ev.tenant_id.empty() || ev.event_type.empty()
         || ev.aggregate_id.empty() || ev.idempotency_key.empty()
         || ev.primary_id.empty() || ev.payload_json.empty()) {
@@ -107,11 +116,15 @@ void OutboxWriter::append_impl(BusEvent& ev, const char* dispatch_status) {
     ev.outbox_sequence = claim_next_sequence();
 
     sqlite3* const db = conn_.raw();
-    const char* const sql =
-        "INSERT INTO bus_events("
-        "event_id,tenant_id,event_type,primary_id,aggregate_id,outbox_sequence,"
-        "causation_chain_json,idempotency_key,payload_json,created_at,version,"
-        "dispatch_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+    const char* const sql = or_ignore
+        ? "INSERT OR IGNORE INTO bus_events("
+          "event_id,tenant_id,event_type,primary_id,aggregate_id,outbox_sequence,"
+          "causation_chain_json,idempotency_key,payload_json,created_at,version,"
+          "dispatch_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+        : "INSERT INTO bus_events("
+          "event_id,tenant_id,event_type,primary_id,aggregate_id,outbox_sequence,"
+          "causation_chain_json,idempotency_key,payload_json,created_at,version,"
+          "dispatch_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt* ins_raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &ins_raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "OutboxWriter::append: prepare INSERT failed");

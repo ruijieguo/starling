@@ -175,19 +175,14 @@ TEST(BusAppendEvidence, NoStoreReplayWithinWindowDoesNotCrash) {
 
     // Second call with the same source identity within the same 60s window:
     // the audit event's idempotency_key is identical to the first call.
-    // The UNIQUE(idempotency_key) on bus_events means the second insert
-    // is silently deduped at the storage layer. This SHOULD propagate the
-    // SqliteError up; the caller treats it as a benign "audit row already
-    // recorded for this source within the window" and retries are safe.
-    //
-    // Concretely: the second append_evidence call throws SqliteError from
-    // OutboxWriter::append_already_delivered. The TransactionGuard rolls
-    // back. No second audit row is written. This is acceptable behavior
-    // for an at-least-once audit signal.
-    EXPECT_THROW(bus.append_evidence(inp, std::nullopt),
-                 starling::persistence::SqliteError);
+    // 行为反转(QA ISSUE-002):此前钉的是「抛 SqliteError、调用方善意处理」,
+    // 但现实调用方(dashboard /api/remember)从未捕获——直接 500。审计通知的
+    // 去重契约就是 idempotency_key,重复发射由 append_already_delivered 以
+    // INSERT OR IGNORE 静默丢弃,调用方正常返回 NoStore。
+    auto out2 = bus.append_evidence(inp, std::nullopt);
+    EXPECT_NE(std::get_if<AppendEvidenceNoStore>(&out2), nullptr);
 
-    // Exactly one audit row exists.
+    // Exactly one audit row exists (duplicate dropped, not duplicated).
     EXPECT_EQ(row_count(*a, "SELECT count(*) FROM bus_events"), 1);
     EXPECT_EQ(row_count(*a,
         "SELECT count(*) FROM bus_events WHERE event_type='evidence.no_store_audit'"),
@@ -207,10 +202,12 @@ TEST(BusAppendEvidence, IdempotentHitReplayWithinWindowDoesNotCrash) {
     ASSERT_NE(std::get_if<AppendEvidenceIdempotent>(&out2), nullptr);
 
     // Third call within the same 60s window: idempotency_key for the
-    // evidence.idempotent_hit row collides with the second call. The
-    // UNIQUE(idempotency_key) deduplicates at the storage layer.
-    EXPECT_THROW(bus.append_evidence(user_input(), std::nullopt),
-                 starling::persistence::SqliteError);
+    // evidence.idempotent_hit row collides with the second call.
+    // 行为反转(QA ISSUE-002 真实复现):用户在界面 60s 内重复「记住」同一
+    // 文本,第三次 append_evidence 在这里抛 UNIQUE → /api/remember 500。
+    // 现在重复通知由 INSERT OR IGNORE 静默丢弃,调用方拿到正常 Idempotent。
+    auto out3 = bus.append_evidence(user_input(), std::nullopt);
+    EXPECT_NE(std::get_if<AppendEvidenceIdempotent>(&out3), nullptr);
 
     // Exactly two events: one accepted, one idempotent_hit. The third
     // attempt did not add a row.
