@@ -62,6 +62,10 @@ def test_statements_filter(client):
     assert r.status_code == 200
     rows = r.json()["rows"]
     assert rows and rows[0]["predicate"] == "responsible_for"
+    # QA ISSUE-001 回归:详情抽屉要能看到治理字段(谓词注册表/校验器的降级
+    # 结果),读侧必须带出这三列。
+    for field in ("review_status", "consolidation_state", "nesting_depth"):
+        assert field in rows[0], f"statements 读侧缺 {field}"
 
 
 def test_commitments_joins_statement(client):

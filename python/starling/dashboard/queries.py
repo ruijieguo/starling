@@ -80,7 +80,8 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
             conn,
             f"SELECT id, holder_id, holder_perspective, subject_id, predicate, "
             f"object_kind, object_value, modality, polarity, confidence, salience, "
-            f"observed_at FROM statements WHERE {clause} ORDER BY observed_at DESC "
+            f"observed_at, review_status, consolidation_state, nesting_depth "
+            f"FROM statements WHERE {clause} ORDER BY observed_at DESC "
             f"LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
