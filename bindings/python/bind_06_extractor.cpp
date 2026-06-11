@@ -142,6 +142,9 @@ void bind_06_extractor(pybind11::module_& m) {
                  self.set_default_response(starling::extractor::LLMResponse{raw_xml, ok, error});
              },
              py::arg("raw_xml"), py::arg("ok") = true, py::arg("error") = "")
+        .def("set_delay_ms",
+             &starling::extractor::FakeLLMAdapter::set_delay_ms,
+             py::arg("delay_ms"))
         .def("extract",
              &starling::extractor::FakeLLMAdapter::extract,
              py::arg("prompt"), py::arg("prompt_input_hash"));
