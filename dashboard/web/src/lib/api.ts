@@ -17,20 +17,26 @@ export class ApiError extends Error {
 
 const TIMEOUT_MS = 15000;
 
-async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const headers = new Headers(init.headers);
+// 默认 15s 适用于本地读查询;走 LLM/embedder 网络的端点(remember/recall/
+// working_set/config test/save/tick)真模型下要 20-45s 甚至更久,调用点用
+// timeoutMs 按请求放宽——否则前端先报超时、后端继续完成,UI 与事实错位。
+type ReqInit = RequestInit & { timeoutMs?: number };
+
+async function req<T>(path: string, init: ReqInit = {}): Promise<T> {
+	const { timeoutMs = TIMEOUT_MS, ...rest } = init;
+	const headers = new Headers(rest.headers);
 	const tok = getToken();
 	if (tok) headers.set('Authorization', `Bearer ${tok}`);
 	headers.set('Content-Type', 'application/json');
 	const ctrl = new AbortController();
-	const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-	// caller 传入的 signal 链到内部 controller:保证 15s 超时始终生效,且 caller 取消也能传播。
-	if (init.signal) {
-		if (init.signal.aborted) ctrl.abort();
-		else init.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	// caller 传入的 signal 链到内部 controller:保证超时始终生效,且 caller 取消也能传播。
+	if (rest.signal) {
+		if (rest.signal.aborted) ctrl.abort();
+		else rest.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
 	}
 	try {
-		const res = await fetch(path, { ...init, headers, signal: ctrl.signal });
+		const res = await fetch(path, { ...rest, headers, signal: ctrl.signal });
 		if (!res.ok) {
 			let detail = res.statusText;
 			try {
@@ -45,7 +51,7 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 	} catch (e) {
 		if (e instanceof ApiError) throw e;
 		if (e instanceof DOMException && e.name === 'AbortError')
-			throw new ApiError(0, path, `请求超时（>${TIMEOUT_MS / 1000}s）`);
+			throw new ApiError(0, path, `请求超时（>${timeoutMs / 1000}s）`);
 		throw new ApiError(0, path, String(e));
 	} finally {
 		clearTimeout(timer);
@@ -53,7 +59,7 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-	get: <T>(p: string, init?: RequestInit) => req<T>(p, init),
-	post: <T>(p: string, body: unknown, init?: RequestInit) =>
+	get: <T>(p: string, init?: ReqInit) => req<T>(p, init),
+	post: <T>(p: string, body: unknown, init?: ReqInit) =>
 		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) })
 };

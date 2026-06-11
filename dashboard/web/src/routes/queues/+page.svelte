@@ -22,7 +22,8 @@
 	async function tick() {
 		ticking = true;
 		try {
-			await api.post('/api/tick', {});
+			// tick 批量嵌入积压语句(逐条走网络),按积压量放宽。
+			await api.post('/api/tick', {}, { timeoutMs: 120_000 });
 			toast.success('Tick 发送成功');
 			await q.refetch();
 		} catch (e) {

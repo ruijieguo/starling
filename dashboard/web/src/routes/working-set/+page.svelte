@@ -19,7 +19,7 @@
 		try {
 			const q = new URLSearchParams({ interlocutor, token_budget: String(budget) });
 			if (goal) q.set('goal', goal);
-			ws = await api.get(`/api/working_set?${q}`);
+			ws = await api.get(`/api/working_set?${q}`, { timeoutMs: 60_000 }); // 内含 recall(网络 embed)
 		} catch (e) {
 			toast.error(String((e as ApiError).message));
 		} finally {

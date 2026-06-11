@@ -22,7 +22,10 @@
 			const body: Record<string, unknown> = { text };
 			if (holder) body.holder = holder;
 			if (interlocutor) body.interlocutor = interlocutor;
-			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', body);
+			// 真模型抽取实测 20-45s,放宽到 120s(后端有自己的重试与超时)。
+			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', body, {
+				timeoutMs: 120_000
+			});
 			remembered = r.statement_ids;
 			outcome = r.outcome;
 			toast.success(`outcome: ${r.outcome} · ${r.statement_ids.length} statements`);
@@ -35,7 +38,11 @@
 	async function recall() {
 		busyQ = true;
 		try {
-			const r = await api.post<{ results: typeof results }>('/api/recall', { query, mode });
+			const r = await api.post<{ results: typeof results }>(
+				'/api/recall',
+				{ query, mode },
+				{ timeoutMs: 60_000 } // query embed 走网络,留足重试余量
+			);
 			results = r.results;
 			recalled = true;
 		} catch (e) {

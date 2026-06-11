@@ -74,7 +74,8 @@
 		try {
 			const r = await api.post<{ ok: boolean; detail: string; latency_ms: number }>(
 				'/api/config/test',
-				{ kind: 'llm', provider: llm.provider, model: llm.model, base_url: llm.base_url, ...(llmKey ? { api_key: llmKey } : {}) }
+				{ kind: 'llm', provider: llm.provider, model: llm.model, base_url: llm.base_url, ...(llmKey ? { api_key: llmKey } : {}) },
+				{ timeoutMs: 90_000 } // 真模型探测含后端重试退避
 			);
 			llmTest = { ok: r.ok, detail: r.detail, ms: r.latency_ms };
 		} catch (e) {
@@ -89,7 +90,8 @@
 		try {
 			const r = await api.post<{ ok: boolean; detail: string; latency_ms: number }>(
 				'/api/config/test',
-				{ kind: 'embedder', provider: emb.provider, model: emb.model, base_url: emb.base_url, dim: emb.dim, ...(embKey ? { api_key: embKey } : {}) }
+				{ kind: 'embedder', provider: emb.provider, model: emb.model, base_url: emb.base_url, dim: emb.dim, ...(embKey ? { api_key: embKey } : {}) },
+				{ timeoutMs: 90_000 } // 真模型探测含后端重试退避
 			);
 			embTest = { ok: r.ok, detail: r.detail, ms: r.latency_ms };
 		} catch (e) {
@@ -129,7 +131,10 @@
 				llm: { provider: llm.provider, model: llm.model, base_url: llm.base_url, ...(llmKey ? { api_key: llmKey } : {}) },
 				embedder: { provider: emb.provider, model: emb.model, base_url: emb.base_url, dim: emb.dim, ...(embKey ? { api_key: embKey } : {}) }
 			};
-			const c = await api.post<{ llm: Prov; embedder: Prov }>('/api/config', payload);
+			// 改 embedder 会触发全量重嵌(逐条走网络),保存请求按库规模放宽。
+			const c = await api.post<{ llm: Prov; embedder: Prov }>('/api/config', payload, {
+				timeoutMs: 120_000
+			});
 			llm = { provider: 'openai', ...c.llm };
 			emb = { provider: 'openai', ...c.embedder };
 			llmKey = '';
