@@ -177,6 +177,36 @@ TEST(ExtractorOrchestrator, DualStatementSharedSpanKeyDoesNotDuplicateAttempt) {
     EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
 }
 
+// Regression(noop 分支的同型洞): the Accepted-branch guard alone is not
+// enough — on a RE-REMEMBER of an already-extracted text, BOTH same-span
+// statements hit the cross-run noop branch, and the second noop record
+// collided on (run_id, span_key, attempt_number) → whole rerun 500'd.
+TEST(ExtractorOrchestrator, DualStatementSharedSpanKeyRerunNoopsOnce) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"self","holder_perspective":"HEARSAY","subject":"Dana","predicate":"responsible_for","object":"rate limiter","modality":"BELIEVES","polarity":"POS","nesting_depth":0},)JSON"
+            R"JSON({"holder":"self","holder_perspective":"HEARSAY","subject":"Bob","predicate":"responsible_for","object":"rate limiter","modality":"BELIEVES","polarity":"NEG","nesting_depth":0}])JSON",
+        .ok = true});
+
+    auto r1 = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    ASSERT_EQ(r1.status, ExtractionRunResult::Status::SUCCESS);
+    ASSERT_EQ(r1.accepted_statement_ids.size(), 2u);
+
+    // Rerun (same engram, same canned parse). Before the fix this threw the
+    // UNIQUE-constraint RuntimeError out of the second noop record.
+    auto r2 = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    EXPECT_EQ(r2.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(row_count(conn, "statements"), 2);                              // unchanged
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='noop'"), 1);     // recorded once
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.noop'"), 1);
+}
+
 // Regression: a second-order (nesting_depth=2) emission — the prompt's own
 // HEARSAY/nested examples teach the model to produce these — must complete the
 // run. The old parser mapped depth>=2 to object_kind="statement", whose writer

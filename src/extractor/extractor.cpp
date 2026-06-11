@@ -237,6 +237,7 @@ ExtractionRunResult Extractor::run(
         bool wrote_anything_this_attempt = false;
         bool noop_short_circuited = false;
         std::set<std::string> written_span_keys;  // tracks intra-run writes
+        std::set<std::string> nooped_span_keys;   // tracks intra-run noop records
         for (auto& stmt : parsed.statements) {
             stmt.holder_id        = std::string(holder_id);
             stmt.holder_tenant_id = std::string(holder_tenant_id);
@@ -271,14 +272,24 @@ ExtractionRunResult Extractor::run(
             // constraint on the attempt row.
             if (written_span_keys.find(span_key) == written_span_keys.end()
                     && extraction_span_key_already_succeeded(conn_, span_key)) {
-                ledger.record_attempt(run_id, span_key, attempt,
-                                      ExtractionStatus::Noop,
-                                      /*raw_output=*/{},
-                                      /*error=*/"noop:extraction_span_key_hit");
-                emit_extraction_event(conn_, "extraction.noop",
-                                      holder_tenant_id, run_id, span_key,
-                                      run_started_event_id);
-                noop_short_circuited = true;
+                // Record the noop ONCE per span per run: one parse can yield two
+                // statements sharing a span_key (same predicate+object, different
+                // subject/polarity — e.g. "Dana/Bob responsible_for rate limiter"
+                // from one hearsay sentence). On a re-remember BOTH hit this
+                // branch; a second record_attempt would collide on
+                // (run_id, span_key, attempt_number) — the same UNIQUE blowup
+                // already fixed on the Accepted branch — and the duplicate
+                // extraction.noop event would collide on its idempotency key.
+                if (nooped_span_keys.insert(span_key).second) {
+                    ledger.record_attempt(run_id, span_key, attempt,
+                                          ExtractionStatus::Noop,
+                                          /*raw_output=*/{},
+                                          /*error=*/"noop:extraction_span_key_hit");
+                    emit_extraction_event(conn_, "extraction.noop",
+                                          holder_tenant_id, run_id, span_key,
+                                          run_started_event_id);
+                    noop_short_circuited = true;
+                }
                 continue;
             }
 
