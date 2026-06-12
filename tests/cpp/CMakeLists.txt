@@ -135,6 +135,7 @@ add_executable(starling_tests
     test_affect_reranker.cpp
     test_abstention_gate.cpp
     test_context_pack.cpp
+    test_retrieval_planner.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

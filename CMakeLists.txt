@@ -98,6 +98,7 @@ target_sources(starling_core PRIVATE
     src/retrieval/affect_reranker.cpp
     src/retrieval/abstention.cpp
     src/retrieval/context_pack.cpp
+    src/retrieval/retrieval_planner.cpp
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
     src/cognizer/cognizer_hub.cpp
