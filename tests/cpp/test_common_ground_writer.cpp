@@ -201,3 +201,61 @@ TEST(CommonGroundWriter, TimeoutDowngrades) {
     EXPECT_EQ(fresh_status, "asserted_unack")
         << "Fresh row should NOT be downgraded";
 }
+
+// ── P3.a2: 七幕补全(expire / unground / 人工确认) ───────────────────────────
+
+TEST(CommonGroundWriter, ExpireGroundOnlyFromGrounded) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    CommonGroundWriter writer(*adapter);
+    const std::string now = "2026-06-12T10:00:00Z";
+
+    std::string cg = writer.assert_(conn, "default", "stmt-x", {"alice"}, now);
+    // 未 grounded 时 expire 是 no-op(状态机不允许 asserted_unack → expired)。
+    writer.expire_ground(conn, cg, "policy", now);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE id='" + cg + "'"),
+        "asserted_unack");
+
+    writer.acknowledge(conn, cg, "bob", now);
+    writer.expire_ground(conn, cg, "policy", now);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE id='" + cg + "'"), "expired");
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT expired_at FROM common_ground WHERE id='" + cg + "'"), now);
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE common_ground_id='" + cg +
+        "' AND act='expire'"), 1);
+}
+
+TEST(CommonGroundWriter, UngroundBackToSuspectedDiverge) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    CommonGroundWriter writer(*adapter);
+    const std::string now = "2026-06-12T10:00:00Z";
+
+    std::string cg = writer.assert_(conn, "default", "stmt-y", {"alice"}, now);
+    writer.acknowledge(conn, cg, "bob", now);
+    writer.unground(conn, cg, "erasure", now);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE id='" + cg + "'"),
+        "suspected_diverge");
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE common_ground_id='" + cg +
+        "' AND act='unground'"), 1);
+}
+
+TEST(CommonGroundWriter, ManualAcknowledgeKeepsAuditActor) {
+    auto adapter = open_fresh();
+    auto& conn   = adapter->connection();
+    CommonGroundWriter writer(*adapter);
+    const std::string now = "2026-06-12T10:00:00Z";
+
+    std::string cg = writer.assert_(conn, "default", "stmt-z", {"alice"}, now);
+    writer.acknowledge_manual(conn, cg, "reviewer-jane", now);
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE id='" + cg + "'"), "grounded");
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT audit_actor FROM common_ground WHERE id='" + cg + "'"),
+        "reviewer-jane");
+}

@@ -271,6 +271,84 @@ void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
     log_act(db, tenant_id, old_cg_id, "supersede", "", new_stmt_id, now_iso);
 }
 
+namespace {
+// cg 行的 tenant_id 反查(审计行需要;诸幕共用)。
+std::string lookup_tenant(sqlite3* db, std::string_view cg_id) {
+    const char* q = "SELECT tenant_id FROM common_ground WHERE id=?";
+    sqlite3_stmt* qraw = nullptr;
+    if (sqlite3_prepare_v2(db, q, -1, &qraw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "common_ground_writer: prepare tenant_id lookup");
+    StmtHandle qh(qraw);
+    bind_sv(qh.get(), 1, cg_id);
+    if (sqlite3_step(qh.get()) == SQLITE_ROW) {
+        const auto* t = sqlite3_column_text(qh.get(), 0);
+        return t ? reinterpret_cast<const char*>(t) : "";
+    }
+    return "";
+}
+}  // namespace
+
+void CommonGroundWriter::expire_ground(persistence::Connection& conn,
+                                        std::string_view cg_id,
+                                        std::string_view actor,
+                                        std::string_view now_iso) {
+    sqlite3* db = conn.raw();
+    const char* sql =
+        "UPDATE common_ground"
+        " SET status='expired', expired_at=?, updated_at=?"
+        " WHERE id=? AND status='grounded'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "expire_ground prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, now_iso);
+    bind_sv(h.get(), 2, now_iso);
+    bind_sv(h.get(), 3, cg_id);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "expire_ground step");
+    if (sqlite3_changes(db) > 0)
+        log_act(db, lookup_tenant(db, cg_id), cg_id, "expire", actor, "", now_iso);
+}
+
+void CommonGroundWriter::unground(persistence::Connection& conn,
+                                   std::string_view cg_id,
+                                   std::string_view actor,
+                                   std::string_view now_iso) {
+    sqlite3* db = conn.raw();
+    const char* sql =
+        "UPDATE common_ground"
+        " SET status='suspected_diverge', updated_at=?"
+        " WHERE id=? AND status='grounded'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "unground prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, now_iso);
+    bind_sv(h.get(), 2, cg_id);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "unground step");
+    if (sqlite3_changes(db) > 0)
+        log_act(db, lookup_tenant(db, cg_id), cg_id, "unground", actor, "", now_iso);
+}
+
+void CommonGroundWriter::acknowledge_manual(persistence::Connection& conn,
+                                             std::string_view cg_id,
+                                             std::string_view audit_actor,
+                                             std::string_view now_iso) {
+    // 人工确认必须保留审计 actor(spec grounded 判定规则 #4)。
+    acknowledge(conn, cg_id, audit_actor, now_iso);
+    sqlite3* db = conn.raw();
+    const char* sql = "UPDATE common_ground SET audit_actor=? WHERE id=?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "acknowledge_manual prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, audit_actor);
+    bind_sv(h.get(), 2, cg_id);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "acknowledge_manual step");
+}
+
 int CommonGroundWriter::sweep_timeout_downgrade(persistence::Connection& conn,
                                                   std::string_view now_iso) {
     // Compute cutoff = now - 24h, format back to ISO.
