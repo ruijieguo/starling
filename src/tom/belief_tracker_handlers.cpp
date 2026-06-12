@@ -7,6 +7,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/tom/second_order.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
@@ -50,6 +51,16 @@ void handle_statement_written(
 
     const std::string stmt_id = j.value("stmt_id", primary_id);
     const std::string engram_ref_id = j.value("engram_ref_id", std::string{});
+
+    // P3.a2 二阶信念生产端:他者一手语句 → self 的 'X believes P' 嵌套建模
+    // (内部自带 self 解析/provenance/嵌套源跳过 + 永久幂等 + 双限流;异常
+    // 自吞,不得让二阶失败回滚本 handler 的 frontier 记账)。
+    {
+        const auto so = second_order::maybe_persist_second_order(
+            conn, tenant_id, stmt_id);
+        if (so.persisted) stats.second_order_written++;
+    }
+
     if (engram_ref_id.empty()) return;
 
     // Look up observed_at from the statements table.

@@ -110,6 +110,8 @@ target_sources(starling_core PRIVATE
     src/tom/nesting_depth_writer.cpp
     src/tom/rate_limiter.cpp
     src/tom/depth_estimator.cpp
+    src/tom/limiting.cpp
+    src/tom/second_order.cpp
     src/tom/mentalizing_believe.cpp
     src/tom/mentalizing_know.cpp
     src/tom/mentalizing_misalign.cpp
