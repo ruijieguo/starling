@@ -5,18 +5,14 @@
 #include <vector>
 
 #include "starling/persistence/sqlite_adapter.hpp"
-#include "starling/retrieval/statement_row.hpp"
+#include "starling/retrieval/query_intent.hpp"
 #include "starling/retrieval/retrieval_receipt.hpp"
+#include "starling/retrieval/statement_row.hpp"
 
 namespace starling::retrieval {
 
-// P1 ships only FACT_LOOKUP. The remaining 8 intents (BELIEF_OF_OTHER,
-// META_BELIEF, HISTORY, COMMITMENT_DUE, PREFERENCE, NORM_LOOKUP,
-// COMMON_GROUND, ABSTAIN_CHECK) are spec'd at 13_retrieval.md
-// §"QueryIntent 枚举（9 种）" but rejected at runtime in P1.
-enum class QueryIntent {
-    FACT_LOOKUP,
-};
+// QueryIntent 全 9 种见 query_intent.hpp(P3.a1 迁出)。BasicRetriever 仍只
+// 接受 FACT_LOOKUP——结构化单意图入口的 runtime reject 行为是 P1 契约。
 
 struct BasicRetrieverParams {
     std::string  tenant_id;

@@ -16,7 +16,15 @@ void bind_05_retrieval(pybind11::module_& m) {
     // ----- M0.6: retrieval bindings -----
 
     py::enum_<starling::retrieval::QueryIntent>(m, "QueryIntent")
-        .value("FACT_LOOKUP", starling::retrieval::QueryIntent::FACT_LOOKUP)
+        .value("FACT_LOOKUP",     starling::retrieval::QueryIntent::FACT_LOOKUP)
+        .value("BELIEF_OF_OTHER", starling::retrieval::QueryIntent::BELIEF_OF_OTHER)
+        .value("META_BELIEF",     starling::retrieval::QueryIntent::META_BELIEF)
+        .value("HISTORY",         starling::retrieval::QueryIntent::HISTORY)
+        .value("COMMITMENT_DUE",  starling::retrieval::QueryIntent::COMMITMENT_DUE)
+        .value("PREFERENCE",      starling::retrieval::QueryIntent::PREFERENCE)
+        .value("NORM_LOOKUP",     starling::retrieval::QueryIntent::NORM_LOOKUP)
+        .value("COMMON_GROUND",   starling::retrieval::QueryIntent::COMMON_GROUND)
+        .value("ABSTAIN_CHECK",   starling::retrieval::QueryIntent::ABSTAIN_CHECK)
         .export_values();
 
     py::enum_<starling::retrieval::Sufficiency>(m, "Sufficiency")
