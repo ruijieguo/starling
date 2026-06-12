@@ -293,3 +293,28 @@ class ToMDepthEstimator:
 **holder 子图族（外部依赖）**：[Neocortex](v24_07_neocortex.md) 按 `holder` 字段组织的 Statement 子集，支持 `neocortex.query(holder=target, time=time)` 查询。
 
 - 配置：所有 Adapter 与运行时配置采用 JSON 格式，统一 schema 见主文档 §2.0
+
+---
+
+## 实现补记(2026-06-12 P3.a2)
+
+P3.a2 交付:**Grounding Acts 七幕齐全**(expire_ground/unground/
+acknowledge_manual 补全,migration 0024 放行七幕 CHECK;人工确认落
+audit_actor 列);**治理接线**——`statement.superseded` → SupersedeGround
+联动(CG 订阅者消费仲裁 payload,主触发器断线修复)+ 24h 超时降级每批自动
+运行 + pair 形 cg_ref 的 parties 过滤(P2.j 遗留修复);**双限流补全**
+(`tom/limiting`:链长 derived_depth>=3 ‖ 链长>=3 对齐 Bus 深度帽,
+复用 10min 窗口);**二阶生产端**(`tom/second_order`:belief_tracker 的
+statement.written handler 自动把他者一手语句建模为 self 的 depth=1 嵌套行,
+tom_inferred + 置信折减 0.9 + salience 继承 ×0.8 + 永久幂等;显式
+`persist_meta_belief` depth=2 受 ToMDepthEstimator order>=2 门控——Adaptive
+ToM Order 首个 driver 消费点);**mentalizing 7/7**(补
+what_does_X_think_Y_believes / predict_X_would(诚实契约:返回可审计
+PredictionBasis,不编造预测文本)/ who_committed);二阶准入评测
+`eval_tom_bench.py --order second`(阈 0.70,fixture 入 CI,真模型 gated)。
+
+**触发面注记**:单 agent 抽取流所有语句 holder=self("X 信 P"是扁平一阶
+表示),自动二阶建模的触发面是**多 holder 写入**(dashboard 演示数据/
+程序化/多智能体 ingestion)。扁平→嵌套的再抽取(LLM 嵌套抽取)归 P3+。
+grounded 判定规则 #3(M=2 重复确认)由订阅者「同命题异方→acknowledge」
+路径覆盖(与 #1 同路),未另设计数器。

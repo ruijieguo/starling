@@ -87,3 +87,22 @@ P2 §16.3 CRITICAL 准入达成；eval harness 就位且离线全绿（C1/C2/C3 
 **P2 准入达成：结构性（§16.3 十条）+ 离线（C1/C2/C3 fixture）+ 真模型 gated（C1 离线真 / C2 / C3）三层 eval 数字全部达阈。**
 
 （附：P1 期 extractor eval 以 deepseek-v4-flash 补跑，5 字段 4 达阈，holder_perspective 末轮 0.794 微差 0.80；详见 §5.1。该指标属 P1 期，不构成 P2 准入门槛。）
+
+---
+
+## 6. P3.a2 二阶 ToM 准入(2026-06-12 增设)
+
+P3 准入硬约束之一:**二阶 ToM precision > 0.70**。harness 扩展
+`scripts/eval_tom_bench.py --order second`(二阶子集
+false-belief / second-order / higher-order,阈 0.70;一阶记录跳过)。
+
+- fixture 离线:**PASS**(确定性 mock,入 CI:`test_eval_tom_bench_harness.py::test_second_order_subset_with_higher_threshold`)。
+- 真模型 gated(待跑,命令):
+  ```bash
+  OPENAI_API_KEY=… OPENAI_BASE_URL=https://api.deepseek.com/v1 \
+    .venv/bin/python scripts/eval_tom_bench.py \
+    --corpus <tombench-second-order.jsonl> --order second \
+    --model deepseek-v4-flash --rounds 3 --max-items 24 \
+    --report build/eval_tom_bench_second.md
+  ```
+  真模型数字回填本节后,P3.a2 准入关闭。

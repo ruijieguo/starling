@@ -164,3 +164,26 @@ def test_write_report_format(tmp_path: Path) -> None:
     assert "0.6800" in content
     assert f"{ACCURACY_THRESHOLD:.2f}" in content
     assert "PASS" in content
+
+
+def test_second_order_subset_with_higher_threshold(tmp_path: Path) -> None:
+    """P3.a2 准入:--order second 选二阶子集,阈值 0.70;一阶记录被跳过。"""
+    recs = []
+    for i, ab in enumerate(["false-belief", "second-order", "higher-order"] * 4):
+        recs.append({"question_id": f"q{i}", "ability": ab, "context": "s",
+                     "question": "q", "choices": ["a", "b", "c", "d"], "answer": 1})
+    recs.append({"question_id": "skip-first-order", "ability": "desire",
+                 "context": "s", "question": "q", "choices": ["a", "b"],
+                 "answer": 0})
+    corpus = tmp_path / "second.jsonl"
+    corpus.write_text("\n".join(json.dumps(r) for r in recs))
+    report = tmp_path / "report.md"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_tom_bench.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--corpus", str(corpus),
+         "--order", "second", "--fixture-mode", "--rounds", "2",
+         "--report", str(report)],
+        check=True, capture_output=True, text=True)
+    assert "PASS" in proc.stdout
+    content = report.read_text()
+    assert "0.70" in content and "PASS" in content

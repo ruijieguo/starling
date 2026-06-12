@@ -58,7 +58,13 @@ FIRST_ORDER_ABILITIES = frozenset(
     ["unexpected-outcome", "desire", "persuade", "world-knowledge"]
 )
 
+# P3.a2 二阶子集(P3 准入:precision > 0.70)。
+SECOND_ORDER_ABILITIES = frozenset(
+    ["false-belief", "second-order", "higher-order"]
+)
+
 ACCURACY_THRESHOLD = 0.55
+SECOND_ORDER_THRESHOLD = 0.70
 
 # Deterministic seed used by the fixture mock so results are reproducible.
 _FIXTURE_CORRECT_RATE = 0.70  # 70 % correct → well above 0.55 threshold
@@ -185,14 +191,15 @@ def run_one_round(
     base_url: str,
     api_key: str,
     model: str,
+    abilities: frozenset = FIRST_ORDER_ABILITIES,
 ) -> float:
     """Run every record in corpus and return accuracy (0.0–1.0)."""
     correct = 0
     total = 0
     for idx, record in enumerate(corpus):
         ability = record.get("ability", "")
-        if ability not in FIRST_ORDER_ABILITIES:
-            # skip abilities outside the easy first-order subset
+        if ability not in abilities:
+            # skip abilities outside the selected subset
             continue
         total += 1
         gold = int(record["answer"])
@@ -219,7 +226,7 @@ def run_one_round(
         if not fixture_mode:
             time.sleep(0.5)  # be polite to the rate limiter
     if total == 0:
-        print("WARN: no records matched first-order abilities; accuracy=0.0", file=sys.stderr)
+        print("WARN: no records matched the selected ability subset; accuracy=0.0", file=sys.stderr)
         return 0.0
     return correct / total
 
@@ -299,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Limit corpus to first N items (useful for quick test runs)",
     )
     parser.add_argument(
+        "--order",
+        default="first",
+        choices=["first", "second"],
+        help=(
+            "Ability subset: first (easy first-order, threshold 0.55) or "
+            "second (P3.a2 second-order admission, threshold 0.70)"
+        ),
+    )
+    parser.add_argument(
         "--fixture-mode",
         action="store_true",
         help=(
@@ -307,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+
+    abilities = (SECOND_ORDER_ABILITIES if args.order == "second"
+                 else FIRST_ORDER_ABILITIES)
+    threshold = (SECOND_ORDER_THRESHOLD if args.order == "second"
+                 else ACCURACY_THRESHOLD)
 
     # --- validate API key (not needed in fixture mode) ---
     api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -341,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=base_url,
             api_key=api_key,
             model=args.model,
+            abilities=abilities,
         )
         round_accuracies.append(acc)
         print(
@@ -349,18 +371,18 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # --- write report ---
-    write_report(args.report, round_accuracies, ACCURACY_THRESHOLD)
+    write_report(args.report, round_accuracies, threshold)
     print(f"Report written to {args.report}", file=sys.stderr)
 
     # --- verdict ---
     last_acc = round_accuracies[-1]
-    if last_acc >= ACCURACY_THRESHOLD:
+    if last_acc >= threshold:
         print(
-            f"PASS — last-round accuracy {last_acc:.4f} >= threshold {ACCURACY_THRESHOLD}",
+            f"PASS — last-round accuracy {last_acc:.4f} >= threshold {threshold}",
         )
         return 0
     print(
-        f"BLOCKED — last-round accuracy {last_acc:.4f} < threshold {ACCURACY_THRESHOLD}",
+        f"BLOCKED — last-round accuracy {last_acc:.4f} < threshold {threshold}",
     )
     return 1
 
