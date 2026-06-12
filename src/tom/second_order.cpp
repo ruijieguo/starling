@@ -27,10 +27,11 @@ std::string col(sqlite3_stmt* h, int i) {
 struct SourceRow {
     bool found = false;
     std::string holder, subject, predicate, hash, observed_at, provenance;
-    std::string evidence_json;
+    std::string evidence_json, affect_json;
     int nesting_depth = 0;
     int derived_depth = 0;
     double confidence = 0.0;
+    double salience = 0.0;
 };
 
 SourceRow load_source(sqlite3* db, std::string_view tenant,
@@ -40,7 +41,8 @@ SourceRow load_source(sqlite3* db, std::string_view tenant,
     if (sqlite3_prepare_v2(db,
         "SELECT holder_id, subject_id, predicate, canonical_object_hash, "
         "observed_at, provenance, COALESCE(evidence_json,'[]'), nesting_depth, "
-        "COALESCE(derived_depth,0), confidence "
+        "COALESCE(derived_depth,0), confidence, salience, "
+        "COALESCE(affect_json,'{}') "
         "FROM statements WHERE id=? AND tenant_id=?",
         -1, &raw, nullptr) != SQLITE_OK) return r;
     StmtHandle h(raw);
@@ -55,6 +57,8 @@ SourceRow load_source(sqlite3* db, std::string_view tenant,
     r.nesting_depth = sqlite3_column_int(h.get(), 7);
     r.derived_depth = sqlite3_column_int(h.get(), 8);
     r.confidence = sqlite3_column_double(h.get(), 9);
+    r.salience = sqlite3_column_double(h.get(), 10);
+    r.affect_json = col(h.get(), 11);
     return r;
 }
 
@@ -156,6 +160,22 @@ Outcome write_nested(persistence::Connection& conn, std::string_view tenant,
         out.persisted = true;   // 已有等价行(review_requested),视作完成
         out.stmt_id = dup->stmt_id;
         out.reason = "chunk_duplicate";
+    }
+    if (out.persisted) {
+        // salience 继承(源 ×0.8,下限保留出生中性值):tom_inferred 的采样
+        // provenance 因子是 0.25,若停留在中性 0.0144,权重 0.0036 < w_min
+        // ——嵌套行永远不被 Replay 采样巩固,META_BELIEF 永远查空。
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(),
+            "UPDATE statements SET salience = MAX(salience, ?1), "
+            "affect_json = ?2 WHERE id = ?3",
+            -1, &raw, nullptr) == SQLITE_OK) {
+            StmtHandle h(raw);
+            sqlite3_bind_double(h.get(), 1, src.salience * 0.8);
+            bind_sv(h.get(), 2, src.affect_json.empty() ? "{}" : src.affect_json);
+            bind_sv(h.get(), 3, out.stmt_id);
+            sqlite3_step(h.get());
+        }
     }
     return out;
 }

@@ -58,7 +58,26 @@ void bind_11_neocortex(pybind11::module_& m) {
              [](starling::tom::CommonGroundWriter& s, std::string now) {
                  return s.sweep_timeout_downgrade(s.connection(), now);
              },
-             py::arg("now_iso"));
+             py::arg("now_iso"))
+        // P3.a2: 七幕补全。
+        .def("expire_ground",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string actor, std::string now) {
+                 s.expire_ground(s.connection(), cg_id, actor, now);
+             },
+             py::arg("cg_id"), py::arg("actor"), py::arg("now_iso"))
+        .def("unground",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string actor, std::string now) {
+                 s.unground(s.connection(), cg_id, actor, now);
+             },
+             py::arg("cg_id"), py::arg("actor"), py::arg("now_iso"))
+        .def("acknowledge_manual",
+             [](starling::tom::CommonGroundWriter& s,
+                std::string cg_id, std::string audit_actor, std::string now) {
+                 s.acknowledge_manual(s.connection(), cg_id, audit_actor, now);
+             },
+             py::arg("cg_id"), py::arg("audit_actor"), py::arg("now_iso"));
 
     // ── M0.8: PersonaContainer + AnchorStatement + ConcurrentRebuildError ─
 

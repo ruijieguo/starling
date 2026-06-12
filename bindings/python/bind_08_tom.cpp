@@ -8,6 +8,8 @@
 #include <vector>
 #include "starling/tom/mentalizing.hpp"
 #include "starling/tom/common_ground.hpp"
+#include "starling/tom/depth_estimator.hpp"
+#include "starling/tom/second_order.hpp"
 #include "starling/tom/tom_engine.hpp"
 #include "starling/tom/belief_tracker.hpp"
 #include "starling/tom/nesting_depth_writer.hpp"
@@ -166,13 +168,90 @@ void bind_08_tom(pybind11::module_& m) {
         py::arg("adapter"), py::arg("members"), py::arg("tenant"), py::arg("as_of"),
         "Return facts believed by ALL members.");
 
+    // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
+    py::class_<starling::tom::mentalizing::NestedBelief>(m, "NestedBelief")
+        .def_readonly("outer", &starling::tom::mentalizing::NestedBelief::outer)
+        .def_readonly("inner", &starling::tom::mentalizing::NestedBelief::inner);
+
+    m.def("what_does_X_think_Y_believes",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& x, const std::string& y,
+           const std::string& tenant, const std::string& as_of) {
+            return starling::tom::mentalizing::what_does_X_think_Y_believes(
+                adapter, x, y, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("y"),
+        py::arg("tenant"), py::arg("as_of"),
+        "Second-order: nested beliefs X holds about Y (outer+inner pairs).");
+
+    py::class_<starling::tom::mentalizing::PredictionBasis>(m, "PredictionBasis")
+        .def_readonly("beliefs",     &starling::tom::mentalizing::PredictionBasis::beliefs)
+        .def_readonly("preferences", &starling::tom::mentalizing::PredictionBasis::preferences)
+        .def_readonly("commitments", &starling::tom::mentalizing::PredictionBasis::commitments);
+
+    m.def("predict_X_would",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& x, const std::string& situation,
+           const std::string& tenant, const std::string& as_of) {
+            return starling::tom::mentalizing::predict_X_would(
+                adapter, x, situation, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("situation"),
+        py::arg("tenant"), py::arg("as_of"),
+        "Auditable prediction basis (beliefs/preferences/commitments).");
+
+    py::class_<starling::tom::mentalizing::CommitmentFact>(m, "CommitmentFact")
+        .def_readonly("stmt",     &starling::tom::mentalizing::CommitmentFact::stmt)
+        .def_readonly("state",    &starling::tom::mentalizing::CommitmentFact::state)
+        .def_readonly("deadline", &starling::tom::mentalizing::CommitmentFact::deadline);
+
+    m.def("who_committed",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& about,
+           const std::string& tenant, const std::string& as_of) {
+            return starling::tom::mentalizing::who_committed(adapter, about, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("about"), py::arg("tenant"), py::arg("as_of"),
+        "Open commitments whose object mentions `about`.");
+
+    py::class_<starling::tom::second_order::Outcome>(m, "SecondOrderOutcome")
+        .def_readonly("persisted", &starling::tom::second_order::Outcome::persisted)
+        .def_readonly("stmt_id",   &starling::tom::second_order::Outcome::stmt_id)
+        .def_readonly("reason",    &starling::tom::second_order::Outcome::reason);
+
+    m.def("persist_meta_belief",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& tenant, const std::string& partner,
+           const std::string& nested_stmt_id, const std::string& as_of) {
+            auto& conn = adapter.connection();
+            starling::persistence::TransactionGuard tx(conn);
+            auto out = starling::tom::second_order::persist_meta_belief(
+                conn, tenant, partner, nested_stmt_id, as_of);
+            tx.commit();
+            return out;
+        },
+        py::arg("adapter"), py::arg("tenant"), py::arg("partner"),
+        py::arg("nested_stmt_id"), py::arg("as_of"),
+        "Explicit depth-2 meta-belief persist, gated by ToMDepthEstimator order>=2.");
+
+    m.def("tom_depth_estimate",
+        [](starling::persistence::SqliteAdapter& adapter,
+           const std::string& partner, const std::string& tenant,
+           const std::string& as_of) {
+            return starling::tom::depth_estimator::estimate(
+                adapter.connection(), partner, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("partner"), py::arg("tenant"), py::arg("as_of"),
+        "Adaptive ToM order estimate (0/1/2) with 1h cache.");
+
     // TickStats — read-only
     py::class_<starling::tom::belief_tracker::TickStats>(m, "TickStats")
         .def_readonly("events_processed",       &starling::tom::belief_tracker::TickStats::events_processed)
         .def_readonly("frontier_facts_written",  &starling::tom::belief_tracker::TickStats::frontier_facts_written)
         .def_readonly("trust_prior_updates",     &starling::tom::belief_tracker::TickStats::trust_prior_updates)
         .def_readonly("last_seen_updates",       &starling::tom::belief_tracker::TickStats::last_seen_updates)
-        .def_readonly("presence_log_writes",     &starling::tom::belief_tracker::TickStats::presence_log_writes);
+        .def_readonly("presence_log_writes",     &starling::tom::belief_tracker::TickStats::presence_log_writes)
+        .def_readonly("second_order_written",    &starling::tom::belief_tracker::TickStats::second_order_written);
 
     // belief_tracker_tick — free function for Python consumers
     m.def("belief_tracker_tick",
