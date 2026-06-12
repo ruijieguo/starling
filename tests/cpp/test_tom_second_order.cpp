@@ -169,3 +169,56 @@ TEST(TomSecondOrder, MetaBeliefGatedByEstimatorOrder) {
     ASSERT_TRUE(ok.persisted) << ok.reason;
     EXPECT_EQ(icol(db, "SELECT nesting_depth FROM statements WHERE id='" + ok.stmt_id + "'"), 2);
 }
+
+// ── P3.a2: mentalizing 后三 API ──────────────────────────────────────────────
+
+#include "starling/tom/mentalizing.hpp"
+
+TEST(TomMentalizingMore, NestedQueryPredictionBasisAndWhoCommitted) {
+    auto a = open_fresh();
+    auto& conn = a->connection();
+    sqlite3* db = conn.raw();
+    seed_self(db);
+    // alice 的一手语句 P1 → 自动二阶建模(self believes alice believes P1)。
+    seed_statement(db, "P1", "alice");
+    exec(db, "BEGIN IMMEDIATE");
+    const auto so = second_order::maybe_persist_second_order(conn, "default", "P1");
+    exec(db, "COMMIT");
+    ASSERT_TRUE(so.persisted) << so.reason;
+    // 嵌套行是 volatile 出生;查询要求稳定态 → 手动晋升(回放等价)。
+    exec(db, "UPDATE statements SET consolidation_state='consolidated' "
+             "WHERE id='" + so.stmt_id + "'");
+
+    // 5. what_does_X_think_Y_believes(self, alice)→ 外层+内层成对。
+    const auto nested = mentalizing::what_does_X_think_Y_believes(
+        *a, "cog-self", "alice", "default", "2026-06-12T12:00:00Z");
+    ASSERT_EQ(nested.size(), 1u);
+    EXPECT_EQ(nested[0].outer.id, so.stmt_id);
+    EXPECT_EQ(nested[0].inner.id, "P1");
+    EXPECT_EQ(nested[0].inner.object_value, "on track");
+
+    // 6. predict_X_would:alice 的 situation 相关信念 + 偏好 + 承诺。
+    seed_statement(db, "PREF", "alice");
+    exec(db, "UPDATE statements SET predicate='prefers', object_value='short standups' "
+             "WHERE id='PREF'");
+    const auto basis = mentalizing::predict_X_would(
+        *a, "alice", "proj", "default", "2026-06-12T12:00:00Z");
+    ASSERT_EQ(basis.beliefs.size(), 1u);     // P1(subject_id='proj' LIKE 命中)
+    EXPECT_EQ(basis.beliefs[0].id, "P1");
+    ASSERT_EQ(basis.preferences.size(), 1u);
+    EXPECT_EQ(basis.preferences[0].id, "PREF");
+
+    // 7. who_committed:挂一条活跃承诺。
+    seed_statement(db, "CMT", "alice");
+    exec(db, "UPDATE statements SET predicate='promises', "
+             "object_value='ship the proj runbook' WHERE id='CMT'");
+    exec(db, "INSERT INTO commitments(tenant_id,stmt_id,state,broken_count,"
+             "deadline,created_at,updated_at) VALUES('default','CMT','ACTIVE',0,"
+             "'2026-06-15T00:00:00Z','2026-06-12T00:00:00Z','2026-06-12T00:00:00Z')");
+    const auto facts = mentalizing::who_committed(
+        *a, "proj", "default", "2026-06-12T12:00:00Z");
+    ASSERT_EQ(facts.size(), 1u);
+    EXPECT_EQ(facts[0].stmt.holder_id, "alice");
+    EXPECT_EQ(facts[0].state, "ACTIVE");
+    EXPECT_EQ(facts[0].deadline, "2026-06-15T00:00:00Z");
+}
