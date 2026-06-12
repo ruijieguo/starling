@@ -32,6 +32,8 @@ class RecallBody(BaseModel):
     perspective: str = "first_person"
     k: int = 10
     mode: str = "semantic"
+    intent: str | None = None    # 非空 → 走 RetrievalPlanner(P3.a1)
+    target: str | None = None    # BELIEF_OF_OTHER / COMMON_GROUND 对方
 
 
 class TickBody(BaseModel):
@@ -72,6 +74,12 @@ def build_commands_router(require_token) -> APIRouter:
     @router.post("/recall")
     async def recall(body: RecallBody, request: Request):
         eng = _engine(request)
+        if body.intent:
+            payload = await to_thread.run_sync(partial(
+                eng.plan_query, body.query, intent=body.intent,
+                target=body.target, k=body.k))
+            await _broadcast(request, "recall", {"n": len(payload["results"])})
+            return payload
         hits = await to_thread.run_sync(partial(
             eng.recall, body.query, perspective=body.perspective, k=body.k, mode=body.mode))
         out = [{"subject": h["row"].subject_id, "predicate": h["row"].predicate,

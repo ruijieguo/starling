@@ -42,6 +42,17 @@ def test_recall_shape(client):
     assert r.status_code == 200 and isinstance(r.json()["results"], list)
 
 
+def test_recall_with_intent_goes_through_planner(client):
+    client.post("/api/remember", json={"text": "Bob owns auth"})
+    client.post("/api/tick", json={})
+    r = client.post("/api/recall", json={
+        "query": "auth", "intent": "FACT_LOOKUP", "k": 5})
+    assert r.status_code == 200
+    body = r.json()
+    assert {"results", "context_pack", "abstained", "plan_steps"} <= set(body)
+    assert [s["step"] for s in body["plan_steps"]][:3] == ["parse", "mask", "plan"]
+
+
 def test_remember_409_when_llm_unconfigured(tmp_path):
     cfg = DashboardConfig(db_path=str(tmp_path / "nollm.db"), token="")
     eng = DashboardEngine(cfg)            # llm unset

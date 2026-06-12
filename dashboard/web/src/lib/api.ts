@@ -63,3 +63,13 @@ export const api = {
 	post: <T>(p: string, body: unknown, init?: ReqInit) =>
 		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) })
 };
+
+// P3.a1 检索规划响应(POST /api/recall 带 intent 时)。
+export type PlannedRecallResponse = {
+	results: { subject: string; predicate: string; object: string; score: number; label: string }[];
+	context_pack: string;
+	abstained: boolean;
+	abstention_reason: string;
+	plan_steps: { step: string; detail: string }[];
+	scopes_searched: string[];
+};

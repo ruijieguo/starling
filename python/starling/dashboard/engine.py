@@ -176,6 +176,26 @@ class DashboardEngine:
         with self._lock:
             return self._core.tick(now)
 
+    def plan_query(self, text: str, *, intent: str, perspective=None,
+                   target=None, k: int = 10) -> dict:
+        """P3.a1 检索规划(9 意图 + 8 标签 + 拒答);JSON-able 摘要给路由层。"""
+        with self._lock:
+            r = self._core.plan_query(text, intent=intent,
+                                      perspective=perspective, target=target, k=k)
+            return {
+                "results": [{"subject": e.row.subject_id,
+                             "predicate": e.row.predicate,
+                             "object": e.row.object_value,
+                             "score": e.score, "label": e.label.name}
+                            for e in r.entries],
+                "context_pack": r.context_pack,
+                "abstained": r.abstained,
+                "abstention_reason": r.receipt.abstention_reason,
+                "plan_steps": [{"step": s.step, "detail": s.detail}
+                               for s in r.receipt.plan_steps],
+                "scopes_searched": list(r.receipt.scopes_searched),
+            }
+
     def start_background_tick(self, interval_s: float, on_tick=None) -> None:
         """周期维护线程(P2.o 运行时闭环):每 interval_s 秒跑一次 tick
         (嵌入 → 承诺触发 → grounding → 回放巩固 → 投影兜底 → 出箱收敛),
