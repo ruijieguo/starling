@@ -147,6 +147,27 @@ class Memory:
         """
         return self._core.recall(query, perspective=perspective, k=k, mode=mode)
 
+    def query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
+              perspective: str | None = None, target: str | None = None,
+              subject: str | None = None, predicate: str | None = None,
+              k: int = 10, now=None) -> dict:
+        """检索规划入口(P3.a1):9 种意图 + Context Pack 8 标签 + 可审计回执。
+
+        返回 dict:entries(row/score/label)、context_pack(LLM-ready 文本)、
+        abstained、abstention_reason、receipt(完整回执对象)。
+        """
+        r = self._core.plan_query(text, intent=intent, perspective=perspective,
+                                  target=target, subject=subject,
+                                  predicate=predicate, k=k, now=now)
+        return {
+            "entries": [{"row": e.row, "score": e.score,
+                         "label": e.label.name} for e in r.entries],
+            "context_pack": r.context_pack,
+            "abstained": r.abstained,
+            "abstention_reason": r.receipt.abstention_reason,
+            "receipt": r.receipt,
+        }
+
     def tick(self, now: str = "2026-06-01T10:00:00Z") -> TickStats:
         """Advance background workers: embed pending statements + fire due commitments."""
         return TickStats(**self._core.tick(now))

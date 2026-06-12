@@ -13,6 +13,7 @@ the embedded facade is single-user by contract.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -104,6 +105,29 @@ class MemoryCore:
             tenant_id=self.tenant, holder_id=self.agent,
             holder_perspective=perspective, query_text=query, k=k))
         return [{"row": s.row, "score": s.score} for s in res.rows]
+
+    def plan_query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
+                   perspective: Optional[str] = None, target: Optional[str] = None,
+                   subject: Optional[str] = None, predicate: Optional[str] = None,
+                   k: int = 10, now=None):
+        """P3.a1 检索规划:一行转发 _core.RetrievalPlanner(7 步管线居 C++,
+        语义路径网络期间释放 GIL)。"""
+        q = _core.PlannerQuery()
+        q.tenant_id = self.tenant
+        q.querier = self.agent
+        q.perspective = perspective or ""
+        q.intent = getattr(_core.QueryIntent, intent)
+        q.text = text
+        q.subject_id = subject or ""
+        q.predicate = predicate or ""
+        q.target = target or ""
+        q.as_of_iso8601 = parse_now(now).astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        q.k = k
+        q.trace_id = str(uuid.uuid4())
+        q.query_id = str(uuid.uuid4())
+        planner = _core.RetrievalPlanner(self.rt.adapter, self.semantic)
+        return planner.run(q)
 
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +
