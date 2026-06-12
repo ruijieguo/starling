@@ -1,5 +1,6 @@
 #include "starling/bus/statement_writer.hpp"
 
+#include "starling/affect/affect_vector.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
@@ -158,7 +159,7 @@ void insert_statement_row(
         "  ?, 'v1',"
         "  ?, ?, ?, ?,"
         "  ?, ?, ?,"
-        "  0.0, '{}', 0.0, ?,"
+        "  ?, '{}', 0.0, ?,"
         "  ?, ?, ?, ?, ?,"
         "  'volatile', ?,"
         "  ?, ?,"
@@ -199,6 +200,10 @@ void insert_statement_row(
     } else {
         sqlite3_bind_null(h.get(), i++);
     }
+    // 出生 salience = 中性 AffectVector 的公式值(≈0.0144),非 0。spec §3.9
+    // 「写入打分」:全中性记忆也必须 > 采样器 w_min(0.01),否则 Replay
+    // 永远采不到它,volatile→consolidated 晋升被锁死(P2.o 实测根因之二)。
+    sqlite3_bind_double(h.get(), i++, affect::salience(affect::AffectVector{}));
     bind_sv(h.get(), i++, ts);  // last_accessed
     bind_sv(h.get(), i++, schema::to_string(s.provenance));
     bind_sv(h.get(), i++, evid);

@@ -62,7 +62,12 @@ void bind_13_memory_ops(pybind11::module_& m) {
                   t = starling::memoryops::tick_all(adapter, worker, policy, now_iso);
               }
               return py::dict("embedded"_a = t.embedded, "fired"_a = t.fired,
-                              "broken"_a = t.broken, "auto_withdrawn"_a = t.auto_withdrawn);
+                              "broken"_a = t.broken, "auto_withdrawn"_a = t.auto_withdrawn,
+                              "replay_sampled"_a = t.replay_sampled,
+                              "consolidated"_a = t.consolidated,
+                              "ttl_archived"_a = t.ttl_archived,
+                              "projected"_a = t.projected,
+                              "dispatched"_a = t.dispatched);
           },
           py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"));
 }

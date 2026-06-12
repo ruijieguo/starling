@@ -36,8 +36,12 @@ struct RememberOutcome {
 };
 
 // 标准写管线:内容确定性幂等键 → Bus::append_evidence(证据入库)→
-// 仅 accepted/idempotent 时 Extractor::run(LLM 抽取)。prompt_template 由
-// 调用方注入(prompt 是配置数据,单一源在 python/starling/extractor/prompts.py)。
+// 仅 accepted/idempotent 时 Extractor::run(LLM 抽取)→ 写后泵一次
+// (SubscriberPump::run_post_write:投影/信念/再巩固/在线回放/策略)。
+// 泵的生产宿主在这里而非 Bus::write——生产语句写经 Extractor→StatementWriter,
+// 不经 Bus::write,挂在那里的泵在 remember 路径永不运行(P2.o 实测根因)。
+// prompt_template 由调用方注入(prompt 是配置数据,单一源在
+// python/starling/extractor/prompts.py)。
 RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& llm,
                          std::string_view prompt_template,
@@ -48,10 +52,20 @@ struct TickOutcome {
     int fired = 0;
     int broken = 0;
     int auto_withdrawn = 0;
+    // P2.o 周期维护:回放巩固 + 投影兜底 + 出箱收敛。
+    int replay_sampled = 0;   // 本批 idle 回放采样数
+    int consolidated = 0;     // volatile→consolidated 晋升数(op_compress)
+    int ttl_archived = 0;     // VOLATILE TTL 超期归档数
+    int projected = 0;        // 投影兜底批处理事件数
+    int dispatched = 0;       // 出箱 pending→delivered 数(in_process 消费者)
 };
 
-// 后台推进三连:嵌入一批待向量语句 + 承诺触发器 tick + grounding 滞后冲账
-// (P2.j)。worker/policy 由调用方持有注入(embedder 可热换,见 DashboardEngine)。
+// 周期维护(P2.o 扩展):嵌入一批待向量语句 → 承诺触发器 tick → grounding
+// 滞后冲账(P2.j)→ 回放维护(振荡防护 → volatile TTL sweep → idle 批)→
+// 投影兜底批 → 出箱派发(Accept-all "in_process" 消费者:嵌入式单进程无外部
+// 消费者,五个进程内消费者均按 consumer_checkpoints 推进且不过滤
+// dispatch_status,故标记 delivered 安全;delivered=进程内交付完成)。
+// worker/policy 由调用方持有注入(embedder 可热换,见 DashboardEngine)。
 TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      embedding::EmbeddingWorker& worker,
                      prospective::PolicyEngine& policy,

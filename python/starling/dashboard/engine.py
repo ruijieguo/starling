@@ -16,6 +16,7 @@ captures it at build), so chat and embedder may use different providers/keys.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -30,6 +31,9 @@ from starling._memory_core import LLMNotConfigured, MemoryCore
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+logger = logging.getLogger(__name__)
 
 
 # Routes run engine calls in worker threads (anyio to_thread), so the transient
@@ -114,6 +118,9 @@ class DashboardEngine:
         rt.start()
         self._core = MemoryCore(rt, agent=config.agent, tenant_id=config.tenant,
                                 adapter_name="dashboard", source_prefix="dash-")
+        # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
+        self._tick_thread: threading.Thread | None = None
+        self._tick_stop: threading.Event | None = None
         self.set_llm(config.llm)
         self.rebuild_embedder(config.embedder, reembed=False)
 
@@ -169,6 +176,50 @@ class DashboardEngine:
         with self._lock:
             return self._core.tick(now)
 
+    def start_background_tick(self, interval_s: float, on_tick=None) -> None:
+        """周期维护线程(P2.o 运行时闭环):每 interval_s 秒跑一次 tick
+        (嵌入 → 承诺触发 → grounding → 回放巩固 → 投影兜底 → 出箱收敛),
+        让 remember 的内容无人工干预地变得可召回。
+
+        - 首次 tick 在一个完整间隔之后(避免启动时与首屏请求抢引擎锁);
+        - tick 持引擎 RLock,期间 UI 命令请求排队——与手动 tick 同语义;
+        - on_tick(stats) 仅在本轮有实际变化(任一计数非零)时回调,调用方
+          用它做 WS 广播;
+        - 异常记日志后继续循环(网络嵌入失败不杀线程);
+        - interval_s <= 0 或已启动时为 no-op。
+        """
+        if interval_s <= 0 or self._tick_thread is not None:
+            return
+        stop = threading.Event()
+
+        def _loop() -> None:
+            while not stop.wait(interval_s):
+                try:
+                    stats = self.tick(_now_iso())
+                except Exception:  # noqa: BLE001 — 保活:单轮失败不终结调度
+                    logger.exception("background tick failed")
+                    continue
+                if on_tick is not None and any(stats.values()):
+                    try:
+                        on_tick(stats)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("background tick on_tick callback failed")
+
+        self._tick_stop = stop
+        self._tick_thread = threading.Thread(
+            target=_loop, name="starling-bg-tick", daemon=True)
+        self._tick_thread.start()
+
+    def stop_background_tick(self) -> None:
+        if self._tick_thread is None:
+            return
+        self._tick_stop.set()
+        # 有界等待:线程可能正阻塞在真模型嵌入网络调用里;daemon 线程随
+        # 进程退出,这里只为测试与显式 close 提供确定性收尾。
+        self._tick_thread.join(timeout=5.0)
+        self._tick_thread = None
+        self._tick_stop = None
+
     def working_set(self, interlocutor, *, goal=None, token_budget=2000) -> dict:
         """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""
         with self._lock:
@@ -180,6 +231,7 @@ class DashboardEngine:
                     "truncated": cb.truncated}
 
     def close(self) -> None:
+        self.stop_background_tick()
         self._core.close()
 
 

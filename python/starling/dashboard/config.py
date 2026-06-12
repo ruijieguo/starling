@@ -21,7 +21,7 @@ _DEFAULT_DB = _DEFAULT_DIR / "dashboard.db"
 
 _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
-    "cors_origins", "llm", "embedder",
+    "cors_origins", "llm", "embedder", "tick_interval_s",
 )
 
 
@@ -44,6 +44,9 @@ class DashboardConfig:
     cors_origins: list[str] = field(default_factory=list)
     llm: dict = field(default_factory=_default_llm)
     embedder: dict = field(default_factory=_default_embedder)
+    # P2.o 运行时闭环:后台维护 tick 间隔秒数(嵌入/巩固/投影/出箱收敛)。
+    # 0 = 禁用(回到纯手动 tick)。
+    tick_interval_s: float = 30.0
     config_path: str = ""  # not serialized; where load()/save() persist
 
     @classmethod
@@ -57,6 +60,7 @@ class DashboardConfig:
             host=os.environ.get("STARLING_DASH_HOST", "127.0.0.1"),
             port=int(os.environ.get("STARLING_DASH_PORT", "8787")),
             cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
+            tick_interval_s=float(os.environ.get("STARLING_DASH_TICK_INTERVAL", "30")),
         )
 
     @classmethod
@@ -114,6 +118,7 @@ def _env_overlay(cfg: DashboardConfig) -> None:
     if e("STARLING_DASH_TOKEN"): cfg.token = e("STARLING_DASH_TOKEN")
     if e("STARLING_DASH_HOST"): cfg.host = e("STARLING_DASH_HOST")
     if e("STARLING_DASH_PORT"): cfg.port = int(e("STARLING_DASH_PORT"))
+    if e("STARLING_DASH_TICK_INTERVAL"): cfg.tick_interval_s = float(e("STARLING_DASH_TICK_INTERVAL"))
     if e("STARLING_DASH_CORS_ORIGINS"):
         cfg.cors_origins = [o.strip() for o in e("STARLING_DASH_CORS_ORIGINS").split(",") if o.strip()]
     if not cfg.llm.get("api_key") and e("OPENAI_API_KEY"):

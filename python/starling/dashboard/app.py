@@ -1,8 +1,10 @@
 """FastAPI app factory for the Starling dashboard engine-API."""
 from __future__ import annotations
 
+import asyncio
 import hmac
 import urllib.parse
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
@@ -36,7 +38,37 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     Inspection routes read the SQLite at `config.db_path` directly (read-only).
     """
     config.validate_bind()
-    app = FastAPI(title="Starling Dashboard", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # P2.o 运行时闭环:默认启动后台维护 tick(tick_interval_s=0 关闭)。
+        # 引擎在此即建(而非等首个命令请求)——闭环从进程启动起就在转。
+        # lifespan 只在 ASGI 服务器/`with TestClient` 下运行;直接构造
+        # TestClient(app) 的既有测试不受影响。
+        if config.tick_interval_s > 0:
+            eng = app.state.engine
+            if eng is None:
+                from starling.dashboard.engine import DashboardEngine
+                eng = DashboardEngine(config)
+                app.state.engine = eng
+            # 测试可注入只实现部分接口的引擎替身,故按能力探测。
+            if hasattr(eng, "start_background_tick"):
+                loop = asyncio.get_running_loop()
+                mgr = app.state.ws_manager
+
+                def _on_tick(stats: dict) -> None:
+                    # 维护线程 → 事件循环的桥;消息形状与手动 /api/tick 一致,
+                    # 前端无需区分自动/手动。
+                    asyncio.run_coroutine_threadsafe(
+                        mgr.broadcast({"type": "tick", "payload": stats}), loop)
+
+                eng.start_background_tick(config.tick_interval_s, _on_tick)
+        yield
+        eng = app.state.engine
+        if eng is not None and hasattr(eng, "stop_background_tick"):
+            eng.stop_background_tick()
+
+    app = FastAPI(title="Starling Dashboard", version="0.1.0", lifespan=lifespan)
     app.state.config = config
     app.state.engine = engine
 

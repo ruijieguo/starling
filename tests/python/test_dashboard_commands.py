@@ -30,7 +30,10 @@ def test_remember_then_tick(client):
     r = client.post("/api/remember", json={"text": "Bob owns auth"})
     assert r.status_code == 200 and r.json()["outcome"] in ("accepted", "idempotent")
     t = client.post("/api/tick", json={})
-    assert t.status_code == 200 and set(t.json()) == {"embedded", "fired", "broken", "auto_withdrawn"}
+    assert t.status_code == 200 and set(t.json()) == {
+        "embedded", "fired", "broken", "auto_withdrawn",
+        "replay_sampled", "consolidated", "ttl_archived",
+        "projected", "dispatched"}
 
 
 def test_recall_shape(client):

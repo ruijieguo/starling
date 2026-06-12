@@ -1184,6 +1184,8 @@ salience 在三处生效：
 
 AffectVector 是 value object，随 Statement 持久化为嵌入 JSON 字段，不独立成表。
 
+> **出生 salience（2026-06-12 P2.o 修正）**：写入时尚无评估器为 Statement 打 affect（Affect Buffer 评估归 P3），出生 salience 取**全中性 AffectVector 的公式值 ≈ 0.0144**（`affect::salience(AffectVector{})`，StatementWriter 落库），而非 0。0 会使重放采样权重恒为 0——「完全中性的记忆排在巩固队列最末」是设计意图，「永远不被巩固」不是。该底值刚好越过采样器 `w_min=0.01`。
+
 ### 3.10 BusEvent 信封
 
 BusEvent 是 outbox 事件信封，独立于 BaseEntity 体系。所有跨子系统通信经此投递。
@@ -2187,6 +2189,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| 2026-06-12 P2.o 运行时闭环 | 写后泵生产宿主修正（`memoryops::remember` 尾部，`Bus::write` 生产无调用者致五订阅者从未运行，§05_bus）；出生 salience 0→中性公式值 ≈0.0144（0 使重放采样权重恒 0、巩固锁死，§3.9 注）；`tick_all` 扩为周期维护（嵌入→承诺→grounding→回放巩固→投影兜底→出箱收敛）；嵌入式 dispatch 语义 delivered=进程内交付完成（§05_bus）；dashboard 默认 30s 后台维护线程（tick_interval_s，0=关）。写→读闭环首次无人工干预成立 |
 | 2026-06-11 边界裁定 | §2.0 多语言绑定新增边界规范（核心语义必须居于 C++，绑定层只做应用适配）；Working Set 自 Python 归位 C++ `src/hippocampus/`（海马体首个代码模块）；§05_bus 补生产侧幂等去重契约（审计/通知事件 OR IGNORE vs 业务事件 fail-loud，record_attempt 同构） |
 | v24.1 → 2026-06-10 审计对齐 | P1/P2 全部完成后实现现状回写：§2.1 存储标注（raw SQLite + BLOB 向量为实际落地，seekdb/dist-store 顺延 P3.b）、§2.4 补 Dashboard 子系统、§2.3/§3.5 decay 与 Commitment 保护改为 CAS/表实现的等价机制、§3.1.2 KnowledgeFrontier 计算视图 + proj_*/statement_vectors 补记、§3.3 scope_parties_json/last_replay_batch_id 列与 predicate 分级注册表、§3.6 子类无 type 列 + Commitment 扩展表、§3.7 Persona 两锚仲裁、§3.10 commitment.* 改 P2 + 实现新增事件表 + evidence.redacted/erased producer 现状、§14/§15.1 XML→JSON 抽取 + TypeScript 绑定降级、§15 P2 收官、§16.5 Prospective Loop/ToMDepthEstimator 已交付与 RuntimeHealth 背压归 P3.c、配置文件名统一 ~/.starling/starling.json |
 | v24 → v24.1 | P1 验收门槛重组：CRITICAL 标签元规则、9 用例迁出至 §16.3/§16.4、3 条新 CRITICAL、§3.5 T7 P1 路径明文化 |

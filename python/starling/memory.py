@@ -101,6 +101,12 @@ class TickStats:
     fired: int = 0
     broken: int = 0
     auto_withdrawn: int = 0
+    # P2.o 周期维护:回放巩固 + 投影兜底 + 出箱收敛(memoryops::tick_all)。
+    replay_sampled: int = 0
+    consolidated: int = 0
+    ttl_archived: int = 0
+    projected: int = 0
+    dispatched: int = 0
 
 
 class Memory:

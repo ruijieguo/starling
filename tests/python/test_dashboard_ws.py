@@ -66,7 +66,8 @@ def test_ws_receives_broadcast():
     The broadcast is triggered from inside the app's event loop via the
     TestClient portal so the WebSocket send happens on the right loop.
     """
-    cfg = DashboardConfig(db_path=":memory:", token="")
+    # tick_interval_s=0:纯 WS 层测试,lifespan 不建引擎(:memory: 无法迁移)。
+    cfg = DashboardConfig(db_path=":memory:", token="", tick_interval_s=0)
     app = create_app(cfg)
     # Enter the TestClient as a context manager so `client.portal` is bound to a
     # live blocking portal; the websocket session then shares that portal/loop,
@@ -121,7 +122,8 @@ def test_ws_rejects_cross_origin_browser():
     """Integration: cross-origin browser request is rejected (close 1008)."""
     from starlette.websockets import WebSocketDisconnect
 
-    cfg = DashboardConfig(db_path=":memory:", token="")  # loopback dev, no allowlist
+    cfg = DashboardConfig(db_path=":memory:", token="",  # loopback dev, no allowlist
+                          tick_interval_s=0)
     app = create_app(cfg)
     with TestClient(app) as client:
         with pytest.raises(WebSocketDisconnect):
@@ -131,7 +133,7 @@ def test_ws_rejects_cross_origin_browser():
 
 def test_ws_allows_loopback_origin():
     """Integration: loopback-origin browser connects and receives broadcast."""
-    cfg = DashboardConfig(db_path=":memory:", token="")
+    cfg = DashboardConfig(db_path=":memory:", token="", tick_interval_s=0)
     app = create_app(cfg)
     with TestClient(app) as client:
         with client.websocket_connect("/ws", headers={"origin": "http://localhost:5173"}) as ws:

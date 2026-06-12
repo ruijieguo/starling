@@ -302,6 +302,10 @@ P1 只冻结两个产生用户可见重复副作用的键：
 
 **Dispatcher checkpoint**：`consumer_checkpoint(subscriber, shard, last_dispatched_sequence)` 持久化；重启后从 checkpoint+1 恢复扫描。Subscriber 处理成功后先写本地 inbox ACK / 业务幂等记录，再更新 checkpoint；ACK 丢失导致重复投递时按 inbox 去重并直接 ACK。
 
+**写后泵的生产宿主（2026-06-12 P2.o 修正）**：五订阅者泵（conflict_key / belief_tracker / reconsolidation / projection / replay_online，`SubscriberPump::run_post_write`）的生产挂点是 **`memoryops::remember` 尾部**（extractor 跑完后每次 remember 泵一次），而非 `Bus::write` 尾部——生产语句写经 `Extractor`→`StatementWriter`，不经过 `Bus::write`，只挂在那里的泵在生产路径永不运行（P2.o 实测根因：投影滞后、在线回放计数冻结、语句永滞 volatile）。`Bus::write` 尾部的泵保留，服务直调该 API 的使用方；两处宿主幂等共存（订阅者均 checkpoint 驱动）。
+
+**嵌入式 dispatch 语义（2026-06-12 P2.o）**：单进程嵌入式运行时没有外部消费者；五个进程内消费者全部按 `consumer_checkpoints` 推进且事件 SELECT 不过滤 `dispatch_status`。`memoryops::tick_all` 周期内由 Accept-all 的 `OutboxDispatcher`（`consumer_id="in_process"`）把 pending 行收敛为 delivered——此处 **delivered = 进程内交付完成**，`bus_events` 表保留为审计日志。未来接入外部消费者（P3.b 多底座/网络拓扑）时换用真实 Consumer 回调,语义自然升级为外部投递确认。
+
 **冻结默认值汇总**：
 
 | 参数 | 值 |

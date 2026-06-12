@@ -90,4 +90,70 @@ TEST(MemoryOps, TickAllAdvancesEmbeddingAndReturnsShape) {
     EXPECT_EQ(row_count(a->connection(), "SELECT COUNT(*) FROM statement_vectors"), 1);
 }
 
+// ── P2.o 运行时闭环 ──────────────────────────────────────────────────────────
+// 根因回归:生产语句写经 StatementWriter 不经 Bus::write,挂在 Bus::write 尾部
+// 的订阅者泵在 remember 路径永不运行(投影/信念/再巩固/在线回放全部缺席)。
+// 泵宿主归位 memoryops::remember 后,以下行为必须成立。
+
+TEST(MemoryOps, RememberRunsSubscriberPump) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+
+    ASSERT_EQ(remember(*a, llm, "", params("Bob owns auth")).outcome, "accepted");
+
+    // 泵的 replay_online 订阅者跑过:在线触发计数 +1。
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT online_trigger_counter FROM replay_scheduler_state WHERE id=1"), 1);
+    // 出生 salience = 中性 affect 公式值(≈0.0144),必须超过采样器 w_min,
+    // 否则该语句永远不会被 Replay 采样巩固(根因之二回归)。
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statements WHERE salience > 0.01"), 1);
+}
+
+TEST(MemoryOps, ThirdRememberTriggersOnlineConsolidation) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+
+    ASSERT_EQ(remember(*a, llm, "", params("text one")).outcome, "accepted");
+    ASSERT_EQ(remember(*a, llm, "", params("text two")).outcome, "accepted");
+    ASSERT_EQ(remember(*a, llm, "", params("text three")).outcome, "accepted");
+
+    // 第 3 次写触发在线采样窗(kOnlineTrigger=3):计数归零 + 至少一条语句
+    // volatile→consolidated(op_compress 一触即晋升)。
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT online_trigger_counter FROM replay_scheduler_state WHERE id=1"), 0);
+    EXPECT_GE(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statements WHERE consolidation_state='consolidated'"), 1);
+}
+
+TEST(MemoryOps, TickAllConsolidatesProjectsAndDispatches) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*a, llm, "", params("Bob owns auth")).outcome, "accepted");
+    ASSERT_GE(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statements WHERE consolidation_state='volatile'"), 1);
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z");
+
+    // idle 批扫掉积压 volatile:写→读闭环的巩固半边。
+    EXPECT_GE(t.replay_sampled, 1);
+    EXPECT_GE(t.consolidated, 1);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statements WHERE consolidation_state='volatile'"), 0);
+    // 出箱收敛:in_process Accept-all 消费者把 pending 全部标 delivered。
+    EXPECT_GE(t.dispatched, 1);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM bus_events WHERE dispatch_status='pending'"), 0);
+    // 投影兜底批不抛且计数非负(remember 路径的事件已被泵内 PM 消费)。
+    EXPECT_GE(t.projected, 0);
+}
+
 }  // namespace starling::memoryops
