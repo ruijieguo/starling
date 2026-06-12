@@ -2189,6 +2189,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| 2026-06-12 P3.a1 检索规划 | 9 种 QueryIntent + 7 步管线（parse/mask/plan/fetch/fuse/ground/abstain，receipt 全程留痕）+ Affect-aware Reranker 五因子 + Abstention Gate 四条件 + Context Pack 8 标签 + Receipt 完整字段/RetrievalScopePlan + 多 holder 隔离与 filter 混合拒绝（§13_retrieval 实现补记；sanitized_query/RRF/WorkGate 裁剪登记） |
 | 2026-06-12 P3.b 改向（用户裁定） | P3.b 自「多底座产品化」重定义为「存储层重构 + OpenClaw 集成」：删除 cloud-store 三形态/dist-store/跨档迁移工具/五家外部迁移脚本（顺延 P3+）；新 b1=local-store 存储抽象（44 文件散落 SQL 收敛进 substrate 访问层、表所有权、局部 keystore crypto_erasure）、b2=OpenClaw memory slot 插件（HTTP API 集成）；准入 TC-A8-002 顺延 P3+，改为插件 e2e（§15.x/§16.4 同步） |
 | 2026-06-12 P2.o 运行时闭环 | 写后泵生产宿主修正（`memoryops::remember` 尾部，`Bus::write` 生产无调用者致五订阅者从未运行，§05_bus）；出生 salience 0→中性公式值 ≈0.0144（0 使重放采样权重恒 0、巩固锁死，§3.9 注）；`tick_all` 扩为周期维护（嵌入→承诺→grounding→回放巩固→投影兜底→出箱收敛）；嵌入式 dispatch 语义 delivered=进程内交付完成（§05_bus）；dashboard 默认 30s 后台维护线程（tick_interval_s，0=关）。写→读闭环首次无人工干预成立 |
 | 2026-06-11 边界裁定 | §2.0 多语言绑定新增边界规范（核心语义必须居于 C++，绑定层只做应用适配）；Working Set 自 Python 归位 C++ `src/hippocampus/`（海马体首个代码模块）；§05_bus 补生产侧幂等去重契约（审计/通知事件 OR IGNORE vs 业务事件 fail-loud，record_attempt 同构） |

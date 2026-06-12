@@ -357,3 +357,24 @@ P1 最简路径。只查 Statement 主表轻量索引，只返回 `CONSOLIDATED 
 in-memory 软统计，Replay Scheduler 周期批量 flush 到 Statement，不是每次召回即写库。
 
 - 配置：所有 Adapter 与运行时配置采用 JSON 格式，统一 schema 见主文档 §2.0
+
+---
+
+## 实现补记(2026-06-12 P3.a1)
+
+P3.a1 交付:9 种 QueryIntent、7 步管线(`src/retrieval/retrieval_planner.cpp`,
+每步写 receipt.plan_steps)、Affect-aware Reranker 五因子(`affect_reranker.cpp`,
+breakdown 落 receipt.score_breakdown)、Abstention Gate 四条件(`abstention.cpp`,
+优先级 frontier>recanted>conflict>score,τ_recall 默认 0.25 可配)、Context Pack
+8 标签(`context_pack.cpp`,优先级 TODO>CONFLICT>COMMON>INFERRED>HEARSAY>
+BELIEF>FACT,ABSTAIN 由 gate 注入整包)、Receipt 完整字段与 RetrievalScopePlan、
+多 holder 隔离(per-step 单一 holder_scope + `invalid_scope_filter_mix` 拒绝)。
+perspective mask:结构化路径 SQL 下推,语义路径取回后、rerank 前按
+KnowledgeFrontier 可见集遮蔽(满足"排序之前"位序)。statement.recalled 由
+planner 中心化 emit(键公式与 basic_retrieve 一致,拒答零事件)。入口:
+`Memory.query()` / dashboard `POST /api/recall`(intent 非空)。
+
+本期裁剪(后续里程碑):`sanitized_query`(P3.b 随 query 清洗)、三级 RRF/bm25
+融合与多源并发 latency budget(P3.c)、`ScopedWorkGate(lane=retrieval)`(P3.c
+治理)、`temporal_distance_penalty` 连续距离函数(v1 为有界惩罚:过期 0.3)。
+META_BELIEF 的 ToMDepthEstimator 上限调制接线归 P3.a2(估计器已存在)。
