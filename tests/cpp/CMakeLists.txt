@@ -133,6 +133,7 @@ add_executable(starling_tests
     test_working_set.cpp
     test_memory_ops.cpp
     test_affect_reranker.cpp
+    test_abstention_gate.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
