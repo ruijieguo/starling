@@ -274,3 +274,78 @@ TEST(CommonGroundSubscriber, ContainerRebuilt) {
     // Contains the asserted statement id.
     EXPECT_NE(content.find("S1"), std::string::npos);
 }
+
+// ── P3.a2: superseding 联动 + 超时降级接线 ───────────────────────────────────
+
+namespace {
+void insert_superseded_event(Connection& conn,
+                             const std::string& event_id,
+                             const std::string& old_id,
+                             const std::string& new_id,
+                             int outbox_sequence,
+                             const std::string& tenant_id = "default") {
+    const char* sql =
+        "INSERT INTO bus_events("
+        "event_id,tenant_id,event_type,primary_id,aggregate_id,"
+        "outbox_sequence,idempotency_key,payload_json,created_at"
+        ") VALUES (?,?,'statement.superseded',?,?,?,?,?,?)";
+    sqlite3_stmt* raw = nullptr;
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr));
+    StmtHandle h(raw);
+    int i = 1;
+    auto bs = [&](const std::string& v) {
+        sqlite3_bind_text(h.get(), i++, v.c_str(), -1, SQLITE_TRANSIENT);
+    };
+    bs(event_id);
+    bs(tenant_id);
+    bs(new_id);              // primary_id = new statement(arbitration 同款)
+    bs(new_id);
+    sqlite3_bind_int(h.get(), i++, outbox_sequence);
+    bs("ikey-" + event_id);
+    bs("{\"old_stmt_id\":\"" + old_id + "\",\"new_stmt_id\":\"" + new_id + "\"}");
+    bs("2026-06-12T00:00:00Z");
+    ASSERT_EQ(SQLITE_DONE, sqlite3_step(h.get()));
+}
+}  // namespace
+
+TEST(CommonGroundSubscriber, SupersededGroundedEntryGetsSupersedeGround) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+
+    // S1(self 断言)+ S2(bob 同命题同极性复述)→ grounded。
+    insert_statement(conn, "S1", "self", "pos", "[\"bob\",\"self\"]");
+    insert_bus_event(conn, "ev1", "S1", 1);
+    insert_statement(conn, "S2", "bob", "pos", "[\"bob\",\"self\"]");
+    insert_bus_event(conn, "ev2", "S2", 2);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-12T10:00:00Z");
+    ASSERT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='S1'"), "grounded");
+
+    // 仲裁产生 S3 取代 S1 → statement.superseded → cg 标 superseded_by=S3。
+    insert_statement(conn, "S3", "self", "pos", "[\"bob\",\"self\"]");
+    insert_superseded_event(conn, "ev3", "S1", "S3", 3);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-12T10:05:00Z");
+
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT superseded_by FROM common_ground WHERE statement_id='S1'"), "S3");
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE act='supersede' AND statement_id='S3'"), 1);
+}
+
+TEST(CommonGroundSubscriber, TimeoutSweepRunsInTick) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+
+    // 25h 前的 asserted_unack(经正常事件路径建立,旧时间戳)。
+    insert_statement(conn, "SOLD", "self", "pos", "[\"bob\",\"self\"]");
+    insert_bus_event(conn, "ev-old", "SOLD", 1);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-11T08:00:00Z");
+    ASSERT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='SOLD'"), "asserted_unack");
+
+    // 零新事件的 tick,25h 后:sweep 在订阅者内自动运行 → 降级。
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-12T10:00:00Z");
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='SOLD'"),
+        "suspected_diverge");
+}

@@ -147,3 +147,39 @@ TEST(CommonGroundContainer, RebuildIncrementsVersion) {
         "WHERE holder_id='cgref-ver' AND kind='common_ground'");
     EXPECT_EQ(v2, 2);
 }
+
+// ── P3.a2: sorted-pair cg_ref 的 parties 过滤(P2.j 遗留修复) ────────────────
+
+namespace {
+void seed_cg_pair(sqlite3* db, const std::string& id, const std::string& sid,
+                  const std::string& parties_json) {
+    std::string s =
+        "INSERT INTO common_ground(id,tenant_id,statement_id,status,parties_json,"
+        "created_at,updated_at) VALUES('" +
+        id + "','default','" + sid + "','grounded','" + parties_json + "'," +
+        "'2026-06-12T09:00:00Z','2026-06-12T09:00:00Z')";
+    sqlite3_exec(db, s.c_str(), nullptr, nullptr, nullptr);
+}
+}  // namespace
+
+TEST(CommonGroundContainer, PairRefFiltersByParties) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    seed_cg_pair(conn.raw(), "cg-ab", "stmt-ab", "[\"alice\",\"bob\"]");
+    seed_cg_pair(conn.raw(), "cg-cd", "stmt-cd", "[\"carol\",\"dave\"]");
+
+    CommonGroundContainer cgc(*adapter);
+    cgc.rebuild(conn, "default", "alice::bob", "2026-06-12T10:00:00Z");
+    const std::string cj = scol(conn.raw(),
+        "SELECT content_json FROM containers WHERE holder_id='alice::bob'");
+    EXPECT_NE(cj.find("stmt-ab"), std::string::npos);
+    EXPECT_EQ(cj.find("stmt-cd"), std::string::npos)
+        << "carol/dave 的共识不得混入 alice::bob 容器: " << cj;
+
+    // 旧语义兼容:无 "::" 的 ref 仍是全租户。
+    cgc.rebuild(conn, "default", "legacy-ref", "2026-06-12T10:00:00Z");
+    const std::string legacy = scol(conn.raw(),
+        "SELECT content_json FROM containers WHERE holder_id='legacy-ref'");
+    EXPECT_NE(legacy.find("stmt-ab"), std::string::npos);
+    EXPECT_NE(legacy.find("stmt-cd"), std::string::npos);
+}

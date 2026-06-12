@@ -42,31 +42,100 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         StmtHandle h(raw);
         if (sqlite3_step(h.get()) == SQLITE_ROW) last_seq = sqlite3_column_int(h.get(), 0);
     }
-    // 2. read statement.written events after checkpoint
-    struct Ev { std::string stmt_id, tenant; int seq; };
+    // 2. read statement.written / statement.superseded events after checkpoint
+    //    (P3.a2:superseding 是 CommonGround 过时治理的主触发器,spec 09_tom §5)
+    struct Ev { std::string stmt_id, tenant, type, payload; int seq; };
     std::vector<Ev> evs;
     {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
-            "SELECT primary_id, tenant_id, outbox_sequence FROM bus_events "
-            "WHERE outbox_sequence > ? AND event_type='statement.written' "
+            "SELECT primary_id, tenant_id, event_type, COALESCE(payload_json,''), "
+            "outbox_sequence FROM bus_events "
+            "WHERE outbox_sequence > ? AND event_type IN "
+            "('statement.written','statement.superseded') "
             "ORDER BY outbox_sequence LIMIT ?", -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(db, "cg_subscriber: read events prepare");
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, last_seq);
         sqlite3_bind_int(h.get(), 2, batch_size);
         while (sqlite3_step(h.get()) == SQLITE_ROW)
-            evs.push_back({col(h.get(), 0), col(h.get(), 1), sqlite3_column_int(h.get(), 2)});
+            evs.push_back({col(h.get(), 0), col(h.get(), 1), col(h.get(), 2),
+                           col(h.get(), 3), sqlite3_column_int(h.get(), 4)});
     }
-    if (evs.empty()) return 0;
 
     CommonGroundWriter writer(adapter);
     neocortex::CommonGroundContainer container(adapter);
     int max_seq = last_seq;
     std::vector<std::pair<std::string, std::string>> rebuilt;   // (tenant, cg_ref) 去重
 
+    // 超时降级(T=24h)每批运行——时间驱动,与事件无关;受影响 pair 先收集
+    // 再 sweep,容器随后统一重建。
+    {
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db,
+            "SELECT tenant_id, parties_json FROM common_ground "
+            "WHERE status='asserted_unack' AND created_at < ?",
+            -1, &raw, nullptr) == SQLITE_OK) {
+            StmtHandle h(raw);
+            // cutoff 与 writer.sweep_timeout_downgrade 同口径(now-24h)。
+            // 直接复用 writer 的扫描:先粗收集所有 asserted_unack 的 pair,
+            // sweep 后只有真降级的行影响容器;多重建无害(幂等)。
+            bind_sv(h.get(), 1, now_iso);   // created_at < now 的超集,sweep 内部再判 24h
+            while (sqlite3_step(h.get()) == SQLITE_ROW) {
+                const std::string tenant = col(h.get(), 0);
+                std::string pj = col(h.get(), 1);
+                try {
+                    auto a = nlohmann::json::parse(pj);
+                    if (a.is_array() && a.size() >= 2)
+                        rebuilt.emplace_back(tenant,
+                            a[0].get<std::string>() + "::" + a[1].get<std::string>());
+                } catch (...) {}
+            }
+        }
+        if (writer.sweep_timeout_downgrade(conn, now_iso) == 0) {
+            rebuilt.clear();   // 没有任何降级,无需为此重建
+        }
+    }
+    if (evs.empty() && rebuilt.empty()) return 0;
+
     for (const auto& ev : evs) {
         max_seq = ev.seq;
+        // ── superseding → SupersedeGround 联动(grounded 旧共识标记被取代)──
+        if (ev.type == "statement.superseded") {
+            std::string old_id, new_id;
+            try {
+                auto p = nlohmann::json::parse(ev.payload);
+                old_id = p.value("old_stmt_id", "");
+                new_id = p.value("new_stmt_id", "");
+            } catch (...) {}
+            if (old_id.empty() || new_id.empty()) continue;
+            struct Hit { std::string cg_id, parties; };
+            std::vector<Hit> hits;
+            {
+                sqlite3_stmt* raw = nullptr;
+                if (sqlite3_prepare_v2(db,
+                    "SELECT id, parties_json FROM common_ground "
+                    "WHERE tenant_id=? AND statement_id=? AND status='grounded' "
+                    "AND superseded_by IS NULL",
+                    -1, &raw, nullptr) != SQLITE_OK)
+                    throw make_sqlite_error(db, "cg_subscriber: superseded select");
+                StmtHandle h(raw);
+                bind_sv(h.get(), 1, ev.tenant);
+                bind_sv(h.get(), 2, old_id);
+                while (sqlite3_step(h.get()) == SQLITE_ROW)
+                    hits.push_back({col(h.get(), 0), col(h.get(), 1)});
+            }
+            for (const auto& hit : hits) {
+                writer.supersede_ground(conn, hit.cg_id, new_id, now_iso);
+                try {
+                    auto a = nlohmann::json::parse(hit.parties);
+                    if (a.is_array() && a.size() >= 2)
+                        rebuilt.emplace_back(ev.tenant,
+                            a[0].get<std::string>() + "::" + a[1].get<std::string>());
+                } catch (...) {}
+            }
+            continue;
+        }
         std::string holder, subject_id, predicate, hash, polarity, sp_json;
         {
             sqlite3_stmt* raw = nullptr;

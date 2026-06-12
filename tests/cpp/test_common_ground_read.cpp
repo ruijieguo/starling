@@ -27,9 +27,12 @@ void seed_stmt(sqlite3* db, const std::string& id, const std::string& obj) {
 // grounded_at, last_confirmed_at, superseded_by, expired_at, audit_actor,
 // created_at, updated_at  (parties_json has DEFAULT '[]'; others nullable)
 void seed_cg(sqlite3* db, const std::string& sid, const std::string& status) {
-    std::string s = "INSERT INTO common_ground(id,tenant_id,statement_id,status,created_at,updated_at)"
+    // P3.a2 起 pair 形 cg_ref("alice::bob")按 parties 过滤,种子行必须挂
+    // 对应 parties(此前 DEFAULT '[]' 依赖全租户镜像缺陷,roadmap 登记修复)。
+    std::string s = "INSERT INTO common_ground(id,tenant_id,statement_id,status,"
+        "parties_json,created_at,updated_at)"
         " VALUES('cg-" + sid + "','default','" + sid + "','" + status +
-        "','2026-06-01T09:00:00Z','2026-06-01T09:00:00Z')";
+        "','[\"alice\",\"bob\"]','2026-06-01T09:00:00Z','2026-06-01T09:00:00Z')";
     sqlite3_exec(db, s.c_str(), nullptr, nullptr, nullptr);
 }
 }  // namespace
