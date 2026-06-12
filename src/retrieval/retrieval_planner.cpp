@@ -139,9 +139,12 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     };
     // 每个 case 决定 statement_main 的附加 WHERE 与 holder。
     std::string extra_where;
+    const bool has_hints = !q.subject_id.empty() || !q.predicate.empty();
     switch (q.intent) {
         case QueryIntent::FACT_LOOKUP:
-            add_step("statement_main", q.querier, q.k * 5);
+            // 无结构化提示时 statement_main 没有选择性(等于按 holder 全量),
+            // 主路改语义;有提示才结构化先行(progressive 低成本优先)。
+            if (has_hints) add_step("statement_main", q.querier, q.k * 5);
             add_step("semantic_index", q.querier, q.k * 5);
             break;
         case QueryIntent::BELIEF_OF_OTHER:
@@ -175,7 +178,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                      static_cast<int>(pctx.common_ids.size()));
             break;
         case QueryIntent::ABSTAIN_CHECK:
-            add_step("statement_main", q.querier, q.k * 5);
+            // exhaustive:有提示带结构化路,语义必跑(不早停)。
+            if (has_hints) add_step("statement_main", q.querier, q.k * 5);
             add_step("semantic_index", q.querier, q.k * 5);
             break;
     }

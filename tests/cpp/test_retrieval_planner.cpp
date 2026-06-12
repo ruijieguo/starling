@@ -210,6 +210,21 @@ TEST(RetrievalPlanner, MetaBeliefRequiresNestedRows) {
     EXPECT_EQ(r.entries[0].row.id, "flat");
 }
 
+TEST(RetrievalPlanner, UnhintedFactLookupGoesSemanticOnly) {
+    // 无 subject/predicate 提示时 statement_main 没有选择性(=按 holder 全量,
+    // 触发早停把语义索引饿死)——主路必须是语义。本例库里无向量 → 语义空
+    // → 结构化拒答;关键断言是路由本身。
+    Rig rig;
+    insert_statement(rig.a->connection(), "noise", "cog-self", "Bob",
+                     "responsible_for", "auth");
+    auto q = rig.q(QueryIntent::FACT_LOOKUP);
+    q.text = "who owns the auth service";
+    const auto r = rig.planner.run(q);
+    ASSERT_EQ(r.receipt.scopes_searched.size(), 1u);
+    EXPECT_EQ(r.receipt.scopes_searched[0], "semantic_index");
+    EXPECT_TRUE(r.abstained);   // 无向量 → 语义零候选 → low_score
+}
+
 TEST(RetrievalPlanner, RejectsScopeFilterMix) {
     Rig rig;
     auto q = rig.q(QueryIntent::BELIEF_OF_OTHER);
