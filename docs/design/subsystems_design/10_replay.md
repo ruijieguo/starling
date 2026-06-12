@@ -341,3 +341,16 @@ Replay 不直接修改 state，而是 emit `statement.decay_candidate`，由 Bus
 - [Statement Bus](v24_05_bus.md) — 事件写入与 replay_derived 路由
 - [Affect Buffer](v24_06_hippocampus.md) — VOLATILE TTL 兜底判断、Idle 优先级影响
 - [Reconsolidation Engine](v24_11_reconsolidation.md) — reconcile 操作的接收方与冲突仲裁
+
+---
+
+## 实现补记(2026-06-12 P3.a3)
+
+Affect Buffer 落地为**派生视图**(`hippocampus/affect_buffer`):成员 = 租户
+VOLATILE 中 salience ≥ θ_buffer(0.6)的 top-C(64),与 spec 堆语义逐条等价
+(容量淘汰=top-C 截断;被替换者留 VOLATILE=平凡成立;跨重启=天然成立),
+零新表零写路径。两个消费点:①采样权重已含 salience(P2.c),优先语义由
+权重携带;②`sweep_volatile_ttl` 豁免成员(spec "超 7 天 AND not in Affect
+Buffer → ARCHIVED" 字面落地)。`reconsolidate.requested`(触发器 #4)接通:
+`request_reconsolidation` 绑定发事件(payload {stmt_id, request_id},同
+request 当日去重),ReconsolidationEngine 批内消费开窗。

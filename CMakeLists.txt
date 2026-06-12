@@ -112,6 +112,7 @@ target_sources(starling_core PRIVATE
     src/tom/depth_estimator.cpp
     src/tom/limiting.cpp
     src/tom/second_order.cpp
+    src/hippocampus/affect_buffer.cpp
     src/tom/mentalizing_believe.cpp
     src/tom/mentalizing_know.cpp
     src/tom/mentalizing_misalign.cpp

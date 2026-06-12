@@ -2,6 +2,7 @@
 #include "starling/affect/affect_vector.hpp"
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/hippocampus/affect_buffer.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
@@ -17,6 +18,8 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace starling::replay {
@@ -355,8 +358,23 @@ int ReplayScheduler::sweep_volatile_ttl(persistence::Connection& conn,
 
     if (expired.empty()) return 0;
 
+    // P3.a3:Affect Buffer 豁免(spec 10_replay:"超 7 天 AND not in Affect
+    // Buffer → ARCHIVED")——高 salience 候选不被 TTL 兜底清理,留给 Replay
+    // 优先采样。成员集逐租户缓存。
+    std::unordered_map<std::string, std::unordered_set<std::string>> buffer_by_tenant;
+    auto in_buffer = [&](const Expired& e) {
+        auto it = buffer_by_tenant.find(e.tenant_id);
+        if (it == buffer_by_tenant.end()) {
+            it = buffer_by_tenant.emplace(
+                e.tenant_id,
+                hippocampus::affect_buffer::member_set(conn, e.tenant_id)).first;
+        }
+        return it->second.count(e.id) > 0;
+    };
+
     int count = 0;
     for (const auto& e : expired) {
+        if (in_buffer(e)) continue;
         const char* upd_sql =
             "UPDATE statements SET consolidation_state='archived' "
             "WHERE id=? AND tenant_id=? AND consolidation_state='volatile'";

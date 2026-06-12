@@ -2189,6 +2189,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| 2026-06-12 P3.a3 动力学小件 | Affect Buffer 落地(派生视图 top-C 高 salience volatile;TTL sweep 豁免成员,§10_replay 实现补记);`reconsolidate.requested` 显式触发路径接通(request_reconsolidation 绑定 → 引擎消费开窗,触发器 #4)。**P3.a 三子里程碑(a1/a2/a3)全部收官** |
 | 2026-06-12 P3.a2 二阶 ToM+CG 补完 | Grounding Acts 七幕齐全(expire/unground/人工确认+audit_actor,migration 0024)；superseding→SupersedeGround 联动 + 24h 超时降级入批 + pair 容器 parties 过滤(P2.j 遗留修复)；双限流补链长半边；二阶生产端(belief_tracker 自动 depth1 建模 + salience 继承,estimator 门控显式 depth2——Adaptive ToM Order 首个 driver)；mentalizing 7/7;二阶准入评测 --order second 阈 0.70(§09_tom 实现补记) |
 | 2026-06-12 P3.a1 检索规划 | 9 种 QueryIntent + 7 步管线（parse/mask/plan/fetch/fuse/ground/abstain，receipt 全程留痕）+ Affect-aware Reranker 五因子 + Abstention Gate 四条件 + Context Pack 8 标签 + Receipt 完整字段/RetrievalScopePlan + 多 holder 隔离与 filter 混合拒绝（§13_retrieval 实现补记；sanitized_query/RRF/WorkGate 裁剪登记） |
 | 2026-06-12 P3.b 改向（用户裁定） | P3.b 自「多底座产品化」重定义为「存储层重构 + OpenClaw 集成」：删除 cloud-store 三形态/dist-store/跨档迁移工具/五家外部迁移脚本（顺延 P3+）；新 b1=local-store 存储抽象（44 文件散落 SQL 收敛进 substrate 访问层、表所有权、局部 keystore crypto_erasure）、b2=OpenClaw memory slot 插件（HTTP API 集成）；准入 TC-A8-002 顺延 P3+，改为插件 e2e（§15.x/§16.4 同步） |

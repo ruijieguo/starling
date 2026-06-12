@@ -181,12 +181,13 @@ EngineStats ReconsolidationEngine::tick_one_batch(
 
         // 5 trigger types:
         //   statement.recalled / statement.references_existing / belief.conflict
-        //   → open window.
+        //   / reconsolidate.requested(P3.a3 显式 API,触发器 #4)→ open window.
         //   commitment.fulfilled / commitment.broken → stub, skip.
         //   others → skip.
         if (ev.event_type == "statement.recalled" ||
             ev.event_type == "statement.references_existing" ||
-            ev.event_type == "belief.conflict") {
+            ev.event_type == "belief.conflict" ||
+            ev.event_type == "reconsolidate.requested") {
             try {
                 const std::string tenant = ev.tenant_id;
                 if (tenant.empty()) continue;

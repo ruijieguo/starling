@@ -124,10 +124,11 @@ TEST(ReplayScheduler, SweepVolatileTTL_OldArchived_RecentUnchanged) {
     auto a = SqliteAdapter::open(":memory:");
     auto& c = a->connection();
 
-    // created_at 8 days before now=2026-05-27
-    seed_volatile(c.raw(), "old_stmt", "2026-05-19T00:00:00Z", 0.8, 0);
+    // created_at 8 days before now=2026-05-27。salience 0.4 < θ_buffer 0.6,
+    // 不在 Affect Buffer(P3.a3 起高 salience 成员豁免 TTL,见下一测试)。
+    seed_volatile(c.raw(), "old_stmt", "2026-05-19T00:00:00Z", 0.4, 0);
     // created_at 2 days before now
-    seed_volatile(c.raw(), "new_stmt", "2026-05-25T00:00:00Z", 0.8, 0);
+    seed_volatile(c.raw(), "new_stmt", "2026-05-25T00:00:00Z", 0.4, 0);
 
     ReplayScheduler sched(*a);
     const int count = sched.sweep_volatile_ttl(c, "2026-05-27T00:00:00Z");
@@ -147,6 +148,28 @@ TEST(ReplayScheduler, SweepVolatileTTL_OldArchived_RecentUnchanged) {
         "SELECT COUNT(*) FROM bus_events "
         "WHERE event_type='statement.archived' AND primary_id='new_stmt'"),
         0);
+}
+
+// ── P3.a3: Affect Buffer 成员豁免 TTL(spec 10_replay "AND not in Affect
+// Buffer")——高 salience 超期 volatile 不被兜底归档,留给 Replay 优先采样。──
+
+TEST(ReplayScheduler, SweepVolatileTTL_AffectBufferMemberExempt) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+
+    // 两条都超期 8 天:hot(0.9 ≥ θ 0.6)在 buffer → 豁免;dull(0.3)归档。
+    seed_volatile(c.raw(), "hot_stmt",  "2026-05-19T00:00:00Z", 0.9, 0);
+    seed_volatile(c.raw(), "dull_stmt", "2026-05-19T00:00:00Z", 0.3, 0);
+
+    ReplayScheduler sched(*a);
+    const int count = sched.sweep_volatile_ttl(c, "2026-05-27T00:00:00Z");
+    EXPECT_EQ(count, 1);
+    EXPECT_EQ(scol(c.raw(),
+        "SELECT consolidation_state FROM statements WHERE id='hot_stmt'"),
+        "volatile");
+    EXPECT_EQ(scol(c.raw(),
+        "SELECT consolidation_state FROM statements WHERE id='dull_stmt'"),
+        "archived");
 }
 
 // ── Test 4: tick_online counter increments, sampling on 3rd call ──

@@ -119,3 +119,31 @@ def test_grounding_seven_acts_bindings(tmp_path):
         assert {"assert", "acknowledge", "unground", "expire"} <= acts
     finally:
         mem.close()
+
+
+def test_request_reconsolidation_opens_window(tmp_path):
+    """P3.a3:reconsolidate.requested 显式触发(#4)→ 引擎异步开窗。"""
+    db = str(tmp_path / "recon.db")
+    llm = starling.make_stub_llm(default_response=CANNED)
+    mem = starling.Memory.open(db, agent="alice", llm=llm)
+    try:
+        assert mem.remember("Bob owns the auth module").outcome == "accepted"
+        mem.tick()   # 巩固(窗口只对 CONSOLIDATED/ARCHIVED 开)
+        ro = sqlite3.connect(db)
+        stmt_id = ro.execute(
+            "SELECT id FROM statements WHERE consolidation_state='consolidated'"
+        ).fetchone()[0]
+
+        ev_id = _core.request_reconsolidation(
+            mem._rt.adapter, "default", stmt_id, "req-001", NOW)
+        assert ev_id
+
+        eng = _core.ReconsolidationEngine(mem._rt.adapter)
+        eng.tick_one_batch(NOW)
+        n = ro.execute(
+            "SELECT COUNT(*) FROM reconsolidation_windows WHERE stmt_id=?",
+            (stmt_id,)).fetchone()[0]
+        ro.close()
+        assert n == 1
+    finally:
+        mem.close()
