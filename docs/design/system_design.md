@@ -1701,7 +1701,7 @@ statement.written × 3
 | 子阶段 | 周数 | 核心交付 | 验收方式 |
 |---|---|---|---|
 | P3.a 检索规划 + 二阶 ToM | 4 周 | Retrieval Planner 完整 7 步 + 9 种 QueryIntent；perspective filter（iterative masking）；Abstention 判定；Context Pack Builder 8 标签；二阶 ToM（nesting_depth=2）全链路；ToMDepthEstimator（A-ToM 风格）；CommonGround 完整 grounding acts；Affect Buffer 参与采样 | ToMBench / FANToM / SoMi-ToM 全量；二阶 ToM 主动提示 precision > 70%；ToMDepth 估计 accuracy > 60% |
-| P3.b 多底座产品化 | 4 周 | Substrate Adapter 三档 profile 全量交付：local-store（目标形态 seekdb+LadybugDB；P1/P2 当前实现落在 raw SQLite + 暴力 BLOB 向量，seekdb 后端经 `VectorIndex` seam 后续接入）；dist-store（Postgres+pgvector+AGE，原规划 P2，未落地，顺延至 P3.b）；P3.b 交付 cloud-store 三形态（单云原生 AWS/GCP/Azure、混合托管、跨云 SaaS）；P1↔P2↔P3 跨档迁移工具；mem0 / Letta / cognee / Graphiti / memU 迁移脚本；评测体系全量跑通；API 文档 + 接入指南 | 用户主观评测 A/B 对照；跨档迁移 + 5 种外部系统迁移集成测试 |
+| P3.b 存储层重构 + OpenClaw 集成（2026-06-12 改向，原"多底座产品化"） | 4 周 | b1 local-store 优化与存储抽象：数据访问收敛进 substrate 访问层（§2.1 三层抽象真正落地）——按表所有权划分 store 接口（每表唯一 writer 模块）、SQL 单一来源（改向时实测 44 个 C++ 文件在 persistence/ 之外手搓 SQL）、schema 演进与索引治理、性能基线；crypto_erasure 改局部 keystore（真云 KMS 顺延 P3+）。b2 OpenClaw memory 插件：Starling 作 OpenClaw memory slot provider（auto-capture→remember、auto-recall→working_set、memory_search→recall；走 dashboard HTTP API）；评测全量；API 文档（插件即首个外部消费方）。删除：cloud-store 三形态、dist-store、跨档迁移工具、五家外部系统迁移脚本（均顺延 P3+）；TypeScript NAPI 降按需 | 用户主观评测 A/B 对照；OpenClaw 插件 e2e 集成测试（替代原跨档迁移 + 5 种迁移集成测试） |
 | P3.c 规模化优化 | 4 周 | 完整 ScopedWorkGate / RestartGuard / stage_timing；RuntimeHealth 完整仪表盘与自动背压调度；完整 SourceAdapter 插件系统；dimension-level Container CAS；segment_map / span_start / span_end；ActionPolicyGraph 8 规则完整版；PipelineStepContract 通用 step graph；Retrieval 多源 fan-out latency budget | P3 规模化负载测试：1000 Cognizer × 10000 Statement × 100 QPS 检索 |
 
 ### 15.2 P1 内部里程碑 M0.0 - M0.7
@@ -2036,7 +2036,7 @@ P2 开始前必须满足：
 
 P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 形式化 belief base（可选高阶）；神经-符号混合实验。P3+ 不设出货门槛，P3 结束后按研究进度迭代。
 
-**P3 准入用例（迁移自 §15.3）**：TC-A8-002（cloud-graphiti 跨 Postgres + Neo4j + Qdrant saga 补偿）须在 P3.b 多底座产品化中通过，作为 dist/cloud-store profile 的准入条件之一。其 Given 引用 cloud-store 三库底座，P1 不交付，按 §15.3.0 元规则归入此处。
+**P3 准入用例（迁移自 §15.3）**：TC-A8-002（cloud-graphiti 跨 Postgres + Neo4j + Qdrant saga 补偿）原定 P3.b 多底座产品化通过。**2026-06-12 改向**：P3.b 重定义为「存储层重构 + OpenClaw 集成」，cloud-store/dist-store 自 P3 移除，TC-A8-002 随之顺延 P3+（其 Given 引用的三库底座不再在 P3 交付）；P3.b 准入改为 OpenClaw memory 插件 e2e 集成测试。见附录 H。
 
 依赖：P3+ 的群聊 SharedGround 需要 P2 CommonGround pool 作为基础；PDDL 形式化 belief base 需要 P3 Context Pack Builder 稳定后才有足够结构化输入；Multi-agent 信任传播需要 P2 KnowledgeFrontier + P3 ToMDepthEstimator 联合驱动。
 
@@ -2067,7 +2067,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 | Retrieval P3 多源 fan-out latency budget | P3 | 实际负载成点才能估准默认值 |
 | PipelineStepContract/requires/produces/failure_policy 通用 step graph | P3 | P1 只记录 pipeline_name/version/status/counters |
 | seekdb 单引擎 local-store 后端 | P3 | 当前 local-store 以 raw SQLite + 暴力 BLOB 向量落地；seekdb 后端经 `VectorIndex` seam 后接（seekdb 为 MySQL-wire 守护进程，无可嵌入 C++ SDK） |
-| dist-store（Postgres+pgvector+AGE）底座 | P3.b（原规划 P2） | P2 未落地，顺延至 P3.b 多底座产品化；当前仅 local-store SQLite 单租户 |
+| dist-store（Postgres+pgvector+AGE）底座 | P3+（2026-06-12 自 P3.b 顺延） | P2 未落地；P3.b 改向「存储层重构 + OpenClaw 集成」后 dist/cloud-store 均出 P3 范围；当前仅 local-store SQLite 单租户，P3.b 专注其抽象与优化 |
 | 应用接口层（`Memory` 门面 + Working Set 渲染 + quickstart 示例） | P2（收尾 P2.e） | 「支持小规模应用」所需的可用 facade；P2.a–c 仅交付 `_core` 绑定 + Runtime 监督器，无 agent 可直接消费的入口 |
 | 承诺履行 100 条 / LongMemEval 评测准入 | P2（收尾 P2.f） | P2.c 走 tests-only；roadmap P2 准入的 eval（承诺履行 detection/timeliness、LongMemEval 时间/更新）尚未跑通 |
 
@@ -2189,6 +2189,7 @@ P3+ 研究方向：群聊 SharedGround 维护；Multi-agent 信任传播；PDDL 
 
 | 版本跨度 | 主题 |
 |---|---|
+| 2026-06-12 P3.b 改向（用户裁定） | P3.b 自「多底座产品化」重定义为「存储层重构 + OpenClaw 集成」：删除 cloud-store 三形态/dist-store/跨档迁移工具/五家外部迁移脚本（顺延 P3+）；新 b1=local-store 存储抽象（44 文件散落 SQL 收敛进 substrate 访问层、表所有权、局部 keystore crypto_erasure）、b2=OpenClaw memory slot 插件（HTTP API 集成）；准入 TC-A8-002 顺延 P3+，改为插件 e2e（§15.x/§16.4 同步） |
 | 2026-06-12 P2.o 运行时闭环 | 写后泵生产宿主修正（`memoryops::remember` 尾部，`Bus::write` 生产无调用者致五订阅者从未运行，§05_bus）；出生 salience 0→中性公式值 ≈0.0144（0 使重放采样权重恒 0、巩固锁死，§3.9 注）；`tick_all` 扩为周期维护（嵌入→承诺→grounding→回放巩固→投影兜底→出箱收敛）；嵌入式 dispatch 语义 delivered=进程内交付完成（§05_bus）；dashboard 默认 30s 后台维护线程（tick_interval_s，0=关）。写→读闭环首次无人工干预成立 |
 | 2026-06-11 边界裁定 | §2.0 多语言绑定新增边界规范（核心语义必须居于 C++，绑定层只做应用适配）；Working Set 自 Python 归位 C++ `src/hippocampus/`（海马体首个代码模块）；§05_bus 补生产侧幂等去重契约（审计/通知事件 OR IGNORE vs 业务事件 fail-loud，record_attempt 同构） |
 | v24.1 → 2026-06-10 审计对齐 | P1/P2 全部完成后实现现状回写：§2.1 存储标注（raw SQLite + BLOB 向量为实际落地，seekdb/dist-store 顺延 P3.b）、§2.4 补 Dashboard 子系统、§2.3/§3.5 decay 与 Commitment 保护改为 CAS/表实现的等价机制、§3.1.2 KnowledgeFrontier 计算视图 + proj_*/statement_vectors 补记、§3.3 scope_parties_json/last_replay_batch_id 列与 predicate 分级注册表、§3.6 子类无 type 列 + Commitment 扩展表、§3.7 Persona 两锚仲裁、§3.10 commitment.* 改 P2 + 实现新增事件表 + evidence.redacted/erased producer 现状、§14/§15.1 XML→JSON 抽取 + TypeScript 绑定降级、§15 P2 收官、§16.5 Prospective Loop/ToMDepthEstimator 已交付与 RuntimeHealth 背压归 P3.c、配置文件名统一 ~/.starling/starling.json |
