@@ -28,6 +28,11 @@ struct StatementRow {
     std::string review_status;
     std::string evidence_json;       // raw JSON array of EvidenceRef-like dicts
     std::string affect_json;         // raw affect JSON ("{}" if absent); P2.e
+    // P3.b1 phase 3:MetaStore 读收编的高频扩展列(默认空/0,旧 SELECT 不读不受影响)。
+    double      salience{};          // statements.salience
+    double      activation{};        // statements.activation
+    std::string provenance;          // statements.provenance
+    int         nesting_depth{};     // statements.nesting_depth
 };
 
 }  // namespace starling::retrieval
