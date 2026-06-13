@@ -80,6 +80,8 @@ target_sources(starling_core PRIVATE
     src/bus/conflict_probe.cpp
     src/bus/conflict_key_backfill.cpp
     src/persistence/sqlite_adapter.cpp
+    src/store/sqlite_graph_store.cpp
+    src/store/store_bundle.cpp
     src/evidence/engram.cpp
     src/evidence/ingest_policy_resolver.cpp
     src/evidence/evidence_validator.cpp
