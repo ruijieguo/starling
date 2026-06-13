@@ -1,10 +1,8 @@
 #include "starling/tom/mentalizing.hpp"
 
-#include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_meta_store.hpp"
 
-#include <sqlite3.h>
 #include <cmath>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,88 +10,6 @@
 namespace starling::tom::mentalizing {
 
 namespace {
-
-// Fetch all consolidated/archived beliefs held by holder about (subject_kind,
-// subject_id) for the given tenant, time-anchored at as_of.
-std::vector<retrieval::StatementRow> fetch_beliefs(
-    sqlite3* db,
-    std::string_view tenant,
-    std::string_view holder,
-    std::string_view subject_kind,
-    std::string_view subject_id,
-    std::string_view as_of)
-{
-    static constexpr const char* kSql =
-        "SELECT id, tenant_id, holder_id, holder_perspective,"
-        "       subject_kind, subject_id, predicate,"
-        "       object_kind, object_value, canonical_object_hash,"
-        "       modality, polarity, confidence, observed_at,"
-        "       valid_from, valid_to, consolidation_state, review_status,"
-        "       evidence_json"
-        "  FROM statements"
-        " WHERE tenant_id = ?1"
-        "   AND holder_id = ?2"
-        "   AND subject_kind = ?3"
-        "   AND subject_id = ?4"
-        "   AND consolidation_state IN ('consolidated','archived')"
-        "   AND review_status NOT IN ('rejected','pending_review')"
-        "   AND (valid_from IS NULL OR valid_from <= ?5)"
-        "   AND (valid_to   IS NULL OR valid_to   >  ?5)";
-
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, kSql, -1, &raw, nullptr) != SQLITE_OK) {
-        throw std::runtime_error(
-            std::string("find_misalignment fetch prepare: ") + sqlite3_errmsg(db));
-    }
-    persistence::StmtHandle h{raw};
-
-    sqlite3_bind_text(raw, 1, tenant.data(), static_cast<int>(tenant.size()),
-                      SQLITE_TRANSIENT);
-    sqlite3_bind_text(raw, 2, holder.data(), static_cast<int>(holder.size()),
-                      SQLITE_TRANSIENT);
-    sqlite3_bind_text(raw, 3, subject_kind.data(),
-                      static_cast<int>(subject_kind.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(raw, 4, subject_id.data(), static_cast<int>(subject_id.size()),
-                      SQLITE_TRANSIENT);
-    sqlite3_bind_text(raw, 5, as_of.data(), static_cast<int>(as_of.size()),
-                      SQLITE_TRANSIENT);
-
-    std::vector<retrieval::StatementRow> rows;
-    while (true) {
-        const int rc = sqlite3_step(raw);
-        if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW) {
-            throw std::runtime_error(
-                std::string("find_misalignment fetch step: ") + sqlite3_errmsg(db));
-        }
-        auto col_text = [raw](int i) -> std::string {
-            const unsigned char* t = sqlite3_column_text(raw, i);
-            return t ? std::string(reinterpret_cast<const char*>(t)) : std::string{};
-        };
-        retrieval::StatementRow r;
-        r.id                    = col_text(0);
-        r.tenant_id             = col_text(1);
-        r.holder_id             = col_text(2);
-        r.holder_perspective    = col_text(3);
-        r.subject_kind          = col_text(4);
-        r.subject_id            = col_text(5);
-        r.predicate             = col_text(6);
-        r.object_kind           = col_text(7);
-        r.object_value          = col_text(8);
-        r.canonical_object_hash = col_text(9);
-        r.modality              = col_text(10);
-        r.polarity              = col_text(11);
-        r.confidence            = sqlite3_column_double(raw, 12);
-        r.observed_at           = col_text(13);
-        r.valid_from            = col_text(14);
-        r.valid_to              = col_text(15);
-        r.consolidation_state   = col_text(16);
-        r.review_status         = col_text(17);
-        r.evidence_json         = col_text(18);
-        rows.push_back(std::move(r));
-    }
-    return rows;
-}
 
 // Key for aligning beliefs: (predicate, canonical_object_hash).
 struct BeliefKey {
@@ -124,10 +40,21 @@ Misalignment find_misalignment(
     std::string_view tenant,
     std::string_view as_of)
 {
-    sqlite3* db = adapter.connection().raw();
-
-    auto x_rows = fetch_beliefs(db, tenant, x, subject_kind, subject_id, as_of);
-    auto y_rows = fetch_beliefs(db, tenant, y, subject_kind, subject_id, as_of);
+    // P3.b1 phase 3:两侧信念读收编进 MetaStore.query_statements —— 默认 state
+    // IN(consolidated,archived) + review 守卫 + as_of 时间窗即原 fetch_beliefs
+    // WHERE。比较逻辑(polarity/confidence 对齐)保持不变。
+    store::SqliteMetaStore meta(adapter.connection());
+    auto fetch = [&](std::string_view holder) {
+        store::StatementFilter f;
+        f.tenant_id     = std::string(tenant);
+        f.holder_id     = std::string(holder);
+        f.subject_kind  = std::string(subject_kind);
+        f.subject_id    = std::string(subject_id);
+        f.as_of_iso8601 = std::string(as_of);
+        return meta.query_statements(f);
+    };
+    auto x_rows = fetch(x);
+    auto y_rows = fetch(y);
 
     // Build lookup maps by belief key.
     std::unordered_map<BeliefKey, retrieval::StatementRow, BeliefKeyHash> x_map, y_map;
