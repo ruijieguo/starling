@@ -15,6 +15,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
+#include "starling/store/sqlite_meta_store.hpp"
 #include "starling/tom/common_ground.hpp"
 
 namespace starling::retrieval {
@@ -252,19 +253,13 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                                          "statement_main_only"});
         for (const auto& s : sr.rows) {
             FetchedRow f; f.row = s.row; f.base = s.score;
-            // salience/activation/provenance 语义路径不带列 → 单行补查。
-            sqlite3_stmt* raw = nullptr;
-            if (sqlite3_prepare_v2(db,
-                "SELECT salience, activation, provenance FROM statements "
-                "WHERE id=?1 AND tenant_id=?2", -1, &raw, nullptr) == SQLITE_OK) {
-                StmtHandle h(raw);
-                bind_sv(h.get(), 1, s.row.id); bind_sv(h.get(), 2, q.tenant_id);
-                if (sqlite3_step(h.get()) == SQLITE_ROW) {
-                    f.salience   = sqlite3_column_double(h.get(), 0);
-                    f.activation = sqlite3_column_double(h.get(), 1);
-                    const auto* p = sqlite3_column_text(h.get(), 2);
-                    f.provenance = p ? reinterpret_cast<const char*>(p) : "";
-                }
+            // salience/activation/provenance 语义路径不带列 → 点查补全。
+            // P3.b1 phase 3:补查收编进 MetaStore.get_statement。
+            store::SqliteMetaStore enrich_meta(conn);
+            if (const auto full = enrich_meta.get_statement(s.row.id, q.tenant_id)) {
+                f.salience   = full->salience;
+                f.activation = full->activation;
+                f.provenance = full->provenance;
             }
             fetched.push_back(std::move(f));
         }

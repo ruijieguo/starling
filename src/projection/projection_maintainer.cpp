@@ -11,6 +11,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_meta_store.hpp"
 
 #include <sqlite3.h>
 
@@ -87,35 +88,22 @@ struct StmtRow {
 
 StmtRow read_stmt(persistence::Connection& conn, std::string_view stmt_id,
                   std::string_view tenant_id) {
-    const char* sql =
-        "SELECT tenant_id, holder_id, subject_kind, subject_id, predicate, "
-        "       consolidation_state, observed_at, salience, modality, review_status "
-        "FROM statements WHERE id = ? AND tenant_id = ?";
-    sqlite3_stmt* raw = nullptr;
+    // P3.b1 phase 3:点查收编进 MetaStore.get_statement(纯 id+tenant,字段全覆盖)。
+    store::SqliteMetaStore meta(conn);
     StmtRow row;
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return row;
-    StmtHandle h(raw);
-    bind_sv(h.get(), 1, stmt_id);
-    bind_sv(h.get(), 2, tenant_id);
-    if (sqlite3_step(h.get()) == SQLITE_ROW) {
-        auto get_text = [&](int col) -> std::string {
-            const char* t = reinterpret_cast<const char*>(
-                sqlite3_column_text(h.get(), col));
-            return t ? t : "";
-        };
-        row.tenant_id           = get_text(0);
-        row.holder_id           = get_text(1);
-        row.subject_kind        = get_text(2);
-        row.subject_id          = get_text(3);
-        row.predicate           = get_text(4);
-        row.consolidation_state = get_text(5);
-        row.observed_at         = get_text(6);
-        row.salience            = sqlite3_column_double(h.get(), 7);
-        row.modality            = get_text(8);
-        row.review_status       = get_text(9);
-        row.found               = true;
-    }
+    const auto r = meta.get_statement(stmt_id, tenant_id);
+    if (!r) return row;
+    row.tenant_id           = r->tenant_id;
+    row.holder_id           = r->holder_id;
+    row.subject_kind        = r->subject_kind;
+    row.subject_id          = r->subject_id;
+    row.predicate           = r->predicate;
+    row.consolidation_state = r->consolidation_state;
+    row.observed_at         = r->observed_at;
+    row.salience            = r->salience;
+    row.modality            = r->modality;
+    row.review_status       = r->review_status;
+    row.found               = true;
     return row;
 }
 
