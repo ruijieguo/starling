@@ -138,6 +138,7 @@ add_executable(starling_tests
     test_retrieval_planner.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp
+    test_statement_store.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
