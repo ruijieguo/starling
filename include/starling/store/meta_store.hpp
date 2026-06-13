@@ -28,6 +28,7 @@ struct StatementFilter {
     std::string holder_perspective;
     std::string provenance;
     int nesting_depth_ge = -1;                      // >=0 时启用 nesting_depth >= ?
+    double salience_ge = -1.0;                      // >=0 时启用 salience >= ?(affect buffer)
     // 状态:空 = 默认 {consolidated,archived};显式设覆盖(如 {"volatile"})。
     std::vector<std::string> consolidation_states;
     bool default_review_guard = true;               // review NOT IN(rejected,pending_review)

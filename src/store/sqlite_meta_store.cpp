@@ -104,6 +104,10 @@ std::vector<retrieval::StatementRow> SqliteMetaStore::query_statements(
         sql += " AND nesting_depth >= ?";
         binds.push_back(std::to_string(f.nesting_depth_ge));
     }
+    if (f.salience_ge >= 0.0) {
+        sql += " AND salience >= ?";
+        binds.push_back(std::to_string(f.salience_ge));
+    }
     if (!f.as_of_iso8601.empty()) {
         sql += " AND (valid_from IS NULL OR valid_from <= ?)"
                " AND (valid_to   IS NULL OR valid_to   >  ?)";
@@ -112,7 +116,8 @@ std::vector<retrieval::StatementRow> SqliteMetaStore::query_statements(
     }
     // order_by 白名单(防注入:只接受固定值)。
     if (f.order_by == "observed_at ASC" || f.order_by == "observed_at DESC" ||
-        f.order_by == "salience DESC"   || f.order_by == "created_at ASC")
+        f.order_by == "salience DESC"   || f.order_by == "created_at ASC" ||
+        f.order_by == "salience DESC, created_at ASC")
         sql += " ORDER BY " + f.order_by;
     if (f.limit > 0) sql += " LIMIT " + std::to_string(f.limit);
 

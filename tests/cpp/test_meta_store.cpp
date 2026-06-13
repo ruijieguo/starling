@@ -135,6 +135,30 @@ TEST(MetaStore, QueryVolatileByProvenanceWithOrderAndLimit) {
     EXPECT_EQ(rows[0].id, "v2");   // 最新的 user_input volatile
 }
 
+TEST(MetaStore, QuerySalienceGeNoReviewGuardDoubleKeyOrder) {
+    // affect_buffer 模式:volatile + salience>=θ,无 review 守卫,salience DESC
+    // 双键排序取 top-C。
+    auto a = make_adapter();
+    SqliteMetaStore m(a->connection());
+    seed(a->connection(), "hot",  "cog-self", "Bob", "knows", "volatile",
+         "user_input", 0, /*salience=*/0.9);
+    seed(a->connection(), "mid",  "cog-self", "Bob", "knows", "volatile",
+         "user_input", 0, 0.7);
+    seed(a->connection(), "dull", "cog-self", "Bob", "knows", "volatile",
+         "user_input", 0, 0.3);
+    StatementFilter f;
+    f.tenant_id = "default";
+    f.consolidation_states = {"volatile"};
+    f.salience_ge = 0.6;
+    f.default_review_guard = false;
+    f.order_by = "salience DESC, created_at ASC";
+    f.limit = 10;
+    const auto rows = m.query_statements(f);
+    ASSERT_EQ(rows.size(), 2u);     // hot + mid (>=0.6)
+    EXPECT_EQ(rows[0].id, "hot");   // salience DESC
+    EXPECT_EQ(rows[1].id, "mid");
+}
+
 TEST(MetaStore, QueryAsOfTimeWindow) {
     auto a = make_adapter();
     SqliteMetaStore m(a->connection());
