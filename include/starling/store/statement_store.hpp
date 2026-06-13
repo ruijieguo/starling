@@ -12,6 +12,35 @@
 
 namespace starling::store {
 
+// 仲裁分叉行(reconsolidation severe-contradict):复制 old 行字段 + 新 id +
+// provenance='reconsolidation_derived' + state='consolidated' + supersedes_id。
+// salience/activation 以字符串复制(保真 arbitration:364 的 col_str 取值)。
+struct ArbitratedFork {
+    std::string new_id;
+    std::string tenant_id;
+    std::string holder_id;
+    std::string holder_perspective;
+    std::string subject_kind;
+    std::string subject_id;
+    std::string predicate;
+    std::string object_kind;
+    std::string object_value;
+    std::string canonical_object_hash;
+    std::string canonical_object_hash_version;
+    std::string modality;
+    std::string polarity;
+    double confidence = 0.0;
+    std::string observed_at;
+    std::string salience_str;
+    std::string affect_json;
+    std::string activation_str;
+    std::string last_accessed;
+    std::string review_status;
+    std::string supersedes_id;
+    std::string created_at;
+    std::string updated_at;
+};
+
 class StatementStore {
 public:
     virtual ~StatementStore() = default;
@@ -68,6 +97,11 @@ public:
     virtual void inherit_salience(std::string_view id, std::string_view tenant,
                                   double min_salience,
                                   std::string_view affect_json) = 0;
+
+    // ── 派生插入 ──
+    // 仲裁分叉 INSERT(reconsolidation severe-contradict);不 emit event(调用方
+    // 在 SAVEPOINT 内自行发 3 事件,防重入)。
+    virtual void insert_arbitrated_fork(const ArbitratedFork&) = 0;
 };
 
 }  // namespace starling::store

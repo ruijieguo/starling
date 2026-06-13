@@ -234,6 +234,50 @@ void SqliteStatementStore::set_confidence_consolidated(
         throw make_sqlite_error(db, "StatementStore::set_confidence_consolidated step");
 }
 
+void SqliteStatementStore::insert_arbitrated_fork(const ArbitratedFork& f) {
+    // exact 自 src/reconsolidation/arbitration.cpp:364(severe-contradict 分叉)。
+    // provenance/consolidation_state 硬编码;salience/activation 字符串复制。
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "INSERT INTO statements("
+        "id, tenant_id, holder_id, holder_perspective, subject_kind, subject_id, "
+        "predicate, object_kind, object_value, canonical_object_hash, "
+        "canonical_object_hash_version, modality, polarity, confidence, observed_at, "
+        "salience, affect_json, activation, last_accessed, provenance, "
+        "consolidation_state, review_status, supersedes_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+        "'reconsolidation_derived','consolidated',?,?,?,?)";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "StatementStore::insert_arbitrated_fork prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(),  1, f.new_id);
+    bind_sv(h.get(),  2, f.tenant_id);
+    bind_sv(h.get(),  3, f.holder_id);
+    bind_sv(h.get(),  4, f.holder_perspective);
+    bind_sv(h.get(),  5, f.subject_kind);
+    bind_sv(h.get(),  6, f.subject_id);
+    bind_sv(h.get(),  7, f.predicate);
+    bind_sv(h.get(),  8, f.object_kind);
+    bind_sv(h.get(),  9, f.object_value);
+    bind_sv(h.get(), 10, f.canonical_object_hash);
+    bind_sv(h.get(), 11, f.canonical_object_hash_version);
+    bind_sv(h.get(), 12, f.modality);
+    bind_sv(h.get(), 13, f.polarity);
+    sqlite3_bind_double(h.get(), 14, f.confidence);
+    bind_sv(h.get(), 15, f.observed_at);
+    bind_sv(h.get(), 16, f.salience_str);
+    bind_sv(h.get(), 17, f.affect_json);
+    bind_sv(h.get(), 18, f.activation_str);
+    bind_sv(h.get(), 19, f.last_accessed);
+    bind_sv(h.get(), 20, f.review_status);
+    bind_sv(h.get(), 21, f.supersedes_id);
+    bind_sv(h.get(), 22, f.created_at);
+    bind_sv(h.get(), 23, f.updated_at);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "StatementStore::insert_arbitrated_fork step");
+}
+
 void SqliteStatementStore::inherit_salience(
     std::string_view id, std::string_view tenant, double min_salience,
     std::string_view affect_json) {

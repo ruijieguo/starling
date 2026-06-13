@@ -136,7 +136,8 @@ class GraphStore {
 
 ## 8. 验收
 
-- 写点普查脚本复跑:statements/edges/vectors 的写 SQL 只在 store/(+testing 豁免)。
-- ci_static_scan 新红线:store/persistence/testing 外出现 `INSERT INTO statements` 即 fail。
+- 写点普查脚本复跑:statements 的写 SQL 只在 store/ + `bus/statement_writer.cpp`(statements INSERT 唯一受控授权写者)+ testing;edges/vectors 写只在 store/(+testing)。
+- ci_static_scan 红线#2(已落 phase 2):store/ + statement_writer.cpp + testing 外出现 `INSERT INTO statements` / `UPDATE statements` 即 fail。
+- 注:`StatementWriter`(bus/)是 statements INSERT 的既有受控授权接口(返回 `StatementWriteOutcome`),已满足 req #1「写经接口」实质;物理迁移到 `src/store/`(纯命名空间 bus→store)降级为后续清理项,phase 2 不做。
 - ProfileCapability preflight 生效;`StoreBundle::open_local()` 装配三引擎。
 - 全量门 + dashboard remember→tick→recall 闭环不变(phase 1–4);zvec 换装后召回质量不退(phase 5)。

@@ -211,6 +211,38 @@ TEST(StatementStore, SetConfidenceConsolidated) {
     EXPECT_EQ(state_of(a->connection(), "s1"), "consolidated");
 }
 
+TEST(StatementStore, InsertArbitratedForkCopiesOldWithDerivedProvenance) {
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "old1", "consolidated");   // 被取代的旧行
+    ArbitratedFork f;
+    f.new_id = "fork1"; f.tenant_id = "default";
+    f.holder_id = "cog-self"; f.holder_perspective = "FIRST_PERSON";
+    f.subject_kind = "cognizer"; f.subject_id = "Bob";
+    f.predicate = "knows"; f.object_kind = "str"; f.object_value = "y";
+    f.canonical_object_hash = "h-y"; f.canonical_object_hash_version = "v1";
+    f.modality = "KNOWS"; f.polarity = "POS"; f.confidence = 0.85;
+    f.observed_at = "2026-06-10T00:00:00Z";
+    f.salience_str = "0.5"; f.affect_json = "{}"; f.activation_str = "0.0";
+    f.last_accessed = "2026-06-10T00:00:00Z"; f.review_status = "approved";
+    f.supersedes_id = "old1";
+    f.created_at = "2026-06-13T00:00:00Z"; f.updated_at = "2026-06-13T00:00:00Z";
+    st.insert_arbitrated_fork(f);
+
+    EXPECT_EQ(state_of(a->connection(), "fork1"), "consolidated");
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT provenance FROM statements WHERE id='fork1'"),
+        "reconsolidation_derived");
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT supersedes_id FROM statements WHERE id='fork1'"), "old1");
+    EXPECT_NEAR(dcol(a->connection(),
+        "SELECT confidence FROM statements WHERE id='fork1'"), 0.85, 1e-9);
+    EXPECT_NEAR(dcol(a->connection(),
+        "SELECT salience FROM statements WHERE id='fork1'"), 0.5, 1e-9);
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT subject_id FROM statements WHERE id='fork1'"), "Bob");
+}
+
 TEST(StatementStore, InheritSalienceTakesMax) {
     auto a = make_adapter();
     SqliteStatementStore st(a->connection());

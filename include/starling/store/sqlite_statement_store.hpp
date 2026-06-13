@@ -32,6 +32,7 @@ public:
                                      double) override;
     void inherit_salience(std::string_view, std::string_view, double,
                           std::string_view) override;
+    void insert_arbitrated_fork(const ArbitratedFork&) override;
 
 private:
     persistence::Connection& conn_;

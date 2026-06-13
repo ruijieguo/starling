@@ -41,6 +41,20 @@ FORBIDDEN_PATTERNS = (
 NOLINT_TAG = "NOLINT(starling-testing-isolation)"
 SOURCE_SUFFIXES = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h", ".py", ".pyi", ".js", ".ts"}
 
+# Defense-line #2 (P3.b1 phase 2): statements 写收编。所有 statements 表的
+# INSERT/UPDATE 只允许活在存储层(src/store/)、其唯一受控 INSERT 授权写者
+# (src/bus/statement_writer.cpp),或测试(src/testing/)。其余子系统必须经
+# StatementStore 语义方法,不得手搓 SQL —— 防止写不变式(六态机守卫)散落回潮。
+STATEMENTS_WRITE_PATTERNS = (
+    re.compile(r"\bINSERT INTO statements\b"),
+    re.compile(r"\bUPDATE statements\b"),
+)
+STATEMENTS_WRITE_ALLOWED = (
+    "src/store",
+    "src/bus/statement_writer.cpp",
+    "src/testing",
+)
+
 
 def _iter_source_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*"):
@@ -123,6 +137,32 @@ def scan(prod_roots: list[Path], allowed_roots: list[Path]) -> list[str]:
     return violations
 
 
+def scan_statements_ownership(src_root: Path, allowed: list[Path]) -> list[str]:
+    """statements 写收编红线:src/ 下非授权 .cpp 出现 INSERT/UPDATE statements 即违规。"""
+    violations: list[str] = []
+    if not src_root.exists():
+        return violations
+    for path in _iter_source_files(src_root):
+        if path.suffix not in {".cpp", ".cc", ".cxx"}:
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if any(_is_under(resolved, a) for a in allowed):
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for idx, line in enumerate(lines):
+            if NOLINT_TAG in line:
+                continue
+            for pattern in STATEMENTS_WRITE_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        f"{path}:{idx + 1}: statements 写未收编进 StatementStore: "
+                        f"{line.strip()}")
+    return violations
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -153,13 +193,22 @@ def main() -> int:
     allowed_roots = [(cwd / r).resolve() for r in args.allowed_roots]
 
     violations = scan(prod_roots, allowed_roots)
-
     if violations:
         print("CI static scan FAILED — testing namespace leaked into prod roots:")
         for v in violations:
             print(f"  {v}")
         return 1
     print("CI static scan OK — no forbidden testing references in prod roots.")
+
+    # Defense-line #2: statements 写收编。
+    stmt_allowed = [(cwd / r).resolve() for r in STATEMENTS_WRITE_ALLOWED]
+    stmt_violations = scan_statements_ownership(cwd / "src", stmt_allowed)
+    if stmt_violations:
+        print("CI static scan FAILED — statements 写未收编进 StatementStore:")
+        for v in stmt_violations:
+            print(f"  {v}")
+        return 1
+    print("CI static scan OK — statements 写均收编进 store/(+ statement_writer 授权 + testing)。")
     return 0
 
 

@@ -26,7 +26,7 @@
 ## Phase 进度
 
 - [x] **Phase 1 地基**(DONE,commit `3bf55b5`):`ProfileCapability` + `StorageProfile`、`GraphStore` 接口(`insert_edge`/`neighbors`/`edges_by_conflict_key`)、`SqliteGraphStore` backend、`StoreBundle::open_local`、`test_store_foundation.cpp`(3 钉测)。ctest 567。
-- [ ] **Phase 2 MetaStore 写收编(StatementStore)** —— 本计划全 TDD 细节(下)。
+- [x] **Phase 2 MetaStore 写收编(StatementStore)**(DONE):`StatementStore` 13 法(10 转换/修正 + `apply_mild_contradict` + `archive_nonterminal` + `insert_arbitrated_fork`,均 TDD 先红);路由 consolidation_ops/scheduler/arbitration/recon_engine/bus/second_order —— 删 **14 处内联 `UPDATE statements` + 1 处 fork INSERT**;ci_static_scan **红线#2**(statements 写只允许 store/ + statement_writer.cpp 授权 + testing)。`StatementWriter` 主 INSERT 确立为 statements INSERT 唯一受控授权写者(物理迁 store/ 降级为后续纯命名空间清理,低收益高风险)。commits `94836ce`/`7e31e9d`/`39b92b3`/`7fc47b1`/本次;ctest 580 / pytest 595 全绿,零行为变化。接口缺口(arbitration 两处语义)在路由阶段暴露并补齐——印证逐法 exact SQL 迁入的必要。
 - [ ] **Phase 3 MetaStore 读收编 + 其余 meta 表 owner 化** —— 任务级(下);phase 2 接口定后展开。
 - [ ] **Phase 4 GraphStore 路由** —— 任务级。
 - [ ] **Phase 5 zvec backend** —— 任务级。

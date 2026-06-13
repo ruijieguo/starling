@@ -360,44 +360,32 @@ std::string apply_severe_contradict(persistence::Connection& conn,
     //         consolidation_state=consolidated, supersedes_id=old_stmt_id).
     //         Do NOT emit statement.written (防重入).
     {
-        const char* ins_sql =
-            "INSERT INTO statements("
-            "id, tenant_id, holder_id, holder_perspective, subject_kind, subject_id, "
-            "predicate, object_kind, object_value, canonical_object_hash, "
-            "canonical_object_hash_version, modality, polarity, confidence, observed_at, "
-            "salience, affect_json, activation, last_accessed, provenance, "
-            "consolidation_state, review_status, supersedes_id, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-            "'reconsolidation_derived','consolidated',?,?,?,?)";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, ins_sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "apply_severe_contradict: prepare INSERT new row");
-        StmtHandle h(raw);
-        bind_sv(h.get(),  1, new_id);
-        bind_sv(h.get(),  2, tenant_id);
-        bind_sv(h.get(),  3, old.holder_id);
-        bind_sv(h.get(),  4, old.holder_perspective);
-        bind_sv(h.get(),  5, old.subject_kind);
-        bind_sv(h.get(),  6, old.subject_id);
-        bind_sv(h.get(),  7, old.predicate);
-        bind_sv(h.get(),  8, old.object_kind);
-        bind_sv(h.get(),  9, old.object_value);
-        bind_sv(h.get(), 10, old.canonical_object_hash);
-        bind_sv(h.get(), 11, old.canonical_object_hash_version);
-        bind_sv(h.get(), 12, old.modality);
-        bind_sv(h.get(), 13, old.polarity);
-        sqlite3_bind_double(h.get(), 14, old.confidence);
-        bind_sv(h.get(), 15, old.observed_at);
-        bind_sv(h.get(), 16, old.salience_str);
-        bind_sv(h.get(), 17, old.affect_json);
-        bind_sv(h.get(), 18, old.activation_str);
-        bind_sv(h.get(), 19, old.last_accessed);
-        bind_sv(h.get(), 20, old.review_status);
-        bind_sv(h.get(), 21, old_stmt_id);  // supersedes_id
-        bind_sv(h.get(), 22, now_s);         // created_at
-        bind_sv(h.get(), 23, now_s);         // updated_at
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "apply_severe_contradict: INSERT new row step");
+        // P3.b1 phase 2:分叉 INSERT 收编进 StatementStore(不 emit,防重入)。
+        store::ArbitratedFork fork;
+        fork.new_id                        = new_id;
+        fork.tenant_id                     = std::string(tenant_id);
+        fork.holder_id                     = old.holder_id;
+        fork.holder_perspective            = old.holder_perspective;
+        fork.subject_kind                  = old.subject_kind;
+        fork.subject_id                    = old.subject_id;
+        fork.predicate                     = old.predicate;
+        fork.object_kind                   = old.object_kind;
+        fork.object_value                  = old.object_value;
+        fork.canonical_object_hash         = old.canonical_object_hash;
+        fork.canonical_object_hash_version = old.canonical_object_hash_version;
+        fork.modality                      = old.modality;
+        fork.polarity                      = old.polarity;
+        fork.confidence                    = old.confidence;
+        fork.observed_at                   = old.observed_at;
+        fork.salience_str                  = old.salience_str;
+        fork.affect_json                   = old.affect_json;
+        fork.activation_str                = old.activation_str;
+        fork.last_accessed                 = old.last_accessed;
+        fork.review_status                 = old.review_status;
+        fork.supersedes_id                 = std::string(old_stmt_id);
+        fork.created_at                    = now_s;
+        fork.updated_at                    = now_s;
+        store::SqliteStatementStore(conn).insert_arbitrated_fork(fork);
     }
 
     // Step 3: INSERT SUPERSEDES edge: new_id -> old_stmt_id.
