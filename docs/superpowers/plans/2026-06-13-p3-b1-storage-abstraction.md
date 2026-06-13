@@ -35,7 +35,7 @@
     - policy_engine `read_stmt_meta` —— 读 `event_time_end`(commitment 触发专用列,不在 `StatementRow`),属 prospective 触发子系统专用元数据。
   - **裁剪登记(保留子系统,非纯 statements 读)**:跨表 JOIN(pattern expand JOIN edges / mentalizing_more 双 JOIN / embedding LEFT JOIN vectors / who_committed JOIN cg)、frontier EXISTS(basic_retriever)、commitment 子查询、COUNT(depth_estimator)、DISTINCT tenant(bus/engine)、EXISTS 检验(know/already_modeled/trigger);以及需 StatementRow 外字段的点查(load_source `derived_depth` / conflict_probe `supersedes_id`+`event_time_start` / common_ground_subscriber `scope_parties_json` / belief_tracker `perceived_by_json`)—— 这些读交织多表/聚合或需富字段,换引擎时各 backend 专门实现,不收编进通用 query_statements。
 - [~] **Phase 3 余(其余 meta 表 owner 化)** —— **defer(YAGNI)**:proj_*/commitment/common_ground/cognizer_relations/checkpoint 各已单 owner、local-store 下全 SQLite,无写散落痛点(MetaStore 抽象 statements 因其核心热表 + 写散落 8 文件的真实痛点)。提前给这些表做接口抽象,唯一收益是未来 dist/cloud-store,而那尚未启动 → 违反 YAGNI;留真正做 dist-store 时按需抽象。GraphStore(下阶段)是例外——图存储是 LadybugDB 换装的直接目标,接口已就绪需实装。
-- [ ] **Phase 4 GraphStore 路由** —— 任务级。
+- [x] **Phase 4 GraphStore 路由**(写侧 DONE,`e55c76f`):insert_edge 四写者收编 + conflict 去重下沉 + 接口对齐 Connection&;读侧(neighbors 图遍历/scope 富集)、conflict_key_backfill(回填工具)、cognizer_relations(社会图)经分析裁剪/defer。
 - [ ] **Phase 5 zvec backend** —— 任务级。
 - [ ] **Phase 6 LadybugDB backend** —— 仅 PoC + go/no-go 关卡。
 - [ ] **Phase 7 crypto_erasure 局部 keystore** —— 任务级。
@@ -442,10 +442,13 @@ phase 2 的 StatementStore 接口定后展开。
 
 phase 1 的 GraphStore 接口已就位,本期把写者/读者接上。
 
-- **Task 4.1:** edges 五写者(bus/conflict_key_backfill/embedding/prospective/arbitration)的 `INSERT INTO statement_edges` → `GraphStore::insert_edge`;`insert_statement_edge` helper 删除/委托。
-- **Task 4.2:** PatternCompletor 邻居读 → `GraphStore::neighbors`。**注意**现为 `json_each` 批量查(一 SQL 多 seed),逐 seed 调 neighbors 改性能特征——**显式登记**:phase 4 保批量(给 GraphStore 加 `neighbors_batch(seeds,...)` 法)或接受 N 查并基准对照,二选一在执行时定。
-- **Task 4.3:** cognizer_relations 并入 GraphStore(`upsert_relation`/`get_relation`),cognizer_hub 路由。
-- **验收:** statement_edges 写 SQL 只在 store/;PatternCompletor 钉测召回不变。
+- [x] **Task 4.0 + 4.1(DONE,`e55c76f`):** 四写者 `INSERT INTO statement_edges` → `GraphStore::insert_edge`(bus helper 委托 / arbitration severe_contradict / commitment renegotiate / embedding overlap),删 bus `random_edge_id` + commitment/embedding `random_hex_32`(均仅 edge 用)。**接口对齐**:`SqliteGraphStore` adapter& → Connection&(与 StatementStore 对称,各写者用事务 conn,原子性显式同连接)。**conflict 去重下沉**:`insert_edge` 返回 `EdgeInsert{id,deduped}`,conflicts_with 的 canonical_conflict_key UNIQUE(0009 partial index)命中静默 dedup(spec §8.4),WARN 业务日志留 bus。schema 默认 weight=1.0/metadata='{}' == `EdgeRecord` 默认,委托零漂移。**conflict_key_backfill 裁剪**:SELECT/UPDATE canonical_conflict_key/DELETE dup 是一次性回填迁移工具(操作 conflict_key_backfill_state 表),非 plain insert;GraphStore 无 update/delete/scan 法,LadybugDB 换装本需重写。
+- [~] **Task 4.2(裁剪登记):** statement_edges 读点全为图遍历/scope 富集,非 `GraphStore::neighbors` 单跳 plain 边读 → 裁剪:
+  - PatternCompletor `expand` —— `json_each` 批量 seed + 双向 UNION(前向 5 种传播边 / 反向仅 MAY_OVERLAP_WITH)+ **JOIN statements 隐私 scope 富集**(holder/perspective/state/review,逐字对齐 search_topk 安全不变式);scope 是检索语义,不入存储接口。
+  - planner `fetch_graph_supersedes`(supersedes 双向扩展)、commitment `supersedes_chain_length`(链遍历)—— 多跳图遍历,非单跳。
+  这些属检索编排(与 retrieval_planner 同类),换 LadybugDB 时 backend 改写 Cypher 遍历(phase 6 评估点)。`GraphStore::neighbors`/`edges_by_conflict_key` 接口就绪(StoreBundle 暴露 + 钉测),为 LadybugDB 兑现抽象。
+- [~] **Task 4.3(defer,YAGNI):** cognizer_relations(社会图)是独立于 statement_edges 的另一张图(src/dst 是 cognizer 非 statement),并入需扩 GraphStore 异构 schema(`upsert_relation`/`get_relation`);cognizer_hub 已单 owner、local-store 全 SQLite。提前并入唯一收益是 LadybugDB 社会图换装,而那在 phase 6 PoC 后定夺 → defer,留 phase 6 go 后随社会图换装一并做。
+- **验收(已达成):** statement_edges INSERT 只在 store/ + bus helper 委托(`e55c76f`);edge 写四写者钉测 + PatternCompletor 召回钉测不变(ctest 587)。
 
 ## Phase 5:zvec backend(任务级)
 

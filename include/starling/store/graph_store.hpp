@@ -2,11 +2,12 @@
 // GraphStore — 关系/图类存储接口(P3.b1)。引擎无关:SQLite backend(phase 1)
 // 与 LadybugDB backend(phase 6 后置)都实现它。
 //
-// 当前覆盖 statement_edges(CONFLICTS_WITH / MAY_OVERLAP_WITH / supersedes);
-// cognizer_relations(社会图)在 phase 4 路由 cognizer_hub 时并入。
+// 当前覆盖 statement_edges(conflicts_with / MAY_OVERLAP_WITH / supersedes 等);
+// cognizer_relations(社会图)并入 defer 至 phase 6(LadybugDB go 后随社会图换装,
+// 见 plan Task 4.3)——异构图 schema 不提前塞进 statement-edge 接口。
 //
-// 接口签名不带引擎特定句柄(无 SQLite Connection&)——SQLite backend 经其持有
-// 的单写者 adapter 连接读写(与现有 bus 事务同连接,phase 4 路由后行为不变);
+// 接口方法签名不带引擎特定句柄——SQLite backend 构造时注入单写者 Connection&
+// 读写(各 edge 写者用各自事务的 conn,与现有 bus 事务同连接、原子性不变);
 // LadybugDB backend 持有自己的 DB 句柄。
 #include <optional>
 #include <string>
