@@ -17,6 +17,7 @@
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/vector/pattern_separator.hpp"
 #include "starling/vector/vector_math.hpp"
+#include "starling/store/sqlite_graph_store.hpp"
 
 #include <sqlite3.h>
 
@@ -53,18 +54,6 @@ std::string render_text(std::string_view subject_id, std::string_view predicate,
     out.push_back(' ');
     out.append(object_value);
     return out;
-}
-
-// 32 random hex chars for edge ids (mirrors arbitration.cpp).
-std::string random_hex_32() {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    const std::uint64_t a = rng();
-    const std::uint64_t b = rng();
-    char buf[33];
-    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
-                  static_cast<unsigned long long>(a),
-                  static_cast<unsigned long long>(b));
-    return std::string(buf, 32);
 }
 
 // emit_event helper (mirrors projection_maintainer.cpp). MUST run inside an
@@ -248,24 +237,18 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
             }
 
             // MAY_OVERLAP_WITH soft edges (similarity in weight).
+            // P3.b1 phase 4:边写收编进 GraphStore::insert_edge(同 conn 同事务,
+            // weight=sim、metadata={"resolved":false}、created_at=now_iso 保真)。
             for (const auto& [nid, sim] : sep.overlaps) {
-                const char* sql =
-                    "INSERT INTO statement_edges"
-                    "(id,tenant_id,src_id,dst_id,edge_kind,weight,created_at,metadata_json)"
-                    " VALUES(?,?,?,?,'MAY_OVERLAP_WITH',?,?,'{\"resolved\":false}')";
-                sqlite3_stmt* raw = nullptr;
-                if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-                    throw make_sqlite_error(conn.raw(), "embedding_worker: insert edge prepare");
-                StmtHandle h(raw);
-                const std::string edge_id = random_hex_32();
-                bind_sv(h.get(), 1, edge_id);
-                bind_sv(h.get(), 2, row.tenant_id);
-                bind_sv(h.get(), 3, row.id);
-                bind_sv(h.get(), 4, nid);
-                sqlite3_bind_double(h.get(), 5, sim);
-                bind_sv(h.get(), 6, now_iso);
-                if (sqlite3_step(h.get()) != SQLITE_DONE)
-                    throw make_sqlite_error(conn.raw(), "embedding_worker: insert edge step");
+                store::EdgeRecord e;
+                e.tenant_id     = row.tenant_id;
+                e.src_id        = row.id;
+                e.dst_id        = nid;
+                e.edge_kind     = "MAY_OVERLAP_WITH";
+                e.weight        = sim;
+                e.metadata_json = R"({"resolved":false})";
+                e.created_at    = now_iso;
+                store::SqliteGraphStore(conn).insert_edge(e);
             }
 
             // vector.embedded outbox event.

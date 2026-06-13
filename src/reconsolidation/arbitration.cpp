@@ -6,6 +6,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
+#include "starling/store/sqlite_graph_store.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -389,22 +390,16 @@ std::string apply_severe_contradict(persistence::Connection& conn,
     }
 
     // Step 3: INSERT SUPERSEDES edge: new_id -> old_stmt_id.
+    // P3.b1 phase 4:边写收编进 GraphStore::insert_edge(同 conn 同事务,created_at
+    // 传 now_s 保持批次时间戳)。
     {
-        const std::string edge_id = random_hex_32();
-        const char* edge_sql =
-            "INSERT INTO statement_edges(id, tenant_id, src_id, dst_id, edge_kind, created_at) "
-            "VALUES(?,?,?,?,'supersedes',?)";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, edge_sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "apply_severe_contradict: prepare INSERT edge");
-        StmtHandle h(raw);
-        bind_sv(h.get(), 1, edge_id);
-        bind_sv(h.get(), 2, tenant_id);
-        bind_sv(h.get(), 3, new_id);
-        bind_sv(h.get(), 4, old_stmt_id);
-        bind_sv(h.get(), 5, now_s);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "apply_severe_contradict: INSERT edge step");
+        store::EdgeRecord e;
+        e.tenant_id  = std::string(tenant_id);
+        e.src_id     = new_id;
+        e.dst_id     = std::string(old_stmt_id);
+        e.edge_kind  = "supersedes";
+        e.created_at = now_s;
+        store::SqliteGraphStore(conn).insert_edge(e);
     }
 
     // Step 4: UPDATE old statement → archived(守卫 NOT IN archived/forgotten)。

@@ -13,6 +13,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
+#include "starling/store/sqlite_graph_store.hpp"
 #include "starling/schema/enums.hpp"
 
 #include <sqlite3.h>
@@ -135,19 +136,6 @@ BusEvent make_event(
     return e;
 }
 
-// 32 random hex chars for statement_edges.id. Per-edge primary key only —
-// not stored in user-facing protocols, so no UUID-v4/v7 nibble bits required.
-std::string random_edge_id() {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    const std::uint64_t a = rng();
-    const std::uint64_t b = rng();
-    char buf[33];
-    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
-                  static_cast<unsigned long long>(a),
-                  static_cast<unsigned long long>(b));
-    return std::string(buf, 32);
-}
-
 void insert_statement_edge(
     starling::persistence::Connection& conn,
     std::string_view src_id,
@@ -155,42 +143,23 @@ void insert_statement_edge(
     std::string_view tenant_id,
     std::string_view edge_kind,
     std::optional<std::string> canonical_conflict_key = std::nullopt) {
-    const char* sql =
-        "INSERT INTO statement_edges"
-        "(id, tenant_id, src_id, dst_id, edge_kind, canonical_conflict_key, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        throw persistence::detail::make_sqlite_error(conn.raw(), "insert_statement_edge prepare");
-    starling::persistence::StmtHandle h(raw);
-    const std::string edge_id = random_edge_id();
-    const std::string now_iso = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
-    persistence::detail::bind_sv(h.get(), 1, edge_id);
-    persistence::detail::bind_sv(h.get(), 2, tenant_id);
-    persistence::detail::bind_sv(h.get(), 3, src_id);
-    persistence::detail::bind_sv(h.get(), 4, dst_id);
-    persistence::detail::bind_sv(h.get(), 5, edge_kind);
-    if (canonical_conflict_key.has_value()) {
-        sqlite3_bind_text(h.get(), 6,
-                          canonical_conflict_key->c_str(), -1, SQLITE_STATIC);
-    } else {
-        sqlite3_bind_null(h.get(), 6);
-    }
-    persistence::detail::bind_sv(h.get(), 7, now_iso);
-    const int rc = sqlite3_step(h.get());
-    if (rc == SQLITE_DONE) return;
-    if (rc == SQLITE_CONSTRAINT && canonical_conflict_key.has_value()) {
-        // UNIQUE partial index violation: a conflicts_with edge with this
-        // canonical_conflict_key already exists. Silently drop the duplicate
-        // and emit a WARN to stderr — per spec §8.4.
+    // P3.b1 phase 4:边写收编进 GraphStore::insert_edge(同 conn 同事务,weight/
+    // metadata 默认 1.0/'{}' 与 schema 默认一致,行为不变)。conflicts_with 的
+    // conflict_key UNIQUE dedup 下沉 store;命中时 WARN 留 bus(spec §8.4 业务日志)。
+    store::EdgeRecord r;
+    r.tenant_id = std::string(tenant_id);
+    r.src_id    = std::string(src_id);
+    r.dst_id    = std::string(dst_id);
+    r.edge_kind = std::string(edge_kind);
+    r.canonical_conflict_key = canonical_conflict_key;
+    const auto res = store::SqliteGraphStore(conn).insert_edge(r);
+    if (res.deduped) {
         std::fprintf(stderr,
             "[bus.conflict_key] WARN dedup hit on canonical_conflict_key=%s "
             "(edge_kind=conflicts_with, tenant=%s); existing edge retained.\n",
             canonical_conflict_key->c_str(),
             std::string(tenant_id).c_str());
-        return;
     }
-    throw persistence::detail::make_sqlite_error(conn.raw(), "insert_statement_edge step");
 }
 
 std::string conflict_payload(const ConflictMatch& m, std::string_view new_stmt_id) {

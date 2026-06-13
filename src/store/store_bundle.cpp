@@ -9,7 +9,7 @@ StoreBundle StoreBundle::open_local(persistence::SqliteAdapter& meta_adapter,
     StoreBundle b;
     b.meta_adapter_ = &meta_adapter;
     b.vector_ = &vector_index;
-    b.graph_ = std::make_unique<SqliteGraphStore>(meta_adapter);
+    b.graph_ = std::make_unique<SqliteGraphStore>(meta_adapter.connection());
 
     ProfileCapability cap;
     cap.profile_name   = "local-store";

@@ -10,6 +10,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_graph_store.hpp"
 
 #include <sqlite3.h>
 
@@ -32,18 +33,6 @@ using starling::bus::compute_window_bucket;
 using starling::persistence::detail::bind_sv;
 using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
-
-// 32 random hex chars for new edge ids (mirrors arbitration.cpp).
-std::string random_hex_32() {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    const std::uint64_t a = rng();
-    const std::uint64_t b = rng();
-    char buf[33];
-    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
-                  static_cast<unsigned long long>(a),
-                  static_cast<unsigned long long>(b));
-    return std::string(buf, 32);
-}
 
 // emit_event helper (copied from projection_maintainer.cpp pattern).
 void emit_event(
@@ -331,23 +320,16 @@ bool CommitmentEngine::renegotiate(persistence::Connection& conn,
     }
 
     // INSERT supersedes edge: src=new, dst=old ("new supersedes old").
+    // P3.b1 phase 4:边写收编进 GraphStore::insert_edge(同 conn 同事务,created_at
+    // 传 now_iso 保持批次时间戳)。
     {
-        const char* sql =
-            "INSERT INTO statement_edges"
-            "(id,tenant_id,src_id,dst_id,edge_kind,created_at)"
-            " VALUES(?,?,?,?,'supersedes',?)";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(conn.raw(), "commitment: renegotiate edge prepare");
-        StmtHandle h(raw);
-        const std::string edge_id = random_hex_32();
-        bind_sv(h.get(), 1, edge_id);
-        bind_sv(h.get(), 2, tenant_id);
-        bind_sv(h.get(), 3, new_stmt_id);
-        bind_sv(h.get(), 4, old_stmt_id);
-        bind_sv(h.get(), 5, now_iso);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(conn.raw(), "commitment: renegotiate edge step");
+        store::EdgeRecord e;
+        e.tenant_id  = std::string(tenant_id);
+        e.src_id     = std::string(new_stmt_id);
+        e.dst_id     = std::string(old_stmt_id);
+        e.edge_kind  = "supersedes";
+        e.created_at = now_iso;
+        store::SqliteGraphStore(conn).insert_edge(e);
     }
 
     // Old commitment → RENEGOTIATED.

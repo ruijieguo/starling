@@ -35,13 +35,21 @@ struct EdgeOut {
     std::optional<std::string> canonical_conflict_key;
 };
 
+// insert_edge 结果:正常插入返回新边 id;conflicts_with 的 canonical_conflict_key
+// UNIQUE 命中时 deduped=true、id 空(已存在边保留,未插入)。
+struct EdgeInsert {
+    std::string id;
+    bool deduped = false;
+};
+
 class GraphStore {
 public:
     virtual ~GraphStore() = default;
 
-    // 插入一条边(当前语义=plain insert,与 bus::insert_statement_edge 一致;
-    // 去重不变式由调用方/UNIQUE 约束持有,不在此隐式 dedup)。返回 edge id。
-    virtual std::string insert_edge(const EdgeRecord&) = 0;
+    // 插入一条边。conflicts_with 边的 canonical_conflict_key UNIQUE(0009 partial
+    // index)命中时静默 dedup(deduped=true,不插入),封装 spec §8.4 冲突去重;其余
+    // 边 plain insert。dedup 命中的 WARN 日志由调用方据 deduped 决定(业务日志不入 store)。
+    virtual EdgeInsert insert_edge(const EdgeRecord&) = 0;
 
     // 取 src 在给定 edge_kind 集合下的直接邻居(weight 一并返回)。
     // kinds 为空 = 不限 kind。

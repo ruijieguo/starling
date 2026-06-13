@@ -33,9 +33,10 @@ EdgeRecord edge(const char* src, const char* dst, const char* kind,
 
 TEST(SqliteGraphStore, InsertAndNeighborsByKind) {
     auto a = make_adapter();
-    SqliteGraphStore g(*a);
-    const std::string id = g.insert_edge(edge("s1", "s2", "CONFLICTS_WITH", 0.9));
-    EXPECT_FALSE(id.empty());
+    SqliteGraphStore g(a->connection());
+    const auto ins = g.insert_edge(edge("s1", "s2", "CONFLICTS_WITH", 0.9));
+    EXPECT_FALSE(ins.id.empty());
+    EXPECT_FALSE(ins.deduped);
     g.insert_edge(edge("s1", "s3", "MAY_OVERLAP_WITH", 0.4));
     g.insert_edge(edge("s1", "s4", "CONFLICTS_WITH", 0.7));
 
@@ -57,7 +58,7 @@ TEST(SqliteGraphStore, InsertAndNeighborsByKind) {
 
 TEST(SqliteGraphStore, EdgesByConflictKey) {
     auto a = make_adapter();
-    SqliteGraphStore g(*a);
+    SqliteGraphStore g(a->connection());
     g.insert_edge(edge("s1", "s2", "CONFLICTS_WITH", 0.9, "ck-abc"));
     g.insert_edge(edge("s3", "s4", "CONFLICTS_WITH", 0.8, "ck-abc"));
     g.insert_edge(edge("s5", "s6", "CONFLICTS_WITH", 0.7, "ck-xyz"));
@@ -67,6 +68,20 @@ TEST(SqliteGraphStore, EdgesByConflictKey) {
     for (const auto& e : hits)
         ASSERT_TRUE(e.canonical_conflict_key && *e.canonical_conflict_key == "ck-abc");
     EXPECT_EQ(g.edges_by_conflict_key("default", "ck-none").size(), 0u);
+}
+
+TEST(SqliteGraphStore, InsertConflictsWithDedupOnConflictKey) {
+    auto a = make_adapter();
+    SqliteGraphStore g(a->connection());
+    // 小写 conflicts_with + 非空 key 命中 0009 partial UNIQUE index。
+    const auto first = g.insert_edge(edge("s1", "s2", "conflicts_with", 0.9, "ck-1"));
+    EXPECT_FALSE(first.id.empty());
+    EXPECT_FALSE(first.deduped);
+    // 同 tenant + conflict_key → UNIQUE 命中,静默 dedup,不插入(spec §8.4)。
+    const auto dup = g.insert_edge(edge("s3", "s4", "conflicts_with", 0.5, "ck-1"));
+    EXPECT_TRUE(dup.id.empty());
+    EXPECT_TRUE(dup.deduped);
+    EXPECT_EQ(g.edges_by_conflict_key("default", "ck-1").size(), 1u);
 }
 
 TEST(StoreBundle, OpenLocalWiresThreeCategories) {

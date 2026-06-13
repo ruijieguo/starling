@@ -41,8 +41,8 @@ constexpr const char* kEdgeCols =
     "id, src_id, dst_id, edge_kind, weight, canonical_conflict_key";
 }  // namespace
 
-std::string SqliteGraphStore::insert_edge(const EdgeRecord& r) {
-    sqlite3* db = adapter_.connection().raw();
+EdgeInsert SqliteGraphStore::insert_edge(const EdgeRecord& r) {
+    sqlite3* db = conn_.raw();
     const std::string id  = random_edge_id();
     const std::string now = r.created_at.empty()
         ? iso8601_utc(std::chrono::system_clock::now()) : r.created_at;
@@ -65,15 +65,20 @@ std::string SqliteGraphStore::insert_edge(const EdgeRecord& r) {
     else sqlite3_bind_null(h.get(), 7);
     bind_sv(h.get(), 8, now);
     bind_sv(h.get(), 9, r.metadata_json.empty() ? "{}" : r.metadata_json);
-    if (sqlite3_step(h.get()) != SQLITE_DONE)
-        throw make_sqlite_error(db, "SqliteGraphStore::insert_edge step");
-    return id;
+    const int rc = sqlite3_step(h.get());
+    if (rc == SQLITE_DONE) return {id, false};
+    // conflicts_with 的 canonical_conflict_key UNIQUE(0009 partial index)命中 →
+    // 静默 dedup(已存在边保留,不插入),封装 spec §8.4 去重。WARN 由调用方据
+    // deduped 决定(业务日志不入 store)。
+    if (rc == SQLITE_CONSTRAINT && r.canonical_conflict_key)
+        return {std::string(), true};
+    throw make_sqlite_error(db, "SqliteGraphStore::insert_edge step");
 }
 
 std::vector<EdgeOut> SqliteGraphStore::neighbors(
     std::string_view tenant_id, std::string_view src_id,
     const std::vector<std::string>& kinds) {
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     std::string sql = std::string("SELECT ") + kEdgeCols +
         " FROM statement_edges WHERE tenant_id=?1 AND src_id=?2";
     if (!kinds.empty()) {
@@ -97,7 +102,7 @@ std::vector<EdgeOut> SqliteGraphStore::neighbors(
 
 std::vector<EdgeOut> SqliteGraphStore::edges_by_conflict_key(
     std::string_view tenant_id, std::string_view key) {
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const std::string sql = std::string("SELECT ") + kEdgeCols +
         " FROM statement_edges WHERE tenant_id=?1 AND canonical_conflict_key=?2";
     sqlite3_stmt* raw = nullptr;
