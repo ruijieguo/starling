@@ -38,7 +38,7 @@ int SqliteStatementStore::mark_consolidated(
     const std::vector<std::string>& ids, std::string_view tenant,
     std::string_view replay_batch_id) {
     // exact 自 src/replay/consolidation_ops.cpp:31(op_compress)。
-    return run_per_id(adapter_.connection().raw(),
+    return run_per_id(conn_.raw(),
         "UPDATE statements SET consolidation_state='consolidated', "
         "  last_replay_batch_id=?, replay_count=replay_count+1 "
         " WHERE id=? AND tenant_id=? AND consolidation_state='volatile'",
@@ -49,7 +49,7 @@ int SqliteStatementStore::reinforce(
     const std::vector<std::string>& ids, std::string_view tenant,
     std::string_view replay_batch_id) {
     // exact 自 src/replay/consolidation_ops.cpp:57(op_reinforce)。
-    return run_per_id(adapter_.connection().raw(),
+    return run_per_id(conn_.raw(),
         "UPDATE statements SET access_count=access_count+1, "
         "  consolidation_state='consolidated', "
         "  last_replay_batch_id=?, replay_count=replay_count+1 "
@@ -61,7 +61,7 @@ int SqliteStatementStore::bump_replay_count(
     const std::vector<std::string>& ids, std::string_view tenant,
     std::string_view replay_batch_id) {
     // exact 自 src/replay/consolidation_ops.cpp:80(op_abstract)。
-    return run_per_id(adapter_.connection().raw(),
+    return run_per_id(conn_.raw(),
         "UPDATE statements SET last_replay_batch_id=?, replay_count=replay_count+1 "
         " WHERE id=? AND tenant_id=?",
         "StatementStore::bump_replay_count", ids, tenant, replay_batch_id);
@@ -70,7 +70,7 @@ int SqliteStatementStore::bump_replay_count(
 int SqliteStatementStore::enter_reconsolidating(std::string_view id,
                                                 std::string_view tenant) {
     // exact 自 src/replay/consolidation_ops.cpp:154(op_reconcile)。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements SET consolidation_state='replaying_reconsolidating' "
         "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
@@ -88,7 +88,7 @@ int SqliteStatementStore::enter_reconsolidating(std::string_view id,
 int SqliteStatementStore::restore_consolidated(std::string_view id,
                                                std::string_view tenant) {
     // exact 自 src/reconsolidation/reconsolidation_engine.cpp:265(兜底)。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements SET consolidation_state='consolidated' "
         "WHERE id=? AND tenant_id=? "
@@ -107,7 +107,7 @@ int SqliteStatementStore::restore_consolidated(std::string_view id,
 int SqliteStatementStore::force_consolidate_pending_review() {
     // exact 自 src/replay/replay_scheduler.cpp:289(enforce_oscillation_guard)。
     // 跨租户 bulk(无 tenant 过滤)——保真现行为。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements "
         "SET consolidation_state='consolidated', review_status='pending_review' "
@@ -129,7 +129,7 @@ int SqliteStatementStore::archive(const std::vector<std::string>& ids,
     // 参数化归档:守卫 from_state;updated_at 有值时刷新(supersede bus.cpp:308 /
     // arbitration:452),nullopt 不动 updated_at(decay consolidation_ops.cpp:135 /
     // TTL replay_scheduler.cpp:379)——保真各源行为差异。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const std::string sql = updated_at
         ? "UPDATE statements SET consolidation_state='archived', updated_at=?4 "
           "WHERE id=?1 AND tenant_id=?2 AND consolidation_state=?3"
@@ -156,7 +156,7 @@ void SqliteStatementStore::apply_mild_correction(
     std::string_view id, std::string_view tenant, double confidence,
     std::string_view history_json, std::string_view updated_at) {
     // exact 自 src/bus/bus.cpp:264(mild-correction)。provenance 不动。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements "
         "SET confidence = ?, confidence_history_json = ?, updated_at = ? "
@@ -177,7 +177,7 @@ void SqliteStatementStore::apply_mild_correction(
 void SqliteStatementStore::set_confidence_consolidated(
     std::string_view id, std::string_view tenant, double confidence) {
     // exact 自 src/reconsolidation/arbitration.cpp:204(apply_supports)。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements SET confidence=?, consolidation_state='consolidated' "
         "WHERE id=? AND tenant_id=?";
@@ -197,7 +197,7 @@ void SqliteStatementStore::inherit_salience(
     std::string_view affect_json) {
     // exact 自 src/tom/second_order.cpp:170(salience 继承)。原 WHERE 仅 id;
     // 这里加 tenant 守卫(id 全局唯一,行为等价),与本 store 其余法一致。
-    sqlite3* db = adapter_.connection().raw();
+    sqlite3* db = conn_.raw();
     const char* sql =
         "UPDATE statements SET salience = MAX(salience, ?1), affect_json = ?2 "
         "WHERE id = ?3 AND tenant_id = ?4";

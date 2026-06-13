@@ -1,16 +1,15 @@
 #pragma once
 // SqliteStatementStore —— StatementStore 的 local-store(SQLite)backend
-// (P3.b1 phase 2)。经持有的单写者 adapter 连接读写,故 phase 2 路由后与现有
-// bus/replay/recon 事务同连接、行为不变。
-#include "starling/persistence/sqlite_adapter.hpp"
+// (P3.b1 phase 2)。绑定 Connection&(写的实际单位):replay/recon/bus 的写者
+// 都持有 Connection&(常在已开事务中),故路由后与原事务同连接、行为不变。
+#include "starling/persistence/connection.hpp"
 #include "starling/store/statement_store.hpp"
 
 namespace starling::store {
 
 class SqliteStatementStore : public StatementStore {
 public:
-    explicit SqliteStatementStore(persistence::SqliteAdapter& adapter)
-        : adapter_(adapter) {}
+    explicit SqliteStatementStore(persistence::Connection& conn) : conn_(conn) {}
 
     int mark_consolidated(const std::vector<std::string>&, std::string_view,
                           std::string_view) override;
@@ -31,7 +30,7 @@ public:
                           std::string_view) override;
 
 private:
-    persistence::SqliteAdapter& adapter_;
+    persistence::Connection& conn_;
 };
 
 }  // namespace starling::store

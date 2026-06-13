@@ -2,6 +2,8 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/replay/forgetting_curve.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
+#include <optional>
 #include <stdexcept>
 
 namespace starling::replay {
@@ -25,23 +27,9 @@ OpResult op_compress(persistence::Connection& conn,
                      std::string_view tenant_id,
                      std::string_view replay_batch_id) {
     OpResult r{ConsolidationOp::Compress, {}, 0};
-    sqlite3* db = conn.raw();
-    for (const auto& id : input_stmt_ids) {
-        const char* sql =
-            "UPDATE statements SET consolidation_state='consolidated', "
-            "  last_replay_batch_id=?, replay_count=replay_count+1 "
-            " WHERE id=? AND tenant_id=? AND consolidation_state='volatile'";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "op_compress: prepare");
-        StmtHandle h(raw);
-        bind_sv(h.get(), 1, replay_batch_id);
-        bind_sv(h.get(), 2, id);
-        bind_sv(h.get(), 3, tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "op_compress: step");
-        r.affected += sqlite3_changes(db);
-    }
+    // P3.b1 phase 2:statements 写收编进 StatementStore(同 conn,行为不变)。
+    r.affected = store::SqliteStatementStore(conn).mark_consolidated(
+        input_stmt_ids, tenant_id, replay_batch_id);
     if (!input_stmt_ids.empty()) r.output_stmt_id = input_stmt_ids.front();
     return r;
 }
@@ -51,21 +39,8 @@ OpResult op_reinforce(persistence::Connection& conn,
                       std::string_view tenant_id,
                       std::string_view replay_batch_id) {
     OpResult r{ConsolidationOp::Reinforce, {}, 0};
-    sqlite3* db = conn.raw();
-    for (const auto& id : input_stmt_ids) {
-        const char* sql =
-            "UPDATE statements SET access_count=access_count+1, "
-            "  consolidation_state='consolidated', "
-            "  last_replay_batch_id=?, replay_count=replay_count+1 "
-            " WHERE id=? AND tenant_id=?";
-        sqlite3_stmt* raw=nullptr;
-        if (sqlite3_prepare_v2(db,sql,-1,&raw,nullptr)!=SQLITE_OK)
-            throw make_sqlite_error(db,"op_reinforce: prepare");
-        StmtHandle h(raw);
-        bind_sv(h.get(),1,replay_batch_id); bind_sv(h.get(),2,id); bind_sv(h.get(),3,tenant_id);
-        if (sqlite3_step(h.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_reinforce: step");
-        r.affected += sqlite3_changes(db);
-    }
+    r.affected = store::SqliteStatementStore(conn).reinforce(
+        input_stmt_ids, tenant_id, replay_batch_id);
     return r;
 }
 
@@ -74,19 +49,8 @@ OpResult op_abstract(persistence::Connection& conn,
                      std::string_view tenant_id,
                      std::string_view replay_batch_id) {
     OpResult r{ConsolidationOp::Abstract, {}, 0};
-    sqlite3* db = conn.raw();
-    for (const auto& id : input_stmt_ids) {
-        const char* sql =
-            "UPDATE statements SET last_replay_batch_id=?, replay_count=replay_count+1 "
-            " WHERE id=? AND tenant_id=?";
-        sqlite3_stmt* raw=nullptr;
-        if (sqlite3_prepare_v2(db,sql,-1,&raw,nullptr)!=SQLITE_OK)
-            throw make_sqlite_error(db,"op_abstract: prepare");
-        StmtHandle h(raw);
-        bind_sv(h.get(),1,replay_batch_id); bind_sv(h.get(),2,id); bind_sv(h.get(),3,tenant_id);
-        if (sqlite3_step(h.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_abstract: step");
-        r.affected += sqlite3_changes(db);
-    }
+    r.affected = store::SqliteStatementStore(conn).bump_replay_count(
+        input_stmt_ids, tenant_id, replay_batch_id);
     if (!input_stmt_ids.empty()) r.output_stmt_id = input_stmt_ids.front();
     return r;
 }
@@ -130,16 +94,9 @@ OpResult op_decay(persistence::Connection& conn,
         }
         if (state != "consolidated") continue;  // 串行守护: 已变即跳过
         if (compute_s_t(in, now_iso) < 0.05 && !in.active_grounded) {
-            sqlite3_stmt* upd=nullptr;
-            if (sqlite3_prepare_v2(db,
-                "UPDATE statements SET consolidation_state='archived' "
-                "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'",
-                -1,&upd,nullptr)!=SQLITE_OK)
-                throw make_sqlite_error(db,"op_decay: prepare update");
-            StmtHandle hupd(upd);
-            bind_sv(hupd.get(),1,id); bind_sv(hupd.get(),2,tenant_id);
-            if (sqlite3_step(hupd.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_decay: step");
-            r.affected += sqlite3_changes(db);
+            // 归档无 updated_at(decay 路径保真)→ StatementStore。
+            r.affected += store::SqliteStatementStore(conn).archive(
+                {id}, tenant_id, "consolidated", std::nullopt);
         }
     }
     return r;
@@ -149,17 +106,8 @@ OpResult op_reconcile(persistence::Connection& conn,
                       const std::string& stmt_id,
                       std::string_view tenant_id) {
     OpResult r{ConsolidationOp::Reconcile, stmt_id, 0};
-    sqlite3* db = conn.raw();
-    const char* sql =
-        "UPDATE statements SET consolidation_state='replaying_reconsolidating' "
-        "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
-    sqlite3_stmt* raw=nullptr;
-    if (sqlite3_prepare_v2(db,sql,-1,&raw,nullptr)!=SQLITE_OK)
-        throw make_sqlite_error(db,"op_reconcile: prepare");
-    StmtHandle h(raw);
-    bind_sv(h.get(),1,stmt_id); bind_sv(h.get(),2,tenant_id);
-    if (sqlite3_step(h.get())!=SQLITE_DONE) throw make_sqlite_error(db,"op_reconcile: step");
-    r.affected = sqlite3_changes(db);
+    r.affected = store::SqliteStatementStore(conn).enter_reconsolidating(
+        stmt_id, tenant_id);
     return r;
 }
 

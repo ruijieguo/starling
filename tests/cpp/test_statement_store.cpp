@@ -68,7 +68,7 @@ std::string state_of(persistence::Connection& c, const char* id) {
 
 TEST(StatementStore, MarkConsolidatedOnlyFromVolatile) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "volatile");
     seed(a->connection(), "s2", "consolidated");   // 守卫:非 volatile 不动
 
@@ -82,7 +82,7 @@ TEST(StatementStore, MarkConsolidatedOnlyFromVolatile) {
 
 TEST(StatementStore, ReinforceNoStateGuard) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "archived");   // reinforce 无状态守卫
     EXPECT_EQ(st.reinforce({"s1"}, "default", "b1"), 1);
     EXPECT_EQ(state_of(a->connection(), "s1"), "consolidated");
@@ -92,7 +92,7 @@ TEST(StatementStore, ReinforceNoStateGuard) {
 
 TEST(StatementStore, BumpReplayCountNoStateChange) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "volatile");
     EXPECT_EQ(st.bump_replay_count({"s1"}, "default", "b1"), 1);
     EXPECT_EQ(state_of(a->connection(), "s1"), "volatile");   // 状态不变
@@ -102,7 +102,7 @@ TEST(StatementStore, BumpReplayCountNoStateChange) {
 
 TEST(StatementStore, EnterReconsolidatingOnlyFromConsolidated) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "consolidated");
     seed(a->connection(), "s2", "volatile");
     EXPECT_EQ(st.enter_reconsolidating("s1", "default"), 1);
@@ -113,7 +113,7 @@ TEST(StatementStore, EnterReconsolidatingOnlyFromConsolidated) {
 
 TEST(StatementStore, RestoreConsolidatedOnlyFromReconsolidating) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "replaying_reconsolidating");
     seed(a->connection(), "s2", "volatile");
     EXPECT_EQ(st.restore_consolidated("s1", "default"), 1);
@@ -123,7 +123,7 @@ TEST(StatementStore, RestoreConsolidatedOnlyFromReconsolidating) {
 
 TEST(StatementStore, ForceConsolidateOnHighReplayCount) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "hot", "volatile", /*replay_count=*/5);
     seed(a->connection(), "cold", "volatile", /*replay_count=*/4);
     EXPECT_GE(st.force_consolidate_pending_review(), 1);
@@ -135,7 +135,7 @@ TEST(StatementStore, ForceConsolidateOnHighReplayCount) {
 
 TEST(StatementStore, ArchiveHonorsFromStateGuardAndOptionalUpdatedAt) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "c1", "consolidated");
     seed(a->connection(), "v1", "volatile");
     // from_state='consolidated' + updated_at:只动 c1,且 updated_at 刷新。
@@ -154,7 +154,7 @@ TEST(StatementStore, ArchiveHonorsFromStateGuardAndOptionalUpdatedAt) {
 
 TEST(StatementStore, ApplyMildCorrectionSetsConfidenceHistoryNotProvenance) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "consolidated");
     st.apply_mild_correction("s1", "default", 0.77, R"([{"c":0.5}])",
                              "2026-06-13T01:00:00Z");
@@ -169,7 +169,7 @@ TEST(StatementStore, ApplyMildCorrectionSetsConfidenceHistoryNotProvenance) {
 
 TEST(StatementStore, SetConfidenceConsolidated) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "replaying_reconsolidating");
     st.set_confidence_consolidated("s1", "default", 0.88);
     EXPECT_NEAR(dcol(a->connection(),
@@ -179,7 +179,7 @@ TEST(StatementStore, SetConfidenceConsolidated) {
 
 TEST(StatementStore, InheritSalienceTakesMax) {
     auto a = make_adapter();
-    SqliteStatementStore st(*a);
+    SqliteStatementStore st(a->connection());
     seed(a->connection(), "s1", "volatile", 0, /*salience=*/0.6);
     // 传入更低 → MAX 保留 0.6。
     st.inherit_salience("s1", "default", 0.3, R"({"valence":0.2})");

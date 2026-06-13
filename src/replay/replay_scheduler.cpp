@@ -7,6 +7,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/replay/swr_sampler.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -15,6 +16,7 @@
 #include <ctime>
 #include <format>
 #include <map>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -284,18 +286,8 @@ int ReplayScheduler::enforce_oscillation_guard(persistence::Connection& conn) {
 
     if (affected.empty()) return 0;
 
-    // UPDATE all matching rows
-    const char* upd_sql =
-        "UPDATE statements "
-        "SET consolidation_state='consolidated', review_status='pending_review' "
-        "WHERE replay_count >= 5 "
-        "  AND consolidation_state IN ('volatile','replaying_consolidating')";
-    sqlite3_stmt* upd_raw = nullptr;
-    if (sqlite3_prepare_v2(db, upd_sql, -1, &upd_raw, nullptr) != SQLITE_OK)
-        throw make_sqlite_error(db, "enforce_oscillation_guard: prepare UPDATE");
-    StmtHandle hupd(upd_raw);
-    if (sqlite3_step(hupd.get()) != SQLITE_DONE)
-        throw make_sqlite_error(db, "enforce_oscillation_guard: UPDATE step");
+    // UPDATE all matching rows —— P3.b1 phase 2:写收编进 StatementStore(同 conn)。
+    store::SqliteStatementStore(conn).force_consolidate_pending_review();
 
     // Emit one consolidation_forced event per affected stmt
     for (const auto& a : affected) {
@@ -375,18 +367,9 @@ int ReplayScheduler::sweep_volatile_ttl(persistence::Connection& conn,
     int count = 0;
     for (const auto& e : expired) {
         if (in_buffer(e)) continue;
-        const char* upd_sql =
-            "UPDATE statements SET consolidation_state='archived' "
-            "WHERE id=? AND tenant_id=? AND consolidation_state='volatile'";
-        sqlite3_stmt* upd_raw = nullptr;
-        if (sqlite3_prepare_v2(db, upd_sql, -1, &upd_raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "sweep_volatile_ttl: prepare UPDATE");
-        StmtHandle hupd(upd_raw);
-        bind_sv(hupd.get(), 1, e.id);
-        bind_sv(hupd.get(), 2, e.tenant_id);
-        if (sqlite3_step(hupd.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "sweep_volatile_ttl: UPDATE step");
-        const int changed = sqlite3_changes(db);
+        // TTL 归档无 updated_at(保真)→ StatementStore。
+        const int changed = store::SqliteStatementStore(conn).archive(
+            {e.id}, e.tenant_id, "volatile", std::nullopt);
         count += changed;
         if (changed > 0) {
             try {
