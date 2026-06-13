@@ -11,6 +11,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_meta_store.hpp"
 
 namespace starling::retrieval {
 
@@ -94,47 +95,19 @@ std::vector<EdgeHit> expand(persistence::Connection& conn,
     return hits;
 }
 
-// Fetch a full StatementRow by (id, tenant) re-checking visibility — mirrors
-// semantic_retriever.cpp kSelectByIdSql exactly (defense-in-depth on top of the
-// walk's per-hop scope predicate).
-constexpr const char* kSelectByIdSql =
-    "SELECT id, tenant_id, holder_id, holder_perspective, "
-    "       subject_kind, subject_id, predicate, "
-    "       object_kind, object_value, canonical_object_hash, "
-    "       modality, polarity, confidence, observed_at, "
-    "       valid_from, valid_to, consolidation_state, review_status, "
-    "       evidence_json, affect_json "
-    "  FROM statements "
-    " WHERE id = ?1 AND tenant_id = ?2 "
-    "   AND consolidation_state IN ('consolidated','archived') "
-    "   AND review_status NOT IN ('rejected','pending_review') "
-    " LIMIT 1;";
-
+// Fetch a full StatementRow by (id, tenant) re-checking visibility.
+// P3.b1 phase 3:读收编进 MetaStore;query_statements 默认守卫(state IN
+// (consolidated,archived) + review NOT IN(rejected,pending_review))= 原
+// kSelectByIdSql 的 visibility 二次校验(走每跳 scope 之上的 defense-in-depth)。
+// 空结果 → 空 row(空 id 表示 vanished / not visible,与原行为一致)。
 StatementRow fetch_row(persistence::Connection& conn, const std::string& id,
                        const std::string& tenant) {
-    sqlite3* db = conn.raw();
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, kSelectByIdSql, -1, &raw, nullptr) != SQLITE_OK)
-        throw make_sqlite_error(db, "PatternCompletor::fetch_row prepare");
-    StmtHandle h{raw};
-    sqlite3_bind_text(raw, 1, id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(raw, 2, tenant.c_str(), -1, SQLITE_TRANSIENT);
-
-    auto col = [raw](int i) {
-        const unsigned char* t = sqlite3_column_text(raw, i);
-        return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
-    };
-    StatementRow row;  // empty id signals "vanished / not visible"
-    if (sqlite3_step(raw) != SQLITE_ROW) return row;
-    row.id = col(0); row.tenant_id = col(1); row.holder_id = col(2);
-    row.holder_perspective = col(3); row.subject_kind = col(4); row.subject_id = col(5);
-    row.predicate = col(6); row.object_kind = col(7); row.object_value = col(8);
-    row.canonical_object_hash = col(9); row.modality = col(10); row.polarity = col(11);
-    row.confidence = sqlite3_column_double(raw, 12); row.observed_at = col(13);
-    row.valid_from = col(14); row.valid_to = col(15); row.consolidation_state = col(16);
-    row.review_status = col(17); row.evidence_json = col(18);
-    row.affect_json = col(19);
-    return row;
+    store::SqliteMetaStore meta(conn);
+    store::StatementFilter f;
+    f.tenant_id = tenant;
+    f.id_in = {id};
+    const auto rows = meta.query_statements(f);
+    return rows.empty() ? StatementRow{} : rows.front();
 }
 
 }  // namespace
