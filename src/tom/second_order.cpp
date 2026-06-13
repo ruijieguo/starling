@@ -5,6 +5,7 @@
 #include <variant>
 
 #include "starling/bus/statement_writer.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
@@ -165,17 +166,12 @@ Outcome write_nested(persistence::Connection& conn, std::string_view tenant,
         // salience 继承(源 ×0.8,下限保留出生中性值):tom_inferred 的采样
         // provenance 因子是 0.25,若停留在中性 0.0144,权重 0.0036 < w_min
         // ——嵌套行永远不被 Replay 采样巩固,META_BELIEF 永远查空。
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(),
-            "UPDATE statements SET salience = MAX(salience, ?1), "
-            "affect_json = ?2 WHERE id = ?3",
-            -1, &raw, nullptr) == SQLITE_OK) {
-            StmtHandle h(raw);
-            sqlite3_bind_double(h.get(), 1, src.salience * 0.8);
-            bind_sv(h.get(), 2, src.affect_json.empty() ? "{}" : src.affect_json);
-            bind_sv(h.get(), 3, out.stmt_id);
-            sqlite3_step(h.get());
-        }
+        // P3.b1 phase 2:写收编进 StatementStore(best-effort:失败不影响 persisted)。
+        try {
+            store::SqliteStatementStore(conn).inherit_salience(
+                out.stmt_id, tenant, src.salience * 0.8,
+                src.affect_json.empty() ? "{}" : src.affect_json);
+        } catch (...) {}
     }
     return out;
 }

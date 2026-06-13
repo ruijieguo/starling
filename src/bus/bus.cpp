@@ -12,6 +12,7 @@
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 #include "starling/schema/enums.hpp"
 
 #include <sqlite3.h>
@@ -259,23 +260,10 @@ void apply_mild_correction(
         ? new_confidence : old_confidence;
 
     // UPDATE S_old: bump confidence + append to history.  provenance NOT updated.
-    {
-        const char* sql =
-            "UPDATE statements "
-            "SET confidence = ?, confidence_history_json = ?, updated_at = ? "
-            "WHERE id = ? AND tenant_id = ?";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw persistence::detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old prepare");
-        starling::persistence::StmtHandle h(raw);
-        sqlite3_bind_double(h.get(), 1, updated_confidence);
-        persistence::detail::bind_sv(h.get(), 2, history_json);
-        persistence::detail::bind_sv(h.get(), 3, ts);
-        persistence::detail::bind_sv(h.get(), 4, match.matched_statement_id);
-        persistence::detail::bind_sv(h.get(), 5, match.matched_tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw persistence::detail::make_sqlite_error(conn.raw(), "mild_correction: update s_old step");
-    }
+    // P3.b1 phase 2:写收编进 StatementStore(同 conn)。
+    store::SqliteStatementStore(conn).apply_mild_correction(
+        match.matched_statement_id, match.matched_tenant_id,
+        updated_confidence, history_json, ts);
 }
 
 // Apply the §15.3.4 4-item atomic SUPERSEDES path. Caller MUST hold a
@@ -304,20 +292,13 @@ void apply_supersedes_atomic(
     // guard against stale probe matches; if the row's state has changed
     // between probe and apply, sqlite3_changes() will be 0 and we throw.
     {
-        const char* sql =
-            "UPDATE statements SET consolidation_state='archived', updated_at=? "
-            "WHERE id=? AND tenant_id=? AND consolidation_state='consolidated'";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw persistence::detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old prepare");
-        starling::persistence::StmtHandle h(raw);
-        const std::string now_iso = persistence::detail::iso8601_utc(std::chrono::system_clock::now());
-        persistence::detail::bind_sv(h.get(), 1, now_iso);
-        persistence::detail::bind_sv(h.get(), 2, match.matched_statement_id);
-        persistence::detail::bind_sv(h.get(), 3, match.matched_tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw persistence::detail::make_sqlite_error(conn.raw(), "supersedes_path: archive s_old step");
-        if (sqlite3_changes(conn.raw()) != 1) {
+        // P3.b1 phase 2:写收编进 StatementStore;守卫 'consolidated' + updated_at,
+        // changes!=1 检查保留。
+        const std::string now_iso =
+            persistence::detail::iso8601_utc(std::chrono::system_clock::now());
+        if (store::SqliteStatementStore(conn).archive(
+                {match.matched_statement_id}, match.matched_tenant_id,
+                "consolidated", now_iso) != 1) {
             throw std::runtime_error(
                 "supersedes_path: S_old row missing or wrong state at archive time");
         }
