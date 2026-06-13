@@ -174,6 +174,48 @@ void SqliteStatementStore::apply_mild_correction(
         throw make_sqlite_error(db, "StatementStore::apply_mild_correction step");
 }
 
+void SqliteStatementStore::apply_mild_contradict(
+    std::string_view id, std::string_view tenant, double confidence,
+    std::string_view history_json) {
+    // exact 自 src/reconsolidation/arbitration.cpp:284(apply_mild_contradict)。
+    // 改 confidence+history+state='consolidated';不动 updated_at/provenance。
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET confidence=?, confidence_history_json=?, "
+        "consolidation_state='consolidated' "
+        "WHERE id=? AND tenant_id=?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "StatementStore::apply_mild_contradict prepare");
+    StmtHandle h(raw);
+    sqlite3_bind_double(h.get(), 1, confidence);
+    bind_sv(h.get(), 2, history_json);
+    bind_sv(h.get(), 3, id);
+    bind_sv(h.get(), 4, tenant);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "StatementStore::apply_mild_contradict step");
+}
+
+int SqliteStatementStore::archive_nonterminal(
+    std::string_view id, std::string_view tenant, std::string_view updated_at) {
+    // exact 自 src/reconsolidation/arbitration.cpp:452(severe-archive)。
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET consolidation_state='archived', updated_at=? "
+        "WHERE id=? AND tenant_id=? "
+        "  AND consolidation_state NOT IN ('archived','forgotten')";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "StatementStore::archive_nonterminal prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, updated_at);
+    bind_sv(h.get(), 2, id);
+    bind_sv(h.get(), 3, tenant);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "StatementStore::archive_nonterminal step");
+    return sqlite3_changes(db);
+}
+
 void SqliteStatementStore::set_confidence_consolidated(
     std::string_view id, std::string_view tenant, double confidence) {
     // exact 自 src/reconsolidation/arbitration.cpp:204(apply_supports)。

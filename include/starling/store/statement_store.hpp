@@ -46,12 +46,20 @@ public:
                         std::optional<std::string> updated_at) = 0;
 
     // ── 局部修正 ──
-    // mild-correction: SET confidence + confidence_history_json + updated_at
-    // (provenance 不动)。confidence 取 max(只升不降)由调用方决定后传入。
+    // mild-correction(bus): SET confidence + confidence_history_json + updated_at
+    // (provenance/state 不动)。confidence 取 max(只升不降)由调用方决定后传入。
     virtual void apply_mild_correction(std::string_view id, std::string_view tenant,
                                        double confidence,
                                        std::string_view history_json,
                                        std::string_view updated_at) = 0;
+    // mild-contradict(arbitration): SET confidence + history + state='consolidated'
+    // (updated_at/provenance 不动 —— 与 apply_mild_correction 相反的语义)。
+    virtual void apply_mild_contradict(std::string_view id, std::string_view tenant,
+                                       double confidence,
+                                       std::string_view history_json) = 0;
+    // severe-archive(arbitration): archived,除非已 archived/forgotten;刷新 updated_at。
+    virtual int archive_nonterminal(std::string_view id, std::string_view tenant,
+                                    std::string_view updated_at) = 0;
     // 支持仲裁: SET confidence + consolidation_state='consolidated'。
     virtual void set_confidence_consolidated(std::string_view id,
                                              std::string_view tenant,

@@ -24,6 +24,10 @@ public:
                 std::string_view, std::optional<std::string>) override;
     void apply_mild_correction(std::string_view, std::string_view, double,
                                std::string_view, std::string_view) override;
+    void apply_mild_contradict(std::string_view, std::string_view, double,
+                               std::string_view) override;
+    int archive_nonterminal(std::string_view, std::string_view,
+                            std::string_view) override;
     void set_confidence_consolidated(std::string_view, std::string_view,
                                      double) override;
     void inherit_salience(std::string_view, std::string_view, double,

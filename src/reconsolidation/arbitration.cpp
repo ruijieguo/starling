@@ -5,6 +5,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -198,21 +199,9 @@ void apply_supports(persistence::Connection& conn, std::string_view stmt_id,
     const double new_conf = bayesian_update_up(old_conf, agg.strength);
     (void)now_iso;  // available for future updated_at extension
 
-    // UPDATE confidence + consolidation_state
-    {
-        const char* upd_sql =
-            "UPDATE statements SET confidence=?, consolidation_state='consolidated' "
-            "WHERE id=? AND tenant_id=?";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, upd_sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "apply_supports: prepare UPDATE");
-        StmtHandle h(raw);
-        sqlite3_bind_double(h.get(), 1, new_conf);
-        bind_sv(h.get(), 2, stmt_id);
-        bind_sv(h.get(), 3, tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "apply_supports: UPDATE step");
-    }
+    // UPDATE confidence + consolidation_state —— P3.b1 phase 2:写收编进 StatementStore。
+    store::SqliteStatementStore(conn).set_confidence_consolidated(
+        stmt_id, tenant_id, new_conf);
 
     // Emit statement.consolidated
     {
@@ -277,24 +266,10 @@ void apply_mild_contradict(persistence::Connection& conn, std::string_view stmt_
         new_history = history_json.substr(0, history_json.size() - 1) + "," + obj + "]";
     }
 
-    // UPDATE confidence + confidence_history_json + consolidation_state.
-    // IMPORTANT: do NOT write provenance.
-    {
-        const char* upd_sql =
-            "UPDATE statements SET confidence=?, confidence_history_json=?, "
-            "consolidation_state='consolidated' "
-            "WHERE id=? AND tenant_id=?";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, upd_sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "apply_mild_contradict: prepare UPDATE");
-        StmtHandle h(raw);
-        sqlite3_bind_double(h.get(), 1, new_conf);
-        bind_sv(h.get(), 2, new_history);
-        bind_sv(h.get(), 3, stmt_id);
-        bind_sv(h.get(), 4, tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "apply_mild_contradict: UPDATE step");
-    }
+    // UPDATE confidence + confidence_history_json + consolidation_state(不写
+    // provenance/updated_at)—— P3.b1 phase 2:写收编进 StatementStore。
+    store::SqliteStatementStore(conn).apply_mild_contradict(
+        stmt_id, tenant_id, new_conf, new_history);
 
     // Emit statement.consolidated (NOT statement.corrected)
     {
@@ -444,26 +419,12 @@ std::string apply_severe_contradict(persistence::Connection& conn,
             throw make_sqlite_error(db, "apply_severe_contradict: INSERT edge step");
     }
 
-    // Step 4: UPDATE old statement → archived.
-    {
-        // State guard: only archive a still-live row. Mirrors the P1 sync path's
-        // defensive guard against archiving an already-terminal statement.
-        const char* upd_sql =
-            "UPDATE statements SET consolidation_state='archived', updated_at=? "
-            "WHERE id=? AND tenant_id=? "
-            "  AND consolidation_state NOT IN ('archived','forgotten')";
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, upd_sql, -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(db, "apply_severe_contradict: prepare UPDATE archive");
-        StmtHandle h(raw);
-        bind_sv(h.get(), 1, now_s);
-        bind_sv(h.get(), 2, old_stmt_id);
-        bind_sv(h.get(), 3, tenant_id);
-        if (sqlite3_step(h.get()) != SQLITE_DONE)
-            throw make_sqlite_error(db, "apply_severe_contradict: UPDATE archive step");
-        if (sqlite3_changes(db) != 1)
-            throw std::runtime_error("apply_severe_contradict: old statement row not found or already terminal");
-    }
+    // Step 4: UPDATE old statement → archived(守卫 NOT IN archived/forgotten)。
+    // P3.b1 phase 2:写收编进 StatementStore;changes!=1 检查保留。
+    if (store::SqliteStatementStore(conn).archive_nonterminal(
+            old_stmt_id, tenant_id, now_s) != 1)
+        throw std::runtime_error(
+            "apply_severe_contradict: old statement row not found or already terminal");
 
     // Step 5: Emit 3 outbox events (statement.corrected, statement.archived, statement.superseded).
     // Do NOT emit statement.written for new_id (防重入 Replay).

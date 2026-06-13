@@ -11,6 +11,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 
 #include <sqlite3.h>
 
@@ -261,17 +262,8 @@ int ReconsolidationEngine::close_due_windows(
             // Fallback: ensure stmt is not stuck in replaying_reconsolidating.
             // Best-effort; ignore if stmt was deleted.
             try {
-                const char* sql =
-                    "UPDATE statements SET consolidation_state='consolidated' "
-                    "WHERE id=? AND tenant_id=? "
-                    "AND consolidation_state='replaying_reconsolidating'";
-                sqlite3_stmt* raw = nullptr;
-                if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) == SQLITE_OK) {
-                    StmtHandle h(raw);
-                    bind_sv(h.get(), 1, stmt_id);
-                    bind_sv(h.get(), 2, tenant);
-                    sqlite3_step(h.get());
-                }
+                // P3.b1 phase 2:写收编进 StatementStore;异常被本 catch 吞(best-effort 保留)。
+                store::SqliteStatementStore(conn).restore_consolidated(stmt_id, tenant);
             } catch (...) {}
         }
 

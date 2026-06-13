@@ -167,6 +167,40 @@ TEST(StatementStore, ApplyMildCorrectionSetsConfidenceHistoryNotProvenance) {
         "SELECT provenance FROM statements WHERE id='s1'"), "user_input");  // 不动
 }
 
+TEST(StatementStore, ApplyMildContradictSetsStateConsolidatedNotUpdatedAt) {
+    // arbitration:284 语义:改 confidence+history+state='consolidated',不动
+    // updated_at(与 bus mild-correction 相反:那个改 updated_at 不改 state)。
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "s1", "replaying_reconsolidating");
+    st.apply_mild_contradict("s1", "default", 0.66, R"([{"c":0.4}])");
+    EXPECT_NEAR(dcol(a->connection(),
+        "SELECT confidence FROM statements WHERE id='s1'"), 0.66, 1e-9);
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT confidence_history_json FROM statements WHERE id='s1'"),
+        R"([{"c":0.4}])");
+    EXPECT_EQ(state_of(a->connection(), "s1"), "consolidated");   // state 改
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT updated_at FROM statements WHERE id='s1'"),
+        "2026-06-10T00:00:00Z");   // updated_at 不动
+}
+
+TEST(StatementStore, ArchiveNonterminalGuard) {
+    // arbitration:452 语义:archived,除非已 archived/forgotten;刷新 updated_at。
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "live", "consolidated");
+    seed(a->connection(), "vol", "volatile");        // 非终态:也归档
+    seed(a->connection(), "done", "archived");       // 终态:守卫拦住
+    EXPECT_EQ(st.archive_nonterminal("live", "default", "2026-06-13T02:00:00Z"), 1);
+    EXPECT_EQ(st.archive_nonterminal("vol", "default", "2026-06-13T02:00:00Z"), 1);
+    EXPECT_EQ(st.archive_nonterminal("done", "default", "2026-06-13T02:00:00Z"), 0);
+    EXPECT_EQ(state_of(a->connection(), "live"), "archived");
+    EXPECT_EQ(state_of(a->connection(), "vol"), "archived");
+    EXPECT_EQ(scol(a->connection(),
+        "SELECT updated_at FROM statements WHERE id='live'"), "2026-06-13T02:00:00Z");
+}
+
 TEST(StatementStore, SetConfidenceConsolidated) {
     auto a = make_adapter();
     SqliteStatementStore st(a->connection());
