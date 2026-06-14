@@ -22,6 +22,7 @@ _DEFAULT_DB = _DEFAULT_DIR / "dashboard.db"
 _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
     "cors_origins", "llm", "embedder", "tick_interval_s",
+    "vector_backend", "vector_store_path",
 )
 
 
@@ -47,6 +48,11 @@ class DashboardConfig:
     # P2.o 运行时闭环:后台维护 tick 间隔秒数(嵌入/巩固/投影/出箱收敛)。
     # 0 = 禁用(回到纯手动 tick)。
     tick_interval_s: float = 30.0
+    # P3.b1 phase 5: 向量后端选型。sqlite(默认)=暴力 cosine + SQL scope,任意维、零额外
+    # 依赖;zvec=HNSW(需 STARLING_VECTOR_ZVEC 构建的 _core,否则 MemoryCore 报错)。
+    # vector_store_path 空 → 工厂用 ~/.starling/vectors。
+    vector_backend: str = "sqlite"
+    vector_store_path: str = ""
     config_path: str = ""  # not serialized; where load()/save() persist
 
     @classmethod
@@ -119,6 +125,8 @@ def _env_overlay(cfg: DashboardConfig) -> None:
     if e("STARLING_DASH_HOST"): cfg.host = e("STARLING_DASH_HOST")
     if e("STARLING_DASH_PORT"): cfg.port = int(e("STARLING_DASH_PORT"))
     if e("STARLING_DASH_TICK_INTERVAL"): cfg.tick_interval_s = float(e("STARLING_DASH_TICK_INTERVAL"))
+    if e("STARLING_DASH_VECTOR_BACKEND"): cfg.vector_backend = e("STARLING_DASH_VECTOR_BACKEND")
+    if e("STARLING_DASH_VECTOR_STORE_PATH"): cfg.vector_store_path = e("STARLING_DASH_VECTOR_STORE_PATH")
     if e("STARLING_DASH_CORS_ORIGINS"):
         cfg.cors_origins = [o.strip() for o in e("STARLING_DASH_CORS_ORIGINS").split(",") if o.strip()]
     if not cfg.llm.get("api_key") and e("OPENAI_API_KEY"):

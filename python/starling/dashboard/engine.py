@@ -117,7 +117,9 @@ class DashboardEngine:
         rt = _runtime._build_local_store_sqlite_runtime(Path(config.db_path))
         rt.start()
         self._core = MemoryCore(rt, agent=config.agent, tenant_id=config.tenant,
-                                adapter_name="dashboard", source_prefix="dash-")
+                                adapter_name="dashboard", source_prefix="dash-",
+                                vector_backend=config.vector_backend,
+                                vector_store_path=(config.vector_store_path or None))
         # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
         self._tick_thread: threading.Thread | None = None
         self._tick_stop: threading.Event | None = None
