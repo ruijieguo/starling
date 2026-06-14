@@ -167,6 +167,13 @@ else()
     target_link_libraries(starling_core PUBLIC ICU::uc)
 endif()
 
+# P3.b1 phase 5: zvec 向量后端(STARLING_VECTOR_ZVEC=ON)。declare ExternalProject
+# 编译 zvec + 合并 2-bundle + zvec_backend INTERFACE 库。Task 5.2 将加
+# src/vector/zvec_vector_store.cpp 到 starling_core 并链接 zvec_backend。
+if(STARLING_VECTOR_ZVEC)
+    include(cmake/StarlingZvec.cmake)
+endif()
+
 # Embed migration SQL into a header. Re-run cmake configure when files change.
 file(GLOB STARLING_MIGRATION_FILES
     LIST_DIRECTORIES false
