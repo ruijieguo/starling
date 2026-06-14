@@ -71,7 +71,8 @@ TEST(ZvecVectorIndex, ParityScopeVisibilityAndRecall) {
     SqliteBlobVectorIndex sqlite_idx;
     const std::string coll = temp_coll("parity");
     std::filesystem::remove_all(coll);
-    ZvecVectorIndex zvec_idx(coll, 4);
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, 4);
+    auto& zvec_idx = *zvp;
 
     const std::vector<float> v1{1.0f, 0.0f, 0.0f, 0.0f};
     const std::vector<float> v2{0.0f, 1.0f, 0.0f, 0.0f};
@@ -100,6 +101,7 @@ TEST(ZvecVectorIndex, ParityScopeVisibilityAndRecall) {
     EXPECT_EQ(sq.front().stmt_id, "s1");
     EXPECT_EQ(zv.front().stmt_id, "s1");
 
+    zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
     std::filesystem::remove_all(coll);
 }
 
@@ -113,7 +115,8 @@ TEST(ZvecVectorIndex, ParityScopeHolderFilter) {
     SqliteBlobVectorIndex sqlite_idx;
     const std::string coll = temp_coll("holder");
     std::filesystem::remove_all(coll);
-    ZvecVectorIndex zvec_idx(coll, 4);
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, 4);
+    auto& zvec_idx = *zvp;
 
     const std::vector<float> v{1.0f, 0.0f, 0.0f, 0.0f};
     for (VectorIndex* idx : {static_cast<VectorIndex*>(&sqlite_idx),
@@ -132,6 +135,7 @@ TEST(ZvecVectorIndex, ParityScopeHolderFilter) {
     EXPECT_EQ(id_set(sq), id_set(zv));
     EXPECT_EQ(id_set(zv), (std::set<std::string>{"mine"}));  // 仅自己 holder
 
+    zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
     std::filesystem::remove_all(coll);
 }
 
@@ -144,7 +148,8 @@ TEST(ZvecVectorIndex, ParityRemove) {
     SqliteBlobVectorIndex sqlite_idx;
     const std::string coll = temp_coll("remove");
     std::filesystem::remove_all(coll);
-    ZvecVectorIndex zvec_idx(coll, 4);
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, 4);
+    auto& zvec_idx = *zvp;
 
     const std::vector<float> v{1.0f, 0.0f, 0.0f, 0.0f};
     sqlite_idx.insert(conn, "x", "default", v);
@@ -160,6 +165,7 @@ TEST(ZvecVectorIndex, ParityRemove) {
     EXPECT_TRUE(sqlite_idx.search_topk(conn, v, 10, scope).empty());
     EXPECT_TRUE(zvec_idx.search_topk(conn, v, 10, scope).empty());
 
+    zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
     std::filesystem::remove_all(coll);
 }
 

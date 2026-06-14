@@ -12,6 +12,7 @@
 
 #include <sqlite3.h>
 
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <unordered_set>
@@ -92,6 +93,15 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
     q.target_.field_name_ = kVecField;
     q.target_.set_vector(std::string(reinterpret_cast<const char*>(query.data()),
                                      query.size() * sizeof(float)));
+    // zvec filter 是 SQL-like 字符串 DSL(无参数化绑定 API):tenant_id 拼入字符串
+    // 字面 → 字符 allowlist 防 filter 注入(跨租户绕过)。tenant 是内部标识,异常
+    // 字符即拒绝;tenant 隔离的第二层防御=下方 SQL 精过滤的参数化 s.tenant_id=?。
+    for (const char c : scope.tenant_id) {
+        const auto uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_' || c == '-' || c == ':' || c == '.'))
+            throw std::runtime_error(
+                "ZvecVectorIndex: tenant_id has disallowed char (filter injection guard)");
+    }
     q.filter_ = "tenant_id = '" + scope.tenant_id + "'";
     auto r = coll_->Query(q);
     if (!r.has_value())
