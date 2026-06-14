@@ -13,12 +13,32 @@ the embedded facade is single-user by contract.
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from starling import _core
 from starling.extractor.prompts import EXTRACTION_PROMPT
+
+
+def _make_vector_index(backend: str, dim: int, store_path):
+    """P3.b1 phase 5 Task 5.3:按 vector_backend 创建向量后端句柄(回滚留好)。
+
+    sqlite(默认):SqliteBlobVectorIndex(暴力 cosine + SQL scope,任意维)。
+    zvec:ZvecVectorIndex(HNSW,需 STARLING_VECTOR_ZVEC 构建的 _core);collection
+         维度固定,需 store_path + dim。向量数据持久化在 store_path,重建句柄即 reopen。
+    """
+    if backend == "zvec":
+        if not hasattr(_core, "ZvecVectorIndex"):
+            raise RuntimeError(
+                "vector_backend='zvec' requires a STARLING_VECTOR_ZVEC build of _core")
+        path = store_path or os.path.expanduser("~/.starling/vectors")
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return _core.ZvecVectorIndex(path, int(dim))
+    return _core.SqliteBlobVectorIndex()
 
 
 class LLMNotConfigured(RuntimeError):
@@ -50,7 +70,8 @@ class MemoryCore:
     """
 
     def __init__(self, rt, *, agent: str, tenant_id: str, llm=None,
-                 adapter_name: str, source_prefix: str):
+                 adapter_name: str, source_prefix: str,
+                 vector_backend: str = "sqlite", vector_store_path=None):
         self.rt = rt
         self.agent = agent
         self.tenant = tenant_id
@@ -59,7 +80,10 @@ class MemoryCore:
         self.source_prefix = source_prefix
         # Shared connection handle for the extractor (keep-alive in binding).
         self.conn = rt.adapter.connection()
-        self.idx = _core.SqliteBlobVectorIndex()
+        # 向量后端在 set_embedder 时按 embedder 维度创建(zvec collection 需固定 dim)。
+        self._vector_backend = vector_backend
+        self._vector_store_path = vector_store_path
+        self.idx = None
         self.policy = _core.PolicyEngine(rt.adapter)
         self.emb = None
         self.semantic = None
@@ -71,6 +95,9 @@ class MemoryCore:
         so the embedder that WRITES vectors (EmbeddingWorker) and the one that
         READS them (SemanticRetriever) never diverge."""
         self.emb = emb
+        # 按后端 + embedder 维度创建向量句柄(数据持久化,重建句柄即 reopen)。
+        self.idx = _make_vector_index(self._vector_backend, emb.dim(),
+                                      self._vector_store_path)
         self.semantic = _core.SemanticRetriever(self.rt.adapter, emb, self.idx)
         self.completor = _core.PatternCompletor(self.rt.adapter, self.semantic)
         self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)

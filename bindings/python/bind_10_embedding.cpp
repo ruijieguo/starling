@@ -10,6 +10,7 @@
 #include "starling/embedding/embedding_worker.hpp"
 #include "starling/embedding/openai_embedding_adapter.hpp"
 #include "starling/vector/vector_index.hpp"
+#include "starling/vector/zvec_vector_index.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/retrieval/pattern_completor.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -23,6 +24,9 @@ void bind_10_embedding(pybind11::module_& m) {
 
     // Abstract bases (no init) so derived-to-base-ref passing works.
     py::class_<starling::embedding::EmbeddingAdapter>(m, "EmbeddingAdapter")
+        // dim() 在基类暴露,使 set_embedder 对所有 embedder(stub/openai)可取维度
+        // (向量后端工厂 zvec collection 需固定 dim)。
+        .def("dim", &starling::embedding::EmbeddingAdapter::dim)
         .def("embed",
              [](starling::embedding::EmbeddingAdapter& self, const std::string& text) {
                  return self.embed(text).vector;  // list[float]; len == dim. Real call → connectivity probe.
@@ -62,6 +66,15 @@ void bind_10_embedding(pybind11::module_& m) {
     py::class_<starling::vector::SqliteBlobVectorIndex,
                starling::vector::VectorIndex>(m, "SqliteBlobVectorIndex")
         .def(py::init<>());
+
+#ifdef STARLING_HAS_ZVEC
+    // zvec 后端(STARLING_VECTOR_ZVEC=ON 编译时可用)。构造接 store_path + dimension
+    // (collection schema 固定维度);default OFF 构建里此类不注册。
+    py::class_<starling::vector::ZvecVectorIndex,
+               starling::vector::VectorIndex>(m, "ZvecVectorIndex")
+        .def(py::init<const std::string&, int>(),
+             py::arg("store_path"), py::arg("dimension"));
+#endif
 
     py::class_<starling::embedding::EmbeddingStats>(m, "EmbeddingStats")
         .def_readonly("embedded",         &starling::embedding::EmbeddingStats::embedded)
