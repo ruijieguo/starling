@@ -10,9 +10,11 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <random>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -166,6 +168,70 @@ TEST(ZvecVectorIndex, ParityRemove) {
     EXPECT_TRUE(zvec_idx.search_topk(conn, v, 10, scope).empty());
 
     zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
+    std::filesystem::remove_all(coll);
+}
+
+// perf 基线(Task 5.4):zvec HNSW vs SqliteBlobVectorIndex 暴力 cosine 的召回一致性
+// + topk 延迟对照。验证「召回不退」(zvec HNSW 近似召回 ≥ 阈值 vs 暴力 ground truth)。
+TEST(ZvecVectorIndex, PerfRecallAndLatencyVsSqlite) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    constexpr int N = 300, DIM = 16, K = 10, Q = 30;
+
+    std::mt19937 rng(42);  // 固定种子,确定性。
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    auto rand_vec = [&]() {
+        std::vector<float> v(DIM);
+        for (auto& x : v) x = dist(rng);
+        return v;
+    };
+
+    const std::string coll = temp_coll("perf");
+    std::filesystem::remove_all(coll);
+    SqliteBlobVectorIndex sqlite_idx;
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, DIM);
+
+    for (int i = 0; i < N; ++i) {
+        const std::string id = "p" + std::to_string(i);
+        seed_stmt(conn, id.c_str(), "cog-self", "consolidated");
+        const auto v = rand_vec();
+        sqlite_idx.insert(conn, id, "default", v);
+        zvp->insert(conn, id, "default", v);
+    }
+
+    SearchScope scope;
+    scope.tenant_id = "default";
+    scope.visible_only = true;
+
+    using clock = std::chrono::steady_clock;
+    long overlap = 0, denom = 0;
+    double sq_us = 0, zv_us = 0;
+    for (int q = 0; q < Q; ++q) {
+        const auto qv = rand_vec();
+        const auto t0 = clock::now();
+        const auto sr = sqlite_idx.search_topk(conn, qv, K, scope);
+        const auto t1 = clock::now();
+        const auto zr = zvp->search_topk(conn, qv, K, scope);
+        const auto t2 = clock::now();
+        sq_us += std::chrono::duration<double, std::micro>(t1 - t0).count();
+        zv_us += std::chrono::duration<double, std::micro>(t2 - t1).count();
+
+        // 召回:zvec top-K 命中 sqlite top-K(暴力 ground truth)的比例。
+        std::set<std::string> truth;
+        for (const auto& r : sr) truth.insert(r.stmt_id);
+        for (const auto& r : zr)
+            if (truth.count(r.stmt_id)) ++overlap;
+        denom += static_cast<long>(sr.size());
+    }
+    const double recall = denom ? static_cast<double>(overlap) / denom : 1.0;
+    std::printf("[zvec perf] N=%d DIM=%d K=%d Q=%d | recall(zvec vs sqlite)=%.3f | "
+                "sqlite=%.1fus zvec=%.1fus per-query\n",
+                N, DIM, K, Q, recall, sq_us / Q, zv_us / Q);
+
+    // 召回不退:zvec HNSW 近似召回应高(小规模近精确)。门设 0.7 留 HNSW 近似余量。
+    EXPECT_GE(recall, 0.7);
+
+    zvp.reset();
     std::filesystem::remove_all(coll);
 }
 
