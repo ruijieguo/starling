@@ -37,7 +37,7 @@
 - [~] **Phase 3 余(其余 meta 表 owner 化)** —— **defer(YAGNI)**:proj_*/commitment/common_ground/cognizer_relations/checkpoint 各已单 owner、local-store 下全 SQLite,无写散落痛点(MetaStore 抽象 statements 因其核心热表 + 写散落 8 文件的真实痛点)。提前给这些表做接口抽象,唯一收益是未来 dist/cloud-store,而那尚未启动 → 违反 YAGNI;留真正做 dist-store 时按需抽象。GraphStore(下阶段)是例外——图存储是 LadybugDB 换装的直接目标,接口已就绪需实装。
 - [x] **Phase 4 GraphStore 路由**(写侧 DONE,`e55c76f`):insert_edge 四写者收编 + conflict 去重下沉 + 接口对齐 Connection&;读侧(neighbors 图遍历/scope 富集)、conflict_key_backfill(回填工具)、cognizer_relations(社会图)经分析裁剪/defer。
 - [x] **Phase 5 zvec backend(DONE)** —— Task 5.1 编译关卡 + 5.1b CMake 集成(ExternalProject + 2-bundle force_load)+ 5.2 ZvecVectorIndex(zvec KNN + SQL scope 精过滤,parity 绿,filter allowlist)+ 5.3 工厂(sqlite|zvec 可切,双路径验证)+ 5.4 perf 基线(recall=1.000,zvec 快 2.3x)+ dashboard 接线。STARLING_VECTOR_ZVEC 默认 OFF 零影响,ON 时 dashboard config/env 切 zvec。
-- [ ] **Phase 6 LadybugDB backend** —— 仅 PoC + go/no-go 关卡。
+- [x] **Phase 6 LadybugDB backend(DONE,go/no-go = NO-GO)** —— LadybugDB v0.17.1 集成可行(MIT/C++20/导出 C++ target + 依赖聚合,优于 zvec),但收益小(边量小,SQLite 递归 CTE 够)+ 冲突边同步→异步破坏 C2/§16.3 即时冲突可见性 → NO-GO,保 SqliteGraphStore;LadybugDB 留 P3+ seam(GraphStore 接口已兑现抽象)。
 - [ ] **Phase 7 crypto_erasure 局部 keystore** —— 任务级。
 
 ---
@@ -478,6 +478,12 @@ phase 1 的 GraphStore 接口已就位,本期把写者/读者接上。
 ## Phase 6:LadybugDB backend —— **仅 PoC + go/no-go**(任务级)
 
 > 项目规则:跨阶段接口未定不预写换装实现。GraphStore 接口稳定(phase 4)后做。
+
+> **2026-06-15 go/no-go 评估 = NO-GO**(保 SqliteGraphStore;LadybugDB 留 P3+ seam):
+> - **集成可行性(优于 zvec):** LadybugDB v0.17.1 实测 —— **MIT + C++20**(与 starling 一致)、**导出 C++ target**(`install(TARGETS lbug lbug_shared)` + `lbug_link_deps` INTERFACE 依赖聚合),无 zvec 的「不导出 C++ 库 + 30+ 库手工 bundle」脆弱性;依赖较轻(antlr4_cypher/parquet/mbedtls/lz4/cppjieba,**无 arrow/rocksdb 重栈**);796 cpp/76M。**集成不是障碍**(若 go 比 zvec 简单)。
+> - **收益小:** statement_edges 边量小(数千~数万),图查询(supersedes 链 / conflict dedup / 双向扩展)用 SQLite 递归 CTE + JOIN 够用、性能非瓶颈。Cypher 优雅但非必需(plan 自标「收益偏代码优雅」)。
+> - **一致性代价(决定性):** 冲突边(conflicts_with)现于 `Bus::write` 同步写 statement_edges(与 statement 同 SQLite 事务 = **C2/§16.3 即时冲突可见性**)。LadybugDB 自带独立 storage/transaction/WAL → 冲突边跨引擎无法与 SQLite statement 同事务原子 → 异步物化(最终一致)→ **破坏即时冲突可见性**(recall 可能漏未物化冲突)。这是架构级语义损失,非性能权衡。
+> - **结论 NO-GO:** 收益(图查询优雅,边量小时性能不显著)不抵一致性代价(即时冲突可见性损失)+ 双引擎运维。GraphStore 接口(phase 4)已兑现存储抽象,SqliteGraphStore 保冲突边同步语义;LadybugDB backend 留 seam,待边量大幅增长或复杂多跳图推理成需求时再 go(单独出换装 plan)。**性能 benchmark(Task 6.1)未做:no-go 由一致性主导,LadybugDB 即便性能优也不改变结论。**
 
 - **Task 6.1:** PoC —— vendored LadybugDB,真数据(从 SQLite 导出边)基准:Cypher `neighbors`/多跳 vs SQLite,P50/P95 延迟 + 内存。
 - **Task 6.2:** 冲突边同步→异步订阅者改造**评估**(C2/§16.3 冲突可见性即时→最终一致的钉测影响);写改造草案。
