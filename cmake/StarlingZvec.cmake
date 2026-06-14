@@ -50,7 +50,8 @@ file(MAKE_DIRECTORY "${_zvec_include}")
 # 系统框架。STARLING_HAS_ZVEC 宏供条件编译。
 add_library(zvec_backend INTERFACE)
 add_dependencies(zvec_backend zvec_ext)
-target_include_directories(zvec_backend INTERFACE "${_zvec_include}")
+# SYSTEM:抑制 zvec 第三方 header 的告警(starling_core 用 -Werror)。
+target_include_directories(zvec_backend SYSTEM INTERFACE "${_zvec_include}")
 target_link_libraries(zvec_backend INTERFACE
     "-Wl,-force_load,${_zvec_plugins}"
     "${_zvec_main}"

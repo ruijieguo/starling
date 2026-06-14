@@ -168,10 +168,13 @@ else()
 endif()
 
 # P3.b1 phase 5: zvec 向量后端(STARLING_VECTOR_ZVEC=ON)。declare ExternalProject
-# 编译 zvec + 合并 2-bundle + zvec_backend INTERFACE 库。Task 5.2 将加
-# src/vector/zvec_vector_store.cpp 到 starling_core 并链接 zvec_backend。
+# 编译 zvec + 合并 2-bundle + zvec_backend INTERFACE 库;ZvecVectorIndex 加入
+# starling_core 并链接 zvec_backend(force_load plugins + main + STARLING_HAS_ZVEC)。
 if(STARLING_VECTOR_ZVEC)
     include(cmake/StarlingZvec.cmake)
+    target_sources(starling_core PRIVATE src/vector/zvec_vector_index.cpp)
+    target_link_libraries(starling_core PUBLIC zvec_backend)
+    add_dependencies(starling_core zvec_ext)
 endif()
 
 # Embed migration SQL into a header. Re-run cmake configure when files change.

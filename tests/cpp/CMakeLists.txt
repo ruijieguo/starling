@@ -146,5 +146,11 @@ target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}")
 target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
 
+# P3.b1 phase 5: ZvecVectorIndex parity 测试(仅 STARLING_VECTOR_ZVEC=ON)。link 经
+# starling_core PUBLIC zvec_backend 传递(force_load plugins + main + 系统框架)。
+if(STARLING_VECTOR_ZVEC)
+    target_sources(starling_tests PRIVATE test_zvec_vector_index.cpp)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(starling_tests)
