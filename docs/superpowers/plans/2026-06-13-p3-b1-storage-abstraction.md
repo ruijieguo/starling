@@ -452,7 +452,14 @@ phase 1 的 GraphStore 接口已就位,本期把写者/读者接上。
 
 ## Phase 5:zvec backend(任务级)
 
-- **Task 5.1:** vendored zvec → `thirdparty/zvec`;`CMakeLists.txt` `add_subdirectory` + 链接 `zvec_core`(BUILD_ZVEC_SHARED,C++17 子集);macOS arm64 构建验证(NEON)。**关卡:编译通过才进 5.2。**
+> **2026-06-14 探查结论(zvec v0.5.0 实测,修正原 audit):** zvec 不是轻量索引,是**完整向量 DB** —— 15 个 git submodule thirdparty(apache-arrow 21.0.0 / rocksdb 8.1.1 / protobuf 3.21.12 / antlr4 等),332 cpp / 20M,含 FTS/DiskANN/列存;Apache 2.0。**zvec 不导出 C++ 库**(CMake install 仅 `_zvec` Python binding + jieba dict),`pip install zvec` 预编译 wheel 对 C++ 集成无用 → starling 用 Collection C++ API 必须 `add_subdirectory` **整个 zvec 源码**(submodule GB 下载 + 编译 arrow/rocksdb/antlr4[需 Java] 1h+ + 巨大二进制)。`BUILD_ZVEC_CORE_ONLY` 仅编 core KNN(轻依赖)但裸 KNN(无 Collection/scope/persist)。**用户裁定(2026-06-14):走 db 路径(全功能 Collection API,接受重依赖)。**
+>
+> **db 路径实操约束:**
+> - **哲学冲突**:Collection 自带 rocksdb WAL 持久化 → starling 从「SQLite 单 ACID 锚」变「SQLite + rocksdb 双引擎双 WAL」。一致性按 spec 设计(Vector 是派生投影,从 vector.embedded 事件**异步物化**,不入 bus 主事务;embedding_worker 已是异步 SAVEPOINT 路径,天然契合)。
+> - **scope 过滤难题**:`VectorIndex::search_topk` 带 SearchScope(tenant/holder/visibility,逐字对齐隐私不变式)。zvec Collection 支持 hybrid filter,需把 stmt 的 tenant/holder/consolidation_state/review_status 存为 zvec attribute,query 时 filter;且 state/review 变化时同步更新 attribute(saga 物化,statement.* 事件驱动)。
+> - **编译关卡高风险**:当前环境 github 间歇 SSL 失败 + arrow/rocksdb 编译时长,Task 5.1 编译验证本身是数小时高风险投入,建议在稳定网络/CI 或独立长时段做,先 `BUILD_ZVEC_CORE_ONLY` 验证基础设施再切完整构建。
+
+- **Task 5.1:** vendored zvec → `thirdparty/zvec`(submodule recursive 拉取);`CMakeLists.txt` `add_subdirectory` zvec 完整构建(arrow/rocksdb/protobuf/antlr4) + 链接 zvec C++ target;macOS arm64 构建验证(NEON)。**关卡:编译通过才进 5.2。**
 - **Task 5.2:** `ZvecVectorStore : VectorIndex`(`Collection::CreateAndOpen`/`Insert`/`Query`+filter/`Delete`,~300 行);store_path 配置;维度按 schema(embedder 热换=新 collection)。TDD:insert/search_topk/remove parity 单测。
 - **Task 5.3:** `VectorIndex` 工厂(`make_vector_index(backend)`:sqlite|zvec),`StoreBundle`/`MemoryCore` 接工厂;回滚留(默认 sqlite,配置切 zvec)。
 - **Task 5.4:** parity + perf 基线:zvec vs SqliteBlobVectorIndex 召回一致性 + topk 延迟对照;dashboard 实测重嵌/召回不退。
