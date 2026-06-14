@@ -468,7 +468,8 @@ phase 1 的 GraphStore 接口已就位,本期把写者/读者接上。
   - `libzvec_main.a`(132M,普通链接)= zvec + zvec_{core,ailego,turbo,proto,sqlengine} + arrow 栈 + rocksdb + protobuf + antlr + glog/gflags/lz4/roaring/FastPFOR + boost/thrift/re2/utf8proc/z。
   - **官方 example(`examples/c++/db/main.cc`)靠此 2-bundle 完整跑通**:CreateAndOpen + Insert(doc_count 0→1)+ HNSW 索引(index_completeness dense 0→1)+ Query(doc_count[1])+ 128 维向量检索(score 1.28 正确)。
   - **关键坑:** force_load 必须只针对 plugins —— force_load 整个 bundle 会强拉 thrift SSL socket(arrow/parquet 依赖,zvec 不用)暴露 OpenSSL 未定义符号。starling 链接:`-Wl,-force_load,libzvec_plugins.a libzvec_main.a` + `-framework CoreFoundation -framework Security -framework SystemConfiguration -lc++ -lz`。
-  - **脆弱性解决:** starling 端链接 2 个稳定 bundle;合并脚本 `find` 收集不写死深层路径;zvec/arrow 升级脚本不变。**下一步:** 落 starling CMake(ExternalProject + 合并 + IMPORTED INTERFACE lib)。
+  - **脆弱性解决:** starling 端链接 2 个稳定 bundle;合并脚本 `find` 收集不写死深层路径;zvec/arrow 升级脚本不变。
+  - **starling CMake 集成已落地(DONE,`173e9e1`):** `cmake/StarlingZvec.cmake`(ExternalProject zvec + `zvec_backend` INTERFACE 库)+ `cmake/merge_zvec_bundles.sh`(find+libtool 2-bundle)+ `STARLING_VECTOR_ZVEC` option(默认 OFF,零影响默认构建)+ 主 CMakeLists 条件 include。**端到端验证通过:** `cmake -DSTARLING_VECTOR_ZVEC=ON` configure OK(`zvec_ext` declare);`build zvec_ext` 全自动 clone+编译+合并产出 `libzvec_{plugins(12M),main(132M)}.a`(`BUILD EXIT 0`)。zvec 编译产物在 `build-zvec-test/`(Task 5.2 复用,免重编)。
 - **Task 5.2:** `ZvecVectorStore : VectorIndex`(`Collection::CreateAndOpen`/`Insert`/`Query`+filter/`Delete`,~300 行);store_path 配置;维度按 schema(embedder 热换=新 collection)。TDD:insert/search_topk/remove parity 单测。
 - **Task 5.3:** `VectorIndex` 工厂(`make_vector_index(backend)`:sqlite|zvec),`StoreBundle`/`MemoryCore` 接工厂;回滚留(默认 sqlite,配置切 zvec)。
 - **Task 5.4:** parity + perf 基线:zvec vs SqliteBlobVectorIndex 召回一致性 + topk 延迟对照;dashboard 实测重嵌/召回不退。
