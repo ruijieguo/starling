@@ -87,8 +87,9 @@ def build_commands_router(require_token) -> APIRouter:
             return payload
         hits = await to_thread.run_sync(partial(
             eng.recall, body.query, perspective=body.perspective, k=body.k, mode=body.mode))
-        out = [{"subject": h["row"].subject_id, "predicate": h["row"].predicate,
-                "object": h["row"].object_value, "score": h["score"]} for h in hits]
+        out = [{"id": h["row"].id, "subject": h["row"].subject_id,
+                "predicate": h["row"].predicate, "object": h["row"].object_value,
+                "score": h["score"]} for h in hits]
         await _broadcast(request, "recall", {"n": len(out)})
         return {"results": out}
 

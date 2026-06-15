@@ -74,10 +74,16 @@ def test_forget_removes_from_recall(client):
     f = client.post("/api/forget", json={"ids": [sid]})
     assert f.status_code == 200 and f.json()["forgotten"] == 1
     hits = client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
-    assert all(h["subject"] != "Bob" or h["predicate"] != "responsible_for" for h in hits) \
-        or hits == []
+    assert all(h["id"] != sid for h in hits)   # forgotten id 不再出现在 recall
 
 
 def test_forget_idempotent(client):
     f = client.post("/api/forget", json={"ids": ["nope"]})
     assert f.status_code == 200 and f.json()["forgotten"] == 0
+
+
+def test_recall_includes_statement_id(client):
+    client.post("/api/remember", json={"text": "Bob owns auth"})
+    client.post("/api/tick", json={})
+    hits = client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
+    assert hits and all("id" in h and h["id"] for h in hits)
