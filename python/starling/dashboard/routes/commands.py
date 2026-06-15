@@ -34,6 +34,7 @@ class RecallBody(BaseModel):
     mode: str = "semantic"
     intent: str | None = None    # 非空 → 走 RetrievalPlanner(P3.a1)
     target: str | None = None    # BELIEF_OF_OTHER / COMMON_GROUND 对方
+    holder: str | None = None    # override recall holder 维度(默认 dashboard agent)
 
 
 class TickBody(BaseModel):
@@ -86,7 +87,8 @@ def build_commands_router(require_token) -> APIRouter:
             await _broadcast(request, "recall", {"n": len(payload["results"])})
             return payload
         hits = await to_thread.run_sync(partial(
-            eng.recall, body.query, perspective=body.perspective, k=body.k, mode=body.mode))
+            eng.recall, body.query, perspective=body.perspective, k=body.k,
+            mode=body.mode, holder=body.holder))
         out = [{"id": h["row"].id, "subject": h["row"].subject_id,
                 "predicate": h["row"].predicate, "object": h["row"].object_value,
                 "score": h["score"]} for h in hits]
@@ -104,10 +106,11 @@ def build_commands_router(require_token) -> APIRouter:
 
     @router.get("/working_set")
     async def working_set(request: Request, interlocutor: str, goal: str | None = None,
-                          token_budget: int = 2000):
+                          token_budget: int = 2000, holder: str | None = None):
         eng = _engine(request)
         return await to_thread.run_sync(partial(
-            eng.working_set, interlocutor, goal=goal, token_budget=token_budget))
+            eng.working_set, interlocutor, goal=goal, token_budget=token_budget,
+            holder=holder))
 
     @router.post("/forget")
     async def forget(body: ForgetBody, request: Request):

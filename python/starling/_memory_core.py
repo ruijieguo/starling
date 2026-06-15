@@ -120,16 +120,22 @@ class MemoryCore:
             created_at_iso8601=created_iso, payload=text.encode("utf-8"))
 
     def recall(self, query: str, *, perspective: str = "first_person",
-               k: int = 10, mode: str = "semantic") -> list:
+               k: int = 10, mode: str = "semantic", holder: str | None = None) -> list:
         """mode="semantic" — vector cosine via SemanticRetriever.vector_recall;
-        mode="completion" — associative spreading via PatternCompletor."""
+        mode="completion" — associative spreading via PatternCompletor.
+
+        holder overrides the recall holder dimension (default self.agent). A
+        caller that wrote statements under a non-default holder MUST recall with
+        the same holder, else the candidate SQL's `s.holder_id = ?` predicate
+        excludes them (P3.b2: OpenClaw plugin holder must round-trip)."""
+        holder_id = holder or self.agent
         if mode == "completion":
             res = self.completor.complete(_core.PatternCompletionParams(
-                tenant_id=self.tenant, holder_id=self.agent,
+                tenant_id=self.tenant, holder_id=holder_id,
                 holder_perspective=perspective, cue_text=query, result_k=k))
             return [{"row": s.row, "score": s.activation} for s in res.rows]
         res = self.semantic.vector_recall(_core.SemanticRetrieverParams(
-            tenant_id=self.tenant, holder_id=self.agent,
+            tenant_id=self.tenant, holder_id=holder_id,
             holder_perspective=perspective, query_text=query, k=k))
         return [{"row": s.row, "score": s.score} for s in res.rows]
 
@@ -162,7 +168,8 @@ class MemoryCore:
         (嵌入网络期间释放 GIL);这里只剩绑定转发。"""
         return _core.memory_tick_all(self.rt.adapter, self.worker, self.policy, now)
 
-    def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
+    def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000,
+                          holder: str | None = None):
         """Assemble the prompt-ready ContextBlock (P2.e): persona /
         common_ground / relevant_memories / pending_commitments / affect under
         an approximate token budget. A `fired` commitment surfaces as a ⚠ DUE
@@ -174,7 +181,7 @@ class MemoryCore:
         """
         return _core.build_working_set(
             self.rt.adapter, self.semantic,
-            tenant_id=self.tenant, agent_id=self.agent,
+            tenant_id=self.tenant, agent_id=holder or self.agent,
             interlocutor=interlocutor, goal=goal or "",
             token_budget=token_budget)
 

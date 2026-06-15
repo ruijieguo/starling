@@ -87,3 +87,16 @@ def test_recall_includes_statement_id(client):
     client.post("/api/tick", json={})
     hits = client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
     assert hits and all("id" in h and h["id"] for h in hits)
+
+
+def test_recall_holder_override(client):
+    # Statement written under a non-default holder ("agent"); dashboard agent="self".
+    client.post("/api/remember", json={"text": "Bob owns auth", "holder": "agent"})
+    client.post("/api/tick", json={})
+    # Default recall holder (dashboard agent "self") must NOT see the agent-held row.
+    miss = client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
+    assert not any(h["subject"] == "Bob" for h in miss)
+    # Explicit holder="agent" round-trips and recalls it (P3.b2 plugin holder).
+    hit = client.post(
+        "/api/recall", json={"query": "auth", "k": 5, "holder": "agent"}).json()["results"]
+    assert any(h["subject"] == "Bob" for h in hit)

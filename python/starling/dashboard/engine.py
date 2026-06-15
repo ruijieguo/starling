@@ -170,9 +170,11 @@ class DashboardEngine:
             return self._core.remember(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
 
-    def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic") -> list:
+    def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
+               holder=None) -> list:
         with self._lock:
-            return self._core.recall(query, perspective=perspective, k=k, mode=mode)
+            return self._core.recall(query, perspective=perspective, k=k, mode=mode,
+                                     holder=holder)
 
     def tick(self, now: str) -> dict:
         with self._lock:
@@ -246,11 +248,11 @@ class DashboardEngine:
         self._tick_thread = None
         self._tick_stop = None
 
-    def working_set(self, interlocutor, *, goal=None, token_budget=2000) -> dict:
+    def working_set(self, interlocutor, *, goal=None, token_budget=2000, holder=None) -> dict:
         """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""
         with self._lock:
             cb = self._core.build_working_set(interlocutor, goal=goal,
-                                              token_budget=token_budget)
+                                              token_budget=token_budget, holder=holder)
             return {"render": cb.render(),
                     "blocks": [{"label": b.label, "content": b.content,
                                 "tokens": b.token_estimate} for b in cb.blocks],
