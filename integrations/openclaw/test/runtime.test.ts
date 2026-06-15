@@ -53,7 +53,7 @@ describe("makeStarlingManager.search", () => {
 
     const results = await mgr.search("who likes math", { maxResults: 5 });
 
-    expect(client.recall).toHaveBeenCalledWith("who likes math", 5);
+    expect(client.recall).toHaveBeenCalledWith("who likes math", 5, "agent");
     expect(results).toHaveLength(1);
     const row = results[0];
     // Synthetic, re-decodable path + memory source + citation == statement id.
@@ -68,7 +68,7 @@ describe("makeStarlingManager.search", () => {
     const client = makeFakeClient();
     const mgr = makeStarlingManager(CFG, client);
     await mgr.search("q");
-    expect(client.recall).toHaveBeenCalledWith("q", 10);
+    expect(client.recall).toHaveBeenCalledWith("q", 10, "agent");
   });
 });
 

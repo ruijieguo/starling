@@ -118,7 +118,9 @@ export function makeStarlingManager(
       opts?: { maxResults?: number },
     ): Promise<MemorySearchResult[]> {
       const k = opts?.maxResults ?? 10;
-      const hits = await client.recall(query, k);
+      // Recall under the SAME holder we capture with (cfg.holder), else the
+      // dashboard's holder_id predicate excludes our own rows (P3.b2 root cause).
+      const hits = await client.recall(query, k, cfg.holder);
       // recallToSearchResults already yields source:"memory" rows; satisfies
       // MemorySearchResult (source is the "memory" | "sessions" union member).
       return recallToSearchResults(hits, cfg.tenant);

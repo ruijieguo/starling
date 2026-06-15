@@ -127,9 +127,11 @@ export class StarlingClient {
    * Returns [] on any non-auth failure (network, 5xx, etc.).
    * Throws StarlingAuthError on 401/403.
    */
-  async recall(query: string, k: number): Promise<RecallHit[]> {
+  async recall(query: string, k: number, holder?: string): Promise<RecallHit[]> {
     try {
-      const res = await this.req("POST", "/api/recall", { query, k });
+      const body: { query: string; k: number; holder?: string } =
+        holder !== undefined ? { query, k, holder } : { query, k };
+      const res = await this.req("POST", "/api/recall", body);
       const json = (await res.json()) as { results: RecallHit[] };
       return json.results ?? [];
     } catch (err) {
@@ -146,10 +148,12 @@ export class StarlingClient {
    */
   async workingSet(
     interlocutor: string,
+    holder?: string,
     goal?: string,
     tokenBudget?: number,
   ): Promise<{ render: string } | null> {
     const params = new URLSearchParams({ interlocutor });
+    if (holder !== undefined) params.set("holder", holder);
     if (goal !== undefined) params.set("goal", goal);
     if (tokenBudget !== undefined) params.set("token_budget", String(tokenBudget));
     const path = `/api/working_set?${params.toString()}`;

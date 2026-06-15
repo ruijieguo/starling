@@ -103,7 +103,9 @@ export default definePluginEntry({
     // recall — auto-inject the Starling working set as prepended context.
     if (cfg.autoRecall) {
       api.on("before_agent_start", async () => {
-        const ws = await client.workingSet(cfg.holder);
+        // holder = cfg.holder so the working set is built for the same holder
+        // we capture under (matches the dashboard holder dimension).
+        const ws = await client.workingSet(cfg.holder, cfg.holder);
         return ws ? { prependContext: workingSetToContext(ws) } : {};
       });
     }

@@ -166,18 +166,27 @@ describe("StarlingClient", () => {
     it("returns { render } on 200", async () => {
       fetchMock.mockResolvedValueOnce(makeResponse(200, { render: "context text" }));
       const client = makeClient();
-      const result = await client.workingSet("i1", "my goal", 2000);
+      const result = await client.workingSet("i1", "h1", "my goal", 2000);
       expect(result).toEqual({ render: "context text" });
     });
 
-    it("passes interlocutor/goal/tokenBudget as query params", async () => {
+    it("passes interlocutor/holder/goal/tokenBudget as query params", async () => {
       fetchMock.mockResolvedValueOnce(makeResponse(200, { render: "" }));
       const client = makeClient();
-      await client.workingSet("alice", "the goal", 500);
+      await client.workingSet("alice", "agent", "the goal", 500);
       const [url] = fetchMock.mock.calls[0] as [string];
       expect(url).toContain("interlocutor=alice");
+      expect(url).toContain("holder=agent");
       expect(url).toContain("goal=the+goal");
       expect(url).toContain("token_budget=500");
+    });
+
+    it("passes holder into the recall body when provided", async () => {
+      fetchMock.mockResolvedValueOnce(makeResponse(200, { results: [] }));
+      const client = makeClient();
+      await client.recall("q", 5, "agent");
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ query: "q", k: 5, holder: "agent" });
     });
 
     it("throws StarlingAuthError on 401", async () => {
