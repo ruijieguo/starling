@@ -178,7 +178,7 @@ class MemoryCore:
             interlocutor=interlocutor, goal=goal or "",
             token_budget=token_budget)
 
-    def forget(self, ids, *, now=None) -> dict:
+    def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
         forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""
         now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -42,7 +42,7 @@ class TickBody(BaseModel):
 
 class ForgetBody(BaseModel):
     ids: list[str]
-    now: str | None = None
+    now: str | None = None  # None → MemoryCore resolves to current UTC time
 
 
 def _engine(request: Request):
