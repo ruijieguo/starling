@@ -1,0 +1,39 @@
+# OpenClaw + Starling memory plugin — integration environment.
+#
+# ONLY OpenClaw runs here. The Starling dashboard runs on the macOS host
+# (native _core.so cannot load in a Linux container) and is reached over
+# host.docker.internal. See docker/README.md for the host-side start command.
+#
+# Run:
+#   STARLING_TOKEN=<token from ~/.starling/starling.json> docker compose up --build
+#
+# The token is read from the host environment and passed through at runtime;
+# it is never written into the image or this file.
+
+services:
+  openclaw:
+    build:
+      # Context is the plugin root so the Dockerfile can COPY src/, package.json…
+      context: ..
+      dockerfile: docker/openclaw.Dockerfile
+    image: starling-openclaw-integration:latest
+    container_name: starling-openclaw
+    # Map host.docker.internal -> the Docker host gateway. On Docker Desktop
+    # (macOS) this resolves automatically, but declaring it keeps the compose
+    # file portable to Linux engines too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Where the host Starling dashboard listens. 8787 is the default port in
+      # ~/.starling/starling.json. The host MUST bind 0.0.0.0 (not 127.0.0.1)
+      # for the container to reach it — see README.
+      STARLING_DASHBOARD_URL: "http://host.docker.internal:${STARLING_PORT:-8787}"
+      # Secret — passed through from the host env, NEVER hard-coded here.
+      # `${STARLING_TOKEN:?...}` makes compose fail fast if it is unset.
+      STARLING_TOKEN: "${STARLING_TOKEN:?set STARLING_TOKEN from ~/.starling/starling.json}"
+      STARLING_TENANT: "${STARLING_TENANT:-openclaw}"
+      STARLING_HOLDER: "${STARLING_HOLDER:-agent}"
+      STARLING_AUTO_RECALL: "${STARLING_AUTO_RECALL:-true}"
+      STARLING_AUTO_CAPTURE: "${STARLING_AUTO_CAPTURE:-true}"
+    # Keep alive for `docker compose exec` driven integration testing.
+    command: ["sleep", "infinity"]

@@ -1,0 +1,16 @@
+# Build context is integrations/openclaw/ (see compose `build.context: ..`).
+# Keep the image hermetic: never copy host build artifacts or secrets in.
+node_modules
+dist
+test
+**/*.test.ts
+# Exclude the docker/ build files from the image context, but KEEP the two
+# in-container e2e harnesses (Dockerfile COPYs them to /opt/starling-plugin).
+docker/*
+!docker/roundtrip.mjs
+!docker/downgrade.mjs
+.gitignore
+# Defensive: never let a stray secret/config slip into the build context.
+**/.env
+**/starling.json
+**/*.local.*

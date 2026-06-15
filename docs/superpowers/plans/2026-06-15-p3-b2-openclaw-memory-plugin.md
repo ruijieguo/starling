@@ -4,7 +4,7 @@
 
 **Goal:** 让 Starling 成为 OpenClaw 的 `plugins.slots.memory` provider —— 一个瘦 TS HTTP 客户端把 OpenClaw memory 操作路由到 Starling dashboard FastAPI,在 docker 内隔离开发集成测试。
 
-**Architecture:** Starling 端先补两个 dashboard 端点(`POST /api/forget` 走新 `StatementStore.forget`→forgotten,`GET /api/statement/{id}` 走新 `queries.statement_by_id`);再做 TS 插件(`integrations/openclaw/`)实现 OpenClaw memory 注册接口,作适配层调 dashboard;最后 docker compose 两服务(starling 挂载本机复用 `_core.so` + openclaw 容器内装插件)端到端验证。核心语义留 C++/Python,插件只翻译+传输+容错。
+**Architecture:** Starling 端先补两个 dashboard 端点(`POST /api/forget` 走新 `StatementStore.forget`→forgotten,`GET /api/statement/{id}` 走新 `queries.statement_by_id`);再做 TS 插件(`integrations/openclaw/`)实现 OpenClaw memory 注册接口,作适配层调 dashboard;最后 docker 隔离端到端验证 —— **dashboard 跑本机 host(macOS Mach-O `_core.so` 不能进 Linux 容器),OpenClaw 跑单容器经 `host.docker.internal` 连本机**(Task 7 实测修正;原「starling 挂载本机容器」作废)。核心语义留 C++/Python,插件只翻译+传输+容错。
 
 **Tech Stack:** C++20(StatementStore/memoryops facade)+ pybind11 + FastAPI(dashboard)+ TypeScript(OpenClaw plugin-sdk, fetch)+ vitest + Docker compose。
 
@@ -504,20 +504,32 @@ dashboard 契约(确定):
 
 **Files:** Create `integrations/openclaw/docker/docker-compose.yml`, 完善 `openclaw.Dockerfile`, `README.md`
 
-- [ ] **Step 1: compose 两服务**
-  - `starling`:python 基础镜像,**挂载本机 repo + `.venv`(只读)**,启动 dashboard(确认启动命令:`PATH=.../.venv/bin python -m starling.dashboard ...` 或既有 CLI),env 注入 `STARLING_DASH_TOKEN`/`STARLING_DASH_TENANT`,暴露 dashboard 端口。复用本机已 build 的 `_core.so`(免镜像内编译 C++)。
-  - `openclaw`:`openclaw.Dockerfile` node 镜像装 openclaw + 本插件,配 `plugins.slots.memory="starling"` + `dashboardUrl=http://starling:<port>` + token/tenant(env,不写进 image 层)。`depends_on: starling`。
-- [ ] **Step 2: 集成测试脚本(docker)**
-  - `docker compose up` → 在 openclaw 容器发 capture(memory write)→ `GET starling /api/statements` 验证新 statement;发 search → 验证返回 starling recall;auto-recall → 验证 working_set 注入。
-  - 降级:`docker compose stop starling` → 读返回空(agent 不中断)、写入插件重试队列;`up starling` → 队列 flush 成功。
-- [ ] **Step 3: README** —— 起停 + 集成测试步骤 + 配置(token/tenant/holder 经 env);强调 token 不入 image/git。
-- [ ] **Step 4:** 回归 `(cd build && ctest)` + `pytest`(确认 Task 1-2 后端未退);commit(explicit-path add `docker/docker-compose.yml docker/openclaw.Dockerfile docker/README.md` + 集成脚本)。
+> **拓扑修正(Task 7 实测):** Starling `_core.so` 是 macOS Mach-O(arm64),**不能在 Linux
+> 容器加载**。故 **dashboard 跑本机 host(非容器)**,OpenClaw 跑容器经 `host.docker.internal`
+> 连本机;compose **只含 `openclaw` 一个服务**(无 starling 服务、无本机挂载)。原 Step 1 的
+> 「starling 容器挂载本机 venv 复用 _core.so」**作废**,以下为已实现版本。
+
+- [x] **Step 1: compose 单服务 + 本机 dashboard**
+  - **本机起 Starling**(repo 根):`STARLING_DASH_HOST=0.0.0.0 .venv/bin/python scripts/run_dashboard.py --no-build`(必须 bind `0.0.0.0`,默认 `127.0.0.1` 容器够不着;token 在 `~/.starling/starling.json`)。
+  - `openclaw`:`openclaw.Dockerfile`(node:22-slim)`npm i -g openclaw@2026.6.6`(pin)+ **镜像内 `tsc` build 本插件**到 `/opt/starling-plugin`;`entrypoint.sh` 运行时按 env 渲染 `openclaw.json`:`plugins.load.paths=["/opt/starling-plugin"]` + `plugins.slots.memory="starling"` + `dashboardUrl="http://host.docker.internal:<port>"` + token/tenant(env,**不写进 image 层/git**)。compose `extra_hosts:["host.docker.internal:host-gateway"]`。
+  - **config 解析坑(2026.6.6 实测):** OpenClaw 用 **`OPENCLAW_CONFIG_PATH`** 定位 config;**切勿设 `OPENCLAW_HOME`**(会被当自身 base dir 追加 `/.openclaw`,config 静默移位 → 插件不被发现)。
+- [x] **Step 2: 集成测试脚本(`integration-test.sh` + `roundtrip.mjs`/`downgrade.mjs`)**
+  - host 端编排:`compose up` → `openclaw plugins inspect starling`(loaded)→ 容器内 `roundtrip.mjs`(import 编译后 `dist/*.js`)发 capture → host `GET /api/overview` 验证 `counts.statements` 增(**实测 0→1 通过**);recall 为 best-effort(见下观察)。
+  - 降级(`downgrade.mjs`):client 指不可达 URL → 读返回 []/null(不抛)、写入重试队列(queueLength 增);URL 恢复 → `flushQueue()` 排空。**实测全绿。**
+- [x] **Step 3: README**(`docker/README.md`)—— 起停 + 集成测试步骤 + 配置(token/tenant/holder 经 env)+ **实测观察 1-7**;强调 token 不入 image/git。
+- [ ] **Step 4:** 回归 `(cd build && ctest)` + `pytest`(确认 Task 1-2 后端未退);commit(explicit-path add `docker/*` + 改的文档)。
+
+**实测遗留观察(详见 README §4):** ① 写路径端到端通(容器→host 跨界建 statement + 向量);
+② `/api/recall`/`/api/working_set` 对刚 remember 的数据返空(host 端直调 `DashboardEngine.recall`
+亦复现)—— **Starling 检索内部行为,非插件/docker 缺陷**,留 Starling 侧跟进;插件已对空降级不中断;
+③ 插件 doctor(2026.6.6)要求 manifest 声明 `contracts.tools:["memory_store","memory_forget"]`
+才能干净注册两个写工具(非致命,插件仍占槽加载)—— 留插件侧 follow-up。
 
 ---
 
 ## Self-Review
 
-- **Spec coverage:** 七能力(T4 map + T6 runtime)、tenant/holder 映射(T4 config)、读降级+写重试(T5)、remove→forgotten(T2)、get(T1)、docker 两服务挂载(T7)、最小后端增量(T1-2)—— 全覆盖。
+- **Spec coverage:** 七能力(T4 map + T6 runtime)、tenant/holder 映射(T4 config)、读降级+写重试(T5)、remove→forgotten(T2)、get(T1)、docker 集成(T7:单 openclaw 容器 + 本机 dashboard,经 `host.docker.internal`;原「两服务挂载本机 venv」因 macOS Mach-O `_core.so` 不能进 Linux 容器而修正)、最小后端增量(T1-2)—— 全覆盖。
 - **接口未定的诚实处理:** OpenClaw 注册 API 形状是真实未定点,集中在 Task 3 关卡解决,Task 4-6 显式依赖其产出(符合「禁止跨阶段预写未定接口」);dashboard 侧 schema 已确定故 Task 1-2/4/5 给确切代码。
 - **类型一致:** `forget(ids)`→`memory_forget(adapter,tenant,ids,now_iso)`→`StatementStore.forget(id,tenant,updated_at)` 贯穿一致;`statement_by_id(db_path,tenant,id)` 与 route 一致;`{forgotten}`/`{results}` 响应键贯穿 pytest 断言一致。
 - **边界:** C++ 仅 `StatementStore.forget` + `memoryops::forget`(核心语义入核);Python/TS 转发;forgotten 派生清理走 tick(一致性模型对齐 P3.b1)。
