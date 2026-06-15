@@ -82,24 +82,27 @@ integrations/openclaw/
     README.md               # 起停 + 集成测试步骤
 ```
 
-### 2. OpenClaw 注册机制(实现第一步精确确认)
-设计层确定用 plugin-sdk 的 memory 插件 API 占据 `plugins.slots.memory`。具体是
-`registerMemoryRuntime(runtime)`(单一 runtime 对象,七能力作其方法)还是
-`registerTool`+`registerService`(像 memory-lancedb 拆成 memory_search/get 工具 +
-auto-capture/recall 后台 service),**实现 Task 1 第一步**精确读
-`dist/plugin-sdk/memory-core*.d.ts` + `dist/extensions/memory-lancedb/{index,lancedb-runtime,api}.js`
-源码确定,并以 memory-lancedb 为可运行参照。本设计的七能力映射与此选择无关。
+### 2. OpenClaw 注册机制(Task 3 探查已确定 → hybrid runtime 路线)
+契约详见 [`2026-06-15-p3-b2-openclaw-contract.md`](2026-06-15-p3-b2-openclaw-contract.md)。占槽靠
+manifest `kind:"memory"` + `definePluginEntry`;注册是 composite(非单一 god-object)。Starling 用
+**hybrid runtime 路线**(用户 2026-06-15 裁定):`registerMemoryRuntime`(search/get/index 经
+`MemorySearchManager`)作骨架 → 白盒复用 builtin memory_search/get 工具 + `memory` CLI + status +
+embedding 接线;`registerTool`(memory_store/memory_forget)补 runtime 缺的写/删;
+`registerMemoryFlushPlan` + `api.on` hooks 补 flush/auto-recall/auto-capture。**关键鸿沟:**
+`MemorySearchManager` 是**文件/行读模型**(`search→{path,startLine,endLine,snippet,score}`、
+`get=readFile(relPath)`,无 write/delete),Starling statement 须造稳定 synthetic path
+`statement://<tenant>/<id>`(get/remove 反解依赖)。
 
-### 3. 七能力 → dashboard API 映射(完整对等)
-| OpenClaw memory 能力 | dashboard API | 数据映射 / 备注 |
-|---|---|---|
-| `search(query, k)` | `POST /api/recall` | `{results}` → memory snippets(subject/predicate/object 拼文本 + score) |
-| `recall`(auto-recall 注入) | `GET /api/working_set` | working_set → 注入上下文块 |
-| `capture(text)` | `POST /api/remember` | `holder` = agent 映射;返回 statement_ids |
-| `flush`(pre-compaction) | `POST /api/remember` | 把待存 durable memory 作 remember 写入 |
-| `get(id)` | **新增 `GET /api/statement/{id}`** | 点读单条(新增 `queries.statement_by_id` 纯 read-only SQL)+ tenant 守卫 |
-| `index` | no-op(Starling 自管) | `tick_interval_s` 后台已周期嵌入/巩固/投影;agent 不强制触发 |
-| `remove(id)` | **新增 `POST /api/forget`** | **forgotten**(六态机终态,真移出检索;向量/投影 tick 清理),逻辑删除 |
+### 3. 七能力 → OpenClaw 落点 + dashboard API(契约文档有确切签名)
+| Starling 能力 | OpenClaw 落点 | dashboard API | 适配 |
+|---|---|---|---|
+| search | `MemorySearchManager.search()` | `POST /api/recall` | recall results → `MemorySearchResult[]`(path=`statement://<tenant>/<id>`、snippet=subj+pred+obj、score、citation=id) |
+| get | `MemorySearchManager.readFile()` | `GET /api/statement/{id}` | relPath 反解 id → statement → `{text,path}`;ENOENT 降级 `{text:"",path}` |
+| index | `MemorySearchManager.sync()` | `POST /api/tick` | 触发维护(或 no-op,Starling 后台自管) |
+| recall(auto) | `api.on("before_agent_start")→{prependContext}` | `GET /api/working_set` | working_set.render → prependContext |
+| capture | `registerTool(memory_store{text})` | `POST /api/remember` | text→remember,holder=agent |
+| flush | `registerMemoryFlushPlan` + `api.on("before_compaction")` | `POST /api/remember` | hook 读 `sessionFile` transcript→remember |
+| remove | `registerTool(memory_forget{memoryId})` | `POST /api/forget` | memoryId(=statement id)→forget(→forgotten) |
 
 ### 4. 数据映射:agent ↔ tenant/holder
 - 插件 config 指定**一个 Starling tenant**(默认 `"openclaw"`)。

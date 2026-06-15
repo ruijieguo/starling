@@ -379,22 +379,15 @@ EOF
 
 ---
 
-## Task 3: OpenClaw 注册机制探查 + 最小「hello memory」插件(关卡)
+## Task 3: 最小「hello memory」插件骨架 + docker 加载验收
 
-**目的:** 精确确定 OpenClaw memory 插件的注册 API + 能力签名(spec 标注的真实未定点),产出可注册的最小插件骨架。后续 Task 4-6 的 TS 接口形状依赖本 Task 结论。**在 docker 内做(不污染本机 OpenClaw)。**
+**契约已确定(探查完成):** 见 `docs/superpowers/specs/2026-06-15-p3-b2-openclaw-contract.md`——hybrid runtime 路线(`registerMemoryRuntime` + `registerTool`(memory_store/forget)+ `registerMemoryFlushPlan` + hooks),`MemorySearchManager` 文件/行读模型,synthetic path `statement://<tenant>/<id>`。本 Task:落最小可加载插件骨架(占槽 + `registerMemoryRuntime` stub manager 打通),Task 4-6 据契约展开七能力。**docker 验收(不污染本机 OpenClaw)。**
 
 **Files:**
 - Create: `integrations/openclaw/openclaw.plugin.json`, `package.json`, `tsconfig.json`, `src/index.ts`(最小)
 - Create: `integrations/openclaw/docker/openclaw.Dockerfile`, `docker/README.md`(探查用最小镜像)
 
-- [ ] **Step 1: 读源确定注册契约**
-
-在 docker(node 镜像装 `openclaw`)或本机只读检视 `/opt/homebrew/lib/node_modules/openclaw/dist`:
-  - `dist/plugin-sdk/` 的 `memory-core*.d.ts` / `*.d.ts` —— 找 memory 插件注册 API 的 TS 类型:`registerMemoryRuntime`/`registerMemoryFlushPlan`/`registerMemoryPromptSection` 的签名,**或** memory-lancedb 用的 `registerTool`/`registerService`/`registerCli` 形态。
-  - `dist/extensions/memory-lancedb/index.js`(bundled)的 `registerTool(`/`registerService(`/`registerMemoryRuntime(` 调用点 —— 确认 memory_search/memory_get tool 的 input schema + 返回形状、auto-capture/recall service 的钩子、flush 时机。
-  - `dist/extensions/memory-lancedb/openclaw.plugin.json`(已读:`{id,kind:"memory",uiHints,configSchema}`)+ `package.json`(已读:`{type:"module",openclaw:{extensions:["./index.js"],install,release}}`)。
-
-  **产出:** 在 `integrations/openclaw/docker/README.md` 记录确定的注册 API 名 + 七能力(search/recall/capture/flush/get/index/remove)各自挂到哪个注册点 + 确切 TS 签名。这份契约是 Task 4-6 的接口依据。
+_(注册契约探查已完成,固化于 `docs/superpowers/specs/2026-06-15-p3-b2-openclaw-contract.md`;以下落最小骨架。)_
 
 - [ ] **Step 2: 最小插件骨架**
 
@@ -431,7 +424,7 @@ EOF
 }
 ```
 
-`src/index.ts` —— 用 Step 1 确定的 `definePluginEntry` + 注册 API,注册**一个**能力(如 search)返回固定 stub `[]`,验证插件能被 OpenClaw 加载 + 该能力可被 agent 调用。
+`src/index.ts` —— `definePluginEntry({id:"starling",kind:"memory",configSchema,register(api){ api.registerMemoryRuntime(stub); }})`,stub.getMemorySearchManager 返回 manager:`search→[]`、`readFile→{text:"",path}`、`status→ok`、`probes→false`(契约 §C skeleton)。验证插件被 OpenClaw 加载 + 占槽 + builtin memory_search 命中 stub。
 
 - [ ] **Step 3: 验收(docker 内)**
 
@@ -471,7 +464,7 @@ dashboard 契约(确定):
 
 - [ ] **Step 1: 写失败 vitest(map 纯函数)** —— 针对每个能力写一条:给定 OpenClaw 入参(Task 3 形状)→ 断言产出确切 dashboard request(method/path/body);给定 dashboard response → 断言产出 OpenClaw 期望的 memory 结果形状(如 recall results 拼 `subject predicate object` 文本 + score)。
 - [ ] **Step 2: 跑红** `cd integrations/openclaw && npx vitest run test/map.test.ts`
-- [ ] **Step 3: 实现 `map.ts`** —— 七能力的请求构造 + 响应转换纯函数(search→/recall、recall→/working_set、capture/flush→/remember、get→/statement/{id}、index→no-op、remove→/forget),holder=config.holder/agent id,tenant 经 config(dashboard tenant 由其 config 固定,无需每请求传——但 holder 经 remember body)。
+- [ ] **Step 3: 实现 `map.ts`**(契约 §B 适配规则)—— 纯函数:**search**:recall `{results}` → `MemorySearchResult[]`(`path="statement://<tenant>/<id>"`、`startLine=endLine=0`、`snippet="<subject> <predicate> <object>"`、`score`、`source:"memory"`、`citation=<id>`);**get**:`readFile.relPath` 反解 `statement://<tenant>/<id>` → id(+ tenant 校验) → `{text:渲染, path:relPath}`;**recall(auto)**:working_set.render → `{prependContext}`;**capture**:`{text}` → remember body(holder=config.holder/agent);**remove**:`{memoryId}` → forget `{ids:[memoryId]}`;**index**:→ tick(或 no-op)。synthetic path 编/解码是核心纯函数(`encodePath(tenant,id)`/`decodePath(relPath)`),单测覆盖往返 + 非法 path 降级。
 - [ ] **Step 4: 实现 `config.ts`** —— 解析校验 `dashboardUrl/token/tenant/holder/autoCapture/autoRecall`,缺 required 报明确错误;token 只入内存不打日志。
 - [ ] **Step 5: 跑绿 + commit**(explicit-path add `integrations/openclaw/src/config.ts src/map.ts test/map.test.ts`)。
 
@@ -493,16 +486,17 @@ dashboard 契约(确定):
 
 ---
 
-## Task 6: `runtime.ts` + `index.ts`(组装七能力 + register)
+## Task 6: `runtime.ts` + `index.ts`(MemoryPluginRuntime + register 全挂)
 
 **Files:** Modify `integrations/openclaw/src/index.ts`;Create `src/runtime.ts`
 
-**说明:** 用 Task 3 注册契约把七能力(map + client)挂到 OpenClaw memory 注册点。
+**说明:** 用契约(§B/§C)把能力挂到 OpenClaw。`runtime.ts` 导出 `makeStarlingRuntime(cfg,api)` 返回 `MemoryPluginRuntime`,外加 `buildPromptSection`/`buildFlushPlan`。
 
-- [ ] **Step 1:** `runtime.ts` 组装:每能力 = `map`(构造 request)→ `client`(发)→ `map`(转响应)。autoCapture/autoRecall 按 config 开关挂到对应 service/钩子(Task 3 形态)。
-- [ ] **Step 2:** `index.ts` `definePluginEntry({id:"starling", register(api){ ... }})` 注册 runtime + flush plan(pre-compaction → capture)。
-- [ ] **Step 3 验收:** docker 内 OpenClaw 配 `plugins.slots.memory="starling"` + dashboardUrl 指向 starling 服务,手动 memory_search/capture 走通到 dashboard(下一 Task 端到端;此 Task 至少 `npx tsc --noEmit` + 插件加载无错)。
-- [ ] **Step 4: commit**(explicit-path add `src/runtime.ts src/index.ts`)。
+- [ ] **Step 1:** `runtime.ts` 的 `MemorySearchManager`:`search`=map.search→client.recall→map;`readFile`=map.get(decodePath)→client.statement→map;`sync`=client.tick(或 no-op);`status`=client.overview/ok;`probeEmbedding/Vector`=查 client config 就绪(降级 false)。读路径全经 client 降级(不可达→空,不抛)。
+- [ ] **Step 2:** `buildFlushPlan`(契约 §E `MemoryFlushPlan`:softThresholdTokens/forceFlushTranscriptBytes/reserveTokensFloor/prompt/systemPrompt/relativePath)+ `buildPromptSection`(告知 memory_store/forget 工具存在)。
+- [ ] **Step 3:** `index.ts` `definePluginEntry`(契约 §C skeleton):`registerMemoryRuntime(rt)` + `registerMemoryPromptSection` + `registerMemoryFlushPlan` + `registerTool(memory_store{text}→client.remember)` + `registerTool(memory_forget{memoryId}→client.forget)` + 条件 `api.on("before_agent_start"→prependContext=working_set)`(autoRecall) + `api.on("before_compaction"→读 sessionFile→remember)`(autoCapture)。
+- [ ] **Step 4 验收:** `cd integrations/openclaw && npx tsc --noEmit` 通过 + 插件加载无错(docker,Task 7 端到端)。
+- [ ] **Step 5: commit**(explicit-path add `src/runtime.ts src/index.ts`)。
 
 ---
 
