@@ -109,3 +109,12 @@ plan 模型:OpenClaw 跑 silent agentic turn 让 **agent 自己**写文件到 `r
 - **synthetic path 不变式:** `path="statement://<tenant>/<id>"` 必须稳定且可反解出 id(get/remove 依赖)。OpenClaw 用 path 去重/引用。
 - **reads 降级:** search/get/working_set 经 StarlingClient,dashboard 不可达 → 空结果 + warn,不抛(不中断 agent)。writes(capture/remove)→ 本地重试队列。
 - **不实现:** registerMemoryEmbeddingProvider(Starling 自带 embedder);Markdown 双写(Starling 接管槽)。
+
+## 2026.6.6 类型核对补注(Task 3 骨架后)
+
+契约主体引自本机全局 OpenClaw **2026.3.28**;Task 3 骨架本地 `npm install` 拉到 **2026.6.6**(integrations/openclaw lockfile 锁定)。两版签名一致编译通过,但以 **2026.6.6** 为实现基准(docker 集成 Task 7 须 pin 同版本)。核对结论:
+
+- **`MemorySearchManager` 确有 `search`/`readFile`**(`dist/plugin-sdk/memory-state-BiCvbkji.d.ts:104-131`):`getMemorySearchManager` 返回 `{manager: MemorySearchManager|null}`,interface = `search(query,opts?{maxResults,minScore,sessionKey,signal,...})→Promise<MemorySearchResult[]>` + `readFile({relPath,from?,lines?})→Promise<MemoryReadResult>` + `status()` + `sync?` + `probeEmbeddingAvailability()` + `probeVectorAvailability()` + `close?`。**§B 正确。** ⚠️ Task 3 骨架用 `runtime as Parameters<typeof registerMemoryRuntime>[0]` 整体断言绕过了 manager 类型检查,故 stub 未实现 search/readFile 也编译过——**Task 6 必须实现真实 search/readFile**(否则运行时 OpenClaw 调 `manager.search` 失败)。
+- **`MemoryProviderStatus.backend` 限 `"builtin"|"qmd"`**(:50-102),非任意字符串。Starling 作外部 provider 宜报 `backend:"qmd"`、`provider:"starling"`、`vector:{enabled,available,dims}`(反映 dashboard embedder/vector 就绪)。
+- **`MemoryReadResult`** = `{text,path,truncated?,from?,lines?,nextFrom?}`(:41-48,比 §B 的 `{text,path}` 多分页 optional 字段)。
+- **备选 `registerMemoryCorpusSupplement`**(`MemoryCorpusSupplement.search→MemoryCorpusSearchResult{corpus,path,score,snippet,id?,startLine?,endLine?,citation?}`、`.get→MemoryCorpusGetResult`):corpus 结果**原生带 `id`**,比 MemorySearchManager 的 synthetic path 更贴 statement 模型。Task 6 可评估主用 runtime(MemorySearchManager)还是 corpus supplement,或并用(runtime 占主槽 + corpus 补 statement 检索)。
