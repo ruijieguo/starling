@@ -24,13 +24,17 @@ export interface StatementRow {
   object_value: string;
 }
 
+/** Mirrors openclaw MemorySource (host/types.d.ts) so recall hits align with
+ *  the real MemorySearchResult.source union when consumed in runtime.ts. */
+export type MemSource = "memory" | "sessions";
+
 export interface MemSearchResult {
   path: string;
   startLine: number;
   endLine: number;
   score: number;
   snippet: string;
-  source: string;
+  source: MemSource;
   citation: string;
 }
 
