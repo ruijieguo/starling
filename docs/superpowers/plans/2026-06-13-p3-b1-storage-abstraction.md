@@ -38,7 +38,7 @@
 - [x] **Phase 4 GraphStore 路由**(写侧 DONE,`e55c76f`):insert_edge 四写者收编 + conflict 去重下沉 + 接口对齐 Connection&;读侧(neighbors 图遍历/scope 富集)、conflict_key_backfill(回填工具)、cognizer_relations(社会图)经分析裁剪/defer。
 - [x] **Phase 5 zvec backend(DONE)** —— Task 5.1 编译关卡 + 5.1b CMake 集成(ExternalProject + 2-bundle force_load)+ 5.2 ZvecVectorIndex(zvec KNN + SQL scope 精过滤,parity 绿,filter allowlist)+ 5.3 工厂(sqlite|zvec 可切,双路径验证)+ 5.4 perf 基线(recall=1.000,zvec 快 2.3x)+ dashboard 接线。STARLING_VECTOR_ZVEC 默认 OFF 零影响,ON 时 dashboard config/env 切 zvec。
 - [x] **Phase 6 LadybugDB backend(DONE,go/no-go = NO-GO)** —— LadybugDB v0.17.1 集成可行(MIT/C++20/导出 C++ target + 依赖聚合,优于 zvec),但收益小(边量小,SQLite 递归 CTE 够)+ 冲突边同步→异步破坏 C2/§16.3 即时冲突可见性 → NO-GO,保 SqliteGraphStore;LadybugDB 留 P3+ seam(GraphStore 接口已兑现抽象)。
-- [ ] **Phase 7 crypto_erasure 局部 keystore** —— 任务级。
+- [~] **Phase 7 crypto_erasure 局部 keystore —— DEFER P3+**(用户 2026-06-15 裁定,不在 P3 实现)。Engram 已留 `key_ref`/`content_ciphertext`/`erased_at` 字段 + NullKms 占位钩子(调用点不变);真 crypto_erasure(LocalFileKms KEK/DEK 信封 + AES-256-GCM + erase 删 DEK 使密文不可逆)推迟到 P3+。**P3.b1 以 phase 1-6 收官。**
 
 ---
 
@@ -489,7 +489,12 @@ phase 1 的 GraphStore 接口已就位,本期把写者/读者接上。
 - **Task 6.2:** 冲突边同步→异步订阅者改造**评估**(C2/§16.3 冲突可见性即时→最终一致的钉测影响);写改造草案。
 - **Task 6.3:** **go/no-go 关卡**:若收益不抵一致性代价 → 保 SQLite backend(GraphStore 接口已兑现抽象,LadybugDB 留 P3+ seam);若 go → 单独出换装 plan。
 
-## Phase 7:crypto_erasure 局部 keystore(任务级)
+## Phase 7:crypto_erasure 局部 keystore —— **DEFER P3+(不在 P3 实现)**
+
+> **2026-06-15 用户裁定:推迟到 P3+,P3 中不实现。** 当前 NullKms 占位(encrypt=identity /
+> key_ref=NULL / content_ciphertext=原始字节)+ Engram 的 `key_ref`/`content_ciphertext`/
+> `erased_at` 字段已留好钩子,调用点(EngramStore::put)不变 → 未来 P3+ 接 LocalFileKms 时
+> 零调用点改动。下列 Task 7.1/7.2 留作 P3+ 的实现蓝图,不在 P3.b1 范围。
 
 - **Task 7.1:** `store/keystore.{hpp,cpp}` —— `LocalFileKms` 替 `NullKms`:per-engram DEK 包裹,文件级 wrapped key `~/.starling/keys/`(0600)。TDD:wrap/unwrap round-trip。
 - **Task 7.2:** `erase(engram_id)` = 删 DEK(密文不可逆);EngramStore 接 keystore;crypto_erasure 生产路径钉测。
