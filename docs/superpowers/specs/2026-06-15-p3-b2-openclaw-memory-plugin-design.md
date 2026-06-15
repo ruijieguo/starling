@@ -97,9 +97,9 @@ auto-capture/recall 后台 service),**实现 Task 1 第一步**精确读
 | `recall`(auto-recall 注入) | `GET /api/working_set` | working_set → 注入上下文块 |
 | `capture(text)` | `POST /api/remember` | `holder` = agent 映射;返回 statement_ids |
 | `flush`(pre-compaction) | `POST /api/remember` | 把待存 durable memory 作 remember 写入 |
-| `get(id)` | **新增 `GET /api/statement/{id}`** | 点读单条(薄包已有 `MetaStore.get_statement`)+ tenant 守卫 |
+| `get(id)` | **新增 `GET /api/statement/{id}`** | 点读单条(新增 `queries.statement_by_id` 纯 read-only SQL)+ tenant 守卫 |
 | `index` | no-op(Starling 自管) | `tick_interval_s` 后台已周期嵌入/巩固/投影;agent 不强制触发 |
-| `remove(id)` | **新增 `POST /api/forget`** | **archive**(六态机 archived 态,可恢复),非硬删除 |
+| `remove(id)` | **新增 `POST /api/forget`** | **forgotten**(六态机终态,真移出检索;向量/投影 tick 清理),逻辑删除 |
 
 ### 4. 数据映射:agent ↔ tenant/holder
 - 插件 config 指定**一个 Starling tenant**(默认 `"openclaw"`)。
@@ -115,12 +115,16 @@ auto-capture/recall 后台 service),**实现 Task 1 第一步**精确读
 - 超时/认证失败(401)单独分类(认证失败不重试,明确报配置错误)。
 
 ### 6. Starling 端改动(最小)
-- **新增 `POST /api/forget`**:body `{id, tenant}`(或 `{ids}`),复用 P3.b1 phase 2
-  `StatementStore.archive`(六态机合法转换到 archived,带守卫),返回 archived 计数。
-  纳入 dashboard `commands.py` router,#token 守卫,广播 `statement_archived` WS 事件。
-- **新增 `GET /api/statement/{id}`**:点读单条(薄包已有 `MetaStore.get_statement`,
-  tenant 守卫),供 `get` 能力用。
-- 不改 C++ 核心(archive/get 语义已在 store 层;仅加 HTTP 端点转发,守 C++/Python 边界)。
+- **新增 `POST /api/forget`**:body `{ids, tenant}`,新增 `StatementStore.forget`(六态机
+  →forgotten,幂等守卫 `state != 'forgotten'`)+ `memoryops::forget` facade + `memory_forget`
+  绑定 + engine/core 转发。返回 forgotten 计数。纳入 `commands.py` router,#token 守卫,
+  广播 `statement_forgotten` WS 事件。**注:** forgotten 立即移出检索(recall SQL 仅取
+  `consolidated/archived`);向量物理清理 + 投影撤回由 tick 的 embedding_worker/projection
+  最终一致跟进。
+- **新增 `GET /api/statement/{id}`**:点读单条(新增 `queries.statement_by_id`,纯 read-only
+  SQL,照 inspect.py/queries.py 模式),tenant 守卫,供 `get` 能力用。
+- C++ 改动最小且守边界:forget 转换入核(`StatementStore.forget` + `memoryops::forget`
+  facade),binding/engine/dashboard 仅转发;get 是纯 read-only SQL(queries 层,无 C++)。
 
 ### 7. docker 开发环境
 - `docker-compose.yml` 两服务:
@@ -145,13 +149,15 @@ auto-capture/recall 后台 service),**实现 Task 1 第一步**精确读
   不用)。
 - 不做 Markdown 双写/共存(Starling 完全接管 slot;OpenClaw Markdown memory 在该 agent 停用)。
 - 不发布到 ClawHub/npm(本阶段 repo 内开发 + docker 集成测试;发布后续)。
-- 不做硬删除(remove=archive,可恢复)。
+- 不做硬删除(remove=forgotten=六态机逻辑删除终态,SQLite 行保留作审计;物理 purge /
+  crypto_erasure 属 P3+)。
 - crypto_erasure(P3.b1 Phase 7)已 defer P3+,与本插件无关。
 
 ## 实现顺序(交 writing-plans 细化)
 1. 精确确认 OpenClaw memory 注册机制 + 能力签名(读 plugin-sdk types + memory-lancedb 源码),
    产出最小「hello memory」插件(注册成功 + 一个能力打通 dashboard)。
-2. Starling 端 `POST /api/forget`(+ 可选 `/statement/{id}`)+ pytest 钉测。
+2. Starling 端 `StatementStore.forget`→`memoryops::forget`→`memory_forget` 绑定→
+   `POST /api/forget` + `GET /api/statement/{id}`(`queries.statement_by_id`)+ ctest/pytest 钉测。
 3. `map.ts` 七能力映射 + 单元测试。
 4. `client.ts` HTTP + 读降级 + 写重试队列 + 单元测试。
 5. `runtime.ts` 组装七能力 + config。
