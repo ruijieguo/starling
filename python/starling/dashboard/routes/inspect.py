@@ -1,7 +1,7 @@
 """Read-only inspection routes (SQL-backed)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from starling.dashboard import queries
 
@@ -49,5 +49,13 @@ def build_inspect_router(require_token) -> APIRouter:
     async def queues(request: Request):
         c = _cfg(request)
         return queries.queues(c.db_path, c.tenant)
+
+    @router.get("/statement/{statement_id}")
+    async def statement(request: Request, statement_id: str):
+        c = _cfg(request)
+        row = queries.statement_by_id(c.db_path, c.tenant, statement_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="not_found")
+        return row
 
     return router

@@ -94,6 +94,21 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
         return {"rows": rows, "edges": edges}
 
 
+def statement_by_id(db_path: str, tenant: str, statement_id: str) -> dict | None:
+    """Single statement by id, tenant-scoped. None when absent or cross-tenant."""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT id, holder_id, holder_perspective, subject_id, predicate, "
+            "object_kind, object_value, modality, polarity, confidence, salience, "
+            "observed_at, review_status, consolidation_state, nesting_depth, "
+            "created_at, updated_at "
+            "FROM statements WHERE tenant_id = ? AND id = ?",
+            (tenant, statement_id),
+        )
+        return rows[0] if rows else None
+
+
 def cognizers(db_path: str, tenant: str) -> dict:
     with open_ro(db_path) as conn:
         nodes = _rows(

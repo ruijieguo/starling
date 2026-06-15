@@ -84,3 +84,20 @@ def test_replay_conflicts_queues_shape(client):
 def test_eval_reports(client):
     r = client.get("/api/eval")
     assert r.status_code == 200 and isinstance(r.json()["reports"], list)
+
+
+def test_statement_by_id_roundtrip(client):
+    # Use the pre-seeded statement (via _seed) instead of /api/remember
+    # (which needs LLM); fetch its id from the list endpoint first.
+    rows = client.get("/api/statements").json()["rows"]
+    sid = rows[0]["id"]
+    r = client.get(f"/api/statement/{sid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == sid and body["consolidation_state"] in (
+        "volatile", "consolidated", "archived")
+
+
+def test_statement_by_id_404_when_absent(client):
+    r = client.get("/api/statement/does-not-exist")
+    assert r.status_code == 404 and r.json()["detail"] == "not_found"
