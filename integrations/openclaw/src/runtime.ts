@@ -126,8 +126,10 @@ export function makeStarlingManager(
 
     async readFile(params: { relPath: string }): Promise<MemoryReadResult> {
       const decoded = decodePath(params.relPath);
-      if (decoded === null) {
-        // Not a statement:// path we own — ENOENT-style degrade, no client call.
+      if (decoded === null || decoded.tenant !== cfg.tenant) {
+        // Not a statement:// path we own, or a cross-tenant path — ENOENT-style
+        // degrade with no client call (defense-in-depth; the dashboard is
+        // already tenant-scoped, but the plugin never reaches across tenants).
         return { text: "", path: params.relPath };
       }
       const row = await client.statement(decoded.id);

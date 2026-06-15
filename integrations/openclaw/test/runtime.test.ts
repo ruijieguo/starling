@@ -100,6 +100,18 @@ describe("makeStarlingManager.readFile", () => {
     expect(client.statement).not.toHaveBeenCalled();
   });
 
+  it("degrades WITHOUT calling the client on a cross-tenant path", async () => {
+    const client = makeFakeClient({
+      statement: async () => ({ subject_id: "x", predicate: "y", object_value: "z" }),
+    });
+    const mgr = makeStarlingManager(CFG, client);
+
+    const res = await mgr.readFile({ relPath: "statement://other-tenant/s1" });
+
+    expect(res).toEqual({ text: "", path: "statement://other-tenant/s1" });
+    expect(client.statement).not.toHaveBeenCalled();
+  });
+
   it("degrades to empty fields when client.statement returns null", async () => {
     const client = makeFakeClient({ statement: async () => null });
     const mgr = makeStarlingManager(CFG, client);
