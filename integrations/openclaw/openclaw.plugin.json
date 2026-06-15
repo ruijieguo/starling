@@ -1,0 +1,21 @@
+{
+  "id": "starling",
+  "kind": "memory",
+  "uiHints": {
+    "token": { "label": "Dashboard Token", "sensitive": true },
+    "dashboardUrl": { "label": "Dashboard URL", "placeholder": "http://localhost:8787" }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dashboardUrl": { "type": "string" },
+      "token": { "type": "string" },
+      "tenant": { "type": "string" },
+      "holder": { "type": "string" },
+      "autoCapture": { "type": "boolean" },
+      "autoRecall": { "type": "boolean" }
+    },
+    "required": ["dashboardUrl", "token"]
+  }
+}

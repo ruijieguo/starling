@@ -1,0 +1,13 @@
+{
+  "name": "@starling/openclaw-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Starling-backed long-term memory plugin for OpenClaw",
+  "openclaw": { "extensions": ["./dist/index.js"] },
+  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
+  "devDependencies": {
+    "@sinclair/typebox": "0.34.48",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": { "openclaw": "*" }
+}
