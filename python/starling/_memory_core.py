@@ -178,6 +178,14 @@ class MemoryCore:
             interlocutor=interlocutor, goal=goal or "",
             token_budget=token_budget)
 
+    def forget(self, ids, *, now=None) -> dict:
+        """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
+        forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        n = _core.memory_forget(self.rt.adapter, tenant=self.tenant,
+                                ids=list(ids), now_iso=now_iso)
+        return {"forgotten": n}
+
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing
         # to release explicitly in the embedded core.

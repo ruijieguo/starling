@@ -40,6 +40,11 @@ class TickBody(BaseModel):
     now: str | None = None  # defaults to current UTC time at request handling
 
 
+class ForgetBody(BaseModel):
+    ids: list[str]
+    now: str | None = None
+
+
 def _engine(request: Request):
     """Return the DashboardEngine, building it lazily from config.
 
@@ -102,6 +107,13 @@ def build_commands_router(require_token) -> APIRouter:
         eng = _engine(request)
         return await to_thread.run_sync(partial(
             eng.working_set, interlocutor, goal=goal, token_budget=token_budget))
+
+    @router.post("/forget")
+    async def forget(body: ForgetBody, request: Request):
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(eng.forget, body.ids, now=body.now))
+        await _broadcast(request, "statement_forgotten", r)
+        return r
 
     return router
 

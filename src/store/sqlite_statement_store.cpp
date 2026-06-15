@@ -216,6 +216,26 @@ int SqliteStatementStore::archive_nonterminal(
     return sqlite3_changes(db);
 }
 
+int SqliteStatementStore::forget(std::string_view id, std::string_view tenant,
+                                 std::string_view updated_at) {
+    // P3.b2:→ forgotten(逻辑删除终态),幂等守卫已 forgotten 不动。
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET consolidation_state='forgotten', updated_at=? "
+        "WHERE id=? AND tenant_id=? "
+        "  AND consolidation_state != 'forgotten'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "StatementStore::forget prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, updated_at);
+    bind_sv(h.get(), 2, id);
+    bind_sv(h.get(), 3, tenant);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "StatementStore::forget step");
+    return sqlite3_changes(db);
+}
+
 void SqliteStatementStore::set_confidence_consolidated(
     std::string_view id, std::string_view tenant, double confidence) {
     // exact 自 src/reconsolidation/arbitration.cpp:204(apply_supports)。

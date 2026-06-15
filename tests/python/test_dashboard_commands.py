@@ -64,3 +64,20 @@ def test_remember_409_when_llm_unconfigured(tmp_path):
 def test_working_set_renders(client):
     r = client.get("/api/working_set", params={"interlocutor": "Alice"})
     assert r.status_code == 200 and "render" in r.json()
+
+
+def test_forget_removes_from_recall(client):
+    rid = client.post("/api/remember", json={"text": "Bob owns auth"}).json()
+    sid = rid["statement_ids"][0]
+    client.post("/api/tick", json={})
+    assert client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
+    f = client.post("/api/forget", json={"ids": [sid]})
+    assert f.status_code == 200 and f.json()["forgotten"] == 1
+    hits = client.post("/api/recall", json={"query": "auth", "k": 5}).json()["results"]
+    assert all(h["subject"] != "Bob" or h["predicate"] != "responsible_for" for h in hits) \
+        or hits == []
+
+
+def test_forget_idempotent(client):
+    f = client.post("/api/forget", json={"ids": ["nope"]})
+    assert f.status_code == 200 and f.json()["forgotten"] == 0

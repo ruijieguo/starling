@@ -70,6 +70,19 @@ void bind_13_memory_ops(pybind11::module_& m) {
                               "dispatched"_a = t.dispatched);
           },
           py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"));
+
+    m.def("memory_forget",
+          [](starling::persistence::SqliteAdapter& adapter,
+             const std::string& tenant, const std::vector<std::string>& ids,
+             const std::string& now_iso) {
+              int n = 0;
+              {
+                  py::gil_scoped_release release;
+                  n = starling::memoryops::forget(adapter, tenant, ids, now_iso);
+              }
+              return n;
+          },
+          py::arg("adapter"), py::arg("tenant"), py::arg("ids"), py::arg("now_iso"));
 }
 
 }  // namespace starling::bindings

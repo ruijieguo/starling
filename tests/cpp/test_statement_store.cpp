@@ -259,4 +259,25 @@ TEST(StatementStore, InheritSalienceTakesMax) {
         "SELECT affect_json FROM statements WHERE id='s1'"), R"({"valence":0.2})");
 }
 
+TEST(StatementStore, ForgetMovesNonterminalToForgotten) {
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "s1", "consolidated");
+    seed(a->connection(), "s2", "archived");
+    EXPECT_EQ(st.forget("s1", "default", "2026-06-15T00:00:00Z"), 1);
+    EXPECT_EQ(state_of(a->connection(), "s1"), "forgotten");
+    EXPECT_EQ(st.forget("s2", "default", "2026-06-15T00:00:00Z"), 1);
+    EXPECT_EQ(state_of(a->connection(), "s2"), "forgotten");
+}
+
+TEST(StatementStore, ForgetIsIdempotentAndTenantScoped) {
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "s1", "forgotten");
+    EXPECT_EQ(st.forget("s1", "default", "2026-06-15T00:00:00Z"), 0);
+    seed(a->connection(), "s2", "consolidated");
+    EXPECT_EQ(st.forget("s2", "other-tenant", "2026-06-15T00:00:00Z"), 0);
+    EXPECT_EQ(state_of(a->connection(), "s2"), "consolidated");
+}
+
 }  // namespace starling::store

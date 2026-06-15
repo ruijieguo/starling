@@ -89,6 +89,11 @@ public:
     // severe-archive(arbitration): archived,除非已 archived/forgotten;刷新 updated_at。
     virtual int archive_nonterminal(std::string_view id, std::string_view tenant,
                                     std::string_view updated_at) = 0;
+    // P3.b2 逻辑删除: any state → forgotten(真移出检索;幂等,已 forgotten 不动)。
+    // recall SQL 仅取 consolidated/archived,故 forgotten 立即不可检索;向量/投影
+    // 物理清理由 tick 的 embedding_worker/projection 最终一致跟进。
+    virtual int forget(std::string_view id, std::string_view tenant,
+                       std::string_view updated_at) = 0;
     // 支持仲裁: SET confidence + consolidation_state='consolidated'。
     virtual void set_confidence_consolidated(std::string_view id,
                                              std::string_view tenant,

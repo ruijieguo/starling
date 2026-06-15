@@ -178,6 +178,10 @@ class DashboardEngine:
         with self._lock:
             return self._core.tick(now)
 
+    def forget(self, ids, *, now=None) -> dict:
+        with self._lock:
+            return self._core.forget(ids, now=now)
+
     def plan_query(self, text: str, *, intent: str, perspective=None,
                    target=None, k: int = 10) -> dict:
         """P3.a1 检索规划(9 意图 + 8 标签 + 拒答);JSON-able 摘要给路由层。"""

@@ -12,6 +12,7 @@
 #include "starling/extractor/extractor.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 #include "starling/tom/common_ground_subscriber.hpp"
 
 namespace starling::memoryops {
@@ -111,6 +112,15 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
         opts);
     t.dispatched = dispatcher.run_once().delivered;
     return t;
+}
+
+int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
+           const std::vector<std::string>& ids, std::string_view now_iso) {
+    auto& conn = adapter.connection();
+    int n = 0;
+    for (const auto& id : ids)
+        n += store::SqliteStatementStore(conn).forget(id, tenant, now_iso);
+    return n;
 }
 
 }  // namespace starling::memoryops

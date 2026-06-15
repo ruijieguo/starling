@@ -71,4 +71,8 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      prospective::PolicyEngine& policy,
                      std::string_view now_iso);
 
+// P3.b2:逻辑删除一批 statements(→forgotten),返回实际转换计数。
+int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
+           const std::vector<std::string>& ids, std::string_view now_iso);
+
 }  // namespace starling::memoryops
