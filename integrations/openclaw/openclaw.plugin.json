@@ -1,6 +1,9 @@
 {
   "id": "starling",
   "kind": "memory",
+  "contracts": {
+    "tools": ["memory_store", "memory_forget"]
+  },
   "uiHints": {
     "token": { "label": "Dashboard Token", "sensitive": true },
     "dashboardUrl": { "label": "Dashboard URL", "placeholder": "http://localhost:8787" }
