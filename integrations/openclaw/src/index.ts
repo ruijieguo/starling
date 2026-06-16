@@ -26,7 +26,7 @@ import {
   buildPromptSection,
   buildFlushPlan,
 } from "./runtime.js";
-import { workingSetToContext } from "./map.js";
+import { workingSetToContext, collectUserText } from "./map.js";
 
 /**
  * Reads a required string field from an OpenClaw-validated tool params object.
@@ -123,9 +123,10 @@ export default definePluginEntry({
     // follow-up (the file path is acknowledged below but not yet streamed).
     if (cfg.autoCapture) {
       api.on("before_compaction", async (event) => {
-        // event.sessionFile is the on-disk JSONL transcript; full-file ingestion
-        // is deferred. For now, persist the latest user message if available.
-        const text = lastUserMessageText(event.messages);
+        // Persist the recent user-stated window (newest user messages up to a
+        // char budget) so Starling's extractor distils facts from more than the
+        // single last message. Full sessionFile JSONL ingestion remains a follow-up.
+        const text = collectUserText(event.messages);
         if (text) {
           await client.remember(text, cfg.holder);
         }
@@ -133,43 +134,3 @@ export default definePluginEntry({
     }
   },
 });
-
-/**
- * Best-effort extraction of the most recent user-authored message text from the
- * before_compaction event's `messages` array (typed `unknown[]` by the host).
- *
- * Walks from the end, returning the first `{ role: "user" }` entry whose content
- * is a non-empty string, or the concatenated text blocks of an array content.
- * Returns "" when nothing usable is found — the caller then skips the write.
- */
-function lastUserMessageText(messages: unknown[] | undefined): string {
-  if (!Array.isArray(messages)) return "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m === null || typeof m !== "object") continue;
-    const rec = m as Record<string, unknown>;
-    if (rec["role"] !== "user") continue;
-    const content = rec["content"];
-    if (typeof content === "string") {
-      const t = content.trim();
-      if (t) return t;
-      continue;
-    }
-    if (Array.isArray(content)) {
-      const parts: string[] = [];
-      for (const block of content) {
-        if (
-          block !== null &&
-          typeof block === "object" &&
-          (block as Record<string, unknown>)["type"] === "text"
-        ) {
-          const bt = (block as Record<string, unknown>)["text"];
-          if (typeof bt === "string") parts.push(bt);
-        }
-      }
-      const joined = parts.join("\n").trim();
-      if (joined) return joined;
-    }
-  }
-  return "";
-}

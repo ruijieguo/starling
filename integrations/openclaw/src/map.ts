@@ -161,3 +161,57 @@ export function captureToRememberBody(
 export function removeToForgetBody(memoryId: string): { ids: string[] } {
   return { ids: [memoryId] };
 }
+
+// ---------------------------------------------------------------------------
+// before_compaction transcript → recent user text (auto-capture)
+// ---------------------------------------------------------------------------
+
+/** Extract plain text from a message `content` (string, or array of text blocks). */
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    const blocks: string[] = [];
+    for (const block of content) {
+      if (
+        block !== null &&
+        typeof block === "object" &&
+        (block as Record<string, unknown>)["type"] === "text"
+      ) {
+        const t = (block as Record<string, unknown>)["text"];
+        if (typeof t === "string") blocks.push(t);
+      }
+    }
+    return blocks.join("\n").trim();
+  }
+  return "";
+}
+
+/**
+ * Collects recent user-authored message text from a before_compaction transcript
+ * (the host types `messages` as unknown[]). Walks newest-first, gathering user
+ * messages up to maxChars, then returns them in chronological order. Auto-capture
+ * sends this recent user-stated window — not just the single last message — so
+ * Starling's extractor can distil structured facts from fuller context. Returns
+ * "" when nothing usable is found. All field access is type-guarded.
+ */
+export function collectUserText(
+  messages: unknown[] | undefined,
+  maxChars = 2000,
+): string {
+  if (!Array.isArray(messages)) return "";
+  const collected: string[] = [];
+  let total = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m === null || typeof m !== "object") continue;
+    const rec = m as Record<string, unknown>;
+    if (rec["role"] !== "user") continue;
+    const text = messageText(rec["content"]);
+    if (!text) continue;
+    if (total > 0 && total + text.length > maxChars) break;
+    collected.push(text);
+    total += text.length;
+    if (total >= maxChars) break;
+  }
+  return collected.reverse().join("\n").trim(); // chronological order
+}
