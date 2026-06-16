@@ -12,10 +12,10 @@ backend.
 
 | OpenClaw capability | Plugin wiring | Starling dashboard API |
 | --- | --- | --- |
-| `memory_search` (builtin tool) | `registerMemoryRuntime` → `search` | `POST /api/recall` |
-| `memory_get` (builtin tool) | `registerMemoryRuntime` → `readFile` | `GET /api/statement/{id}` |
-| reindex | `registerMemoryRuntime` → `sync` | `POST /api/tick` (or no-op) |
-| auto-recall (context inject) | `before_agent_start` hook | `GET /api/working_set` |
+| `memory_search` (builtin tool) | `registerMemoryCapability` → `runtime.search` | `POST /api/recall` |
+| `memory_get` (builtin tool) | `registerMemoryCapability` → `runtime.readFile` | `GET /api/statement/{id}` |
+| reindex | `registerMemoryCapability` → `runtime.sync` | `POST /api/tick` (or no-op) |
+| auto-recall (context inject) | `before_prompt_build` hook | `GET /api/working_set` |
 | `memory_store` (write tool) | `registerTool` | `POST /api/remember` |
 | `memory_forget` (delete tool) | `registerTool` | `POST /api/forget` (→ forgotten) |
 | auto-capture (pre-compaction) | `registerMemoryFlushPlan` + `before_compaction` | `POST /api/remember` |
@@ -174,7 +174,7 @@ Container env (compose passes these into `entrypoint.sh`, which renders
 | `STARLING_PORT` | `8787` | Host dashboard port (`host.docker.internal:<port>`) |
 | `STARLING_TENANT` | `openclaw` | Tenant for the synthetic `statement://<tenant>/<id>` paths |
 | `STARLING_HOLDER` | `agent` | **Holder identity** used for both capture *and* recall (see below) |
-| `STARLING_AUTO_RECALL` | `true` | `before_agent_start` injects the working set as context |
+| `STARLING_AUTO_RECALL` | `true` | `before_prompt_build` injects the working set as context |
 | `STARLING_AUTO_CAPTURE` | `true` | `before_compaction` persists the latest user message |
 
 The plugin's own `configSchema` (`openclaw.plugin.json`) fields are

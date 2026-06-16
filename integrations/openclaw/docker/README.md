@@ -95,7 +95,7 @@ is required):
 | `STARLING_PORT`          | `8787`                                     | Host dashboard port                  |
 | `STARLING_TENANT`        | `openclaw`                                 | Tenant for synthetic `statement://`  |
 | `STARLING_HOLDER`        | `agent`                                    | Holder identity sent to `/api/remember` |
-| `STARLING_AUTO_RECALL`   | `true`                                     | `before_agent_start` context inject  |
+| `STARLING_AUTO_RECALL`   | `true`                                     | `before_prompt_build` context inject |
 | `STARLING_AUTO_CAPTURE`  | `true`                                     | `before_compaction` transcript capture |
 
 The container stays up (`sleep infinity`) so you can drive it with
@@ -184,12 +184,12 @@ characteristics, not plugin/docker defects.
    embedder must be configured (semantic cosine) and the statement must be
    embedded by a tick first (see #4).
 
-3. **Auto-recall (`before_agent_start`)** uses
+3. **Auto-recall (`before_prompt_build`)** uses
    `working_set(interlocutor=cfg.holder, holder=cfg.holder)` — holder now
    matches capture (fixed with #2). Content quality still depends on the embedder
    + tick. Note: `working_set` uses `cfg.holder` as *both* agent and
    interlocutor (self-working-set); a true "other party" dimension is a
-   follow-up (needs an interlocutor id from OpenClaw's `before_agent_start`).
+   follow-up (the OpenClaw hook does not surface a counterpart/interlocutor id).
 
 4. **Capture → search timing.** Statements are embedded by the dashboard's
    **background tick** (`tick_interval_s`). For a deterministic test, either set
@@ -204,24 +204,25 @@ characteristics, not plugin/docker defects.
    `remember(text, holder)` does **not** send an `interlocutor`; consider whether
    capture should pass one.
 
-6. **`autoCapture` (`before_compaction`)** persists the session transcript tail.
-   Whether it is signal or noise depends on the conversation; left on by default.
+6. **`autoCapture` (`before_compaction`)** persists the recent user-stated window
+   (newest user messages up to a char budget, via `collectUserText`) so the
+   extractor distils facts from more than the last message. Full sessionFile
+   JSONL ingestion remains a follow-up. Left on by default.
 
-7. **Plugin doctor warnings under 2026.6.6 (follow-up for the plugin, not docker).**
-   `openclaw plugins doctor` reports:
-   `starling: plugin must declare contracts.tools before registering agent tools`
-   (×2, for `memory_store` + `memory_forget`). Under 2026.6.6, registering agent
-   tools requires the manifest to declare `contracts.tools`. Add to
-   `openclaw.plugin.json`:
-   ```json
-   "contracts": { "tools": ["memory_store", "memory_forget"] }
-   ```
-   The plugin still **loads and occupies the memory slot** without it (the
-   warnings are non-fatal), and the `registerMemoryRuntime` search/get path is
-   unaffected — but the two write tools will not register cleanly until this is
-   added. There are also info/warn notes about the legacy `before_agent_start`
-   hook and "hook-only / non-capability" mode; both are supported compatibility
-   paths.
+7. **Plugin doctor: clean.** Earlier 2026.6.6 warnings — "must declare
+   contracts.tools" (×2 for the write tools), "non-capability shape", and "legacy
+   before_agent_start" — are all resolved: the manifest declares
+   `contracts.tools: ["memory_store","memory_forget"]`, registration is the
+   unified `registerMemoryCapability({runtime,promptBuilder,flushPlanResolver})`,
+   and auto-recall uses `before_prompt_build`. `openclaw plugins doctor` →
+   **"No plugin issues detected."**
+   > **docker build gotcha:** a plain `docker compose build` (even `--no-cache`)
+   > can be fed a **stale `dist`** by docker desktop's buildkit/virtiofs file
+   > cache — the container ends up running old code. Verify the container's code
+   > matches host (`grep -c registerMemoryCapability /opt/starling-plugin/dist/index.js`).
+   > To force fresh code without a working rebuild, bind-mount the host build:
+   > `-v "$PWD/dist:/opt/starling-plugin/dist" -v "$PWD/src:/opt/starling-plugin/src"`,
+   > or restart docker desktop / `docker builder prune`.
 
 ---
 
