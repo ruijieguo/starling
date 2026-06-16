@@ -56,13 +56,15 @@ export default definePluginEntry({
     const client = new StarlingClient(cfg);
     const rt = makeStarlingRuntime(cfg, client);
 
-    // search / get / index — the MemorySearchManager-backed runtime (real
-    // MemoryPluginRuntime type; the skeleton's whole-object `as` cast is gone).
-    api.registerMemoryRuntime(rt);
-    // Advertise the write/remove tools in the memory system-prompt section.
-    api.registerMemoryPromptSection(buildPromptSection);
-    // Pre-compaction flush plan resolver (the agent self-writes a durable note).
-    api.registerMemoryFlushPlan(buildFlushPlan);
+    // Unified memory capability (2026.6.6): runtime (search/get/index) + prompt
+    // section + flush plan in one call. Replaces the deprecated
+    // registerMemoryRuntime / registerMemoryPromptSection / registerMemoryFlushPlan
+    // trio that left the plugin as a "non-capability shape" in `plugins doctor`.
+    api.registerMemoryCapability({
+      runtime: rt,
+      promptBuilder: buildPromptSection,
+      flushPlanResolver: buildFlushPlan,
+    });
 
     // capture — runtime has no write method, so expose a tool.
     api.registerTool(
@@ -102,9 +104,10 @@ export default definePluginEntry({
 
     // recall — auto-inject the Starling working set as prepended context.
     if (cfg.autoRecall) {
-      api.on("before_agent_start", async () => {
-        // holder = cfg.holder so the working set is built for the same holder
-        // we capture under (matches the dashboard holder dimension).
+      // before_prompt_build is the modern prompt-injection hook (2026.6.6);
+      // before_agent_start is deprecated for new work. holder = cfg.holder so the
+      // working set matches the holder we capture under.
+      api.on("before_prompt_build", async () => {
         const ws = await client.workingSet(cfg.holder, cfg.holder);
         return ws ? { prependContext: workingSetToContext(ws) } : {};
       });
