@@ -19,7 +19,9 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "@sinclair/typebox";
 
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/memory-core";
 import { parseConfig, configSchema } from "./config.js";
+import type { StarlingMemoryConfig } from "./config.js";
 import { StarlingClient } from "./client.js";
 import {
   makeStarlingRuntime,
@@ -44,6 +46,89 @@ function readStringField(params: unknown, key: string): string {
   return "";
 }
 
+/**
+ * Wires the plugin's capabilities onto the OpenClaw api. Exported separately from
+ * definePluginEntry so the registration can be unit-tested with a mock api (see
+ * test/wiring.test.ts) rather than only through docker.
+ */
+export function wirePlugin(
+  api: OpenClawPluginApi,
+  cfg: StarlingMemoryConfig,
+  client: StarlingClient,
+): void {
+  const rt = makeStarlingRuntime(cfg, client);
+
+  // Unified memory capability (2026.6.6): runtime (search/get/index) + prompt
+  // section + flush plan in one call. Replaces the deprecated
+  // registerMemoryRuntime / registerMemoryPromptSection / registerMemoryFlushPlan
+  // trio that left the plugin as a "non-capability shape" in `plugins doctor`.
+  api.registerMemoryCapability({
+    runtime: rt,
+    promptBuilder: buildPromptSection,
+    flushPlanResolver: buildFlushPlan,
+  });
+
+  // capture — runtime has no write method, so expose a tool.
+  api.registerTool(
+    {
+      name: "memory_store",
+      label: "Memory Store",
+      description: "Save durable info into Starling.",
+      parameters: Type.Object({ text: Type.String() }),
+      async execute(_toolCallId, params) {
+        const text = readStringField(params, "text");
+        await client.remember(text, cfg.holder);
+        return { content: [{ type: "text", text: "Stored." }], details: {} };
+      },
+    },
+    { name: "memory_store" },
+  );
+
+  // remove — runtime has no delete method, so expose a tool. memoryId is the
+  // statement id surfaced as a search-result citation.
+  api.registerTool(
+    {
+      name: "memory_forget",
+      label: "Memory Forget",
+      description: "Forget a memory by its id.",
+      parameters: Type.Object({ memoryId: Type.String() }),
+      async execute(_toolCallId, params) {
+        const memoryId = readStringField(params, "memoryId");
+        await client.forget([memoryId]);
+        return {
+          content: [{ type: "text", text: "Forgotten." }],
+          details: {},
+        };
+      },
+    },
+    { name: "memory_forget" },
+  );
+
+  // recall — auto-inject the Starling working set as prepended context.
+  if (cfg.autoRecall) {
+    // before_prompt_build is the modern prompt-injection hook (2026.6.6);
+    // before_agent_start is deprecated for new work. holder = cfg.holder so the
+    // working set matches the holder we capture under.
+    api.on("before_prompt_build", async () => {
+      const ws = await client.workingSet(cfg.holder, cfg.holder);
+      return ws ? { prependContext: workingSetToContext(ws) } : {};
+    });
+  }
+
+  // capture (flush) — Starling self-persists the recent user-stated window in
+  // parallel with OpenClaw's compaction. before_compaction exposes `messages`
+  // (and `sessionFile`); we distil the recent user text. Full sessionFile JSONL
+  // ingestion remains a follow-up.
+  if (cfg.autoCapture) {
+    api.on("before_compaction", async (event) => {
+      const text = collectUserText(event.messages);
+      if (text) {
+        await client.remember(text, cfg.holder);
+      }
+    });
+  }
+}
+
 export default definePluginEntry({
   id: "starling",
   name: "Starling Memory",
@@ -54,83 +139,6 @@ export default definePluginEntry({
     // D: config arrives on api.pluginConfig and is validated by our own parser.
     const cfg = parseConfig(api.pluginConfig);
     const client = new StarlingClient(cfg);
-    const rt = makeStarlingRuntime(cfg, client);
-
-    // Unified memory capability (2026.6.6): runtime (search/get/index) + prompt
-    // section + flush plan in one call. Replaces the deprecated
-    // registerMemoryRuntime / registerMemoryPromptSection / registerMemoryFlushPlan
-    // trio that left the plugin as a "non-capability shape" in `plugins doctor`.
-    api.registerMemoryCapability({
-      runtime: rt,
-      promptBuilder: buildPromptSection,
-      flushPlanResolver: buildFlushPlan,
-    });
-
-    // capture — runtime has no write method, so expose a tool.
-    api.registerTool(
-      {
-        name: "memory_store",
-        label: "Memory Store",
-        description: "Save durable info into Starling.",
-        parameters: Type.Object({ text: Type.String() }),
-        async execute(_toolCallId, params) {
-          const text = readStringField(params, "text");
-          await client.remember(text, cfg.holder);
-          return { content: [{ type: "text", text: "Stored." }], details: {} };
-        },
-      },
-      { name: "memory_store" },
-    );
-
-    // remove — runtime has no delete method, so expose a tool. memoryId is the
-    // statement id surfaced as a search-result citation.
-    api.registerTool(
-      {
-        name: "memory_forget",
-        label: "Memory Forget",
-        description: "Forget a memory by its id.",
-        parameters: Type.Object({ memoryId: Type.String() }),
-        async execute(_toolCallId, params) {
-          const memoryId = readStringField(params, "memoryId");
-          await client.forget([memoryId]);
-          return {
-            content: [{ type: "text", text: "Forgotten." }],
-            details: {},
-          };
-        },
-      },
-      { name: "memory_forget" },
-    );
-
-    // recall — auto-inject the Starling working set as prepended context.
-    if (cfg.autoRecall) {
-      // before_prompt_build is the modern prompt-injection hook (2026.6.6);
-      // before_agent_start is deprecated for new work. holder = cfg.holder so the
-      // working set matches the holder we capture under.
-      api.on("before_prompt_build", async () => {
-        const ws = await client.workingSet(cfg.holder, cfg.holder);
-        return ws ? { prependContext: workingSetToContext(ws) } : {};
-      });
-    }
-
-    // capture (flush) — Starling self-persists the transcript in parallel with
-    // OpenClaw's compaction. The before_compaction event exposes `sessionFile`
-    // (a JSONL transcript already on disk) and an in-memory `messages` array.
-    //
-    // MVP: rather than parse the full JSONL transcript here, capture the last
-    // user-authored message text (when present in `event.messages`) as a single
-    // durable memory. Full transcript ingestion from `event.sessionFile` is a
-    // follow-up (the file path is acknowledged below but not yet streamed).
-    if (cfg.autoCapture) {
-      api.on("before_compaction", async (event) => {
-        // Persist the recent user-stated window (newest user messages up to a
-        // char budget) so Starling's extractor distils facts from more than the
-        // single last message. Full sessionFile JSONL ingestion remains a follow-up.
-        const text = collectUserText(event.messages);
-        if (text) {
-          await client.remember(text, cfg.holder);
-        }
-      });
-    }
+    wirePlugin(api, cfg, client);
   },
 });
