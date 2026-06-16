@@ -171,22 +171,25 @@ characteristics, not plugin/docker defects.
    boundary (statement count `0 → 1`, with vectors in `statement_vectors`). The
    plugin's HTTP transport, the slot wiring, and the topology are sound.
 
-2. **`/api/recall` and `/api/working_set` returned empty for freshly-remembered
-   data** — even for a near-verbatim query against a statement that exists and is
-   embedded (e.g. `team standup located_at room Ada` queried as "team standup
-   room Ada"), and reproducible **host-side without docker** (direct
-   `DashboardEngine.recall(...)`). So semantic recall through the plugin will
-   often surface nothing on just-captured memories. This is a Starling retrieval
-   behavior (query-embedding / scope / threshold in `_core.recall`), to be
-   chased on the Starling side; it is **out of scope for this integration
-   environment**. The plugin already degrades to `[]`/`null` rather than failing,
-   so empty recall never interrupts an agent turn.
+2. **`/api/recall` empty for freshly-remembered data — ROOT-CAUSED + FIXED.**
+   The original symptom (recall returned nothing for a statement that exists and
+   is embedded) was **not** a Starling retrieval defect. It was a **holder
+   dimension mismatch**: the plugin captured under `cfg.holder` (`"agent"`) but
+   `/api/recall` recalled under the dashboard's `agent` (`"self"`), and the
+   candidate SQL `s.holder_id = ?` excluded the row. Reproduced host-side and
+   fixed by (a) adding a `holder` override to `/api/recall` + `/api/working_set`
+   (commit `122f1ff`) and (b) the plugin passing `cfg.holder` on recall, matching
+   capture (commit `2e0e3ce`); plus case-insensitive `perspective` (`d78dd8d`).
+   Recall now returns plugin-captured memories. **Prereq still applies:** an
+   embedder must be configured (semantic cosine) and the statement must be
+   embedded by a tick first (see #4).
 
-3. **Auto-recall (`before_agent_start`)** uses `working_set(interlocutor=cfg.holder)`.
-   Because `working_set` returned empty in (2) (and the `remember` path does not
-   populate `cognizers`/presence — `overview.counts.cognizers` stayed 0), the
-   injected context is currently empty/weak. Wiring is correct; the content is
-   gated by the same retrieval behavior as (2).
+3. **Auto-recall (`before_agent_start`)** uses
+   `working_set(interlocutor=cfg.holder, holder=cfg.holder)` — holder now
+   matches capture (fixed with #2). Content quality still depends on the embedder
+   + tick. Note: `working_set` uses `cfg.holder` as *both* agent and
+   interlocutor (self-working-set); a true "other party" dimension is a
+   follow-up (needs an interlocutor id from OpenClaw's `before_agent_start`).
 
 4. **Capture → search timing.** Statements are embedded by the dashboard's
    **background tick** (`tick_interval_s`). For a deterministic test, either set
