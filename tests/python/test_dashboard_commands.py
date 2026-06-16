@@ -100,3 +100,13 @@ def test_recall_holder_override(client):
     hit = client.post(
         "/api/recall", json={"query": "auth", "k": 5, "holder": "agent"}).json()["results"]
     assert any(h["subject"] == "Bob" for h in hit)
+
+
+def test_recall_perspective_case_insensitive(client):
+    client.post("/api/remember", json={"text": "Bob owns auth"})
+    client.post("/api/tick", json={})
+    # Uppercase perspective must still match the lowercase-stored value.
+    hits = client.post(
+        "/api/recall", json={"query": "auth", "k": 5, "perspective": "FIRST_PERSON"}
+    ).json()["results"]
+    assert any(h["subject"] == "Bob" for h in hits)

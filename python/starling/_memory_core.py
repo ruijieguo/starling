@@ -129,6 +129,10 @@ class MemoryCore:
         the same holder, else the candidate SQL's `s.holder_id = ?` predicate
         excludes them (P3.b2: OpenClaw plugin holder must round-trip)."""
         holder_id = holder or self.agent
+        # holder_perspective is stored lowercase (extractor normalizes the enum);
+        # normalize the query perspective so a caller passing "FIRST_PERSON" still
+        # matches the stored "first_person" instead of silently returning empty.
+        perspective = (perspective or "").lower()
         if mode == "completion":
             res = self.completor.complete(_core.PatternCompletionParams(
                 tenant_id=self.tenant, holder_id=holder_id,
