@@ -212,4 +212,44 @@ TEST(StatementValidator, UnregisteredPredicateOutranksWeakInference) {
     EXPECT_EQ(*outcome.review_status_override, schema::ReviewStatus::REVIEW_REQUESTED);
 }
 
+// ── episodic action vocab + OCCURRED free-form fallback (sub-project A, phase 3) ──
+
+TEST(StatementValidator, OccurredCuratedActionPredicateStaysApproved) {
+    // Curated object-manipulation verbs are in-vocab: an OCCURRED row with
+    // predicate="put" is approved and the predicate is NOT downgraded.
+    for (const char* p : {"put", "place", "move", "take", "give",
+                          "remove", "transfer", "leave", "open", "close"}) {
+        auto s = valid_first_person();
+        s.modality  = schema::Modality::OCCURRED;
+        s.predicate = p;
+        auto outcome = validate_extracted_statement(s);
+        EXPECT_TRUE(outcome.ok()) << p;
+        EXPECT_EQ(outcome.review_status_override, std::nullopt) << p;
+    }
+}
+
+TEST(StatementValidator, OccurredOutOfSetPredicateAcceptedNotDowngraded) {
+    // Open-domain episodic action: an OCCURRED row with an out-of-set verb is
+    // accepted verbatim, NOT downgraded to REVIEW_REQUESTED.
+    auto s = valid_first_person();
+    s.modality  = schema::Modality::OCCURRED;
+    s.predicate = "yeeted";   // free-form action verb, not in any vocab
+    auto outcome = validate_extracted_statement(s);
+    EXPECT_TRUE(outcome.ok());
+    EXPECT_EQ(outcome.review_status_override, std::nullopt)
+        << "OCCURRED out-of-set predicate must be kept verbatim, not review_requested";
+}
+
+TEST(StatementValidator, NonOccurredOutOfSetPredicateStillDowngraded) {
+    // Strict behaviour for non-OCCURRED modalities is unchanged: BELIEVES with
+    // an out-of-set predicate still downgrades to REVIEW_REQUESTED.
+    auto s = valid_first_person();
+    s.modality  = schema::Modality::BELIEVES;
+    s.predicate = "thinks";   // out-of-set, belief-style modality
+    auto outcome = validate_extracted_statement(s);
+    EXPECT_TRUE(outcome.ok());
+    ASSERT_TRUE(outcome.review_status_override.has_value());
+    EXPECT_EQ(*outcome.review_status_override, schema::ReviewStatus::REVIEW_REQUESTED);
+}
+
 }  // namespace starling::extractor

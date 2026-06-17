@@ -72,7 +72,13 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
     // same precedence rule as validate_for_write's cross-tenant gate). The core
     // set mirrors the EXTRACTION_PROMPT vocabulary; raw-SQL/engine seeds bypass
     // this validator, so only the extraction path is gated.
-    if (!is_core_predicate(s.predicate)) {
+    //
+    // Sub-project A phase 3: episodic events (modality=OCCURRED) use open-domain
+    // action verbs as their predicate ("Sally put ball in basket" → predicate=put).
+    // For OCCURRED rows an out-of-set predicate is kept verbatim (NOT downgraded);
+    // the curated action class (put/place/move/...) covers the common cases for
+    // all modalities. Non-OCCURRED predicate validation is unchanged.
+    if (!is_core_predicate(s.predicate) && s.modality != schema::Modality::OCCURRED) {
         out.review_status_override = schema::ReviewStatus::REVIEW_REQUESTED;
     }
     return out;
