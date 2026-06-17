@@ -86,13 +86,15 @@ CommonGround 条目满足以下任一条件，从 `asserted_unack` 升级为 `gr
 ### 5. Adaptive ToM Order 动态调整流程
 
 ```
-1. ToMDepthEstimator.estimate(partner, context) 返回 0 / 1 / 2
-2. partner order ≤ 1 → 不生成 nesting_depth=2 的持久 Statement，
-   只生成查询时上下文
-3. partner order = 2 → 允许 nesting_depth=2
-4. 深度 3 仅在用户显式触发时计算，不自动写库
-5. 为 META_BELIEF Intent 提供 nesting_depth 上限指导，
-   避免对低阶 partner 做过度二阶推理
+1. ToMDepthEstimator.estimate(partner, context) 返回 partner 已展现的
+   ToM 阶数（任意 int，非帽在 0/1/2）
+2. 自动路径（belief_tracker handler）：镜像观察到的他者信念到任意深度，
+   不受估计器 gate（mirror = 复述既有事实，不是过度推理）
+3. 显式路径 persist_meta_belief：把 depth-k 源包成 self 的 depth-(k+1) 信念，
+   仅当 estimate(partner) >= source_depth+1 才放行——过度推理在此路径上
+   是 fabrication（凭空虚构 partner 未展现的更深心智），受估计器 gate
+4. 软上限 max_nesting_depth（默认 32）+ 级联上限 max_cascade_depth（默认 8）
+   兜底 runaway，与认知阶数无关
 ```
 
 ---
@@ -117,7 +119,7 @@ Innermost:
   nesting_depth=2   # 内容陈述
 ```
 
-默认追踪深度 ≤ 2；深度 3 仅显式触发（成人三阶 ToM 容量约束）。
+嵌套深度任意（arbitrary multi-order），不设认知容量帽。深度由三道护栏界定：无环性（cycle guard，祖先链 id 重复即拒）+ 软上限 `max_nesting_depth`（默认 32）+ 级联上限 `max_cascade_depth`（默认 8，单次自动生产事件级联的派生深度）。这些是 runaway 护栏，不是“成人三阶 ToM 容量约束”。
 
 ### 2. 双限流：先链长，再窗口
 
@@ -126,7 +128,7 @@ def should_persist_tom_statement(stmt, causation_chain) -> bool:
     # 链长限流（§5.4）：约束所有派生事件传播深度
     if len(causation_chain) >= CHAIN_MAX:        # 默认触发阈值
         return False
-    if stmt.derived_depth >= 3:
+    if stmt.derived_depth >= MAX_CASCADE_DEPTH:   # 默认 8（级联 runaway 护栏）
         return False
     if has_cycle_pattern(causation_chain):        # ToM→Replay→Container→ToM
         return False
@@ -191,7 +193,7 @@ class Statement:
     subject:       EntityRef
     predicate:     PredicateType
     object:        EntityRef | StatementRef  # StatementRef 时触发 nesting_depth +1
-    nesting_depth: int                       # 0=一阶，1=二阶，2=三阶（仅显式）
+    nesting_depth: int                       # 无界：0=一阶，1=二阶，2=三阶，…（至软上限 max_nesting_depth）
     polarity:      Literal["POS", "NEG"]
     confidence:    float
     provenance:    Literal["observed", "inferred", "tom_inferred", ...]
@@ -270,7 +272,7 @@ class ToMDepthEstimator:
 
 ## 相关概念
 
-**二阶 ToM / nesting_depth**：`nesting_depth=0` 为一阶信念（X 相信 P），`nesting_depth=1` 为二阶（self 相信 X 相信 P），`nesting_depth=2` 为三阶（仅显式触发）。默认上限为 2。
+**二阶 ToM / nesting_depth**：`nesting_depth=0` 为一阶信念（X 相信 P），`nesting_depth=1` 为二阶（self 相信 X 相信 P），`nesting_depth=2` 为三阶，依此类推——深度无界，仅由软上限 `max_nesting_depth`（默认 32）与无环性护栏约束，无固定认知容量帽。
 
 **StatementRef 嵌套**：`Statement.object` 指向另一条 Statement 时构成嵌套。展平存储保留全部中间节点，通过 `derived_from` 链接。
 
@@ -286,7 +288,7 @@ class ToMDepthEstimator:
 
 **RECANTED**：Withdraw 后的终态。Statement 仍保留（审计用），不再参与推理。
 
-**Adaptive ToM Order**：`ToMDepthEstimator` 实时估计 partner 的 ToM 阶数（0/1/2），驱动 Belief Tracker 的 `nesting_depth` 上限，避免对低阶 partner 做过度推理。
+**Adaptive ToM Order**：`ToMDepthEstimator` 实时估计 partner 已展现的 ToM 阶数（任意 int）。自动路径按观察到的深度镜像信念、不 gate；显式 `persist_meta_belief` 路径用估计器 gate（`estimate(partner) < source_depth+1` → `gated_order`），拦的是 fabrication——凭空虚构 partner 未展现的更深心智，而非镜像。
 
 **KnowledgeFrontier（外部依赖）**：由 [Cognizer Hub](v24_08_cognizer.md) 维护，描述每个 Cognizer 在指定时刻的可见知识边界，`perspective_take` 的 `filter_by_frontier` 步骤依赖此结构。
 

@@ -10,13 +10,15 @@
 //   holder=self, subject=X, predicate='believes',
 //   object_kind='statement', object=P.id, provenance=tom_inferred
 // (NestingDepthWriter 自动得 depth=1)。守门:永久幂等(同元组 tom_inferred
-// 已存在即跳过)+ 双限流(limiting)。估计器不拦 depth1——self 对任意活跃
-// partner 的一阶建模是基础能力;ToMDepthEstimator 调制的是更深嵌套。
+// 已存在即跳过)+ 双限流(limiting)。自动路径全程不 gate——镜像观察到的
+// 他者信念到任意深度(复述既有事实);ToMDepthEstimator 只 gate 下方的
+// 显式虚构路径。
 //
-// 显式路径 persist_meta_belief:在已有 depth=1 行之上再嵌一层(depth=2,
-// "self 相信 X 相信 Y 相信 …")——仅当 ToMDepthEstimator.estimate(partner)
-// == 2 才放行(spec §Adaptive ToM Order:partner order ≤1 不生成 depth2
-// 持久 Statement)。
+// 显式路径 persist_meta_belief:把 holder=partner 的 depth-k 源行再包一层,
+// 成 self 的 depth-(k+1) 信念("self 相信 X 相信 Y 相信 …")——仅当
+// ToMDepthEstimator.estimate(partner) >= source_depth+1 才放行
+// (gated_order;spec §Adaptive ToM Order:不替 partner 虚构其未展现的更深
+// 心智)。深度无界,仅软上限 max_nesting_depth 兜底。
 #include "starling/persistence/connection.hpp"
 
 #include <string>
