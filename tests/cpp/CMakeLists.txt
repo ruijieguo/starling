@@ -142,6 +142,7 @@ add_executable(starling_tests
     test_meta_store.cpp
     test_occurred_modality.cpp
     test_episodic_event_store.cpp
+    test_episodic_extractor.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

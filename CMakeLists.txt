@@ -98,6 +98,7 @@ target_sources(starling_core PRIVATE
     src/extractor/json_parser.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
+    src/extractor/episodic_extractor.cpp
     src/retrieval/basic_retriever.cpp
     src/retrieval/semantic_retriever.cpp
     src/retrieval/affect_reranker.cpp

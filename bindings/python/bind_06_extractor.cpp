@@ -13,6 +13,7 @@
 #include "starling/schema/statement_enums.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/extractor/extractor.hpp"
+#include "starling/extractor/episodic_extractor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/openai_adapter.hpp"
 #include "starling/extractor/anthropic_adapter.hpp"
@@ -244,6 +245,31 @@ void bind_06_extractor(pybind11::module_& m) {
              py::arg("holder_tenant_id"),
              py::arg("existing_ref_map"),
              py::arg("interlocutor") = "");
+
+    // ----- sub-project A phase 5: EpisodicExtractor (second extraction pass) -----
+    // 镜像 Extractor 绑定:ctor(connection, adapter, prompt_template),extract()
+    // 在 LLM 网络调用期间释放 GIL。返回本次写入的 OCCURRED 语句 id 列表。
+    py::class_<starling::extractor::EpisodicExtractor>(m, "EpisodicExtractor")
+        .def(py::init([](starling::persistence::Connection& conn,
+                         starling::extractor::LLMAdapter& a,
+                         const std::string& prompt_template) {
+            return new starling::extractor::EpisodicExtractor(conn, a, prompt_template);
+        }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
+           py::arg("connection"), py::arg("adapter"),
+           py::arg("prompt_template") = "")
+        .def("extract",
+             [](starling::extractor::EpisodicExtractor& self,
+                const std::string& passage,
+                const std::string& engram_ref,
+                const std::string& tenant,
+                const std::string& agent_self,
+                const std::string& now) {
+                 py::gil_scoped_release release;
+                 const auto r = self.extract(passage, engram_ref, tenant, agent_self, now);
+                 return r.event_statement_ids;
+             },
+             py::arg("passage"), py::arg("engram_ref"), py::arg("tenant"),
+             py::arg("agent_self"), py::arg("now"));
 }
 
 }  // namespace starling::bindings

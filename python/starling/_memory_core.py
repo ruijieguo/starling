@@ -20,6 +20,7 @@ from typing import Optional
 
 from starling import _core
 from starling.extractor.prompts import EXTRACTION_PROMPT
+from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
 
 
 def _make_vector_index(backend: str, dim: int, store_path):
@@ -106,18 +107,39 @@ class MemoryCore:
         """标准写管线在 C++ `memoryops::remember`(2026-06-11 边界归位):
         幂等键派生(sha256)、入库策略默认值、「先 engram 后抽取、仅
         accepted/idempotent 才抽取」的顺序规则都在核心层,且 LLM 网络期间
-        释放 GIL。这里只剩前置校验与 datetime→ISO 签名归一。"""
+        释放 GIL。这里只剩前置校验与 datetime→ISO 签名归一。
+
+        sub-project A phase 5:remember 跑 TWO 条独立抽取管线——belief/会话
+        (memory_remember 内的 Extractor)与 episodic(EpisodicExtractor:叙事
+        → OCCURRED 事件 + episodic_events 行)。两条互不影响,任一空集都正常。
+        episodic 是 best-effort 第二条,复用第一条已(幂等)入库的 engram_ref;
+        只有 engram 真入库(accepted/idempotent → engram_ref 非空)时才跑——
+        no_store/rejected 时无 engram 可挂证据,跳过。"""
         if self.llm is None:
             raise LLMNotConfigured(
                 "remember requires an llm adapter "
                 "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
         created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return _core.memory_remember(
+        holder_id = holder or self.agent
+        out = _core.memory_remember(
             self.rt.adapter, self.llm, EXTRACTION_PROMPT,
-            tenant_id=self.tenant, holder_id=holder or self.agent,
+            tenant_id=self.tenant, holder_id=holder_id,
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
             created_at_iso8601=created_iso, payload=text.encode("utf-8"))
+
+        # 第二条:episodic 抽取(叙事事件)。挂在第一条返回的同一 engram 上。
+        engram_ref = out.get("engram_ref") or ""
+        if engram_ref:
+            episodic = _core.EpisodicExtractor(
+                self.conn, self.llm, EPISODIC_EXTRACTION_PROMPT)
+            event_ids = episodic.extract(
+                passage=text, engram_ref=engram_ref, tenant=self.tenant,
+                agent_self=holder_id, now=created_iso)
+            if event_ids:
+                # 合并两条管线本次新写的语句 id(belief + episodic 事件)。
+                out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
+        return out
 
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic", holder: str | None = None) -> list:
