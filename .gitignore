@@ -25,6 +25,10 @@ compile_commands.json
 tests/data/eval_tom_bench/
 # Hand-authored first-order fixture is committed alongside the harness
 !tests/data/eval_tom_bench/first_order.jsonl
+# Second-order ToMBench subset (P3.a2 admission) + its provenance README are
+# committed; see tests/data/eval_tom_bench/README.md (MIT, evaluation-only).
+!tests/data/eval_tom_bench/second_order.jsonl
+!tests/data/eval_tom_bench/README.md
 tests/data/eval_fantom/
 
 # Dashboard secrets store + built frontend assets

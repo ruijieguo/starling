@@ -90,19 +90,56 @@ P2 §16.3 CRITICAL 准入达成；eval harness 就位且离线全绿（C1/C2/C3 
 
 ---
 
-## 6. P3.a2 二阶 ToM 准入(2026-06-12 增设)
+## 6. P3.a2 二阶 ToM 准入(2026-06-12 增设;2026-06-17 真模型回填关闭)
 
-P3 准入硬约束之一:**二阶 ToM precision > 0.70**。harness 扩展
-`scripts/eval_tom_bench.py --order second`(二阶子集
-false-belief / second-order / higher-order,阈 0.70;一阶记录跳过)。
+P3 准入硬约束之一:**二阶 ToM precision > 0.70**。语料为 **ToMBench**(Chen et al.,
+ACL 2024,MIT)False Belief Task 的二阶子集 200 条(ability 含 "Belief:
+Second-order beliefs";100 location + 100 content),提取脚本
+`scripts/build_tombench_second_order_corpus.py` → `tests/data/eval_tom_bench/second_order.jsonl`
+(provenance/署名/eval-only 见同目录 README)。
 
-- fixture 离线:**PASS**(确定性 mock,入 CI:`test_eval_tom_bench_harness.py::test_second_order_subset_with_higher_threshold`)。
-- 真模型 gated(待跑,命令):
-  ```bash
-  OPENAI_API_KEY=… OPENAI_BASE_URL=https://api.deepseek.com/v1 \
-    .venv/bin/python scripts/eval_tom_bench.py \
-    --corpus <tombench-second-order.jsonl> --order second \
-    --model deepseek-v4-flash --rounds 3 --max-items 24 \
-    --report build/eval_tom_bench_second.md
-  ```
-  真模型数字回填本节后,P3.a2 准入关闭。
+**两层度量(关键方法学区分)。** Starling 的二阶信念生产是**确定性 C++**:LLM 抽取
+一律产扁平一阶 `object_kind="str"`(2026-06-11 裁定),嵌套语句由 `belief_tracker`
+→ `tom::second_order::maybe_persist_second_order` **程序化产**(depth=2 受
+`ToMDepthEstimator` gate),嵌套路径无 LLM。故"二阶 ToM"须分别度量后台 LLM 的
+ToM 能力地板与 Starling 记忆机器本身:
+
+| track | 度量对象 | harness | 结果 | 阈 |
+|---|---|---|---|---|
+| 1 LLM 能力地板 | deepseek-v4-pro 裸答二阶 MCQ(不经 Starling) | `eval_tom_bench.py --order second` | **0.990**(194/196 clean)/ 0.970(194/200 raw),3 轮一致 | 0.70 ✅ |
+| 2A Starling 机器(确定性) | 多 holder 种子 → belief_tracker 产 → 巩固 → META_BELIEF 召回 → holder 隔离 | `eval_tom2_starling.py --mode deterministic` | **1.0000**(196/196) | 0.70 ✅ |
+| 2B 端到端 | deepseek 抽取多 holder 信念 → Starling 机器 → 召回答题 | `eval_tom2_starling.py --mode extracted` | **1.0000**(195/195,1 抽取未解析) | 0.70 ✅ |
+
+模型 **deepseek-v4-pro** @ api.deepseek.com;reasoning 模型须 `max_tokens=32768`
+(reasoning_content 计入预算,512 会截断空 content → 误判),3 轮 temp=0。
+
+**语料质量勘误(4/200,已排除)。** ToMBench **英文侧** 4 题翻译漂移:中文近义词
+(橱柜/柜子、手提袋/手提包、箱子)在故事与选项译法不一致,英文 gold 不出现在英文
+故事、按英文不可答(中文侧自洽)。deepseek 一致选"故事一致项"而非坏 gold,证系
+**语料缺陷而非模型/Starling 失败**;tb-so-002/035/047/053 从 clean 数排除
+(`_KNOWN_DRIFT_QIDS`),详见语料 README。这同时解释 track-1 raw 的 6 个 miss 中
+有 4 个属此。
+
+- fixture 离线:**PASS**(`test_eval_tom_bench_harness.py`)。
+- Starling 路径回归:**PASS**(`test_eval_tom2_starling.py` 走真 belief_tracker→召回;
+  `test_tom2_e2e.py` a1×a2 闭环)。
+- 语料 shape:`test_tom_bench_corpus.py::test_second_order_corpus_shape`。
+
+**P3.a2 准入达成关闭(2026-06-17):** 二阶 ToM 三层数字(LLM 地板 0.990 / Starling
+机器 1.0000 / 端到端 1.0000)全部 > 0.70。复跑:
+```bash
+python scripts/build_tombench_second_order_corpus.py \
+  --tombench-file "<ToMBench>/data/False Belief Task.jsonl" \
+  --out tests/data/eval_tom_bench/second_order.jsonl
+# track 1(LLM 地板)
+OPENAI_API_KEY=$DEEPSEEK_API_KEY OPENAI_BASE_URL=https://api.deepseek.com/v1 \
+  python scripts/eval_tom_bench.py --corpus tests/data/eval_tom_bench/second_order.jsonl \
+  --order second --model deepseek-v4-pro --rounds 3 --report build/eval_tom_bench_second.md
+# track 2A(Starling 机器,无网络)
+python scripts/eval_tom2_starling.py --corpus tests/data/eval_tom_bench/second_order.jsonl \
+  --mode deterministic --report build/eval_tom2_starling_deterministic.md
+# track 2B(端到端)
+OPENAI_API_KEY=$DEEPSEEK_API_KEY OPENAI_BASE_URL=https://api.deepseek.com/v1 \
+  python scripts/eval_tom2_starling.py --corpus tests/data/eval_tom_bench/second_order.jsonl \
+  --mode extracted --model deepseek-v4-pro --report build/eval_tom2_starling_extracted.md
+```

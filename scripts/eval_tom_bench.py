@@ -66,6 +66,14 @@ SECOND_ORDER_ABILITIES = frozenset(
 ACCURACY_THRESHOLD = 0.55
 SECOND_ORDER_THRESHOLD = 0.70
 
+# Reasoning models (deepseek-v4-pro, o1-style) count their hidden reasoning_content
+# toward the completion max_tokens. A 512 cap let a long second-order chain-of-
+# thought exhaust the budget (finish_reason="length") and return an EMPTY content —
+# the parser then scored it as a wrong answer, undercounting the model on exactly
+# the hardest items. 32768 leaves the full reasoning budget plus the single-digit
+# answer; non-reasoning models stop early, so the larger cap is harmless to them.
+_MAX_ANSWER_TOKENS = 32768
+
 # Deterministic seed used by the fixture mock so results are reproducible.
 _FIXTURE_CORRECT_RATE = 0.70  # 70 % correct → well above 0.55 threshold
 
@@ -120,10 +128,11 @@ def _call_openai_once(
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
-            # 512 (not 4) so reasoning models (deepseek-v4-*, o1-style) have room to
-            # emit a visible answer; the parser below grabs the first 0-3 digit, so
-            # extra/reasoning text is harmless.
-            "max_tokens": 512,
+            # See _MAX_ANSWER_TOKENS: a reasoning model's reasoning_content counts
+            # toward this budget, so it must be large enough for the full CoT plus
+            # the visible answer digit. The parser grabs the first 0-3 digit, so any
+            # extra/reasoning text in the content is harmless.
+            "max_tokens": _MAX_ANSWER_TOKENS,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
