@@ -140,6 +140,7 @@ add_executable(starling_tests
     test_store_foundation.cpp
     test_statement_store.cpp
     test_meta_store.cpp
+    test_occurred_modality.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

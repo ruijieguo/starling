@@ -28,6 +28,7 @@ std::string_view to_string(Modality m) {
         case Modality::NORM_OUGHT:  return "norm_ought";
         case Modality::NORM_FORBID: return "norm_forbid";
         case Modality::RECANTED:    return "recanted";
+        case Modality::OCCURRED:    return "occurred";
     }
     throw std::invalid_argument("unknown Modality");
 }
@@ -94,6 +95,7 @@ Modality modality_from_string(std::string_view s) {
     if (s == "norm_ought")  return Modality::NORM_OUGHT;
     if (s == "norm_forbid") return Modality::NORM_FORBID;
     if (s == "recanted")    return Modality::RECANTED;
+    if (s == "occurred")    return Modality::OCCURRED;
     throw std::invalid_argument(std::string("unknown Modality: ") + std::string(s));
 }
 

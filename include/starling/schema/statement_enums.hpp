@@ -30,6 +30,7 @@ enum class Modality {
     NORM_OUGHT,
     NORM_FORBID,
     RECANTED,
+    OCCURRED,
 };
 
 enum class Polarity {

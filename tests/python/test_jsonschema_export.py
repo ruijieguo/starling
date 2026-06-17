@@ -33,11 +33,11 @@ def test_affect_schema_five_floats():
         assert props[k]["type"] == "number"
 
 
-def test_modality_schema_is_enum_with_eleven_values():
+def test_modality_schema_is_enum_with_twelve_values():
     s = schema_for(Statement)
     modality_schema = s["properties"]["modality"]
     assert modality_schema["type"] == "string"
-    assert len(modality_schema["enum"]) == 11
+    assert len(modality_schema["enum"]) == 12
 
 
 def test_all_schemas_includes_fifteen_classes():

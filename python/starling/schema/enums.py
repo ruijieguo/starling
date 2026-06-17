@@ -25,6 +25,7 @@ class Modality(StrEnum):
     NORM_OUGHT = "norm_ought"
     NORM_FORBID = "norm_forbid"
     RECANTED = "recanted"
+    OCCURRED = "occurred"  # episodic-event modality (sub-project A, phase 1)
 
 class Polarity(StrEnum):
     POS = "pos"

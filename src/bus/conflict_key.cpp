@@ -29,6 +29,7 @@ std::string modality_str(starling::schema::Modality m) {
         case M::NORM_OUGHT:  return "NORM_OUGHT";
         case M::NORM_FORBID: return "NORM_FORBID";
         case M::RECANTED:    return "RECANTED";
+        case M::OCCURRED:    return "OCCURRED";
     }
     return "UNKNOWN_MODALITY";
 }

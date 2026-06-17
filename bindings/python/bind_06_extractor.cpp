@@ -43,6 +43,7 @@ void bind_06_extractor(pybind11::module_& m) {
         .value("NORM_OUGHT",  starling::schema::Modality::NORM_OUGHT)
         .value("NORM_FORBID", starling::schema::Modality::NORM_FORBID)
         .value("RECANTED",    starling::schema::Modality::RECANTED)
+        .value("OCCURRED",    starling::schema::Modality::OCCURRED)
         .export_values();
 
     py::enum_<starling::schema::Polarity>(m, "Polarity")

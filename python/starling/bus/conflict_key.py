@@ -14,6 +14,7 @@ _SEP = b'\x1f'
 _MODALITY_NAMES = frozenset({
     'BELIEVES', 'KNOWS', 'ASSUMES', 'DOUBTS', 'DESIRES', 'INTENDS',
     'COMMITS', 'PREFERS', 'NORM_OUGHT', 'NORM_FORBID', 'RECANTED',
+    'OCCURRED',
 })
 
 

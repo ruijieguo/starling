@@ -9,10 +9,11 @@ from starling.schema import (
 def test_perspective_values():
     assert {e.value for e in Perspective} == {"first_person", "quoted", "inferred", "hearsay"}
 
-def test_modality_eleven_values():
+def test_modality_twelve_values():
     assert {e.value for e in Modality} == {
         "believes", "knows", "assumes", "doubts", "desires", "intends",
         "commits", "prefers", "norm_ought", "norm_forbid", "recanted",
+        "occurred",
     }
 
 def test_consolidation_state_six():
