@@ -14,8 +14,9 @@ the episodic parser reads them as 3 events. This proves BOTH passes run and the
 episodic rows land, with zero network and no fragile prompt-hash reproduction.
 
 sub-project A phase 6 Task 6.2 — adds a GATED real-LLM end-to-end (the A→B
-handoff proof). It is skipped unless OPENAI_API_KEY (or DEEPSEEK_API_KEY) is in
-the environment, so the offline suite stays green. When a key IS present it
+handoff proof). It is skipped unless STARLING_RUN_LLM_E2E is set (plus an
+OPENAI_API_KEY/DEEPSEEK_API_KEY), so the offline suite stays green regardless of
+inherited keys. When opt-in IS present with a key it
 drives a real LLM through the SAME dual-pass remember() and asserts the full
 handoff payload: OCCURRED events (put/leave/move) + episodic_events seq in
 narrative order + participants + ground-truth current location via
@@ -139,9 +140,11 @@ def test_dual_pass_belief_pass_independent_empty_episodic(tmp_path):
 
 # ----- Task 6.2: gated real-LLM end-to-end (the A→B handoff proof) -----
 #
-# Run it explicitly (key required; not in CI). DeepSeek-compatible endpoint:
+# Run it explicitly (opt-in + key required; not in CI). DeepSeek-compatible
+# endpoint:
 #
-#   OPENAI_API_KEY=$DEEPSEEK_API_KEY \
+#   STARLING_RUN_LLM_E2E=1 OPENAI_API_KEY=$DEEPSEEK_API_KEY \
+#   OPENAI_BASE_URL=https://api.deepseek.com/v1 \
 #   .venv/bin/python -m pytest \
 #       tests/python/test_episodic_e2e.py::test_real_llm_dual_pass_handoff -v
 #
@@ -149,6 +152,11 @@ def test_dual_pass_belief_pass_independent_empty_episodic(tmp_path):
 # DEEPSEEK_API_KEY this test copies it into OPENAI_API_KEY for the adapter.)
 
 _HAS_LLM_KEY = bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY"))
+# Require an EXPLICIT opt-in (STARLING_RUN_LLM_E2E) in addition to a key. The
+# real-LLM test hits a hardcoded DeepSeek endpoint, so an inherited but unrelated
+# OPENAI_API_KEY (e.g. a real OpenAI key) would otherwise run it with the wrong
+# key, get 0 events, and FAIL. Gating on opt-in keeps the default suite green.
+_RUN_LLM_E2E = bool(os.environ.get("STARLING_RUN_LLM_E2E")) and _HAS_LLM_KEY
 
 
 def _participants(participants_json):
@@ -157,8 +165,9 @@ def _participants(participants_json):
 
 
 @pytest.mark.skipif(
-    not _HAS_LLM_KEY,
-    reason="real-LLM e2e: set OPENAI_API_KEY (or DEEPSEEK_API_KEY) to run")
+    not _RUN_LLM_E2E,
+    reason="real-LLM e2e: set STARLING_RUN_LLM_E2E=1 (+ OPENAI_API_KEY/"
+           "DEEPSEEK_API_KEY for the DeepSeek endpoint) to run")
 def test_real_llm_dual_pass_handoff(tmp_path):
     """A→B handoff proof on a REAL model: the Sally/Anne narrative must yield
     OCCURRED events (put / leave / move) with episodic_events rows in narrative
