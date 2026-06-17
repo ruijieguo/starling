@@ -2,6 +2,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include <stdexcept>
+#include <string>
 
 namespace starling::tom {
 
@@ -9,18 +10,33 @@ class NestingDepthOverflow : public std::runtime_error {
 public:
     int computed_depth;
     explicit NestingDepthOverflow(int d)
-        : std::runtime_error("nesting_depth > 2 hard limit (P2.a)"),
+        : std::runtime_error(
+              "nesting_depth exceeds configured max_nesting_depth (runaway guard)"),
           computed_depth(d) {}
 };
 
+class NestingCycle : public std::runtime_error {
+public:
+    std::string cycle_id;  // the statement id revisited while walking ancestors
+    explicit NestingCycle(std::string id)
+        : std::runtime_error("nested-belief object_value chain contains a cycle"),
+          cycle_id(std::move(id)) {}
+};
+
 namespace nesting_depth_writer {
-    // Returns 0 if object_kind != "statement";
-    // returns parent.nesting_depth + 1 otherwise (parent looked up by id = object_value);
-    // throws NestingDepthOverflow if computed_depth > 2.
-    // Throws std::runtime_error if parent not found (parent must be written first).
+    // Default soft ceiling on nesting depth (Phase 6 wires this to runtime config).
+    // 0 => unbounded (the cycle guard still applies).
+    inline constexpr int kDefaultMaxNestingDepth = 32;
+
+    // Returns 0 if object_kind != "statement". Otherwise walks the object_value
+    // ancestor chain to a flat (non-statement) leaf, returning the chain length
+    // (== parent.nesting_depth + 1). Throws NestingCycle if an id repeats on the
+    // walk; throws NestingDepthOverflow if the chain length exceeds max_depth
+    // (when max_depth > 0); throws std::runtime_error if a parent is missing.
     int compute_nesting_depth(
         persistence::Connection& conn,
-        const extractor::ExtractedStatement& s);
+        const extractor::ExtractedStatement& s,
+        int max_depth = kDefaultMaxNestingDepth);
 }
 
 }  // namespace starling::tom
