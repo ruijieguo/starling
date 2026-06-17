@@ -331,7 +331,8 @@ StatementWriteOutcome StatementWriter::write(
     }
 
     // Compute nesting_depth: 0 for non-statement objects; parent.nesting_depth+1
-    // for object_kind=="statement". Throws NestingDepthOverflow if result > 2.
+    // for object_kind=="statement". Uses the default soft ceiling
+    // (max_nesting_depth=32); throws NestingDepthOverflow only beyond it.
     const int nesting_depth = tom::nesting_depth_writer::compute_nesting_depth(conn_, s);
 
     insert_statement_row(conn_, stmt_id, s, evidence_engram_id, content_hash, effective,

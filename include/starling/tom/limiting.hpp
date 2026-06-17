@@ -21,7 +21,10 @@ struct PersistGateInput {
 
 // 链长上限对齐 Bus::write 的 depth-3 帽(§5.4 同源约束)。
 inline constexpr int kChainMax = 3;
-inline constexpr int kDerivedDepthMax = 3;
+// Cascade runaway guard, raised for arbitrary multi-order ToM (was 3). Bounds a
+// single auto-production event cascade's派生深度. Surfacing this to runtime
+// config (max_cascade_depth) is a follow-up — kept as a named constant for now.
+inline constexpr int kDerivedDepthMax = 8;
 
 // true = 允许持久化;false = 仅作 transient context(不落库不发事件)。
 bool should_persist_tom_statement(persistence::Connection& conn,

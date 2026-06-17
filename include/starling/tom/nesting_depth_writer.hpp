@@ -24,7 +24,8 @@ public:
 };
 
 namespace nesting_depth_writer {
-    // Default soft ceiling on nesting depth (Phase 6 wires this to runtime config).
+    // Default soft ceiling on nesting depth (max_nesting_depth). Surfacing this
+    // to runtime config is a follow-up — kept as a named constant for now.
     // 0 => unbounded (the cycle guard still applies).
     inline constexpr int kDefaultMaxNestingDepth = 32;
 

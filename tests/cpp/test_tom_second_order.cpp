@@ -257,8 +257,14 @@ TEST(TomLimiting, ChainLengthRejects) {
     in.subject_id = "alice"; in.predicate = "believes";
     in.canonical_object_hash = "h"; in.as_of_iso8601 = "2026-06-12T09:00:00Z";
 
-    in.derived_depth = 3;
+    // Cascade ceiling raised 3 -> 8 (max_cascade_depth) for arbitrary multi-order
+    // ToM: derived_depth=4 is now allowed (was rejected at the old cap of 3).
+    in.derived_depth = 4;
+    EXPECT_TRUE(limiting::should_persist_tom_statement(conn, in));
+    // At/above the new cap (8) the cascade guard still rejects.
+    in.derived_depth = 8;
     EXPECT_FALSE(limiting::should_persist_tom_statement(conn, in));
+    // causation chain guard (kChainMax) is unchanged at 3.
     in.derived_depth = 0; in.causation_chain_len = 3;
     EXPECT_FALSE(limiting::should_persist_tom_statement(conn, in));
     in.causation_chain_len = 0;
