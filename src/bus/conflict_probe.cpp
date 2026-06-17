@@ -241,6 +241,17 @@ std::optional<ConflictMatch> ConflictProbe::scan(
     const starling::extractor::ExtractedStatement& s_new,
     const NormalizedInterval& interval_new) const {
 
+    // sub-project A phase 4: OCCURRED rows are episodic FACTS, not contestable
+    // beliefs. Two events sharing subject+predicate+object (e.g. "agent moved
+    // ball" at T1, then again at T2) are a temporal SEQUENCE, not a
+    // contradiction — they'd otherwise collide on the same prefilter key here.
+    // Skip arbitration entirely: no conflict key is assigned, so no
+    // conflicts_with / adjacent edge and no belief.conflict event is ever
+    // created for an event. Belief (non-OCCURRED) arbitration is untouched.
+    if (s_new.modality == starling::schema::Modality::OCCURRED) {
+        return std::nullopt;
+    }
+
     auto candidates = fetch_candidates(conn_, s_new);
     if (candidates.empty()) return std::nullopt;
 

@@ -123,6 +123,28 @@ void seed_nested_over_statement(sqlite3* db, const std::string& id,
         std::to_string(nesting_depth) + ",'" + observed + "','" + observed + "')");
 }
 
+// Seed an OTHER-holder OCCURRED event (modality='occurred'): an episodic fact,
+// not a contestable belief. Mirrors the episodic-event row shape from
+// test_episodic_event_store.cpp (subject entity:agent, action predicate, str
+// object=theme) but with an arbitrary partner holder so the ToM auto path would
+// otherwise try to model a meta-belief over it. Phase 4: it must skip_event.
+void seed_occurred_statement(sqlite3* db, const std::string& id,
+                             const std::string& holder, const std::string& theme,
+                             const std::string& observed = "2026-06-12T09:00:00Z") {
+    exec(db,
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,evidence_json,consolidation_state,review_status,"
+        "nesting_depth,created_at,updated_at) VALUES('" + id +
+        "','default','" + holder + "','FIRST_PERSON','entity','agent','moved',"
+        "'str','" + theme + "','h-" + id + "','v1','occurred','POS',0.9,'" +
+        observed + "',0.5,'{}',0.0,'" + observed +
+        "','user_input','[{\"engram_id\":\"eng-" + id +
+        "\"}]','consolidated','approved',0,'" + observed + "','" + observed + "')");
+}
+
 }  // namespace
 
 TEST(TomSecondOrder, AutoPersistsDepthOneForOtherHolder) {
@@ -153,6 +175,30 @@ TEST(TomSecondOrder, AutoPersistsDepthOneForOtherHolder) {
     exec(db, "COMMIT");
     EXPECT_FALSE(again.persisted);
     EXPECT_EQ(again.reason, "skip_already_modeled");
+}
+
+// sub-project A phase 4: an OCCURRED event (episodic fact) authored by a partner
+// must NOT be modeled as a meta-belief. The auto path skips it BEFORE
+// write_nested, returning skip_event and producing no self-authored
+// object_kind='statement' row. (Episodic events are a temporal sequence, not a
+// contestable belief — ToM nesting is belief-only.)
+TEST(TomSecondOrder, SkipsOccurredEvent) {
+    auto a = open_fresh();
+    auto& conn = a->connection();
+    sqlite3* db = conn.raw();
+    seed_self(db);
+    seed_occurred_statement(db, "EV1", "alice", "ball");
+
+    exec(db, "BEGIN IMMEDIATE");
+    const auto out = second_order::maybe_persist_second_order(conn, "default", "EV1");
+    exec(db, "COMMIT");
+
+    EXPECT_FALSE(out.persisted) << out.reason;
+    EXPECT_EQ(out.reason, "skip_event");
+    // No self-authored nested belief row was produced over the event.
+    EXPECT_EQ(icol(db, "SELECT COUNT(*) FROM statements WHERE holder_id='cog-self' "
+                       "AND object_kind='statement'"), 0);
+    EXPECT_EQ(icol(db, "SELECT COUNT(*) FROM statements WHERE provenance='tom_inferred'"), 0);
 }
 
 TEST(TomSecondOrder, SkipsSelfAndInferredButMirrorsNested) {

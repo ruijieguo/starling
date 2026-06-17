@@ -29,6 +29,7 @@ struct SourceRow {
     bool found = false;
     std::string holder, subject, predicate, hash, observed_at, provenance;
     std::string evidence_json, affect_json;
+    std::string modality;   // raw statements.modality string (lowercase StrEnum value)
     int nesting_depth = 0;
     int derived_depth = 0;
     double confidence = 0.0;
@@ -43,7 +44,7 @@ SourceRow load_source(sqlite3* db, std::string_view tenant,
         "SELECT holder_id, subject_id, predicate, canonical_object_hash, "
         "observed_at, provenance, COALESCE(evidence_json,'[]'), nesting_depth, "
         "COALESCE(derived_depth,0), confidence, salience, "
-        "COALESCE(affect_json,'{}') "
+        "COALESCE(affect_json,'{}'), modality "
         "FROM statements WHERE id=? AND tenant_id=?",
         -1, &raw, nullptr) != SQLITE_OK) return r;
     StmtHandle h(raw);
@@ -60,6 +61,7 @@ SourceRow load_source(sqlite3* db, std::string_view tenant,
     r.confidence = sqlite3_column_double(h.get(), 9);
     r.salience = sqlite3_column_double(h.get(), 10);
     r.affect_json = col(h.get(), 11);
+    r.modality = col(h.get(), 12);
     return r;
 }
 
@@ -188,6 +190,17 @@ Outcome maybe_persist_second_order(persistence::Connection& conn,
         sqlite3* db = conn.raw();
         const SourceRow src = load_source(db, tenant_id, source_stmt_id);
         if (!src.found)                    { out.reason = "skip_no_source"; return out; }
+        // sub-project A phase 4: an OCCURRED row is an episodic FACT (a temporal
+        // event), not a contestable belief. ToM nesting models meta-beliefs over
+        // beliefs only — skip events before any meta-belief would be produced.
+        // Compare the raw column against the canonical StrEnum value rather than
+        // round-tripping modality_from_string (which throws on the upper-case
+        // values some test fixtures seed); only OCCURRED is gated, all other
+        // modalities flow through untouched.
+        if (src.modality == schema::to_string(schema::Modality::OCCURRED)) {
+            out.reason = "skip_event";
+            return out;
+        }
         if (src.provenance != "user_input"){ out.reason = "skip_provenance"; return out; }
         // Phase 4: grounded mirroring — no skip_nested_source. A partner's real
         // depth-k belief mirrors to self depth-(k+1) for any k (the written depth
