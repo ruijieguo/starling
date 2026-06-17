@@ -397,3 +397,52 @@ TEST(TomMentalizingMore, NestedQueryPredictionBasisAndWhoCommitted) {
     EXPECT_EQ(facts[0].state, "ACTIVE");
     EXPECT_EQ(facts[0].deadline, "2026-06-15T00:00:00Z");
 }
+
+// ── Phase 5: 递归召回任意多阶嵌套链 ─────────────────────────────────────────────
+//
+// Seed a structurally-real depth-2 outer held by quinn about the partner "peer":
+// flat leaf QL0(depth0,object_kind='str') <- Q1(depth1,object_kind='statement')
+// <- Q2(depth2,object_kind='statement'). The anchor (holder=quinn, subject=peer,
+// nesting_depth>=1) matches BOTH Q2 and Q1 (both are nested rows about peer);
+// ordered observed_at DESC, Q2 is first. The recursive CTE must unwrap the depth-2
+// outer Q2 -> Q1 -> QL0 (full chain to the depth-0 leaf).
+TEST(TomMentalizingMore, RecursiveChainUnwrapsToLeaf) {
+    auto a = open_fresh();
+    auto& conn = a->connection();
+    sqlite3* db = conn.raw();
+    seed_self(db);
+    seed_statement(db, "QL0", "quinn", 0, "user_input", "2026-06-12T09:00:30Z");
+    seed_nested_statement(db, "Q1", "quinn", "QL0", "2026-06-12T09:01:00Z");
+    seed_nested_over_statement(db, "Q2", "quinn", "Q1", 2, "2026-06-12T09:02:00Z");
+
+    const auto nested = mentalizing::what_does_X_think_Y_believes(
+        *a, "quinn", "peer", "default", "2026-06-12T12:00:00Z");
+    ASSERT_EQ(nested.size(), 2u);   // Q2 (depth-2) and Q1 (depth-1) both anchor.
+    EXPECT_EQ(nested[0].outer.id, "Q2");  // most-recent observed_at first
+    // .inner = level-1 immediate inner (Q1) — backward-compat semantics preserved.
+    EXPECT_EQ(nested[0].inner.id, "Q1");
+    EXPECT_EQ(nested[0].inner.object_value, "QL0");  // Q1 -> QL0
+    // .chain = full unwrap from the depth-2 outer: level1=Q1, level2=QL0 (leaf).
+    ASSERT_EQ(nested[0].chain.size(), 2u);
+    EXPECT_EQ(nested[0].chain[0].level, 1);
+    EXPECT_EQ(nested[0].chain[0].id, "Q1");
+    EXPECT_EQ(nested[0].chain[0].object_kind, "statement");
+    EXPECT_EQ(nested[0].chain[0].object_value, "QL0");
+    EXPECT_EQ(nested[0].chain[1].level, 2);
+    EXPECT_EQ(nested[0].chain[1].id, "QL0");
+    EXPECT_EQ(nested[0].chain[1].object_kind, "str");      // leaf reached
+    EXPECT_EQ(nested[0].chain[1].object_value, "on track");
+    // The depth-1 anchor Q1 unwraps a single level to the leaf.
+    EXPECT_EQ(nested[1].outer.id, "Q1");
+    ASSERT_EQ(nested[1].chain.size(), 1u);
+    EXPECT_EQ(nested[1].chain[0].id, "QL0");
+
+    // max_unwrap=1 truncates the chain to the immediate inner only.
+    const auto capped = mentalizing::what_does_X_think_Y_believes(
+        *a, "quinn", "peer", "default", "2026-06-12T12:00:00Z", 1);
+    ASSERT_EQ(capped.size(), 2u);
+    EXPECT_EQ(capped[0].outer.id, "Q2");
+    EXPECT_EQ(capped[0].inner.id, "Q1");
+    ASSERT_EQ(capped[0].chain.size(), 1u);
+    EXPECT_EQ(capped[0].chain[0].id, "Q1");
+}

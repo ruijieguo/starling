@@ -169,20 +169,39 @@ void bind_08_tom(pybind11::module_& m) {
         "Return facts believed by ALL members.");
 
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
+    // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
+    py::class_<starling::tom::mentalizing::ChainLevel>(m, "ChainLevel")
+        .def_readonly("level",        &starling::tom::mentalizing::ChainLevel::level)
+        .def_readonly("holder_id",    &starling::tom::mentalizing::ChainLevel::holder_id)
+        .def_readonly("subject_id",   &starling::tom::mentalizing::ChainLevel::subject_id)
+        .def_readonly("predicate",    &starling::tom::mentalizing::ChainLevel::predicate)
+        .def_readonly("object_kind",  &starling::tom::mentalizing::ChainLevel::object_kind)
+        .def_readonly("object_value", &starling::tom::mentalizing::ChainLevel::object_value)
+        .def_readonly("id",           &starling::tom::mentalizing::ChainLevel::id);
+
     py::class_<starling::tom::mentalizing::NestedBelief>(m, "NestedBelief")
         .def_readonly("outer", &starling::tom::mentalizing::NestedBelief::outer)
-        .def_readonly("inner", &starling::tom::mentalizing::NestedBelief::inner);
+        .def_readonly("inner", &starling::tom::mentalizing::NestedBelief::inner)
+        .def_readonly("chain", &starling::tom::mentalizing::NestedBelief::chain);
 
     m.def("what_does_X_think_Y_believes",
         [](starling::persistence::SqliteAdapter& adapter,
            const std::string& x, const std::string& y,
-           const std::string& tenant, const std::string& as_of) {
-            return starling::tom::mentalizing::what_does_X_think_Y_believes(
-                adapter, x, y, tenant, as_of);
+           const std::string& tenant, const std::string& as_of, int max_unwrap) {
+            std::vector<starling::tom::mentalizing::NestedBelief> out;
+            {   // recursive SQL — release the GIL around the query.
+                py::gil_scoped_release release;
+                out = starling::tom::mentalizing::what_does_X_think_Y_believes(
+                    adapter, x, y, tenant, as_of, max_unwrap);
+            }
+            return out;
         },
         py::arg("adapter"), py::arg("x"), py::arg("y"),
         py::arg("tenant"), py::arg("as_of"),
-        "Second-order: nested beliefs X holds about Y (outer+inner pairs).");
+        py::arg("max_unwrap") =
+            starling::tom::nesting_depth_writer::kDefaultMaxNestingDepth,
+        "Second-order: nested beliefs X holds about Y. .inner is the immediate "
+        "inner; .chain unwraps the full N-deep chain to the depth-0 leaf.");
 
     py::class_<starling::tom::mentalizing::PredictionBasis>(m, "PredictionBasis")
         .def_readonly("beliefs",     &starling::tom::mentalizing::PredictionBasis::beliefs)

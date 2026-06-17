@@ -48,6 +48,112 @@ def _seed_multi_holder(db_path: str) -> None:
         conn.close()
 
 
+_STMT_COLS = (
+    "id,tenant_id,holder_id,holder_perspective,subject_kind,subject_id,"
+    "predicate,object_kind,object_value,canonical_object_hash,"
+    "canonical_object_hash_version,modality,polarity,confidence,observed_at,"
+    "salience,affect_json,activation,last_accessed,provenance,evidence_json,"
+    "consolidation_state,review_status,nesting_depth,created_at,updated_at"
+)
+
+
+def _ins_stmt(conn, *, id, holder, subject_kind, subject_id, object_kind,
+              object_value, depth, observed):
+    """Insert one consolidated/approved statement row."""
+    conn.execute(
+        f"INSERT INTO statements({_STMT_COLS}) VALUES("
+        "?,?,?,'FIRST_PERSON',?,?,'believes',?,?,?,'v1','BELIEVES','POS',0.8,?,"
+        "0.6,'{}',0.0,?,'user_input',?,'consolidated','approved',?,?,?)",
+        (id, "default", holder, subject_kind, subject_id, object_kind,
+         object_value, "h-" + id, observed, observed,
+         '[{"engram_id":"eng-' + id + '"}]', depth, observed, observed))
+
+
+def _seed_partner_depth2_chain(db_path: str) -> None:
+    """Seed a self cognizer (alice) + a structurally-real depth-2 nested belief
+    held by partner `bob`: flat leaf DL0(d0) <- D1(d1,->DL0) <- D2(d2,->D1), plus
+    a statement.written bus event whose stmt_id=D2. belief_tracker mirrors the
+    partner's depth-2 source to a self depth-3 meta-belief (auto path, Phase 4)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(
+            "INSERT INTO cognizers(id,tenant_id,kind,canonical_name,"
+            "canonical_name_normalized,external_id,created_at,last_seen_at) "
+            "VALUES('alice','default','self','Alice','alice','',?,?)", (NOW, NOW))
+        # Flat leaf (depth-0).
+        _ins_stmt(conn, id="DL0", holder="bob", subject_kind="entity",
+                  subject_id="launch", object_kind="str", object_value="on track",
+                  depth=0, observed="2026-06-12T09:00:30Z")
+        # Depth-1 nested over the leaf.
+        _ins_stmt(conn, id="D1", holder="bob", subject_kind="cognizer",
+                  subject_id="peer", object_kind="statement", object_value="DL0",
+                  depth=1, observed="2026-06-12T09:01:00Z")
+        # Depth-2 nested over the depth-1 row — the source the tracker mirrors.
+        _ins_stmt(conn, id="D2", holder="bob", subject_kind="cognizer",
+                  subject_id="peer", object_kind="statement", object_value="D1",
+                  depth=2, observed="2026-06-12T09:02:00Z")
+        conn.execute(
+            "INSERT INTO bus_events(event_id,tenant_id,event_type,primary_id,"
+            "aggregate_id,outbox_sequence,idempotency_key,payload_json,created_at)"
+            " VALUES('ev-d2','default','statement.written','D2','D2',"
+            "900001,'ik-d2','{\"stmt_id\":\"D2\",\"engram_ref_id\":\"eng-D2\"}',?)",
+            (NOW,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_auto_mirror_recall_returns_three_deep_chain(tmp_path):
+    """Phase 5 e2e: partner bob's depth-2 nested belief -> belief_tracker mirrors
+    to a self depth-3 meta-belief; what_does_X_think_Y_believes(alice, bob)
+    recalls the full chain (3 levels) down to the depth-0 leaf DL0."""
+    db = str(tmp_path / "tom2_chain.db")
+    llm = starling.make_stub_llm(default_response=CANNED)
+    mem = starling.Memory.open(db, agent="alice", llm=llm)
+    try:
+        _seed_partner_depth2_chain(db)
+
+        # belief_tracker batch consumes D2's statement.written -> self depth-3.
+        stats = _core.belief_tracker_tick(mem._rt.adapter)
+        assert stats.second_order_written == 1
+
+        ro = sqlite3.connect(db)
+        holder, subject, depth, obj = ro.execute(
+            "SELECT holder_id, subject_id, nesting_depth, object_value "
+            "FROM statements WHERE provenance='tom_inferred' "
+            "AND holder_id='alice'").fetchone()
+        ro.close()
+        assert (holder, subject, depth, obj) == ("alice", "bob", 3, "D2")
+
+        # Consolidate the volatile-born meta-belief so the recall stable-state
+        # filter admits it (mirrors the depth-1 test's mem.tick() consolidation).
+        mem.tick()
+
+        nested = _core.what_does_X_think_Y_believes(
+            mem._rt.adapter, "alice", "bob", "default", "2026-06-13T00:00:00Z")
+        # The self depth-3 meta-belief anchors (holder=alice, subject=bob).
+        outer = next(n for n in nested if n.outer.object_value == "D2")
+        # .inner = immediate inner D2 (backward-compat).
+        assert outer.inner.id == "D2"
+        # .chain unwraps D2 -> D1 -> DL0: three levels ending at the depth-0 leaf.
+        ids = [(c.level, c.id, c.object_value, c.object_kind) for c in outer.chain]
+        assert ids == [
+            (1, "D2", "D1", "statement"),
+            (2, "D1", "DL0", "statement"),
+            (3, "DL0", "on track", "str"),
+        ], ids
+
+        # max_unwrap=1 truncates to the immediate inner only.
+        capped = _core.what_does_X_think_Y_believes(
+            mem._rt.adapter, "alice", "bob", "default", "2026-06-13T00:00:00Z",
+            max_unwrap=1)
+        capped_outer = next(n for n in capped if n.outer.object_value == "D2")
+        assert [c.id for c in capped_outer.chain] == ["D2"]
+    finally:
+        mem.close()
+
+
 def test_second_order_auto_then_meta_belief_query(tmp_path):
     db = str(tmp_path / "tom2.db")
     llm = starling.make_stub_llm(default_response=CANNED)

@@ -43,6 +43,26 @@ constexpr const char* kStableTail =
     "   AND consolidation_state IN ('consolidated','archived')"
     "   AND review_status NOT IN ('rejected','pending_review')";
 
+// Fetch one statement's full StatementRow columns by id (tenant-scoped). Used to
+// populate NestedBelief.inner preserving today's semantics: looked up by id with
+// NO consolidation filter (the trusted outer already passed stable-state filters).
+// Returns an empty row if the id is absent.
+retrieval::StatementRow fetch_row_by_id(sqlite3* db, std::string_view tenant,
+                                        const std::string& id) {
+    const std::string sql = std::string("SELECT ") + kCols +
+        " FROM statements WHERE id = ?1 AND tenant_id = ?2";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "what_does_X_think_Y_believes: prepare inner");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, id);
+    bind_sv(h.get(), 2, tenant);
+    retrieval::StatementRow r;
+    if (sqlite3_step(h.get()) == SQLITE_ROW)
+        r = row_from(h.get(), 0);
+    return r;
+}
+
 }  // namespace
 
 std::vector<NestedBelief> what_does_X_think_Y_believes(
@@ -50,51 +70,105 @@ std::vector<NestedBelief> what_does_X_think_Y_believes(
     std::string_view x,
     std::string_view y,
     std::string_view tenant,
-    std::string_view as_of)
+    std::string_view as_of,
+    int max_unwrap)
 {
     auto& conn = adapter.connection();
     sqlite3* db = conn.raw();
-    // outer:holder=X 对 Y 的嵌套信念;inner:被引用的原语句(JOIN by
-    // outer.object_value = inner.id)。inner 不限 consolidation——外层可信
-    // 即可展示内层内容(外层已过稳定态过滤)。
-    const std::string sql =
+
+    // ── Pass 1: anchor outer rows ────────────────────────────────────────────
+    // holder=X 对 Y 的嵌套信念(stored nesting_depth>=1,object_kind='statement',
+    // 过稳定态/时态过滤)。每个 outer 取全列以填 NestedBelief.outer。
+    const std::string outer_sql =
         std::string("SELECT ") +
         "o.id, o.tenant_id, o.holder_id, o.holder_perspective, o.subject_kind, "
         "o.subject_id, o.predicate, o.object_kind, o.object_value, "
         "o.canonical_object_hash, o.modality, o.polarity, o.confidence, "
         "o.observed_at, o.valid_from, o.valid_to, o.consolidation_state, "
-        "o.review_status, o.evidence_json, "
-        "i.id, i.tenant_id, i.holder_id, i.holder_perspective, i.subject_kind, "
-        "i.subject_id, i.predicate, i.object_kind, i.object_value, "
-        "i.canonical_object_hash, i.modality, i.polarity, i.confidence, "
-        "i.observed_at, i.valid_from, i.valid_to, i.consolidation_state, "
-        "i.review_status, i.evidence_json "
-        "FROM statements o JOIN statements i "
-        "  ON i.id = o.object_value AND i.tenant_id = o.tenant_id "
+        "o.review_status, o.evidence_json "
+        "FROM statements o "
         "WHERE o.tenant_id = ?1 AND o.holder_id = ?2 AND o.subject_id = ?3 "
         "  AND o.object_kind = 'statement' AND o.nesting_depth >= 1 "
         "  AND (o.valid_from IS NULL OR o.valid_from <= ?4) "
-        "  AND (o.valid_to   IS NULL OR o.valid_to   >  ?4) ";
-    // 稳定态过滤限定 o. 前缀(kStableTail 是无前缀版,这里手写):
-    const std::string full = sql +
+        "  AND (o.valid_to   IS NULL OR o.valid_to   >  ?4) "
         "  AND o.consolidation_state IN ('consolidated','archived') "
         "  AND o.review_status NOT IN ('rejected','pending_review') "
         "ORDER BY o.observed_at DESC";
 
     std::vector<NestedBelief> out;
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, full.c_str(), -1, &raw, nullptr) != SQLITE_OK)
-        throw make_sqlite_error(db, "what_does_X_think_Y_believes: prepare");
-    StmtHandle h(raw);
-    bind_sv(h.get(), 1, tenant);
-    bind_sv(h.get(), 2, x);
-    bind_sv(h.get(), 3, y);
-    bind_sv(h.get(), 4, as_of);
-    while (sqlite3_step(h.get()) == SQLITE_ROW) {
-        NestedBelief nb;
-        nb.outer = row_from(h.get(), 0);
-        nb.inner = row_from(h.get(), 19);
-        out.push_back(std::move(nb));
+    {
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(db, outer_sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "what_does_X_think_Y_believes: prepare outer");
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, tenant);
+        bind_sv(h.get(), 2, x);
+        bind_sv(h.get(), 3, y);
+        bind_sv(h.get(), 4, as_of);
+        while (sqlite3_step(h.get()) == SQLITE_ROW) {
+            NestedBelief nb;
+            nb.outer = row_from(h.get(), 0);
+            out.push_back(std::move(nb));
+        }
+    }
+
+    // ── Pass 2: per-outer recursive unwrap of the nested-belief chain ────────
+    // WITH RECURSIVE walks outer.object_value -> next.id, incrementing level,
+    // stopping at a non-statement leaf or when level >= max_unwrap. id is the PK
+    // so the join is indexed; the level<max bound keeps it cycle-safe.
+    // .inner = the level-1 row (immediate inner); inner 不限 consolidation——外层
+    // 可信即可展示内层内容(向后兼容今天的 .inner 语义)。
+    const int cap = max_unwrap > 0 ? max_unwrap
+                                   : nesting_depth_writer::kDefaultMaxNestingDepth;
+    const std::string chain_sql =
+        "WITH RECURSIVE chain(level, id, holder_id, subject_id, predicate, "
+        "                     object_kind, object_value) AS ("
+        "  SELECT 1, n.id, n.holder_id, n.subject_id, n.predicate, "
+        "         n.object_kind, n.object_value "
+        "  FROM statements n "
+        "  WHERE n.id = ?1 AND n.tenant_id = ?2 "
+        "  UNION ALL "
+        "  SELECT c.level + 1, n.id, n.holder_id, n.subject_id, n.predicate, "
+        "         n.object_kind, n.object_value "
+        "  FROM chain c JOIN statements n "
+        "    ON n.id = c.object_value AND n.tenant_id = ?2 "
+        "  WHERE c.object_kind = 'statement' AND c.level < ?3 "
+        ") SELECT level, id, holder_id, subject_id, predicate, object_kind, "
+        "         object_value FROM chain ORDER BY level ASC";
+
+    sqlite3_stmt* craw = nullptr;
+    if (sqlite3_prepare_v2(db, chain_sql.c_str(), -1, &craw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "what_does_X_think_Y_believes: prepare chain");
+    StmtHandle ch(craw);
+
+    for (auto& nb : out) {
+        sqlite3_reset(ch.get());
+        sqlite3_clear_bindings(ch.get());
+        bind_sv(ch.get(), 1, nb.outer.object_value);  // first inner = outer.object_value
+        bind_sv(ch.get(), 2, tenant);
+        sqlite3_bind_int(ch.get(), 3, cap);
+        bool inner_set = false;
+        while (sqlite3_step(ch.get()) == SQLITE_ROW) {
+            ChainLevel cl;
+            cl.level        = sqlite3_column_int(ch.get(), 0);
+            auto col = [&](int i) -> std::string {
+                const unsigned char* p = sqlite3_column_text(ch.get(), i);
+                return p ? std::string(reinterpret_cast<const char*>(p)) : std::string{};
+            };
+            cl.id           = col(1);
+            cl.holder_id    = col(2);
+            cl.subject_id   = col(3);
+            cl.predicate    = col(4);
+            cl.object_kind  = col(5);
+            cl.object_value = col(6);
+            if (cl.level == 1 && !inner_set) {
+                // Populate .inner from the level-1 row, full columns, preserving
+                // today's exact semantics (lookup by id, no consolidation filter).
+                nb.inner = fetch_row_by_id(db, tenant, cl.id);
+                inner_set = true;
+            }
+            nb.chain.push_back(std::move(cl));
+        }
     }
     return out;
 }

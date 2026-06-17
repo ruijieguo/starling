@@ -3,6 +3,7 @@
 #include "starling/cognizer/knowledge_frontier.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/retrieval/statement_row.hpp"
+#include "starling/tom/nesting_depth_writer.hpp"
 
 #include <string>
 #include <string_view>
@@ -85,20 +86,37 @@ std::vector<SharedFact> shared_with(
 
 // ─── P3.a2: 补全 7 API 的后三个 ───────────────────────────────────────────────
 
+// 任意多阶 ToM:嵌套链上的一层(level 1 = 紧邻内层,递增到 depth-0 叶)。
+// 字段是审计所需最小集(不复用 StatementRow 全列——链可深,只取定位列)。
+struct ChainLevel {
+    int level = 0;             // 1 = immediate inner; +1 per unwrap toward leaf
+    std::string holder_id;
+    std::string subject_id;
+    std::string predicate;
+    std::string object_kind;
+    std::string object_value;
+    std::string id;
+};
+
 // 二阶查询结果:外层(X believes ref)+ 内层(被引用的原语句)。
+// .inner 保留 level-1 紧邻内层(向后兼容);.chain 是从 level-1 递归展开到
+// depth-0 叶的有序全链(任意多阶 ToM)。
 struct NestedBelief {
     retrieval::StatementRow outer;
     retrieval::StatementRow inner;
+    std::vector<ChainLevel> chain;
 };
 
 // 5. 二阶 ToM:X 认为 Y 相信什么。展开 holder=X、subject=Y、
-//    object_kind='statement' 的嵌套行,JOIN 内层语句。
+//    object_kind='statement' 的嵌套行,WITH RECURSIVE 递归展开整条嵌套链
+//    (到 depth-0 叶或 level>=max_unwrap 止;靠 level 界做环安全)。
 std::vector<NestedBelief> what_does_X_think_Y_believes(
     persistence::SqliteAdapter& adapter,
     std::string_view x,
     std::string_view y,
     std::string_view tenant,
-    std::string_view as_of);
+    std::string_view as_of,
+    int max_unwrap = nesting_depth_writer::kDefaultMaxNestingDepth);
 
 // 预测依据(v1 诚实契约:返回可审计的 basis——X 的相关信念/偏好/承诺,
 // 不编造预测文本;LLM 模拟归 P3+)。
