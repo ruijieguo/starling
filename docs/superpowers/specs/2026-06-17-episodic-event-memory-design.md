@@ -34,12 +34,13 @@ statements: { holder_id=self, holder_perspective=FIRST_PERSON,
               observed_at=<ingest>, provenance=user_input }
 episodic_events (extension, keyed by statement id):
             { statement_id, tenant_id,
-              event_time=<story/utterance time, nullable>,
+              seq=<monotonic ordinal within the ingestion — REQUIRED>,  # event order
+              event_time=<absolute story time if stated, else NULL>,
               location="basket",        # theme's resulting location/place (nullable)
-              participants_json=["Sally"],  # cognizers present/party to the event
+              participants_json=["Sally"],  # cognizers NAMED in THIS event (raw; B derives presence)
               action_raw="put" }        # surface verb (when predicate canonicalised/free-form)
 ```
-"Anne moves the ball to the box" → another OCCURRED row (subject=Anne, predicate="move", object=ball) + ext {location="box", …}. The theme's location over time is the ordered sequence of its OCCURRED events; B derives per-cognizer last-known location from which events each cognizer perceived.
+"Anne moves the ball to the box" → another OCCURRED row (subject=Anne, predicate="move", object=ball) + ext {location="box", seq=2, …}. The theme's location over time is its OCCURRED events ordered by `seq` (then `event_time`); A exposes a `latest_event_location(theme)` helper for the ground-truth current state, and B derives the per-cognizer last-known location from which events each cognizer perceived.
 
 `holder=self`: an episodic event is the system's own record of something that happened (not an attitude attributed to a cognizer). `subject`=the actor.
 
@@ -49,7 +50,7 @@ Add a curated **action** predicate class to the registry (`include/starling/extr
 
 ### 3.3 Event time & extension schema (migration, commitments-pattern)
 
-New migration adds the `episodic_events` extension table: `statement_id` (PK, FK→statements.id), `tenant_id`, `event_time` (TEXT ISO8601, nullable), `location` (TEXT, nullable), `participants_json` (TEXT, default '[]'), `action_raw` (TEXT). `event_time` lives in the extension (A scope: only events have it) — no change to the 38-field `statements` table. A `store::EpisodicEventStore` (C++, in `src/store/`, owning this table) is the single writer/reader, mirroring `SqliteStatementStore`/commitments ownership.
+New migration adds the `episodic_events` extension table: `statement_id` (PK, FK→statements.id), `tenant_id`, `seq` (INTEGER, monotonic event order within an ingestion — **REQUIRED** so B can order events even when `event_time` is unknown; narrative order suffices for the False-Belief sequence), `event_time` (TEXT ISO8601, nullable), `location` (TEXT, nullable), `participants_json` (TEXT, default '[]'), `action_raw` (TEXT). `event_time` lives in the extension (A scope: only events have it) — no change to the 38-field `statements` table. A `store::EpisodicEventStore` (C++, in `src/store/`, owning this table) is the single writer/reader, mirroring `SqliteStatementStore`/commitments ownership.
 
 ### 3.4 OCCURRED modality
 
@@ -58,6 +59,8 @@ Add `OCCURRED` to the `Modality` enum + its serialization (the modality string m
 ### 3.5 Extraction (decision E1: separate episodic pass)
 
 Add a dedicated **episodic extraction prompt** (`python/starling/extractor/episodic_prompt.py`, narrative-framed: "Given a passage, extract the physical events…") producing a JSON array of events `{actor, action, theme, location, time, participants[]}`. A C++ `EpisodicExtractor` (mirroring `Extractor`, injected with the prompt) parses + writes OCCURRED statements + episodic_events rows. `remember(text)` runs **both** passes: the existing claim `Extractor` AND the `EpisodicExtractor` (dual-pass), so any input yields both attitudes and events. Each pass is independent; an empty result from either is fine. (Per-input pass-skipping is a future optimization, not in A.)
+
+The episodic prompt MUST: (a) emit **presence-change events (enter/leave** — in the action vocab) as their own OCCURRED rows — a departure is precisely what makes a later event unwitnessed, so it cannot be dropped; (b) assign each event a `seq` in narrative order; (c) set `participants` to the cognizers **named in that event only** — it does NOT compute who-is-present (that reconstruction from the ordered enter/leave sequence is B's job). Theme identity relies on the existing `canonical_object_hash` so "ball" links across its events.
 
 ### 3.6 Pipeline integration — events are facts, not contestable beliefs
 
@@ -72,7 +75,7 @@ narrative text → `remember()` → [claim Extractor → belief/relation stateme
 
 ## 5. A/B boundary
 
-A delivers: the event representation, the OCCURRED modality, the episodic_events store, the episodic extractor, dual-pass remember, and event recall. A records `participants` (who was present) as the raw signal. B (separate spec) adds: perception (who *perceived* which event, possibly ≠ participants), perception→knowledge inference, per-cognizer last-known state, and the false-belief query. A must not pre-build B; it only ensures events + participants are represented + retrievable.
+A delivers: the event representation, the OCCURRED modality, the episodic_events store (incl. `seq` order + `latest_event_location` helper), the episodic extractor, dual-pass remember, and event recall. A records, per event, the `participants` named in it **plus the ordered enter/leave events** — the raw spatial-presence signal. B (separate spec) reconstructs who was *present/perceiving* at each event from that ordered sequence (a departure removes a cognizer from presence, so a later event is unwitnessed by them), then adds perception→knowledge inference, per-cognizer last-known state, and the false-belief query. A must not pre-build B; it only ensures events, `seq` order, named participants, and enter/leave events are represented + retrievable.
 
 ## 6. Error handling
 
