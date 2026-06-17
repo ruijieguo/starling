@@ -241,6 +241,57 @@ TEST(ToMDepthEstimatorCache, CacheMissAfterTTLRecomputes) {
     EXPECT_EQ(second, 0);  // Recomputed value
 }
 
+// ----- Arbitrary multi-order generalization (P3) ---------------------------
+// estimate() returns the partner's demonstrated order = max demonstrated
+// nesting + 1, no longer saturating at 2, while preserving legacy {0,1,2}.
+
+TEST(ToMDepthEstimatorCache, DepthTwoStatementsReturnsAtLeastThree) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    // >= threshold (3) statements at nesting_depth=2 → partner demonstrates
+    // order 3 (a depth-d statement demonstrates order d+1).
+    insert_raw_statement(conn,
+        "stmt-d2-1", "tenant-1", "partner-1", "subject-1",
+        "pred-a", "consolidated", 2,
+        "2026-05-26T10:00:00Z");
+    insert_raw_statement(conn,
+        "stmt-d2-2", "tenant-1", "partner-1", "subject-2",
+        "pred-b", "consolidated", 2,
+        "2026-05-26T10:01:00Z");
+    insert_raw_statement(conn,
+        "stmt-d2-3", "tenant-1", "partner-1", "subject-3",
+        "pred-c", "archived", 2,
+        "2026-05-26T10:02:00Z");
+
+    const int depth = estimate(conn, "partner-1", "tenant-1",
+                                "2026-05-26T12:00:00Z");
+    EXPECT_GE(depth, 3);
+}
+
+TEST(ToMDepthEstimatorCache, DepthThreeStatementsReturnsAtLeastFour) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    // >= threshold (3) statements at nesting_depth=3 → order 4.
+    insert_raw_statement(conn,
+        "stmt-d3-1", "tenant-1", "partner-1", "subject-1",
+        "pred-a", "consolidated", 3,
+        "2026-05-26T10:00:00Z");
+    insert_raw_statement(conn,
+        "stmt-d3-2", "tenant-1", "partner-1", "subject-2",
+        "pred-b", "consolidated", 3,
+        "2026-05-26T10:01:00Z");
+    insert_raw_statement(conn,
+        "stmt-d3-3", "tenant-1", "partner-1", "subject-3",
+        "pred-c", "archived", 3,
+        "2026-05-26T10:02:00Z");
+
+    const int depth = estimate(conn, "partner-1", "tenant-1",
+                                "2026-05-26T12:00:00Z");
+    EXPECT_GE(depth, 4);
+}
+
 TEST(ToMDepthEstimatorCache, TenantIsolation) {
     auto a = make_adapter();
     auto& conn = a->connection();

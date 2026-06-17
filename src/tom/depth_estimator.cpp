@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -50,11 +51,39 @@ std::string format_iso8601_utc(time_t t) {
     return oss.str();
 }
 
-// Map raw statement count to ToM depth level.
+// Minimum statements at a given nesting_depth d (for d >= 2) before we credit
+// the partner with the corresponding order d+1. Mirrors the legacy top tier:
+// historically count>=3 at depth=1 mapped to order 2, so 3 is the bar for
+// crediting any deeper demonstrated order.
+constexpr int kMinCountForDepth = 3;
+
+// Map the partner's raw nesting_depth=1 statement count to the legacy ToM
+// order {0,1,2}. Retained verbatim as the floor for the depth-0/1 tier so
+// shallow partners keep their historical outputs byte-for-byte.
 int count_to_depth(int count) {
     if (count >= 3) return 2;
     if (count >= 1) return 1;
     return 0;
+}
+
+// Fold a partner's per-depth statement histogram (nesting_depth -> count over
+// the 7-day window) into the highest order they have demonstrated. A statement
+// at nesting_depth=d demonstrates order d+1. The legacy depth-1 mapping is the
+// floor; any depth d>=2 with at least kMinCountForDepth statements lifts the
+// result to max(result, d+1). No longer saturates at 2.
+int histogram_to_order(const std::map<int, int>& depth_counts) {
+    int depth1_count = 0;
+    if (auto it = depth_counts.find(1); it != depth_counts.end()) {
+        depth1_count = it->second;
+    }
+    int order = count_to_depth(depth1_count);  // legacy {0,1,2} floor
+    for (const auto& [depth, count] : depth_counts) {
+        if (depth >= 2 && count >= kMinCountForDepth) {
+            const int demonstrated_order = depth + 1;
+            if (demonstrated_order > order) order = demonstrated_order;
+        }
+    }
+    return order;
 }
 
 }  // namespace
@@ -89,7 +118,9 @@ int estimate(
 
         const int rc = sqlite3_step(h.get());
         if (rc == SQLITE_ROW) {
-            const int cached_count = sqlite3_column_int(h.get(), 0);
+            // The cache column stores the computed demonstrated order (the
+            // estimate() return value), already folded across nesting depths.
+            const int cached_order = sqlite3_column_int(h.get(), 0);
             const char* recomputed_str =
                 reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));
             if (recomputed_str) {
@@ -97,7 +128,7 @@ int estimate(
                     parse_iso8601_utc(std::string_view(recomputed_str));
                 // Cache hit: last_recomputed_at + 1h > as_of_t
                 if (recomputed_t + 3600 > as_of_t) {
-                    return count_to_depth(cached_count);
+                    return cached_order;
                 }
             }
         } else if (rc != SQLITE_DONE) {
@@ -112,17 +143,20 @@ int estimate(
     const std::string window_start_str = format_iso8601_utc(window_start_t);
     const std::string as_of_str(as_of_iso8601);
 
-    int count = 0;
+    // Read the partner's qualifying statements grouped by nesting_depth over
+    // the 7-day window. Folding the histogram (rather than counting a single
+    // depth) lets estimate() reflect the deepest order the partner demonstrated.
+    std::map<int, int> depth_counts;
     {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
-            "SELECT COUNT(*) FROM statements"
+            "SELECT nesting_depth, COUNT(*) FROM statements"
             " WHERE tenant_id  = ?"
             "   AND holder_id  = ?"
-            "   AND nesting_depth = 1"
             "   AND observed_at   >= ?"
             "   AND observed_at   <= ?"
-            "   AND consolidation_state IN ('consolidated', 'archived')",
+            "   AND consolidation_state IN ('consolidated', 'archived')"
+            " GROUP BY nesting_depth",
             -1, &raw, nullptr) != SQLITE_OK) {
             throw std::runtime_error(
                 std::string("depth_estimator: prepare count failed: ")
@@ -137,15 +171,21 @@ int estimate(
         sqlite3_bind_text(h.get(), 3, window_start_str.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(h.get(), 4, as_of_str.c_str(), -1, SQLITE_TRANSIENT);
 
-        const int rc = sqlite3_step(h.get());
-        if (rc == SQLITE_ROW) {
-            count = sqlite3_column_int(h.get(), 0);
-        } else {
+        int rc = sqlite3_step(h.get());
+        while (rc == SQLITE_ROW) {
+            const int depth = sqlite3_column_int(h.get(), 0);
+            const int rows  = sqlite3_column_int(h.get(), 1);
+            depth_counts[depth] = rows;
+            rc = sqlite3_step(h.get());
+        }
+        if (rc != SQLITE_DONE) {
             throw std::runtime_error(
                 std::string("depth_estimator: step count failed: ")
                 + sqlite3_errmsg(db));
         }
     }
+
+    const int demonstrated_order = histogram_to_order(depth_counts);
 
     // --- UPSERT cache row ---
     {
@@ -165,7 +205,9 @@ int estimate(
                           static_cast<int>(tenant_id.size()), SQLITE_TRANSIENT);
         sqlite3_bind_text(h.get(), 2, partner_cognizer_id.data(),
                           static_cast<int>(partner_cognizer_id.size()), SQLITE_TRANSIENT);
-        sqlite3_bind_int(h.get(), 3, count);
+        // Persist the folded order; the cache column now holds the estimate()
+        // result directly (read back verbatim on a cache hit).
+        sqlite3_bind_int(h.get(), 3, demonstrated_order);
         sqlite3_bind_text(h.get(), 4, as_of_str.c_str(), -1, SQLITE_TRANSIENT);
 
         if (sqlite3_step(h.get()) != SQLITE_DONE) {
@@ -175,7 +217,7 @@ int estimate(
         }
     }
 
-    return count_to_depth(count);
+    return demonstrated_order;
 }
 
 }  // namespace starling::tom::depth_estimator
