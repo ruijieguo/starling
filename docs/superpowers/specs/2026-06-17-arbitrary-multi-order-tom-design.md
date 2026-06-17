@@ -44,6 +44,11 @@ Caps #1 and #2 are the cognitive cap; #3 + the window rate-limiter
 (`rate_limiter::allow_tom_inferred_write`) are the runaway guards. #1 and #2 are
 lifted/decoupled; #3 is kept but made configurable.
 
+**No schema migration.** `nesting_depth` is already an unbounded `INTEGER NOT NULL
+DEFAULT 0` with no CHECK constraint (`migrations/0001_initial_schema.sql:57`); every
+cap is enforced in C++. This change touches zero migrations and needs no data
+backfill — existing depth-0/1/2 rows remain valid.
+
 ## 3. Architecture overview
 
 Replace the hard order cap with **two invariants enforced at write time** and one
@@ -117,18 +122,29 @@ benefiting from the richer chain when callers request it.
 
 ### D. Auto-production + estimator generalization — `depth_estimator` + `second_order.cpp`
 
-- **Estimator:** `count_to_depth` generalizes from {0,1,2} to an arbitrary order
-  estimate derived from the partner's *demonstrated maximum nesting* (the deepest
-  `nesting_depth` the partner authored, plus their per-depth statement counts over
-  the 7-day window). It may return any non-negative int. Cache table unchanged
-  (the cached value's domain widens).
-- **Auto path:** remove the `skip_nested_source` hard skip (`second_order.cpp:190`).
-  Instead, model self's belief about a partner's depth-k statement → depth-(k+1),
-  **gated by the estimator**: auto-produce only up to `estimate(partner)` order, so
-  Starling never reasons deeper than the partner demonstrates (preserves the
-  Adaptive-ToM-Order "don't over-reason about low-order partners" intent,
-  `09_tom.md:289`). Each auto hop is a derived event; the cascade ceiling (§3.3)
-  bounds one cascade. Deeper chains accrete across ticks.
+- **Estimator:** `count_to_depth` generalizes from {0,1,2} to an arbitrary-order
+  estimate, monotone non-decreasing in the partner's demonstrated nesting (the
+  deepest `nesting_depth` the partner authored over the 7-day window, subject to
+  the existing per-depth count threshold so a single fluke does not credit an
+  order). It preserves today's {0,1,2} outputs for shallow partners and extends
+  upward; it may return any non-negative int. The exact monotone formula is fixed
+  in the plan. Cache table unchanged (the cached value's domain widens).
+- **Auto path (grounded mirroring), NOT estimator-gated:** remove the
+  `skip_nested_source` hard skip (`second_order.cpp:190`) and model self's belief
+  about a partner's depth-k statement → self depth-(k+1), for any k. This mirrors a
+  belief the partner *actually authored*, so the partner has by definition
+  demonstrated that order — an estimator gate here would be a tautological no-op for
+  observed sources. (The estimator's real job is gating *fabrication* on the
+  explicit path, §4.E, where the attributed belief is NOT directly observed.) Auto
+  depth is therefore driven by the source's depth — partner nested statements arrive
+  via multi-holder / programmatic ingestion — not by cascading: an auto-produced row
+  is self-held and the auto path already skips self-held sources
+  (`second_order.cpp:193`), so it never re-triggers itself. Bounds: §4.A's soft
+  ceiling + cycle guard (representation), the window rate-limiter (thrash), and the
+  cascade ceiling (§3.3) as defense-in-depth. The Adaptive-ToM-Order intent
+  ("don't over-reason about low-order partners", `09_tom.md:289`) is preserved
+  because over-reasoning = fabrication, which stays estimator-gated on the explicit
+  path; mirroring an observed belief is never over-reasoning.
 
 ### E. Explicit production generalization — `persist_meta_belief` (mechanical)
 
@@ -138,12 +154,12 @@ with `estimate(partner) < target_order → gated_order`, and wrap any depth-k so
 
 ### F. Configuration
 
-Two parameters, defaulting to runaway-safe values. Today the related limits are
-compile-time `constexpr` in `limiting.hpp` (`kDerivedDepthMax`, `kChainMax`).
-These two ship the same way — named constants with the raised defaults below — so
-this change carries no config-plumbing dependency; surfacing them to runtime
-configuration is a follow-up the plan may note but does not require. `0` for
-`max_nesting_depth` means unbounded (cycle guard still applies):
+Two **configurable** limits (per the owner's 配置 intent), defaulting to
+runaway-safe values. Today the related limits are compile-time `constexpr` in
+`limiting.hpp` (`kDerivedDepthMax`, `kChainMax`); the plan moves these two to
+runtime-config-sourced values (resolving Starling's config path) that fall back to
+the defaults below. `0` for `max_nesting_depth` means unbounded (cycle guard still
+applies):
 
 | key | default | meaning |
 |-----|---------|---------|
@@ -154,9 +170,12 @@ configuration is a follow-up the plan may note but does not require. `0` for
 
 1. Partner P authors a depth-2 statement (P believes Q believes R) via programmatic
    / multi-agent ingestion. `nesting_depth_writer` accepts it (≤ 32, acyclic).
-2. `belief_tracker_tick` observes P's depth-2 `statement.written`; if
-   `estimate(P) >= 3`, the auto path models "self believes P believes [that]" →
-   depth-3 (4th-order), `provenance=tom_inferred`, gated by the cascade ceiling.
+2. `belief_tracker_tick` observes P's depth-2 `statement.written` and — grounded
+   mirroring, no estimator gate — models "self believes P believes [that]" → self
+   depth-3 (4th-order), `provenance=tom_inferred`, accepted under the soft ceiling
+   (≤ 32) and cycle guard. (Fabricating a belief P did NOT author — e.g. a fifth
+   level P never stated — would instead go through the explicit, estimator-gated
+   path of §4.E.)
 3. `mem.tick()` consolidates it (salience inheritance unchanged).
 4. `what_does_X_think_Y_believes(self, P)` returns the full 4-level chain via the
    recursive CTE; META_BELIEF recall surfaces the depth-3 row.
