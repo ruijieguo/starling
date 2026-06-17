@@ -168,6 +168,15 @@ class Memory:
             "receipt": r.receipt,
         }
 
+    def latest_event_location(self, theme: str) -> str:
+        """Ground-truth current location of `theme` (sub-project A, episodic).
+
+        Returns the location of the highest-seq OCCURRED event about `theme`,
+        or "" if no event mentions it. After remembering "Sally puts her ball
+        in the basket … Anne moves the ball to the box", this returns "box".
+        """
+        return self._core.latest_event_location(theme)
+
     def tick(self, now: str = "2026-06-01T10:00:00Z") -> TickStats:
         """Advance background workers: embed pending statements + fire due commitments."""
         return TickStats(**self._core.tick(now))

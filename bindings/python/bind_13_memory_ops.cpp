@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "starling/memory/memory_ops.hpp"
+#include "starling/persistence/connection.hpp"
+#include "starling/store/episodic_event_store.hpp"
 
 namespace starling::bindings {
 
@@ -83,6 +85,17 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return n;
           },
           py::arg("adapter"), py::arg("tenant"), py::arg("ids"), py::arg("now_iso"));
+
+    // sub-project A phase 6 Task 6.1:暴露 EpisodicEventStore::latest_event_location。
+    // 主题 theme 的最高 seq 事件的 location(地面真值「当前所在」),无事件返回 ""。
+    // 纯本地 SQLite 读(无网络),薄绑定转发到核心层单属主 store。
+    m.def("latest_event_location",
+          [](starling::persistence::Connection& conn, const std::string& tenant,
+             const std::string& theme) {
+              starling::store::EpisodicEventStore store(conn);
+              return store.latest_event_location(tenant, theme);
+          },
+          py::arg("connection"), py::arg("tenant"), py::arg("theme"));
 }
 
 }  // namespace starling::bindings

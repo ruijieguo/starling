@@ -211,6 +211,12 @@ class MemoryCore:
             interlocutor=interlocutor, goal=goal or "",
             token_budget=token_budget)
 
+    def latest_event_location(self, theme: str) -> str:
+        """sub-project A phase 6:主题 `theme` 最高 seq 的 OCCURRED 事件 location
+        (地面真值「当前所在」),无事件返回 ""。薄转发到核心层
+        `EpisodicEventStore::latest_event_location`(纯本地 SQLite 读)。"""
+        return _core.latest_event_location(self.conn, self.tenant, theme)
+
     def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
         forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""
