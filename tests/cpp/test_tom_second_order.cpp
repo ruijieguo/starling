@@ -74,6 +74,27 @@ void seed_statement(sqlite3* db, const std::string& id, const std::string& holde
         std::to_string(nesting_depth) + ",'" + observed + "','" + observed + "')");
 }
 
+// Seed a structurally-real nested statement: object_kind='statement' pointing at
+// a child statement `child_id`, with stored nesting_depth=1. Used where the
+// NestingDepthWriter's ancestor walk must see a genuine chain (not a flat row
+// carrying a manually-set depth).
+void seed_nested_statement(sqlite3* db, const std::string& id,
+                           const std::string& holder, const std::string& child_id,
+                           const std::string& observed = "2026-06-12T09:00:00Z") {
+    exec(db,
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,evidence_json,consolidation_state,review_status,"
+        "nesting_depth,created_at,updated_at) VALUES('" + id +
+        "','default','" + holder + "','FIRST_PERSON','cognizer','peer','believes',"
+        "'statement','" + child_id + "','h-" + id + "','v1','BELIEVES','POS',0.8,'" +
+        observed + "',0.5,'{}',0.0,'" + observed + "','user_input'"
+        ",'[{\"engram_id\":\"eng-" + id + "\"}]','consolidated','approved',1,'" +
+        observed + "','" + observed + "')");
+}
+
 }  // namespace
 
 TEST(TomSecondOrder, AutoPersistsDepthOneForOtherHolder) {
@@ -159,7 +180,13 @@ TEST(TomSecondOrder, MetaBeliefGatedByEstimatorOrder) {
     EXPECT_EQ(gated.reason, "gated_order");
 
     // 估计器缓存 TTL 1h:换个 partner(bob)避免缓存,3 条 depth=1 → order=2。
-    seed_statement(db, "B1", "bob", 1, "user_input", "2026-06-12T09:01:00Z");
+    // B1 是 persist_meta_belief 要包裹的源——做成结构真实的 depth=1 嵌套:
+    // 一条 flat 叶子 L0(object_kind='str',depth=0)+ B1(object_kind='statement',
+    // object_value='L0',stored depth=1)。NestingDepthWriter 对新 meta-belief
+    // (object_value=B1)走链 B1→L0 得 depth=2。B2/B3 只供估计器计数(读 stored
+    // nesting_depth 列,不触发结构走链),保留 helper 默认的 flat 形态即可。
+    seed_statement(db, "L0", "bob", 0, "user_input", "2026-06-12T09:00:30Z");
+    seed_nested_statement(db, "B1", "bob", "L0", "2026-06-12T09:01:00Z");
     seed_statement(db, "B2", "bob", 1, "user_input", "2026-06-12T09:02:00Z");
     seed_statement(db, "B3", "bob", 1, "user_input", "2026-06-12T09:03:00Z");
     exec(db, "BEGIN IMMEDIATE");
