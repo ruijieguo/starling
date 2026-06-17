@@ -122,7 +122,9 @@ Outcome write_nested(persistence::Connection& conn, std::string_view tenant,
     gate.predicate = "believes";
     gate.canonical_object_hash = cr.sha256_hex;
     gate.derived_depth = src.derived_depth;
-    gate.causation_chain_len = src.nesting_depth;   // 嵌套层数即本链深度
+    // decoupled from nesting_depth (Phase 1's nesting_depth_writer guards depth);
+    // derived_depth remains the cascade guard
+    gate.causation_chain_len = 0;
     gate.as_of_iso8601 = src.observed_at;
     if (!limiting::should_persist_tom_statement(conn, gate)) {
         out.reason = "gated_limiting";
@@ -187,7 +189,11 @@ Outcome maybe_persist_second_order(persistence::Connection& conn,
         const SourceRow src = load_source(db, tenant_id, source_stmt_id);
         if (!src.found)                    { out.reason = "skip_no_source"; return out; }
         if (src.provenance != "user_input"){ out.reason = "skip_provenance"; return out; }
-        if (src.nesting_depth > 0)         { out.reason = "skip_nested_source"; return out; }
+        // Phase 4: grounded mirroring — no skip_nested_source. A partner's real
+        // depth-k belief mirrors to self depth-(k+1) for any k (the written depth
+        // is derived structurally by NestingDepthWriter). Not estimator-gated: it
+        // mirrors a belief the partner actually authored, so a gate would be a
+        // tautological no-op. The self-holder skip below still stops self-cascade.
         const std::string self_id = lookup_self(db, tenant_id);
         if (self_id.empty())               { out.reason = "skip_no_self"; return out; }
         if (src.holder == self_id)         { out.reason = "skip_self_holder"; return out; }
@@ -208,17 +214,19 @@ Outcome persist_meta_belief(persistence::Connection& conn,
     Outcome out;
     try {
         sqlite3* db = conn.raw();
-        // Adaptive ToM Order(spec §主要流程-5):partner order < 2 不生成
-        // depth=2 持久 Statement。
-        if (depth_estimator::estimate(conn, partner_id, tenant_id,
-                                      as_of_iso8601) < 2) {
-            out.reason = "gated_order";
-            return out;
-        }
         const SourceRow src = load_source(db, tenant_id, nested_stmt_id);
         if (!src.found)            { out.reason = "skip_no_source"; return out; }
         if (src.nesting_depth < 1) { out.reason = "skip_not_nested"; return out; }
         if (src.holder != partner_id) { out.reason = "skip_holder_mismatch"; return out; }
+        // Adaptive ToM Order(spec §主要流程-5):partner 须已 demonstrate 到正在
+        // 被捏造的那一阶,否则不落库。Phase 4:depth-N 化——把 depth-k 源包成
+        // depth-(k+1),gate 阈值随源深度走(target_order = src.nesting_depth+1)。
+        const int target_order = src.nesting_depth + 1;
+        if (depth_estimator::estimate(conn, partner_id, tenant_id,
+                                      as_of_iso8601) < target_order) {
+            out.reason = "gated_order";
+            return out;
+        }
         const std::string self_id = lookup_self(db, tenant_id);
         if (self_id.empty())       { out.reason = "skip_no_self"; return out; }
         return write_nested(conn, tenant_id, self_id, partner_id,
