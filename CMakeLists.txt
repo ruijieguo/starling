@@ -82,6 +82,7 @@ target_sources(starling_core PRIVATE
     src/persistence/sqlite_adapter.cpp
     src/store/sqlite_graph_store.cpp
     src/store/sqlite_statement_store.cpp
+    src/store/episodic_event_store.cpp
     src/store/sqlite_meta_store.cpp
     src/store/store_bundle.cpp
     src/evidence/engram.cpp
