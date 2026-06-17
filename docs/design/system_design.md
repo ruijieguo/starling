@@ -523,7 +523,7 @@ P2+ 才需要读：subsystems_design/05_governance.md、subsystems_design/07_neo
 继承与组合的硬约束：
 
 - `Statement.subject` 接受 `CognizerRef | EntityRef`；不接受 `StatementRef`，避免主键不可规范化。
-- `Statement.object` 接受 `Value | CognizerRef | EntityRef | StatementRef`；只在 object 位允许递归引用 Statement，构成二阶/三阶 ToM 嵌套。
+- `Statement.object` 接受 `Value | CognizerRef | EntityRef | StatementRef`；只在 object 位允许递归引用 Statement，构成**任意多阶** ToM 嵌套（二阶/三阶/…；2026-06-17 拆三阶认知帽，软上限 `max_nesting_depth` 默认 32 + cycle 护栏，详见 subsystems_design/09_tom.md）。
 - `Statement.holder` 强引用 Cognizer；Entity 不能作为 holder。
 - `Container.cognizer`（Persona / KnowledgeFrontier）与 `Container.parties`（CommonGround）只接受 CognizerRef。
 - `BusEvent` 不继承 BaseEntity；它是事件信封，生命周期由 outbox 管理，不参与 Statement / Engram 的版本链。
@@ -735,7 +735,7 @@ class Statement(BaseEntity):
     consolidation_state: ConsolidationState
     review_status: ReviewStatus
     provenance: StatementProvenance
-    nesting_depth: int                      # 0=一阶, 1=二阶, 2=三阶
+    nesting_depth: int                      # 0=一阶, 1=二阶, 2=三阶, …（任意多阶；软上限 max_nesting_depth=32）
     # 治理
     visibility: VisibilityScope
     retention_policy: RetentionPolicy

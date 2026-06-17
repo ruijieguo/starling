@@ -1,7 +1,7 @@
 # Arbitrary Multi-Order Theory-of-Mind — Design
 
 **Date:** 2026-06-17
-**Status:** Approved (design); pending implementation plan.
+**Status:** IMPLEMENTED (2026-06-17) — plan `docs/superpowers/plans/2026-06-17-arbitrary-multi-order-tom.md`; commits `c530c80`..`a4884b2` on main; ctest 599 / pytest 614; final review APPROVED.
 **Owner ruling (2026-06-17):** Starling structurally represents mental states, so
 it MUST support *arbitrary* multi-order nested-belief reasoning ("self believes X
 believes Y believes Z believes …"). The current deliberate cap at 3rd-order

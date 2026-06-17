@@ -143,3 +143,20 @@ OPENAI_API_KEY=$DEEPSEEK_API_KEY OPENAI_BASE_URL=https://api.deepseek.com/v1 \
   python scripts/eval_tom2_starling.py --corpus tests/data/eval_tom_bench/second_order.jsonl \
   --mode extracted --model deepseek-v4-pro --report build/eval_tom2_starling_extracted.md
 ```
+
+---
+
+## 7. 全 ToMBench 剖面 + 任意多阶 ToM 增强(2026-06-17)
+
+**全 ToMBench LLM 能力剖面**(超出 §6 二阶子集的综合评测):deepseek-v4-pro 全 8 任务
+2860 题 **overall 0.8315**(2378/2860),harness `scripts/eval_tombench_full.py`(并发,
+按任务剖面);最强 Multiple Desires 1.0 / False Belief 0.97 / Hinting 0.95,最弱
+Emotion Regulation 0.35 / Discrepant Desires 0.45 / Persuasion 0.52。语料 gitignored,
+`scripts/build_tombench_full_corpus.py` 可复现。
+
+**任意多阶 ToM 增强**:Starling 二阶 ToM 记忆机器扩展为**任意多阶**——拆
+`nesting_depth>2` 三阶认知帽,换 cycle 检测 + soft 帽(默认 32);表征 / 生产(自动
+grounded mirror + 显式 depth-N 估计器门控)/ 递归召回(`WITH RECURSIVE` 全展开 N 层)
+全支持任意深度嵌套信念;估计器泛化任意阶。§6 的二阶准入数字是其子集。spec/plan
+`docs/superpowers/{specs,plans}/2026-06-17-arbitrary-multi-order-tom-*.md`;实现 commits
+c530c80..a4884b2;ctest 599 / pytest 614;最终审查 APPROVED。

@@ -1147,7 +1147,7 @@ P2.a CI pipeline 每次跑：
 | `sum(cognizer_relations.fiske_weights) ∈ [1.0±1e-6]` | CognizerHub::upsert_relation | 写入前 |
 | `affinity ∈ [0,1]` | SQL CHECK + Hub 校验 | 双层 |
 | `statement_edges WHERE edge_kind='conflicts_with' AND canonical_conflict_key IS NOT NULL` 对 (tenant_id, canonical_conflict_key) 唯一 | SQL partial UNIQUE 索引 | DB 层 |
-| `statements.nesting_depth ≤ 2`（P2.a 硬上限） | nesting_depth_writer + StatementWriter | 写入前 |
+| ~~`statements.nesting_depth ≤ 2`（P2.a 硬上限）~~ → 任意多阶（2026-06-17 拆三阶认知帽，改 cycle 护栏 + 软上限 `max_nesting_depth`=32；见 `2026-06-17-arbitrary-multi-order-tom-design.md`） | nesting_depth_writer + StatementWriter | 写入前 |
 | BeliefTracker 处理事件时单 outbox_sequence 仅 advance checkpoint 一次（idempotent） | run_once 用 SAVEPOINT | tick 时 |
 | `tom_belief_tracker_checkpoint`/`conflict_key_backfill_state` 是 singleton（id=1） | SQL CHECK constraint | DB 层 |
 | common_ground 表存在但 P2.a 内 INSERT 路径不执行 | spec annotation + 无 writer 代码 | 静态 |

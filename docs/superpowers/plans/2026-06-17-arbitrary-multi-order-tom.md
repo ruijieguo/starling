@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** ✅ IMPLEMENTED 2026-06-17 — all 6 phases landed (commits `c530c80`..`a4884b2` on main); ctest 599/599, pytest 614 passed/13 skipped; final review APPROVED. The `- [ ]` checkboxes below record the original task breakdown.
+
 **Goal:** Lift Starling's hard 3rd-order ToM cap so nested-belief representation, production, and recall support arbitrary depth, bounded only by a cycle guard + configurable soft ceilings.
 
 **Architecture:** Replace the hard `nesting_depth > 2` throw with a write-time ancestor-walk (cycle detection + soft ceiling `max_nesting_depth`, default 32); decouple the production limiter's `causation_chain_len` from `nesting_depth`; generalize the depth estimator and the explicit production path to arbitrary order while the auto path mirrors observed beliefs ungated; make recall fully unwrap the N-deep chain via a bounded recursive CTE. Zero schema migration (`nesting_depth` is already an unbounded `INTEGER`).
