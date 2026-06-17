@@ -104,6 +104,96 @@ def _seed_partner_depth2_chain(db_path: str) -> None:
         conn.close()
 
 
+def _seed_partner_depth3_chain(db_path: str) -> None:
+    """Seed self (alice) + a structurally-real depth-3 nested belief held by
+    partner `bob`: TL0(d0) <- T1(d1) <- T2(d2) <- T3(d3), plus a statement.written
+    bus event whose stmt_id=T3. Phase 4 / Gap 1 headline: belief_tracker must mirror
+    the partner's depth-3 source to a self depth-4 meta-belief through the FULL
+    pipeline (bus -> tracker -> StatementWriter -> NestingDepthWriter). Pre-decouple
+    this would have hit the causation kChainMax=3 guard and written nothing."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(
+            "INSERT INTO cognizers(id,tenant_id,kind,canonical_name,"
+            "canonical_name_normalized,external_id,created_at,last_seen_at) "
+            "VALUES('alice','default','self','Alice','alice','',?,?)", (NOW, NOW))
+        _ins_stmt(conn, id="TL0", holder="bob", subject_kind="entity",
+                  subject_id="launch", object_kind="str", object_value="on track",
+                  depth=0, observed="2026-06-12T09:00:30Z")
+        _ins_stmt(conn, id="T1", holder="bob", subject_kind="cognizer",
+                  subject_id="peer", object_kind="statement", object_value="TL0",
+                  depth=1, observed="2026-06-12T09:01:00Z")
+        _ins_stmt(conn, id="T2", holder="bob", subject_kind="cognizer",
+                  subject_id="peer", object_kind="statement", object_value="T1",
+                  depth=2, observed="2026-06-12T09:02:00Z")
+        _ins_stmt(conn, id="T3", holder="bob", subject_kind="cognizer",
+                  subject_id="peer", object_kind="statement", object_value="T2",
+                  depth=3, observed="2026-06-12T09:03:00Z")
+        conn.execute(
+            "INSERT INTO bus_events(event_id,tenant_id,event_type,primary_id,"
+            "aggregate_id,outbox_sequence,idempotency_key,payload_json,created_at)"
+            " VALUES('ev-t3','default','statement.written','T3','T3',"
+            "900001,'ik-t3','{\"stmt_id\":\"T3\",\"engram_ref_id\":\"eng-T3\"}',?)",
+            (NOW,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_auto_mirror_depth_three_source_produces_depth_four(tmp_path):
+    """Gap 1 headline e2e: partner bob's REAL depth-3 nested belief -> belief_tracker
+    mirrors to a self depth-4 meta-belief through the whole pipeline (proves the
+    causation-chain decouple end-to-end, not just in the unit function);
+    what_does_X_think_Y_believes(alice, bob) recalls the full 4-level chain down to
+    the depth-0 leaf TL0."""
+    db = str(tmp_path / "tom2_d4.db")
+    llm = starling.make_stub_llm(default_response=CANNED)
+    mem = starling.Memory.open(db, agent="alice", llm=llm)
+    try:
+        _seed_partner_depth3_chain(db)
+
+        stats = _core.belief_tracker_tick(mem._rt.adapter)
+        assert stats.second_order_written == 1
+
+        ro = sqlite3.connect(db)
+        holder, subject, depth, obj = ro.execute(
+            "SELECT holder_id, subject_id, nesting_depth, object_value "
+            "FROM statements WHERE provenance='tom_inferred' "
+            "AND holder_id='alice'").fetchone()
+        ro.close()
+        # The headline: depth-3 source -> self depth-4 meta-belief.
+        assert (holder, subject, depth, obj) == ("alice", "bob", 4, "T3")
+
+        mem.tick()  # consolidate the volatile-born meta-belief for recall
+
+        nested = _core.what_does_X_think_Y_believes(
+            mem._rt.adapter, "alice", "bob", "default", "2026-06-13T00:00:00Z")
+        outer = next(n for n in nested if n.outer.object_value == "T3")
+        assert outer.inner.id == "T3"
+        # .chain unwraps T3 -> T2 -> T1 -> TL0: four levels to the depth-0 leaf.
+        ids = [(c.level, c.id, c.object_value, c.object_kind) for c in outer.chain]
+        assert ids == [
+            (1, "T3", "T2", "statement"),
+            (2, "T2", "T1", "statement"),
+            (3, "T1", "TL0", "statement"),
+            (4, "TL0", "on track", "str"),
+        ], ids
+
+        # Idempotency (Gap 6) through the pipeline: a second tracker tick over the
+        # same already-consumed event writes no new nested row.
+        stats2 = _core.belief_tracker_tick(mem._rt.adapter)
+        assert stats2.second_order_written == 0
+        ro = sqlite3.connect(db)
+        n_rows = ro.execute(
+            "SELECT COUNT(*) FROM statements WHERE provenance='tom_inferred' "
+            "AND holder_id='alice' AND subject_id='bob'").fetchone()[0]
+        ro.close()
+        assert n_rows == 1
+    finally:
+        mem.close()
+
+
 def test_auto_mirror_recall_returns_three_deep_chain(tmp_path):
     """Phase 5 e2e: partner bob's depth-2 nested belief -> belief_tracker mirrors
     to a self depth-3 meta-belief; what_does_X_think_Y_believes(alice, bob)

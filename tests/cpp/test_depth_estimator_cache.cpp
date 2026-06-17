@@ -292,6 +292,66 @@ TEST(ToMDepthEstimatorCache, DepthThreeStatementsReturnsAtLeastFour) {
     EXPECT_GE(depth, 4);
 }
 
+// Gap 3: below-threshold reject — exactly 2 statements at nesting_depth=2 do NOT
+// credit order 3 (kMinCountForDepth=3). With no depth-1 rows the floor is 0, so
+// estimate() returns 0 (definitely < 3): a depth-2 demonstration needs >= 3 rows.
+TEST(ToMDepthEstimatorCache, TwoDepthTwoStatementsDoesNotCreditOrderThree) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    insert_raw_statement(conn,
+        "stmt-d2-1", "tenant-1", "partner-1", "subject-1",
+        "pred-a", "consolidated", 2,
+        "2026-05-26T10:00:00Z");
+    insert_raw_statement(conn,
+        "stmt-d2-2", "tenant-1", "partner-1", "subject-2",
+        "pred-b", "consolidated", 2,
+        "2026-05-26T10:01:00Z");
+
+    const int depth = estimate(conn, "partner-1", "tenant-1",
+                                "2026-05-26T12:00:00Z");
+    EXPECT_LT(depth, 3);
+    EXPECT_EQ(depth, 0);  // no depth-1 floor, depth-2 tier under threshold
+}
+
+// Gap 3 (mixed tiers): 3 statements at depth-1 (legacy floor -> order 2) plus 3 at
+// depth-2 (credits order 3). The fold takes the max qualifying tier -> exactly 3.
+TEST(ToMDepthEstimatorCache, MixedDepthOneAndTwoReturnsExactlyThree) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    // 3 at depth-1.
+    insert_raw_statement(conn,
+        "stmt-d1-1", "tenant-1", "partner-1", "subject-1",
+        "pred-a", "consolidated", 1,
+        "2026-05-26T10:00:00Z");
+    insert_raw_statement(conn,
+        "stmt-d1-2", "tenant-1", "partner-1", "subject-2",
+        "pred-b", "consolidated", 1,
+        "2026-05-26T10:01:00Z");
+    insert_raw_statement(conn,
+        "stmt-d1-3", "tenant-1", "partner-1", "subject-3",
+        "pred-c", "consolidated", 1,
+        "2026-05-26T10:02:00Z");
+    // 3 at depth-2.
+    insert_raw_statement(conn,
+        "stmt-d2-1", "tenant-1", "partner-1", "subject-4",
+        "pred-d", "consolidated", 2,
+        "2026-05-26T10:03:00Z");
+    insert_raw_statement(conn,
+        "stmt-d2-2", "tenant-1", "partner-1", "subject-5",
+        "pred-e", "consolidated", 2,
+        "2026-05-26T10:04:00Z");
+    insert_raw_statement(conn,
+        "stmt-d2-3", "tenant-1", "partner-1", "subject-6",
+        "pred-f", "archived", 2,
+        "2026-05-26T10:05:00Z");
+
+    const int depth = estimate(conn, "partner-1", "tenant-1",
+                                "2026-05-26T12:00:00Z");
+    EXPECT_EQ(depth, 3);  // max(floor=2, depth-2 tier=3)
+}
+
 TEST(ToMDepthEstimatorCache, TenantIsolation) {
     auto a = make_adapter();
     auto& conn = a->connection();

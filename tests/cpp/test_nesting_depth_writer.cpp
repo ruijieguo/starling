@@ -258,6 +258,29 @@ TEST(NestingDepthWriter, SoftCeilingOverflowCarriesComputedDepth) {
     }
 }
 
+// Gap 4: soft-cap ACCEPT-at-boundary — a chain computing exactly max_depth=N is
+// accepted (no throw, returns N), pinning the < N+1 reject from below. The throw
+// condition is depth > max_depth, so depth == max_depth is the last accepted value.
+TEST(NestingDepthWriter, SoftCeilingAcceptsExactlyAtBoundary) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    // Chain L0(leaf) <- L1 <- L2; a fresh stmt onto L2 computes depth 3.
+    const std::string deepest = seed_chain(conn, /*n=*/2);
+    auto s = make_nested_stmt(deepest);
+
+    // depth (3) == max_depth (3): accepted, no NestingDepthOverflow.
+    EXPECT_NO_THROW({
+        EXPECT_EQ(
+            nesting_depth_writer::compute_nesting_depth(conn, s, /*max_depth=*/3),
+            3);
+    });
+    // One shallower (max_depth=2) rejects — the paired boundary from above.
+    EXPECT_THROW(
+        nesting_depth_writer::compute_nesting_depth(conn, s, /*max_depth=*/2),
+        starling::tom::NestingDepthOverflow);
+}
+
 TEST(NestingDepthWriter, CycleInExistingChainThrows) {
     auto a = make_adapter();
     auto& conn = a->connection();
@@ -270,6 +293,29 @@ TEST(NestingDepthWriter, CycleInExistingChainThrows) {
     EXPECT_THROW(
         nesting_depth_writer::compute_nesting_depth(conn, s),
         starling::tom::NestingCycle);
+}
+
+// Gap 9: a single-node self-loop (a row whose object_value == its own id) is a
+// degenerate cycle. A fresh stmt pointing at it walks SELF -> SELF -> cycle and
+// throws NestingCycle carrying that id.
+TEST(NestingDepthWriter, SelfLoopThrowsNestingCycle) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+
+    // SELF.object_value = "SELF" (object_kind='statement') — points at itself.
+    insert_nested_statement(conn, "SELF", /*points_at=*/"SELF", /*nesting_depth=*/1);
+
+    auto s = make_nested_stmt("SELF");
+    EXPECT_THROW(
+        nesting_depth_writer::compute_nesting_depth(conn, s),
+        starling::tom::NestingCycle);
+    // The thrown cycle carries the revisited id.
+    try {
+        nesting_depth_writer::compute_nesting_depth(conn, s);
+        FAIL() << "Expected NestingCycle";
+    } catch (const starling::tom::NestingCycle& e) {
+        EXPECT_EQ(e.cycle_id, "SELF");
+    }
 }
 
 TEST(NestingDepthWriter, UnboundedCeilingAcceptsDeepChain) {
