@@ -139,6 +139,11 @@ class MemoryCore:
             if event_ids:
                 # 合并两条管线本次新写的语句 id(belief + episodic 事件)。
                 out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
+                # sub-project B: rebuild per-cognizer perception from the events (best-effort).
+                try:
+                    _core.PerceptionReconstructor(self.conn).reconstruct(tenant=self.tenant)
+                except Exception:  # noqa: BLE001 — perception is best-effort; never fail remember
+                    pass
         return out
 
     def recall(self, query: str, *, perspective: str = "first_person",

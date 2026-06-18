@@ -14,6 +14,7 @@
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/extractor/extractor.hpp"
 #include "starling/extractor/episodic_extractor.hpp"
+#include "starling/cognizer/perception_reconstructor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/openai_adapter.hpp"
 #include "starling/extractor/anthropic_adapter.hpp"
@@ -270,6 +271,17 @@ void bind_06_extractor(pybind11::module_& m) {
              },
              py::arg("passage"), py::arg("engram_ref"), py::arg("tenant"),
              py::arg("agent_self"), py::arg("now"));
+
+    // ----- sub-project B phase 1: PerceptionReconstructor (post-pass) -----
+    // 镜像 EpisodicExtractor 绑定:ctor 持 Connection&(keep_alive),reconstruct()
+    // 扫描租户全部 OCCURRED 事件重建 perception_state。
+    py::class_<starling::cognizer::PerceptionReconstructor>(m, "PerceptionReconstructor")
+        .def(py::init<starling::persistence::Connection&>(), py::arg("conn"), py::keep_alive<1, 2>())
+        .def("reconstruct",
+            [](starling::cognizer::PerceptionReconstructor& self, const std::string& tenant) {
+                self.reconstruct(tenant);
+            },
+            py::arg("tenant"));
 }
 
 }  // namespace starling::bindings
