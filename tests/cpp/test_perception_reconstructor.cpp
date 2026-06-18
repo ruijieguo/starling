@@ -66,6 +66,45 @@ void seed_event(starling::persistence::SqliteAdapter& a, const char* tenant,
 
 }  // namespace
 
+// Issue 3: double-reconstruct must produce identical results (idempotent upserts,
+// no duplicate rows).
+TEST(PerceptionReconstructor, IdempotentDoubleReconstruct) {
+    auto a = open_migrated();
+    const char* T = "t-idem";
+    // Same Sally-Anne seeding as the main test.
+    seed_event(*a, T, "i0", "Sally", "put",  "ball", "basket", R"(["Sally"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "i1", "Sally", "leave", "room", "",       R"(["Sally"])", 2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "i2", "Anne",  "move", "ball", "box",    R"(["Anne"])",  3, "2026-01-01T00:00:03Z");
+
+    PerceptionReconstructor recon(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // First reconstruct.
+    recon.reconstruct(T);
+    PerceptionStateStore ps(a->connection());
+    auto sally1 = ps.last_known(T, "Sally", "ball", "location", AS_OF);
+    auto anne1  = ps.last_known(T, "Anne",  "ball", "location", AS_OF);
+    ASSERT_TRUE(sally1.has_value());
+    ASSERT_TRUE(anne1.has_value());
+    EXPECT_EQ(sally1->state_value, "basket");
+    EXPECT_EQ(anne1->state_value,  "box");
+    auto rows_after_1st = ps.perceived_for_theme(T, "Anne", "ball", AS_OF);
+
+    // Second reconstruct — must produce identical last_known, no extra rows.
+    recon.reconstruct(T);
+    auto sally2 = ps.last_known(T, "Sally", "ball", "location", AS_OF);
+    auto anne2  = ps.last_known(T, "Anne",  "ball", "location", AS_OF);
+    ASSERT_TRUE(sally2.has_value());
+    ASSERT_TRUE(anne2.has_value());
+    EXPECT_EQ(sally2->state_value, "basket");
+    EXPECT_EQ(anne2->state_value,  "box");
+    auto rows_after_2nd = ps.perceived_for_theme(T, "Anne", "ball", AS_OF);
+
+    // No duplicate rows: same count after both runs.
+    EXPECT_EQ(rows_after_1st.size(), rows_after_2nd.size())
+        << "double reconstruct must not insert duplicate perception_state rows";
+}
+
 TEST(PerceptionReconstructor, SallyAnneLocationPresence) {
     auto a = open_migrated();
     const char* T = "t1";

@@ -91,4 +91,25 @@ std::vector<PerceptionStateRow> PerceptionStateStore::perceived_for_theme(
         throw make_sqlite_error(db, "PerceptionStateStore::perceived_for_theme step");
     return out;
 }
+
+std::string PerceptionStateStore::latest_actual(
+    std::string_view tenant, std::string_view theme,
+    std::string_view state_dim, std::string_view as_of) {
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "SELECT state_value FROM perception_state "
+        "WHERE tenant_id=? AND theme_id=? AND state_dim=? AND observed_at<=? "
+        "ORDER BY position DESC LIMIT 1";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "PerceptionStateStore::latest_actual prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, tenant); bind_sv(h.get(), 2, theme);
+    bind_sv(h.get(), 3, state_dim); bind_sv(h.get(), 4, as_of);
+    const int rc = sqlite3_step(h.get());
+    if (rc == SQLITE_ROW) return col_text(h.get(), 0);
+    if (rc == SQLITE_DONE) return "";
+    throw make_sqlite_error(db, "PerceptionStateStore::latest_actual step");
+}
+
 }  // namespace starling::store

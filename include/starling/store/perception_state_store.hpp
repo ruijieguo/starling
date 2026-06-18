@@ -24,6 +24,12 @@ public:
     std::vector<PerceptionStateRow> perceived_for_theme(
         std::string_view tenant, std::string_view cognizer,
         std::string_view theme, std::string_view as_of);
+    // Highest-position state_value for a theme+dim across ALL cognizers (ground truth),
+    // bounded by observed_at <= as_of; "" if none. perception_state only ever holds
+    // non-empty located states (the reconstructor skips empty locations) and the actor
+    // of every located event is a witness, so this equals the latest asserted state.
+    std::string latest_actual(std::string_view tenant, std::string_view theme,
+                              std::string_view state_dim, std::string_view as_of);
 private:
     persistence::Connection& conn_;
 };
