@@ -110,6 +110,7 @@ target_sources(starling_core PRIVATE
     src/cognizer/alias_normalizer.cpp
     src/cognizer/cognizer_hub.cpp
     src/cognizer/knowledge_frontier.cpp
+    src/cognizer/perception_reconstructor.cpp
     src/tom/tom_engine.cpp
     src/tom/common_ground.cpp
     src/tom/common_ground_writer.cpp

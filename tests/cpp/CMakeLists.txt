@@ -144,6 +144,7 @@ add_executable(starling_tests
     test_episodic_event_store.cpp
     test_episodic_extractor.cpp
     test_perception_state_store.cpp
+    test_perception_reconstructor.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
