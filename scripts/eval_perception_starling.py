@@ -391,7 +391,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Loaded {len(probes)} location-look false-belief probes "
           f"(skipped {skipped} other-shape location-FB)", file=sys.stderr)
 
-    llm = starling.make_openai_llm(model=args.model, base_url=base_url)
+    # Build the adapter directly so we can raise max_tokens: reasoning models
+    # (deepseek-v4-pro) count hidden chain-of-thought toward the token budget, and
+    # the 4096 default truncates extraction to empty (0 events -> every probe would
+    # wrongly score has_belief=false). _MAX_ANSWER_TOKENS = 32768. A generous
+    # per-call timeout covers slow reasoning responses.
+    _cfg = _core.OpenAIAdapterConfig.from_env()
+    _cfg.model = args.model
+    if base_url:
+        _cfg.base_url = base_url
+    _cfg.max_tokens = _MAX_ANSWER_TOKENS
+    _cfg.timeout_ms = 180000
+    llm = _core.OpenAIAdapter(_cfg)
 
     total = correct = 0
     for idx, probe in enumerate(probes):
