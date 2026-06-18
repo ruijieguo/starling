@@ -180,7 +180,10 @@ def run_probe(probe: Probe, narrative: str, llm) -> tuple[bool, str]:
     db = tempfile.mktemp(suffix=".db")
     mem = starling.Memory.open(db, agent="narrator", llm=llm)
     try:
-        mem.remember(narrative, now=_NOW)
+        try:
+            mem.remember(narrative, now=_NOW)
+        except Exception as exc:  # extraction/remember failure → miss this probe, don't abort
+            return False, f"remember failed: {exc}"
         adapter = mem._rt.adapter
         tenant = mem._core.tenant
         frontier = _core.KnowledgeFrontier(adapter)

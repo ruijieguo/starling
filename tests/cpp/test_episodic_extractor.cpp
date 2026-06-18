@@ -159,6 +159,41 @@ TEST(EpisodicExtractor, NarrativeWritesOccurredStatementsAndEpisodicRows) {
     EXPECT_EQ(move_row->action_raw, "move");
 }
 
+// null actor/action/theme → 事件被跳过,不抛 type_error.302;其余有效事件正常写入。
+// 镜像真实模型(deepseek-v4-pro)对歧义事件发出 "actor": null / "theme": null 的场景。
+TEST(EpisodicExtractor, NullActorOrThemeSkipsEventNoThrow) {
+    // One well-formed event + one with actor:null + one with theme:null.
+    // Only the well-formed event should be written.
+    constexpr const char* kJson = R"JSON([
+      {"actor":"Sally","action":"put","theme":"ball","location":"basket","participants":["Sally"],"time":null},
+      {"actor":null,"action":"leave","theme":"room","location":null,"participants":[],"time":null},
+      {"actor":"Anne","action":"move","theme":null,"location":"box","participants":["Anne"],"time":null}
+    ])JSON";
+
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn);
+
+    FakeLLMAdapter llm;
+    llm.set_default_response(LLMResponse{.raw_xml = kJson, .ok = true});
+
+    EpisodicExtractor ex(conn, llm, /*prompt=*/"events from: {passage}");
+    // Must not throw.
+    EpisodicExtractionResult result;
+    ASSERT_NO_THROW(result = ex.extract(
+        "Sally puts a ball in the basket. An ambiguous leave. Anne moves the ball.",
+        /*engram_ref=*/"engram-1", /*tenant=*/"default",
+        /*agent_self=*/"cog-self", /*now=*/"2026-06-16T10:00:00Z"));
+
+    // Only the 1 well-formed event (Sally put ball) is written.
+    EXPECT_EQ(result.event_statement_ids.size(), 1u);
+    EXPECT_EQ(row_count(conn, "statements", "modality='occurred'"), 1);
+    EXPECT_EQ(row_count(conn, "episodic_events"), 1);
+
+    const std::string put_id = occurred_stmt_id(conn, "Sally", "put", "ball");
+    ASSERT_FALSE(put_id.empty());
+}
+
 // 空数组 / 解析失败 → 零写入,不抛(best-effort 第二条管线对叙事无事件友好)。
 TEST(EpisodicExtractor, EmptyArrayWritesNothing) {
     auto a = make_adapter();

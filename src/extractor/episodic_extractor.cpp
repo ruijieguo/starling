@@ -106,9 +106,12 @@ EpisodicExtractionResult EpisodicExtractor::extract(
     long long seq = 0;
     for (const auto& el : arr) {
         if (!el.is_object()) continue;  // lenient: skip non-objects.
-        const std::string actor  = el.value("actor",  std::string());
-        const std::string action = el.value("action", std::string());
-        const std::string theme  = el.value("theme",  std::string());
+        std::string actor;
+        if (el.contains("actor") && el["actor"].is_string()) actor = el["actor"].get<std::string>();
+        std::string action;
+        if (el.contains("action") && el["action"].is_string()) action = el["action"].get<std::string>();
+        std::string theme;
+        if (el.contains("theme") && el["theme"].is_string()) theme = el["theme"].get<std::string>();
         if (actor.empty() || action.empty() || theme.empty()) {
             continue;  // lenient: skip incomplete event (keeps seq dense over writes).
         }
