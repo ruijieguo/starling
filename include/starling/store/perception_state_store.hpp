@@ -30,6 +30,11 @@ public:
     // of every located event is a witness, so this equals the latest asserted state.
     std::string latest_actual(std::string_view tenant, std::string_view theme,
                               std::string_view state_dim, std::string_view as_of);
+    // The state dimension a theme is tracked in: "content" if any content-dim row
+    // exists for the theme (observed_at <= as_of), else "location" if any location
+    // row, else "" (the theme was never perceived). content sorts first.
+    std::string dim_for_theme(std::string_view tenant, std::string_view theme,
+                              std::string_view as_of);
 private:
     persistence::Connection& conn_;
 };

@@ -167,3 +167,44 @@ TEST(PerceptionReconstructor, ToldChannelRecipientLearnsStateNotPhysicalWitness)
     auto eve = ps.last_known(T, "Eve", "ball", "location", AS_OF);
     EXPECT_FALSE(eve.has_value()) << "Eve was never in a physical event or tell — no perception";
 }
+
+// Phase 4: Unexpected contents (apparent vs actual).
+// A closed labelled "Smarties tube" really holds pencils.
+//   c0 Anne see   Smarties tube → "Smarties"  (APPARENT content from the label)
+//   c1 Anne leave room                          (Anne departs before the reveal)
+//   c2 Tom  open  Smarties tube → "pencils"    (ACTUAL content on opening)
+// Both see and open write state_dim="content" (NOT "location") to the present
+// witnesses. see/open actors ARE physically present (unlike tell), so each is a
+// witness of their own event. Anne left before the open → her last content
+// perception stays "Smarties"; Tom (present, the opener) learns "pencils".
+TEST(PerceptionReconstructor, UnexpectedContentsSeeApparentOpenActual) {
+    auto a = open_migrated();
+    const char* T = "t-content";
+    seed_event(*a, T, "c0", "Anne", "see",   "Smarties tube", "Smarties", R"(["Anne"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "c1", "Anne", "leave", "room",          "",         R"(["Anne"])", 2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "c2", "Tom",  "open",  "Smarties tube", "pencils",  R"(["Tom"])",  3, "2026-01-01T00:00:03Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Anne saw the closed tube → apparent content "Smarties" (state_dim="content").
+    auto anne = ps.last_known(T, "Anne", "Smarties tube", "content", AS_OF);
+    ASSERT_TRUE(anne.has_value()) << "Anne's see must write a content perception";
+    EXPECT_EQ(anne->state_value, "Smarties");
+    // The see must NOT write a location row (content events are content-dim only).
+    auto anne_loc = ps.last_known(T, "Anne", "Smarties tube", "location", AS_OF);
+    EXPECT_FALSE(anne_loc.has_value()) << "see/open must write content, not location";
+
+    // Tom opened the tube → actual content "pencils".
+    auto tom = ps.last_known(T, "Tom", "Smarties tube", "content", AS_OF);
+    ASSERT_TRUE(tom.has_value()) << "Tom's open must write a content perception";
+    EXPECT_EQ(tom->state_value, "pencils");
+
+    // Anne left before the open, so her last content perception is still Smarties
+    // (she is NOT a default-present witness of Tom's open).
+    EXPECT_EQ(anne->state_value, "Smarties")
+        << "Anne's last content perception must remain the apparent Smarties";
+}

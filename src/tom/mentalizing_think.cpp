@@ -20,8 +20,11 @@ StateBelief what_does_X_think(
     auto& conn = adapter.connection();
     store::PerceptionStateStore ps(conn);
     StateBelief out;
-    // phase 1: location dimension only (phase 4 infers content vs location from the theme's events).
-    const std::string dim = "location";
+    // phase 4: infer the dimension the theme is tracked in — "content" if the theme
+    // has any content-dim perception (a closed labelled container that was seen/opened),
+    // else "location". "" → the theme was never perceived → has_belief stays false.
+    const std::string dim = ps.dim_for_theme(tenant, theme, as_of);
+    if (dim.empty()) return out;
     std::optional<store::PerceptionStateRow> row;
     if (observer.empty()) {
         row = ps.last_known(tenant, x, theme, dim, as_of);   // first-order

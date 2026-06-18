@@ -29,6 +29,13 @@ bool is_enter(const std::string& p) { return p == "enter" || p == "return" || p 
 bool is_presence_change(const std::string& p) { return is_leave(p) || is_enter(p); }
 // tell/inform: informational channel — does NOT establish physical presence (N1).
 bool is_tell(const std::string& p) { return p == "tell" || p == "inform"; }
+// Content channel (phase 4: unexpected contents). see/look read a closed labelled
+// container's APPARENT content; open/reveal expose its ACTUAL content. Both carry
+// the content value in the location field and write state_dim="content". Unlike
+// tell, the see/open actor IS physically present, so they stay in the physical cast.
+bool is_see(const std::string& p) { return p == "see" || p == "look"; }
+bool is_reveal(const std::string& p) { return p == "open" || p == "reveal"; }
+bool is_content(const std::string& p) { return is_see(p) || is_reveal(p); }
 std::vector<std::string> participants_of(const ScanEvent& ev) {
     std::vector<std::string> ps;
     if (!ev.actor.empty()) ps.push_back(ev.actor);
@@ -113,6 +120,19 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
         } else if (is_presence_change(ev.predicate)) {
             if (is_leave(ev.predicate)) for (const auto& p : evp) present.erase(p);   // gone AFTER this
             else                        for (const auto& p : evp) present.insert(p);  // here from now
+        } else if (is_content(ev.predicate)) {  // content event (see/look apparent; open/reveal actual)
+            // Present witnesses (present ∪ actor/participants) learn the container's
+            // content. Ordered BEFORE the physical-location branch so a see/open writes
+            // state_dim="content", not "location". The see/open actor is present.
+            if (!ev.location.empty()) {
+                for (const auto& w : witnesses) {
+                    store::PerceptionStateRow row;
+                    row.tenant_id = std::string(tenant); row.cognizer_id = w;
+                    row.theme_id = ev.theme; row.state_dim = "content"; row.state_value = ev.location;
+                    row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
+                    ps.upsert(row);
+                }
+            }
         } else if (!ev.location.empty()) {  // physical location event
             for (const auto& w : witnesses) {
                 store::PerceptionStateRow row;

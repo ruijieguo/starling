@@ -202,3 +202,61 @@ TEST(WhatDoesXThink, SecondOrderObserverIntersection) {
     EXPECT_EQ(anne_via_sally.state_value, "basket")
         << "Sally's model of Anne: only co-perceived e0=basket (Sally left before move)";
 }
+
+// Phase 4: Unexpected-contents false belief, with dim inference.
+// A closed labelled "Smarties tube" really holds pencils:
+//   c0 Anne see   Smarties tube → "Smarties" (apparent)
+//   c1 Anne leave room                         (Anne departs before the reveal)
+//   c2 Tom  open  Smarties tube → "pencils"   (actual; ground truth)
+// what_does_X_think infers state_dim="content" (the theme has content rows) and
+// uses latest_actual(...,"content",...) = "pencils" as ground truth.
+//   Anne → content/Smarties, is_stale=true (Smarties != actual pencils)
+//   Tom  → content/pencils,  is_stale=false (Tom opened it; he holds the truth)
+TEST(WhatDoesXThink, UnexpectedContentsDimInferenceAndStale) {
+    auto a = open_migrated();
+    const char* T = "t-content";
+    seed_event(*a, T, "c0", "Anne", "see",   "Smarties tube", "Smarties", R"(["Anne"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "c1", "Anne", "leave", "room",          "",         R"(["Anne"])", 2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "c2", "Tom",  "open",  "Smarties tube", "pencils",  R"(["Tom"])",  3, "2026-01-01T00:00:03Z");
+    starling::cognizer::PerceptionReconstructor(a->connection()).reconstruct(T);
+
+    starling::cognizer::KnowledgeFrontier frontier(*a);
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Anne: apparent Smarties, dim inferred as content, stale vs actual pencils.
+    auto anne = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Anne", "Smarties tube", T, AS_OF);
+    EXPECT_TRUE(anne.has_belief);
+    EXPECT_EQ(anne.state_dim, "content");
+    EXPECT_EQ(anne.state_value, "Smarties");
+    EXPECT_TRUE(anne.is_stale) << "Smarties != actual pencils → stale";
+
+    // Tom: actual pencils, not stale (he opened it; ground truth == his belief).
+    auto tom = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Tom", "Smarties tube", T, AS_OF);
+    EXPECT_TRUE(tom.has_belief);
+    EXPECT_EQ(tom.state_dim, "content");
+    EXPECT_EQ(tom.state_value, "pencils");
+    EXPECT_FALSE(tom.is_stale) << "Tom opened the tube → not stale";
+}
+
+// Phase 4 regression: a location-only theme must still infer state_dim="location"
+// (dim inference returns "location" when no content rows exist). Sally-Anne ball.
+TEST(WhatDoesXThink, LocationThemeStillInfersLocationDim) {
+    auto a = open_migrated();
+    const char* T = "t-loc-dim";
+    seed_event(*a, T, "g0", "Sally", "put",  "ball", "basket", R"(["Sally"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "g1", "Sally", "leave", "room", "",       R"(["Sally"])", 2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "g2", "Anne",  "move", "ball", "box",    R"(["Anne"])",  3, "2026-01-01T00:00:03Z");
+    starling::cognizer::PerceptionReconstructor(a->connection()).reconstruct(T);
+
+    starling::cognizer::KnowledgeFrontier frontier(*a);
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    auto sally = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Sally", "ball", T, AS_OF);
+    EXPECT_TRUE(sally.has_belief);
+    EXPECT_EQ(sally.state_dim, "location") << "location-only theme must infer location dim";
+    EXPECT_EQ(sally.state_value, "basket");
+    EXPECT_TRUE(sally.is_stale);  // basket != ground-truth box
+}
