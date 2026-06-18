@@ -17,7 +17,7 @@ Turn A's episodic events into **per-cognizer perception → knowledge → (possi
 
 **Unifying abstraction.** Every false belief reduces to **"X's last-perceived *state* of theme T"**, differing only in (a) the *state dimension* (location vs content) and (b) *how* a cognizer perceives a state update (presence / told / seeing-appearance). One reconstructor materialises "which state-events X perceived" into one ledger; one query primitive returns the latest-perceived state.
 
-**Non-goals (deferred):** multiple distinct scenes within one tenant (needs a scene/session id) and per-room co-location within a scene (decision-3 "by-location" variant) — single-scene-per-tenant assumed (§5); deep (≥3rd-order) perception nesting beyond co-presence (§4.4); semantic vector recall over perception facts (C; the embedded facade uses a stub embedder); arbitrary unstructured content (C).
+**Non-goals (deferred):** multiple distinct scenes within one tenant (needs a scene/session id) and per-room co-location within a scene (decision-3 "by-location" variant) — single-scene-per-tenant assumed (§5); deep (≥3rd-order) perception nesting beyond co-presence (§4.1); semantic vector recall over perception facts (C; the embedded facade uses a stub embedder); arbitrary unstructured content (C).
 
 ## 2. Current state (file:line) — what B builds on
 
@@ -42,7 +42,7 @@ Turn A's episodic events into **per-cognizer perception → knowledge → (possi
 
 ### 3.1 `PerceptionReconstructor` (C++, new — `src/cognizer/perception_reconstructor.{hpp,cpp}`)
 
-Single-responsibility module: given a tenant and the set of themes touched by an ingestion, (re)materialise per-cognizer perception into the frontier.
+Single-responsibility module: after an ingestion, (re)materialise per-cognizer perception for the tenant. It reads **all** the tenant's OCCURRED events (presence is scene-wide — see the scan below) and writes perception facts for the themes those events concern.
 
 **Scope of the event scan (fixes self-review S1 + S2).** Presence is a property of the **scene**, not of any one theme. "Sally leaves" is *not* an event about the ball, so it is absent from `events_for_theme(ball)`. The reconstructor therefore scans **all OCCURRED events in the scene**, ordered on one timeline, and classifies each by predicate:
 
@@ -50,7 +50,7 @@ Single-responsibility module: given a tenant and the set of themes touched by an
 - **presence-change events** (`enter`/`leave` and synonyms, §3.5) drive the presence timeline.
 - **state events** (location/content actions) are attached to their theme (via `object_value` / `canonical_object_hash`) and get a witness set computed from the presence timeline *at that event's position*.
 
-**Presence timeline (decision 3).** Walk the ordered events. The scene's **cast** = every cognizer named anywhere (as actor `subject_id`, in `participants_json`, or in an `enter`). Each cast member is **present from the scene start** unless an explicit `enter` gives a later start; a `leave` removes them until a subsequent `enter`. The **actor and named participants of an event are present at that event** regardless of the timeline (you cannot act on a thing while absent). Result: a per-cognizer presence interval set.
+**Presence timeline (decision 3, fixes N1).** Walk the ordered events. The scene's **physical cast** = cognizers named in **physical / `see` / `open` events** (actor `subject_id` or `participants_json`) or in an `enter`. A cognizer appearing **only as a `tell` teller/recipient is NOT added to the physical cast** — a tell conveys knowledge without implying co-location (§3.4), so it must not back-door physical presence (else "Anne phones absent Bob" would make Bob a witness to the room's physical events). Each physical-cast member is **present from the scene start** unless an explicit `enter` gives a later start; a `leave` removes them until a subsequent `enter`. The **actor and named participants of a physical/`see`/`open` event are present at that event** regardless of the timeline (you cannot act on a thing while absent). Result: a per-cognizer presence interval set.
 
 **Per-kind perception rules (decision 5).** For each state event E (theme T, position k, state `(dim, value)`):
 
@@ -61,9 +61,9 @@ Single-responsibility module: given a tenant and the set of themes touched by an
 | `see`/`look` (closed container) | the **observer(s)** present | `(content, apparent_value)` — the label/appearance (§3.4) |
 | `open`/`reveal` | cognizers **present** | `(content, actual_value)` |
 
-For each (cognizer, perceived E), the reconstructor records into the frontier that the cognizer perceived E's engram (so `visible_engrams_at` and `does_X_know` see it), **plus** an **append-only** perception-state row `(cognizer, theme, state_dim, value, event_time, position, source_event)` — one row per perceived state-event (the per-cognizer last-known-state substrate the query reads; append-only so `as_of`-in-the-past is answerable, §3.6). Writes are **idempotent** keyed by `(cognizer, source_event)` so re-running over the full history is safe.
+For each (cognizer, perceived E), the reconstructor records into the frontier that the cognizer perceived E's engram (so `visible_engrams_at` and `does_X_know` see it), **plus** an **append-only** perception-state row `(cognizer, theme, state_dim, state_value, observed_at, position, source_event_id)` — one row per perceived state-event (the per-cognizer last-known-state substrate the query reads; append-only so `as_of`-in-the-past is answerable, §3.6). The time key is **`observed_at`** (ingest time, always present and the global-order key), not A's nullable `event_time` (fixes N3). Writes are **idempotent** keyed by `(cognizer, source_event_id)` so re-running over the full history is safe.
 
-**Co-presence for second-order (decision 3 extension, fixes S3).** When cognizers X and Y are **both present** at event E, the reconstructor additionally records that **X knows Y perceived E** (and symmetrically); when X is present at a `leave` of Y, X knows Y is absent thereafter. This first-degree co-presence is what makes the common "both in the room" second-order query (`what does Anne think Sally thinks`) answerable without materialising deep nested beliefs. Deeper nesting (≥3rd order) is deferred (§4.4).
+**Second-order via perception intersection (fixes S3 + N5).** No separate co-presence storage is needed. In the single-scene model, two cognizers both present at E are mutually aware of each other's perception, so **`observer`'s model of `x`** = the events in `perception_state` that **both `observer` and `x` perceived** (their intersection for theme T). If `x` left before a later event, that event is absent from `x`'s perceived set and so drops out of the intersection — `observer` correctly models `x` as not knowing it. The `observer` path of `what_does_X_think` (§3.3) computes this intersection at query time; nothing extra is materialised. Deeper nesting (≥3rd order) is deferred (§4.1).
 
 ### 3.2 `KnowledgeFrontier` materialisation (reuse — decision 1)
 
@@ -88,7 +88,7 @@ StateBelief what_does_X_think(StorageAdapter&, KnowledgeFrontier&,
                               const std::string& observer = "");  // observer="" → first-order
 ```
 
-Implementation: take the **max-position state-event for theme T that X perceived** (from B's materialised per-`(cognizer, theme, dim)` facts, bounded by `as_of`) → its `(dim, value)`. Compare to the **global latest actual state** (`latest_event_location` for the location dim; the latest `open`/`reveal`/asserted-actual for content) → `is_stale`. If X perceived nothing for T → `has_belief=false` (never crash, never fall back to ground truth). When `observer` is set, restrict the candidate events to those the observer knows X perceived (the co-presence facts of §3.1) → **second-order** "what does `observer` think `x` thinks". Bound in `bind_08_tom.cpp` + re-exported in `python/starling/tom/__init__.py`, matching the existing primitive pattern.
+Implementation: take the **max-position state-event for theme T that X perceived** → its `(dim, value)`. The **primary read** is the append-only `perception_state` (§3.6) via the `StorageAdapter` — the highest-`position` row with `observed_at ≤ as_of` per `(cognizer, theme, dim)`. The `frontier` parameter (matching the existing `does_X_know(adapter, frontier, …)` signature) serves the `does_X_know` access checks, and lets the implementation read from `cognizer_frontier_facts` instead should the plan home `perception_state` there (§3.6) — the signature accommodates both storage choices. Compare to the **global latest actual state** (`latest_event_location` for the location dim; the latest `open`/`reveal`/asserted-actual for content) → `is_stale`. If X perceived nothing for T → `has_belief=false` (never crash, never fall back to ground truth). The `state_dim` is **inferred from T's perceived events** (a ToMBench theme is location- or content-typed); a theme carrying both dimensions at once is out of scope (fixes N2). When `observer` is set, restrict the candidate events to the **intersection** of `observer`'s and `x`'s perceived events for T (single-scene co-presence ⟹ `observer` knows `x` perceived them; §3.1) → **second-order** "what does `observer` think `x` thinks". Bound in `bind_08_tom.cpp` + re-exported in `python/starling/tom/__init__.py`, matching the existing primitive pattern.
 
 **Relation to existing primitives.** This is a distinct path from `what_does_X_think_Y_believes` (which recurses over **explicit nested belief statements**). B's false belief is **derived from perception**, computed on demand; the two coexist.
 
@@ -108,7 +108,7 @@ This is purely additive to A's extractor (A's spec already anticipated "extensib
 
 ### 3.6 Where the per-cognizer last-known value lives (fixes S8 — do not modify A's table)
 
-B does **not** alter A's `episodic_events` (A's `EpisodicEventStore` is its single owner). The per-cognizer perceived states are carried in **B-owned, append-only storage**: a B-owned companion table `perception_state` with one row per perceived state-event — `(tenant, cognizer, theme, state_dim, state_value, event_time, position, source_event_id)`. Append-only makes `as_of` history queryable (pick the highest-`position` row with `event_time ≤ as_of` per `(cognizer, theme, state_dim)`) and makes writes idempotent on `(cognizer, source_event_id)`. The reconstructor is its single writer; `what_does_X_think` is its reader. (Equivalently the columns could extend `cognizer_frontier_facts`; the exact home is a plan-level decision.) The invariant: **A's schema is untouched** and B owns its perception storage, following the migrations auto-register pattern (`migrations/NNNN_*.sql`, CMake GLOB).
+B does **not** alter A's `episodic_events` (A's `EpisodicEventStore` is its single owner). The per-cognizer perceived states are carried in **B-owned, append-only storage**: a B-owned companion table `perception_state` with one row per perceived state-event — `(tenant, cognizer, theme, state_dim, state_value, observed_at, position, source_event_id)`. The time key is **`observed_at`** (ingest time, always present; A's `event_time` is nullable — N3). Append-only makes `as_of` history queryable (pick the highest-`position` row with `observed_at ≤ as_of` per `(cognizer, theme, state_dim)`) and makes writes idempotent on `(cognizer, source_event_id)`. The reconstructor is its single writer; `what_does_X_think` is its reader. (Equivalently the columns could extend `cognizer_frontier_facts`; the exact home is a plan-level decision.) The invariant: **A's schema is untouched** and B owns its perception storage, following the migrations auto-register pattern (`migrations/NNNN_*.sql`, CMake GLOB).
 
 ## 4. Components & boundaries
 
@@ -117,10 +117,10 @@ B does **not** alter A's `episodic_events` (A's `EpisodicEventStore` is its sing
 - **`KnowledgeFrontier` / `does_X_know`** — reused; B's materialisation makes `does_X_know` event-aware. **Caveat (fixes S6):** `does_X_know`'s Step-2 path keys on `evidence_json` engram-refs; making it fire for events requires the event statements' engram-refs to be the ones B records as visible. B's **primary** query is `what_does_X_think`; the `does_X_know` reuse for the information-access subset is a **secondary integration that is verified on its own**, not assumed free.
 - **A's `EpisodicEventStore`** — reused read-only for state values + ground truth.
 
-### 4.4 Order of mind supported
+### 4.1 Order of mind supported
 
 - **1st order** — "what does X think" — core (§3.3).
-- **2nd order** — "what does X think Y thinks" — via first-degree **co-presence** facts (§3.1), covering the canonical "both were in the room, then one left" case.
+- **2nd order** — "what does X think Y thinks" — via **perception-set intersection** (§3.1): `observer`'s model of `x` is the events both perceived, covering the canonical "both were in the room, then one left" case.
 - **≥3rd order** — deferred. (Explicit *stated* nested beliefs of any order remain answerable through the existing `what_does_X_think_Y_believes`; only *perception-derived* deep nesting is out of scope.)
 
 ## 5. Data flow & the single-scene assumption (fixes S10)
@@ -131,8 +131,9 @@ narrative → remember()
    ├─ EpisodicExtractor → OCCURRED events + episodic_events (A)
    └─ PerceptionReconstructor (B):
         scan ALL OCCURRED events for the tenant, ordered by (observed_at, seq)
-        → presence timeline (enter/leave) + co-presence
+        → presence timeline (enter/leave)
         → per-kind perception rules → frontier + perception_state   (idempotent)
+        (second-order is derived at query time by perception-set intersection, §3.1)
 query time:
    what_does_X_think(x, theme[, observer])  → StateBelief (possibly stale / unknown)
    does_X_know(x, factkey)                  → KnowsResult (info-access, secondary)
@@ -161,7 +162,7 @@ Each phase is independently green and testable (TDD). Ordered so the canonical f
 
 1. **Deterministic kernel** (C++ ctest + pytest, every phase, no LLM): presence timeline (Sally `leave` ⟹ absent from `seq3`); per-kind perception rules (`tell` → recipient; `see` → apparent; `open` → actual); `what_does_X_think(Sally, ball) = basket` + `is_stale=true`; `(Anne, ball) = box`; `has_belief=false` for an outsider; second-order `what_does_X_think(Sally, ball, observer=Anne)`; `does_X_know` sees events.
 2. **Gated real-LLM e2e** (`STARLING_RUN_LLM_E2E`, like A): `remember("Sally puts her ball in the basket and leaves; Anne moves it to the box")` → A extracts events → B reconstructs → `what_does_X_think(Sally, ball) = basket`, `(Anne, ball) = box`.
-3. **ToMBench subset** end-to-end, scored, mirroring the P3.a2 three-track report: the **False Belief Task** file and the **Knowledge / Percepts→Knowledge** items (named exactly in the eval harness — S11); real-model extraction → A events → B perception → `what_does_X_think` scored against gold. Does **not** claim coverage of all ToMBench Knowledge ATOMS.
+3. **ToMBench subset** end-to-end, scored, mirroring the P3.a2 three-track report: the `False Belief Task.jsonl` file (unexpected-transfer false belief) plus ToMBench items whose ATOMS ability is **Knowledge** (perception→knowledge access). Real-model extraction → A events → B perception → `what_does_X_think` scored against gold. Does **not** claim coverage of all ToMBench tasks or all Knowledge items — only the perception-derived subset A+B enable; the harness pins the exact files/ability tag (cf. the P3.a2 `eval_tom_bench.py` ability filters).
 
 **Regression:** ctest 623 / pytest 619 stay green. B is additive (new reconstructor + new primitive + additive vocab + B-owned storage); it does not touch A's OCCURRED exclusion guards, the six-state machine, conflict arbitration, holder isolation, or belief / multi-order-ToM pins.
 
