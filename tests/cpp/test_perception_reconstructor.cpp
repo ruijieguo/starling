@@ -3,8 +3,10 @@
 // seed_event 直接种 statements(modality='occurred')行(镜像 test_episodic_event_store.cpp
 // 的 seed_occurred 26 列布局)+ EpisodicEventStore::upsert 一条 episodic_events 行。
 #include "starling/cognizer/perception_reconstructor.hpp"
+#include "starling/cognizer/knowledge_frontier.hpp"
 #include "starling/store/episodic_event_store.hpp"
 #include "starling/store/perception_state_store.hpp"
+#include "starling/tom/mentalizing.hpp"
 
 #include "starling/persistence/migration_runner.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -59,6 +61,46 @@ void seed_event(starling::persistence::SqliteAdapter& a, const char* tenant,
     row.tenant_id = tenant;
     row.seq = seq;
     row.location = location;                  // "" → NULL
+    row.participants_json = participants_json;
+    row.action_raw = action;
+    ep.upsert(row);
+}
+
+// Task 5.1 variant: seed an OCCURRED event whose evidence_json carries an explicit
+// engram_ref (the key does_X_know's Step-2 evidence scan reads) and a caller-set
+// canonical_object_hash (so a FactKey can match it). Mirrors seed_event otherwise.
+void seed_event_engram(starling::persistence::SqliteAdapter& a, const char* tenant,
+                       const char* stmt_id, const char* actor, const char* action,
+                       const char* theme, const char* location,
+                       const char* participants_json, long long seq,
+                       const char* observed_at, const char* engram_ref,
+                       const char* canonical_object_hash) {
+    auto& conn = a.connection();
+    const std::string sql =
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,evidence_json,consolidation_state,review_status,"
+        "nesting_depth,created_at,updated_at) VALUES('" + std::string(stmt_id) +
+        "','" + tenant + "','cog-self','FIRST_PERSON','cognizer','" + actor +
+        "','" + action + "','entity','" + theme + "','" + canonical_object_hash +
+        "','v1','occurred','POS',0.9,'" + observed_at +
+        "',0.5,'{}',0.0,'" + observed_at +
+        "','user_input','[{\"engram_ref\":\"" + engram_ref +
+        "\",\"status\":\"active\"}]','consolidated','approved',0,'" + observed_at +
+        "','" + observed_at + "')";
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(conn.raw(), sql.c_str(), nullptr, nullptr, &err),
+              SQLITE_OK)
+        << (err ? err : "");
+
+    starling::store::EpisodicEventStore ep(conn);
+    starling::store::EpisodicEventRow row;
+    row.statement_id = stmt_id;
+    row.tenant_id = tenant;
+    row.seq = seq;
+    row.location = location;
     row.participants_json = participants_json;
     row.action_raw = action;
     ep.upsert(row);
@@ -253,4 +295,88 @@ TEST(PerceptionReconstructor, CloseEventWritesNoPerception) {
     auto tom_content = ps.last_known(T, "Tom", "tube", "content", AS_OF);
     ASSERT_TRUE(tom_content.has_value()) << "Tom's open must write a content perception";
     EXPECT_EQ(tom_content->state_value, "pencils");
+}
+
+// Task 5.1: does_X_know event-awareness. The adapter-aware reconstructor ctor feeds
+// each physical witness's perceived-event engram into the KnowledgeFrontier
+// presence_log, so does_X_know() can tell a witness apart from a non-witness.
+//
+// Scene: Sally puts the ball in the basket (Sally+Anne present), Anne moves it to
+// the box. Both Sally and Anne physically witness both events, so each has the
+// shared event engram visible. Charlie is never present.
+//
+// does_X_know returns NotKnown when the queried fact's evidence engram is visible
+// to X via the presence_log (an information-access path exists) but X hasn't
+// directly asserted it; Unknowable when no visible evidence path exists. So a
+// witness → NotKnown, a non-witness → Unknowable. The connection-only ctor writes
+// NO presence_log rows, so even a witness is Unknowable there (proves the adapter
+// overload is what enables the awareness).
+TEST(PerceptionReconstructor, DoesXKnowReflectsEventWitnessing) {
+    auto a = open_migrated();
+    const char* T = "t-know";
+    // Shared engram across both events (mirrors the real remember() path, where one
+    // narrative engram anchors all its OCCURRED events). The move's canonical hash
+    // is the FactKey we query "ball located_at box" against.
+    const char* ENG = "eng-scene-1";
+    const char* HASH_BOX = "hash-ball-box";
+    seed_event_engram(*a, T, "g0", "Sally", "put",  "ball", "basket",
+                      R"(["Sally","Anne"])", 1, "2026-01-01T00:00:01Z", ENG, "hash-ball-basket");
+    seed_event_engram(*a, T, "g1", "Anne",  "move", "ball", "box",
+                      R"(["Sally","Anne"])", 2, "2026-01-01T00:00:02Z", ENG, HASH_BOX);
+
+    // Reconstruct WITH the adapter → also records presence into the frontier.
+    PerceptionReconstructor recon(a->connection(), *a);
+    recon.reconstruct(T);
+
+    starling::cognizer::KnowledgeFrontier frontier(*a);
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+    starling::tom::mentalizing::FactKey fact;
+    fact.subject_kind = "cognizer";  // matches the seeded subject_kind
+    fact.subject_id = "Anne";        // the move event's subject
+    fact.predicate = "move";
+    fact.canonical_object_hash = HASH_BOX;
+
+    using starling::tom::mentalizing::KnowsResult;
+    using starling::tom::mentalizing::does_X_know;
+
+    // Anne witnessed the move event → its engram is visible → NotKnown (access path).
+    EXPECT_EQ(does_X_know(*a, frontier, "Anne", fact, T, AS_OF), KnowsResult::NotKnown)
+        << "a witness must have a visible evidence path to the event fact";
+    // Sally was present throughout → also has the engram visible.
+    EXPECT_EQ(does_X_know(*a, frontier, "Sally", fact, T, AS_OF), KnowsResult::NotKnown)
+        << "Sally witnessed both events → visible evidence path";
+    // Charlie never appeared → no presence_log entry → Unknowable.
+    EXPECT_EQ(does_X_know(*a, frontier, "Charlie", fact, T, AS_OF), KnowsResult::Unknowable)
+        << "a non-witness has no visible evidence path";
+}
+
+// Counterpart: the connection-only ctor must NOT touch the frontier (phase-1..4
+// behavior preserved). Same scene, but reconstructed WITHOUT the adapter → no
+// presence_log rows → even a witness is Unknowable.
+TEST(PerceptionReconstructor, ConnectionOnlyCtorDoesNotRecordFrontier) {
+    auto a = open_migrated();
+    const char* T = "t-noknow";
+    const char* ENG = "eng-scene-2";
+    const char* HASH_BOX = "hash2-ball-box";
+    seed_event_engram(*a, T, "h0", "Sally", "put",  "ball", "basket",
+                      R"(["Sally","Anne"])", 1, "2026-01-01T00:00:01Z", ENG, "hash2-ball-basket");
+    seed_event_engram(*a, T, "h1", "Anne",  "move", "ball", "box",
+                      R"(["Sally","Anne"])", 2, "2026-01-01T00:00:02Z", ENG, HASH_BOX);
+
+    PerceptionReconstructor recon(a->connection());  // connection-only
+    recon.reconstruct(T);
+
+    starling::cognizer::KnowledgeFrontier frontier(*a);
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+    starling::tom::mentalizing::FactKey fact;
+    fact.subject_kind = "cognizer";
+    fact.subject_id = "Anne";
+    fact.predicate = "move";
+    fact.canonical_object_hash = HASH_BOX;
+
+    using starling::tom::mentalizing::KnowsResult;
+    using starling::tom::mentalizing::does_X_know;
+    // No presence recorded → Anne's evidence path is invisible → Unknowable.
+    EXPECT_EQ(does_X_know(*a, frontier, "Anne", fact, T, AS_OF), KnowsResult::Unknowable)
+        << "connection-only ctor must not populate the presence_log";
 }

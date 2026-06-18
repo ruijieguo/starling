@@ -10,20 +10,39 @@
 // 注:TransactionGuard 声明在 persistence/connection.hpp(无独立 transaction_guard.hpp),
 // 已由 perception_reconstructor.hpp 传递包含。
 #include "starling/cognizer/perception_reconstructor.hpp"
+#include "starling/cognizer/knowledge_frontier.hpp"
 #include "starling/store/perception_state_store.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 namespace starling::cognizer {
 namespace {
 struct ScanEvent {
-    std::string stmt_id, actor, predicate, theme, observed_at, location, participants_json;
+    std::string stmt_id, actor, predicate, theme, observed_at, location, participants_json,
+        evidence_json;
     long long seq = 0;
 };
+// The OCCURRED statement's evidence_json is a JSON array of evidence anchors. The
+// episodic write path records the engram as {"engram_ref": "<id>", ...}; some test
+// fixtures use {"engram_id": "<id>"}. Return the first anchor's engram id, or "".
+std::string engram_id_of(const std::string& evidence_json) {
+    if (evidence_json.empty()) return {};
+    auto j = nlohmann::json::parse(evidence_json, nullptr, /*allow_exceptions=*/false);
+    if (!j.is_array()) return {};
+    for (const auto& a : j) {
+        if (!a.is_object()) continue;
+        if (auto it = a.find("engram_ref"); it != a.end() && it->is_string())
+            return it->get<std::string>();
+        if (auto it = a.find("engram_id"); it != a.end() && it->is_string())
+            return it->get<std::string>();
+    }
+    return {};
+}
 bool is_leave(const std::string& p) { return p == "leave" || p == "exit" || p == "depart"; }
 bool is_enter(const std::string& p) { return p == "enter" || p == "return" || p == "arrive"; }
 bool is_presence_change(const std::string& p) { return is_leave(p) || is_enter(p); }
@@ -39,6 +58,19 @@ bool is_content(const std::string& p) { return is_see(p) || is_reveal(p); }
 // close: hides container contents (physical state change only) — no new location
 // or content knowledge is conveyed to witnesses, so write NO perception row.
 bool is_close(const std::string& p) { return p == "close"; }
+// Task 5.1: feed the cognizers who perceived an event into the KnowledgeFrontier
+// presence_log, anchored on the event's engram. No-op if no frontier (adapter-less
+// ctor), no perceivers, or the OCCURRED statement carries no engram in evidence_json.
+void record_frontier(KnowledgeFrontier* frontier, std::string_view tenant,
+                     const std::set<std::string>& perceived_set,
+                     const std::string& evidence_json, const std::string& observed_at,
+                     persistence::Connection& conn) {
+    if (frontier == nullptr || perceived_set.empty()) return;
+    const std::string engram_id = engram_id_of(evidence_json);
+    if (engram_id.empty()) return;
+    const std::vector<std::string> perceived_by(perceived_set.begin(), perceived_set.end());
+    frontier->record_presence_from_statement(tenant, perceived_by, engram_id, observed_at, conn);
+}
 std::vector<std::string> participants_of(const ScanEvent& ev) {
     std::vector<std::string> ps;
     if (!ev.actor.empty()) ps.push_back(ev.actor);
@@ -52,12 +84,17 @@ std::vector<std::string> participants_of(const ScanEvent& ev) {
 
 PerceptionReconstructor::PerceptionReconstructor(persistence::Connection& conn) : conn_(conn) {}
 
+PerceptionReconstructor::PerceptionReconstructor(persistence::Connection& conn,
+                                                 persistence::SqliteAdapter& adapter)
+    : conn_(conn), adapter_(&adapter) {}
+
 void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     sqlite3* db = conn_.raw();
     // 1. Scan ALL OCCURRED events for the tenant on one timeline (observed_at, seq).
+    //    evidence_json carries the engram anchor used for does_X_know awareness (5.1).
     const char* sql =
         "SELECT s.id, s.subject_id, s.predicate, s.object_value, s.observed_at, "
-        "e.seq, e.location, e.participants_json "
+        "e.seq, e.location, e.participants_json, s.evidence_json "
         "FROM statements s JOIN episodic_events e "
         "ON e.statement_id=s.id AND e.tenant_id=s.tenant_id "
         "WHERE s.tenant_id=? AND s.modality='occurred' "
@@ -78,7 +115,7 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             ScanEvent ev;
             ev.stmt_id = col(0); ev.actor = col(1); ev.predicate = col(2); ev.theme = col(3);
             ev.observed_at = col(4); ev.seq = sqlite3_column_int64(h.get(), 5);
-            ev.location = col(6); ev.participants_json = col(7);
+            ev.location = col(6); ev.participants_json = col(7); ev.evidence_json = col(8);
             events.push_back(std::move(ev));
         }
         if (rc != SQLITE_DONE)
@@ -99,6 +136,11 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     // 3. Walk events; present set defaults to the whole cast; enter/leave override;
     //    physical witnesses (present ∪ this event's actor/participants) learn the location.
     store::PerceptionStateStore ps(conn_);
+    // Task 5.1: when an adapter is present, also feed each event's witnesses into the
+    // KnowledgeFrontier presence_log so does_X_know() reflects event perception. The
+    // frontier records on the OCCURRED statement's engram (from evidence_json).
+    std::unique_ptr<KnowledgeFrontier> frontier;
+    if (adapter_) frontier = std::make_unique<KnowledgeFrontier>(*adapter_);
     persistence::TransactionGuard tx(conn_);  // own top-level tx (events already committed)
     std::set<std::string> present(cast.begin(), cast.end());
     long long position = 0;
@@ -106,6 +148,8 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
         const auto evp = participants_of(ev);
         std::set<std::string> witnesses(present.begin(), present.end());
         for (const auto& p : evp) witnesses.insert(p);  // actor/participants present at their event
+        // Cognizers who perceived THIS event (for the frontier presence_log, 5.1).
+        std::set<std::string> perceived_set;
         if (is_tell(ev.predicate)) {
             // Told channel: recipient(s) = participants minus the teller (index 0).
             // Write each recipient's perception_state regardless of physical presence.
@@ -117,10 +161,14 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                     row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
                     row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
                     ps.upsert(row);
+                    perceived_set.insert(evp[i]);  // the recipient learns the told engram
                 }
             }
+            record_frontier(frontier.get(), tenant, perceived_set, ev.evidence_json, ev.observed_at, conn_);
             ++position; continue;  // skip presence update and physical witness branch
         } else if (is_presence_change(ev.predicate)) {
+            // Those present at the moment of an enter/leave witnessed it happening.
+            perceived_set = witnesses;
             if (is_leave(ev.predicate)) for (const auto& p : evp) present.erase(p);   // gone AFTER this
             else                        for (const auto& p : evp) present.insert(p);  // here from now
         } else if (is_content(ev.predicate)) {  // content event (see/look apparent; open/reveal actual)
@@ -134,11 +182,14 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                     row.theme_id = ev.theme; row.state_dim = "content"; row.state_value = ev.location;
                     row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
                     ps.upsert(row);
+                    perceived_set.insert(w);
                 }
             }
         } else if (is_close(ev.predicate)) {
             // Closing a container hides its contents but conveys no new state to
-            // witnesses — write no perception (physical state change only).
+            // witnesses — write no perception (physical state change only). Present
+            // cognizers still witnessed the act, so the engram is visible to them.
+            perceived_set = witnesses;
         } else if (!ev.location.empty()) {  // physical location event
             for (const auto& w : witnesses) {
                 store::PerceptionStateRow row;
@@ -146,8 +197,10 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                 row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
                 row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
                 ps.upsert(row);
+                perceived_set.insert(w);
             }
         }
+        record_frontier(frontier.get(), tenant, perceived_set, ev.evidence_json, ev.observed_at, conn_);
         ++position;
     }
     tx.commit();  // TransactionGuard dtor rolls back unless committed (see episodic_extractor.cpp).

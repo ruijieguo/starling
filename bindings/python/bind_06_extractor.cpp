@@ -275,8 +275,14 @@ void bind_06_extractor(pybind11::module_& m) {
     // ----- sub-project B phase 1: PerceptionReconstructor (post-pass) -----
     // 镜像 EpisodicExtractor 绑定:ctor 持 Connection&(keep_alive),reconstruct()
     // 扫描租户全部 OCCURRED 事件重建 perception_state。
+    // Phase 5 (Task 5.1): 可选第二个 ctor 额外接 SqliteAdapter&,使重建在写
+    // perception_state 之余,把见证者事件 engram 记入 KnowledgeFrontier(does_X_know
+    // 事件感知)。两条 ctor 都 keep_alive 各引用参数,使其活过 reconstructor。
     py::class_<starling::cognizer::PerceptionReconstructor>(m, "PerceptionReconstructor")
         .def(py::init<starling::persistence::Connection&>(), py::arg("conn"), py::keep_alive<1, 2>())
+        .def(py::init<starling::persistence::Connection&, starling::persistence::SqliteAdapter&>(),
+             py::arg("conn"), py::arg("adapter"),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>())
         .def("reconstruct",
             [](starling::cognizer::PerceptionReconstructor& self, const std::string& tenant) {
                 self.reconstruct(tenant);

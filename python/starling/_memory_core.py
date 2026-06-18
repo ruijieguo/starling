@@ -140,8 +140,11 @@ class MemoryCore:
                 # 合并两条管线本次新写的语句 id(belief + episodic 事件)。
                 out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
                 # sub-project B: rebuild per-cognizer perception from the events (best-effort).
+                # Pass the adapter (Task 5.1) so witnessed-event engrams also land in the
+                # KnowledgeFrontier presence_log, making does_X_know() event-aware.
                 try:
-                    _core.PerceptionReconstructor(self.conn).reconstruct(tenant=self.tenant)
+                    _core.PerceptionReconstructor(
+                        self.conn, self.rt.adapter).reconstruct(tenant=self.tenant)
                 except Exception:  # noqa: BLE001 — perception is best-effort; never fail remember
                     pass
         return out
