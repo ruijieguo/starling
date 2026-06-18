@@ -38,6 +38,7 @@ RULES:
 - Array order = narrative order. One JSON object per event.
 - If nothing physical happens, output [].
 - For tell/inform: participants = [teller, recipient...]; theme = the object whose state is conveyed; location = the conveyed state value (where the theme is, or its content). A tell does NOT imply physical co-location — the recipient can be anywhere.
+- For a closed LABELLED CONTAINER (e.g. a "Smarties tube", a cereal box): a "see"/"look" records its APPARENT content (what the label implies) and an "open"/"reveal" records its ACTUAL content (what is really inside). theme = the container; location = the content value; participants = the cognizer(s) who saw/opened it. Use "see"/"look" for the apparent reading and "open"/"reveal" for the actual reveal — both put the content in the location field.
 
 WORKED EXAMPLE 1:
 
@@ -73,6 +74,17 @@ JSON array:
   {"actor":"Sally","action":"tell","theme":"ball","location":"box","participants":["Sally","Anne"],"time":null}
 ]
 (A "tell" conveys a state about a theme: theme=ball, location=box. participants lists the teller first then the recipient(s). The recipient learns the state WITHOUT being in the room — tell does not imply physical co-location.)
+
+WORKED EXAMPLE 4 (unexpected contents):
+
+Passage:
+  Anne sees a closed Smarties tube. Tom opens it; it actually contains pencils.
+JSON array:
+[
+  {"actor":"Anne","action":"see","theme":"Smarties tube","location":"Smarties","participants":["Anne"],"time":null},
+  {"actor":"Tom","action":"open","theme":"Smarties tube","location":"pencils","participants":["Tom"],"time":null}
+]
+(For a closed labelled container, "see" records the APPARENT content from the label (location="Smarties"); "open"/"reveal" records the ACTUAL content (location="pencils"). The container is the theme in both; the content goes in the location field.)
 
 Passage:
 {passage}
