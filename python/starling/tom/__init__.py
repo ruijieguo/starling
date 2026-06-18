@@ -10,6 +10,7 @@ from starling._core import (
     KnowsResult,
     Misalignment,
     SharedFact,
+    StateBelief,
     CommonGroundEntry,
     Context,
     TickStats,
@@ -25,6 +26,7 @@ from starling.tom.primitives import (
     does_X_know,
     find_misalignment,
     shared_with,
+    what_does_X_think,
 )
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "KnowsResult",
     "Misalignment",
     "SharedFact",
+    "StateBelief",
     "CommonGroundEntry",
     "Context",
     "TickStats",
@@ -45,6 +48,7 @@ __all__ = [
     "does_X_know",
     "find_misalignment",
     "shared_with",
+    "what_does_X_think",
     # Direct C++ binding
     "belief_tracker_tick",
 ]

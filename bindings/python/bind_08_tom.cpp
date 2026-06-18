@@ -168,6 +168,28 @@ void bind_08_tom(pybind11::module_& m) {
         py::arg("adapter"), py::arg("members"), py::arg("tenant"), py::arg("as_of"),
         "Return facts believed by ALL members.");
 
+    // ── sub-project B: perception → belief (8th primitive) ──
+    // StateBelief — read-only POD result of what_does_X_think.
+    py::class_<starling::tom::mentalizing::StateBelief>(m, "StateBelief")
+        .def_readonly("has_belief",      &starling::tom::mentalizing::StateBelief::has_belief)
+        .def_readonly("state_dim",       &starling::tom::mentalizing::StateBelief::state_dim)
+        .def_readonly("state_value",     &starling::tom::mentalizing::StateBelief::state_value)
+        .def_readonly("source_event_id", &starling::tom::mentalizing::StateBelief::source_event_id)
+        .def_readonly("is_stale",        &starling::tom::mentalizing::StateBelief::is_stale);
+
+    m.def("what_does_X_think",
+        [](starling::persistence::SqliteAdapter& adapter,
+           starling::cognizer::KnowledgeFrontier& frontier,
+           const std::string& x, const std::string& theme,
+           const std::string& tenant, const std::string& as_of,
+           const std::string& observer) {
+            return starling::tom::mentalizing::what_does_X_think(
+                adapter, frontier, x, theme, tenant, as_of, observer);
+        },
+        py::arg("adapter"), py::arg("frontier"), py::arg("x"), py::arg("theme"),
+        py::arg("tenant"), py::arg("as_of"), py::arg("observer") = "",
+        "First/second-order: X's last-perceived state of a theme (possibly stale).");
+
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
     // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
     py::class_<starling::tom::mentalizing::ChainLevel>(m, "ChainLevel")

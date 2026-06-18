@@ -149,4 +149,27 @@ std::vector<CommitmentFact> who_committed(
     std::string_view tenant,
     std::string_view as_of);
 
+// ─── sub-project B: perception → belief ──────────────────────────────────────
+
+// X's last-perceived state of a theme (sub-project B). has_belief=false → X never
+// perceived any state-event for the theme.
+struct StateBelief {
+    bool has_belief = false;
+    std::string state_dim;       // "location" | "content"
+    std::string state_value;
+    std::string source_event_id;
+    bool is_stale = false;       // state_value != global latest actual state
+};
+
+// 8. First/second-order: X's last-perceived state of `theme`. observer="" → first
+//    order; observer set → restrict to events both observer and x perceived.
+StateBelief what_does_X_think(
+    persistence::SqliteAdapter& adapter,
+    cognizer::KnowledgeFrontier& frontier,
+    std::string_view x,
+    std::string_view theme,
+    std::string_view tenant,
+    std::string_view as_of,
+    std::string_view observer = "");
+
 }  // namespace starling::tom::mentalizing

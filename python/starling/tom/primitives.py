@@ -140,3 +140,34 @@ def shared_with(
     """
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.shared_with(adapter, members, tenant_id, as_of_iso)
+
+
+def what_does_X_think(
+    adapter,
+    frontier,
+    *,
+    x: str,
+    theme: str,
+    tenant_id: str = "default",
+    as_of: Optional[datetime] = None,
+    observer: str = "",
+):
+    """
+    X's last-perceived state of `theme` (sub-project B): first/second-order belief.
+
+    Parameters
+    ----------
+    adapter   : SqliteAdapter
+    frontier  : KnowledgeFrontier
+    x         : cognizer id whose belief is queried
+    theme     : theme id (statements.object_value, e.g. 'ball')
+    tenant_id : tenant scope
+    as_of     : time anchor; defaults to now (UTC).  Must be tz-aware.
+    observer  : "" → first order; set → restrict to events both observer and x perceived.
+
+    Returns
+    -------
+    StateBelief  with fields: has_belief, state_dim, state_value, source_event_id, is_stale
+    """
+    as_of_iso = _iso_now_or_convert(as_of)
+    return _core.what_does_X_think(adapter, frontier, x, theme, tenant_id, as_of_iso, observer)

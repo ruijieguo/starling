@@ -123,6 +123,7 @@ target_sources(starling_core PRIVATE
     src/hippocampus/affect_buffer.cpp
     src/tom/mentalizing_believe.cpp
     src/tom/mentalizing_know.cpp
+    src/tom/mentalizing_think.cpp
     src/tom/mentalizing_misalign.cpp
     src/tom/mentalizing_shared.cpp
     src/tom/mentalizing_more.cpp
