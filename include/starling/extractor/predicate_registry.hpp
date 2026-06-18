@@ -29,11 +29,21 @@ inline constexpr std::array<std::string_view, 10> kActionPredicates = {
     "remove", "transfer", "leave", "open", "close",
 };
 
+// Informational/perception predicate class (sub-project B): speech + perception
+// verbs that update a cognizer's knowledge. tell/inform convey a state to a
+// recipient; see/look (phase 4) read a container's apparent content.
+inline constexpr std::array<std::string_view, 4> kPerceptionPredicates = {
+    "tell", "inform", "see", "look",
+};
+
 inline bool is_core_predicate(std::string_view predicate) {
     for (const auto p : kCoreBeliefPredicates) {
         if (p == predicate) return true;
     }
     for (const auto p : kActionPredicates) {
+        if (p == predicate) return true;
+    }
+    for (const auto p : kPerceptionPredicates) {
         if (p == predicate) return true;
     }
     return false;

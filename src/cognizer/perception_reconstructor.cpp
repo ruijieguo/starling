@@ -27,7 +27,8 @@ struct ScanEvent {
 bool is_leave(const std::string& p) { return p == "leave" || p == "exit" || p == "depart"; }
 bool is_enter(const std::string& p) { return p == "enter" || p == "return" || p == "arrive"; }
 bool is_presence_change(const std::string& p) { return is_leave(p) || is_enter(p); }
-// phase 2 will add: is_tell(p) → excluded from the physical cast.
+// tell/inform: informational channel — does NOT establish physical presence (N1).
+bool is_tell(const std::string& p) { return p == "tell" || p == "inform"; }
 std::vector<std::string> participants_of(const ScanEvent& ev) {
     std::vector<std::string> ps;
     if (!ev.actor.empty()) ps.push_back(ev.actor);
@@ -76,9 +77,14 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     if (events.empty()) return;
 
     // 2. Physical cast = everyone named in a physical / presence-change event.
-    //    (phase 2 will skip tell-only cognizers here.)
+    //    tell/inform events are excluded — a cognizer named ONLY in a tell must NOT
+    //    be presumed physically present (N1: e.g. "Anne phones absent Bob" must not
+    //    make Bob a witness of the room's events).
     std::set<std::string> cast;
-    for (const auto& ev : events) for (const auto& p : participants_of(ev)) cast.insert(p);
+    for (const auto& ev : events) {
+        if (is_tell(ev.predicate)) continue;  // tell does not establish physical presence
+        for (const auto& p : participants_of(ev)) cast.insert(p);
+    }
 
     // 3. Walk events; present set defaults to the whole cast; enter/leave override;
     //    physical witnesses (present ∪ this event's actor/participants) learn the location.
@@ -90,7 +96,21 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
         const auto evp = participants_of(ev);
         std::set<std::string> witnesses(present.begin(), present.end());
         for (const auto& p : evp) witnesses.insert(p);  // actor/participants present at their event
-        if (is_presence_change(ev.predicate)) {
+        if (is_tell(ev.predicate)) {
+            // Told channel: recipient(s) = participants minus the teller (index 0).
+            // Write each recipient's perception_state regardless of physical presence.
+            // A tell is neither a presence change nor a physical witnessing.
+            if (!ev.location.empty()) {
+                for (std::size_t i = 1; i < evp.size(); ++i) {
+                    store::PerceptionStateRow row;
+                    row.tenant_id = std::string(tenant); row.cognizer_id = evp[i];
+                    row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
+                    row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
+                    ps.upsert(row);
+                }
+            }
+            ++position; continue;  // skip presence update and physical witness branch
+        } else if (is_presence_change(ev.predicate)) {
             if (is_leave(ev.predicate)) for (const auto& p : evp) present.erase(p);   // gone AFTER this
             else                        for (const auto& p : evp) present.insert(p);  // here from now
         } else if (!ev.location.empty()) {  // physical location event

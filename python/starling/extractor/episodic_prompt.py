@@ -30,13 +30,14 @@ RULES:
 - Extract EVERY physical event/action — object manipulations AND movements of people.
 - PRESENCE-CHANGES ARE EVENTS. Emit enter / leave / arrive / return as their OWN events. A departure is exactly what makes a LATER event unwitnessed by the person who left, so it MUST NOT be dropped. Never skip a "leaves the room" / "comes back" / "walks out" — give each its own array element in order.
 - actor = the cognizer (person) performing the action.
-- action = the verb. PREFER one of: put, place, move, take, give, remove, transfer, leave, open, close when it fits the event. For enter/arrive/return use the closest verb ("enter", "return"); for leave/exit/walk-out use "leave".
+- action = the verb. PREFER one of: put, place, move, take, give, remove, transfer, leave, open, close, tell, inform when it fits the event. For enter/arrive/return use the closest verb ("enter", "return"); for leave/exit/walk-out use "leave"; for communication of a state use "tell" or "inform".
 - theme = the object acted on. For a presence-change (leave/enter/arrive/return), theme = the PLACE (e.g. "room").
 - location = the object's RESULTING place after the action (where the theme ends up), or null for a non-spatial action. For "put the ball in the basket", location = "basket". For "leaves the room" (non-spatial w.r.t. an object), location = null.
 - participants = ONLY the cognizers NAMED in THAT event. Do NOT infer who else is present, watching, or in the room. If the event names one person, participants has exactly that one person.
 - time = an explicit timestamp/clock phrase if the event states one, else null.
 - Array order = narrative order. One JSON object per event.
 - If nothing physical happens, output [].
+- For tell/inform: participants = [teller, recipient...]; theme = the object whose state is conveyed; location = the conveyed state value (where the theme is, or its content). A tell does NOT imply physical co-location — the recipient can be anywhere.
 
 WORKED EXAMPLE 1:
 
@@ -62,6 +63,16 @@ JSON array:
   {"actor":"Mary","action":"place","theme":"letter","location":"desk","participants":["Mary"],"time":null}
 ]
 (Tom's "left the office" and Mary's "returned" are emitted as their own presence-change events. "took the keys" has location=null — taking is a transfer of custody, no resulting place is named.)
+
+WORKED EXAMPLE 3 (being told):
+
+Passage:
+  Anne is in the kitchen. Sally calls Anne and tells her the ball is now in the box.
+JSON array:
+[
+  {"actor":"Sally","action":"tell","theme":"ball","location":"box","participants":["Sally","Anne"],"time":null}
+]
+(A "tell" conveys a state about a theme: theme=ball, location=box. participants lists the teller first then the recipient(s). The recipient learns the state WITHOUT being in the room — tell does not imply physical co-location.)
 
 Passage:
 {passage}

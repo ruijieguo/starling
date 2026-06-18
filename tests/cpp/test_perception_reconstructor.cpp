@@ -126,3 +126,44 @@ TEST(PerceptionReconstructor, SallyAnneLocationPresence) {
     ASSERT_TRUE(anne.has_value());
     EXPECT_EQ(anne->state_value, "box");
 }
+
+// Task 2.2: told channel.
+// Carol tells Dave the ball is in the box. Dave is named ONLY in the tell —
+// he must (a) learn the told state (last_known=box) and (b) NOT be credited
+// as a physical witness of the put/move events (exactly 1 perception row).
+// A purely-absent outsider (Eve) has no perception row at all.
+TEST(PerceptionReconstructor, ToldChannelRecipientLearnsStateNotPhysicalWitness) {
+    auto a = open_migrated();
+    const char* T = "t-tell";
+    // Physical events: Sally puts ball in basket, Anne moves it to box.
+    seed_event(*a, T, "f0", "Sally", "put",  "ball", "basket", R"(["Sally"])",        1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "f1", "Anne",  "move", "ball", "box",    R"(["Anne"])",         2, "2026-01-01T00:00:02Z");
+    // Tell event: Carol (actor) tells Dave (recipient) the ball is in the box.
+    // Dave appears ONLY in this tell — never in a physical event.
+    seed_event(*a, T, "f2", "Carol", "tell", "ball", "box",    R"(["Carol","Dave"])", 3, "2026-01-01T00:00:03Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Dave was told ball is in box → last_known = box.
+    auto dave = ps.last_known(T, "Dave", "ball", "location", AS_OF);
+    ASSERT_TRUE(dave.has_value()) << "Dave should know about the ball via tell";
+    EXPECT_EQ(dave->state_value, "box");
+
+    // Dave must NOT be a physical witness of f0/f1 — he has exactly ONE perception row
+    // (from the tell, source_event_id = "f2"), not three.
+    auto dave_rows = ps.perceived_for_theme(T, "Dave", "ball", AS_OF);
+    EXPECT_EQ(dave_rows.size(), 1u)
+        << "Dave should have exactly 1 perception row (the tell), not rows for put/move";
+    if (!dave_rows.empty()) {
+        EXPECT_EQ(dave_rows[0].source_event_id, "f2")
+            << "Dave's perception row must come from the tell event";
+    }
+
+    // A purely-absent outsider (Eve) has no perception row at all.
+    auto eve = ps.last_known(T, "Eve", "ball", "location", AS_OF);
+    EXPECT_FALSE(eve.has_value()) << "Eve was never in a physical event or tell — no perception";
+}
