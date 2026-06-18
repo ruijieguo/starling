@@ -149,3 +149,56 @@ TEST(WhatDoesXThink, FirstOrderStaleAndFresh) {
         *a, frontier, "Charlie", "ball", T, AS_OF);
     EXPECT_FALSE(nobody.has_belief);        // never perceived → unknown
 }
+
+// Phase 3: Second-order via perception intersection.
+// Sally-Anne setup (same 3 events):
+//   e0 Sally put ball→basket (Sally present, Anne present)
+//   e1 Sally leave room       (Sally departs)
+//   e2 Anne  move ball→box    (Anne present only)
+//
+// Anne's model of Sally (observer=Anne, x=Sally):
+//   Intersection of Anne's and Sally's perceived events for "ball".
+//   Sally perceived: {e0=basket}.  Anne perceived: {e0=basket, e2=box}.
+//   Intersection = {e0} → highest-position in intersection = basket.
+//   → what_does_X_think(Sally, ball, observer=Anne) == "basket"
+//
+// Sally's model of Anne (observer=Sally, x=Anne):
+//   Anne perceived: {e0=basket, e2=box}.  Sally perceived: {e0=basket}.
+//   Intersection = {e0} → highest-position = basket.
+//   → what_does_X_think(Anne, ball, observer=Sally) == "basket"
+//   (Sally only co-saw the put with Anne; she left before the move.)
+TEST(WhatDoesXThink, SecondOrderObserverIntersection) {
+    auto a = open_migrated();
+    const char* T = "t2";
+    seed_event(*a, T, "f0", "Sally", "put",   "ball", "basket", R"(["Sally","Anne"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "f1", "Sally", "leave", "room", "",        R"(["Sally"])",        2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "f2", "Anne",  "move",  "ball", "box",     R"(["Anne"])",          3, "2026-01-01T00:00:03Z");
+    starling::cognizer::PerceptionReconstructor(a->connection()).reconstruct(T);
+
+    starling::cognizer::KnowledgeFrontier frontier(*a);
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Anne's model of Sally: Anne co-perceived e0 (put→basket) with Sally;
+    // Sally was gone for e2 (move→box). Intersection = {e0} → basket.
+    auto sally_via_anne = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Sally", "ball", T, AS_OF, "Anne");
+    EXPECT_TRUE(sally_via_anne.has_belief);
+    EXPECT_EQ(sally_via_anne.state_value, "basket")
+        << "Anne's model of Sally: only co-perceived e0=basket";
+
+    // First-order Anne stays box (control: observer="" path unchanged).
+    auto anne_first = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Anne", "ball", T, AS_OF);
+    EXPECT_TRUE(anne_first.has_belief);
+    EXPECT_EQ(anne_first.state_value, "box")
+        << "First-order Anne must still return box";
+    EXPECT_FALSE(anne_first.is_stale);
+
+    // Sally's model of Anne: Sally only co-perceived e0 with Anne (not e2 which
+    // occurred after Sally left). Intersection = {e0} → basket.
+    auto anne_via_sally = starling::tom::mentalizing::what_does_X_think(
+        *a, frontier, "Anne", "ball", T, AS_OF, "Sally");
+    EXPECT_TRUE(anne_via_sally.has_belief);
+    EXPECT_EQ(anne_via_sally.state_value, "basket")
+        << "Sally's model of Anne: only co-perceived e0=basket (Sally left before move)";
+}
