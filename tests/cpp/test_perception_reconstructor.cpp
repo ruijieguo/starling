@@ -208,3 +208,49 @@ TEST(PerceptionReconstructor, UnexpectedContentsSeeApparentOpenActual) {
     EXPECT_EQ(anne->state_value, "Smarties")
         << "Anne's last content perception must remain the apparent Smarties";
 }
+
+// Phase 4 / code-review fix: close events must NOT write any perception row.
+// close is in kActionPredicates but matched no B branch, so a close carrying a
+// non-empty location fell through to the physical-location branch and wrote a
+// spurious state_dim="location" row on a content-typed container.
+//
+// Scenario:
+//   d0 Anne see   tube → "Smarties" (seq 1) — Anne learns apparent content
+//   d1 Anne leave room               (seq 2) — Anne departs
+//   d2 Tom  open  tube → "pencils"  (seq 3) — Tom learns actual content (Anne absent)
+//   d3 Tom  close tube, location="shelf" (seq 4) — resting-place annotation on the
+//                                                   close event; must write NO
+//                                                   perception for any witness.
+TEST(PerceptionReconstructor, CloseEventWritesNoPerception) {
+    auto a = open_migrated();
+    const char* T = "t-close";
+    seed_event(*a, T, "d0", "Anne", "see",   "tube", "Smarties", R"(["Anne"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "d1", "Anne", "leave", "room", "",         R"(["Anne"])", 2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "d2", "Tom",  "open",  "tube", "pencils",  R"(["Tom"])",  3, "2026-01-01T00:00:03Z");
+    // close carries a non-empty location ("shelf") — the bug caused this to write
+    // a spurious state_dim="location" row for all present witnesses (Tom, here).
+    seed_event(*a, T, "d3", "Tom",  "close", "tube", "shelf",    R"(["Tom"])",  4, "2026-01-01T00:00:04Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // --- close must NOT write a spurious location row ---
+    auto tom_loc = ps.last_known(T, "Tom", "tube", "location", AS_OF);
+    EXPECT_FALSE(tom_loc.has_value())
+        << "close must NOT write a location perception row (spurious location bug)";
+    auto anne_loc = ps.last_known(T, "Anne", "tube", "location", AS_OF);
+    EXPECT_FALSE(anne_loc.has_value())
+        << "close must NOT write a location perception row for Anne either";
+
+    // --- prior content perceptions remain intact ---
+    auto anne_content = ps.last_known(T, "Anne", "tube", "content", AS_OF);
+    ASSERT_TRUE(anne_content.has_value()) << "Anne's see must write a content perception";
+    EXPECT_EQ(anne_content->state_value, "Smarties");
+
+    auto tom_content = ps.last_known(T, "Tom", "tube", "content", AS_OF);
+    ASSERT_TRUE(tom_content.has_value()) << "Tom's open must write a content perception";
+    EXPECT_EQ(tom_content->state_value, "pencils");
+}

@@ -36,6 +36,9 @@ bool is_tell(const std::string& p) { return p == "tell" || p == "inform"; }
 bool is_see(const std::string& p) { return p == "see" || p == "look"; }
 bool is_reveal(const std::string& p) { return p == "open" || p == "reveal"; }
 bool is_content(const std::string& p) { return is_see(p) || is_reveal(p); }
+// close: hides container contents (physical state change only) — no new location
+// or content knowledge is conveyed to witnesses, so write NO perception row.
+bool is_close(const std::string& p) { return p == "close"; }
 std::vector<std::string> participants_of(const ScanEvent& ev) {
     std::vector<std::string> ps;
     if (!ev.actor.empty()) ps.push_back(ev.actor);
@@ -133,6 +136,9 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                     ps.upsert(row);
                 }
             }
+        } else if (is_close(ev.predicate)) {
+            // Closing a container hides its contents but conveys no new state to
+            // witnesses — write no perception (physical state change only).
         } else if (!ev.location.empty()) {  // physical location event
             for (const auto& w : witnesses) {
                 store::PerceptionStateRow row;
