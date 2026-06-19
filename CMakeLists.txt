@@ -109,6 +109,7 @@ target_sources(starling_core PRIVATE
     src/retrieval/retrieval_planner.cpp
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
+    src/cognizer/name_resolver.cpp
     src/cognizer/cognizer_hub.cpp
     src/cognizer/knowledge_frontier.cpp
     src/cognizer/perception_reconstructor.cpp
