@@ -131,8 +131,11 @@ class MemoryCore:
         # 第二条:episodic 抽取(叙事事件)。挂在第一条返回的同一 engram 上。
         engram_ref = out.get("engram_ref") or ""
         if engram_ref:
+            # Pass the adapter (Phase 2 Task 2.2) so the actor + each participant
+            # surface resolves to its canonical first-seen cognizer name, grounding
+            # name drift ("Xiao Hong"/"XiaoHong") to one entity.
             episodic = _core.EpisodicExtractor(
-                self.conn, self.llm, EPISODIC_EXTRACTION_PROMPT)
+                self.conn, self.llm, self.rt.adapter, EPISODIC_EXTRACTION_PROMPT)
             event_ids = episodic.extract(
                 passage=text, engram_ref=engram_ref, tenant=self.tenant,
                 agent_self=holder_id, now=created_iso)

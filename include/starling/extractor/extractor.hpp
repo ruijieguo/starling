@@ -3,6 +3,7 @@
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/persistence/connection.hpp"
+#include "starling/persistence/sqlite_adapter.hpp"
 
 #include <cstdint>
 #include <string>
@@ -28,6 +29,20 @@ public:
     Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter,
               std::string prompt_template = "")
         : conn_(conn), adapter_(adapter),
+          prompt_template_(std::move(prompt_template)) {}
+
+    // Phase 2 (Task 2.2): an OPTIONAL SqliteAdapter enables cognizer-name
+    // resolution. When present, each parsed statement's subject_id (a cognizer
+    // surface) is resolved to its canonical first-seen name (via CognizerHub,
+    // reusing the cognizers table) before validation + write, so name-surface
+    // drift grounds to one entity. The resolver registers on a miss inside the
+    // run's write transaction; it is best-effort (a failure returns the raw
+    // surface). The connection-only ctor preserves the pre-phase-2 behavior.
+    // store_adapter and conn MUST back the same database.
+    Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter,
+              starling::persistence::SqliteAdapter& store_adapter,
+              std::string prompt_template = "")
+        : conn_(conn), adapter_(adapter), store_adapter_(&store_adapter),
           prompt_template_(std::move(prompt_template)) {}
 
     ExtractionRunResult run(
@@ -67,6 +82,7 @@ public:
 private:
     starling::persistence::Connection& conn_;
     LLMAdapter& adapter_;
+    starling::persistence::SqliteAdapter* store_adapter_ = nullptr;  // null → raw subject_id (no name resolution)
     std::string prompt_template_;
 };
 

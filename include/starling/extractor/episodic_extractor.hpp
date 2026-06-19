@@ -14,6 +14,7 @@
 // python/starling/extractor/episodic_prompt.py),"{passage}" 字面替换。
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/persistence/connection.hpp"
+#include "starling/persistence/sqlite_adapter.hpp"
 
 #include <string>
 #include <string_view>
@@ -31,6 +32,21 @@ public:
     EpisodicExtractor(persistence::Connection& conn, LLMAdapter& adapter,
                       std::string prompt_template = "")
         : conn_(conn), adapter_(adapter),
+          prompt_template_(std::move(prompt_template)) {}
+
+    // Phase 2 (Task 2.2): an OPTIONAL SqliteAdapter enables cognizer-name
+    // resolution. When present, the actor + each participant surface is resolved
+    // to its canonical first-seen name (via CognizerHub, reusing the cognizers
+    // table) before the OCCURRED statement is written, so name-surface drift
+    // ("Xiao Hong"/"XiaoHong") grounds to one entity. The resolver registers on a
+    // miss inside the existing write transaction; it is best-effort (a resolve
+    // failure returns the raw surface). The connection-only ctor preserves the
+    // pre-phase-2 behavior (raw surfaces). store_adapter and conn MUST back the
+    // same database.
+    EpisodicExtractor(persistence::Connection& conn, LLMAdapter& adapter,
+                      persistence::SqliteAdapter& store_adapter,
+                      std::string prompt_template = "")
+        : conn_(conn), adapter_(adapter), store_adapter_(&store_adapter),
           prompt_template_(std::move(prompt_template)) {}
 
     // 抽取叙事 passage 的物理事件并写库。engram_ref 作为语句证据来源;
@@ -51,6 +67,7 @@ public:
 private:
     persistence::Connection& conn_;
     LLMAdapter& adapter_;
+    persistence::SqliteAdapter* store_adapter_ = nullptr;  // null → raw surfaces (no name resolution)
     std::string prompt_template_;
 };
 

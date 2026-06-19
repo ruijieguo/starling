@@ -9,6 +9,8 @@
 #include "starling/extractor/episodic_extractor.hpp"
 
 #include "starling/bus/statement_writer.hpp"
+#include "starling/cognizer/cognizer_hub.hpp"
+#include "starling/cognizer/name_resolver.hpp"
 #include "starling/crypto/sha256.hpp"
 #include "starling/extractor/extraction_span_key.hpp"
 #include "starling/extractor/extracted_statement.hpp"
@@ -16,6 +18,8 @@
 #include "starling/schema/normalize_theme.hpp"
 #include "starling/schema/statement_enums.hpp"
 #include "starling/store/episodic_event_store.hpp"
+
+#include <optional>
 
 #include <nlohmann/json.hpp>
 
@@ -104,6 +108,18 @@ EpisodicExtractionResult EpisodicExtractor::extract(
     StatementWriter writer(conn_);
     store::EpisodicEventStore ep_store(conn_);
 
+    // Phase 2 (Task 2.2): when a store adapter was provided, resolve cognizer
+    // surfaces (actor + each participant) to their canonical first-seen name so
+    // surface drift grounds to one entity. The Hub's register-on-miss writes join
+    // this open transaction (it manages none of its own). Best-effort: the
+    // resolver returns the raw surface on any error, so it never breaks remember.
+    std::optional<cognizer::CognizerHub> hub;
+    if (store_adapter_ != nullptr) hub.emplace(*store_adapter_);
+    const auto resolve_name = [&](const std::string& surface) -> std::string {
+        if (!hub) return surface;
+        return cognizer::resolve_or_register_cognizer(*hub, tenant, surface);
+    };
+
     long long seq = 0;
     for (const auto& el : arr) {
         if (!el.is_object()) continue;  // lenient: skip non-objects.
@@ -118,6 +134,10 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         }
         ++seq;
 
+        // Resolve the actor surface to its canonical first-seen name (no-op when
+        // no store adapter was wired). The participant cast is resolved below.
+        actor = resolve_name(actor);
+
         // location/time 可空:JSON null 或缺省 → "" (= episodic_events SQL NULL)。
         std::string location;
         if (el.contains("location") && el["location"].is_string()) {
@@ -127,10 +147,13 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         if (el.contains("time") && el["time"].is_string()) {
             event_time = el["time"].get<std::string>();
         }
+        // Resolve EVERY participant (not just the actor): B's PerceptionReconstructor
+        // builds its presence cast from actor + participants, so mixing canonical
+        // and raw names would silently split presence.
         std::vector<std::string> participants;
         if (el.contains("participants") && el["participants"].is_array()) {
             for (const auto& p : el["participants"]) {
-                if (p.is_string()) participants.push_back(p.get<std::string>());
+                if (p.is_string()) participants.push_back(resolve_name(p.get<std::string>()));
             }
         }
 

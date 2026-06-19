@@ -59,7 +59,10 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
         return r;
     }
 
-    extractor::Extractor ex(adapter.connection(), llm, std::string(prompt_template));
+    // Pass the adapter (Phase 2 Task 2.2) so the belief subject surface resolves
+    // to its canonical first-seen cognizer name (CognizerHub) before the write,
+    // grounding name drift to one entity. Best-effort + inside the run's txn.
+    extractor::Extractor ex(adapter.connection(), llm, adapter, std::string(prompt_template));
     const auto run = ex.run(r.engram_ref, p.payload, p.holder_id, p.tenant_id,
                             /*existing_ref_map=*/{}, p.interlocutor);
     r.statement_ids = run.accepted_statement_ids;

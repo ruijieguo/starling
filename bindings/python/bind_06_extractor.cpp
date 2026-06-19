@@ -258,6 +258,18 @@ void bind_06_extractor(pybind11::module_& m) {
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
            py::arg("connection"), py::arg("adapter"),
            py::arg("prompt_template") = "")
+        // Phase 2 (Task 2.2): optional store-adapter ctor — enables cognizer-name
+        // resolution (actor + each participant → canonical first-seen name).
+        // Mirrors PerceptionReconstructor's (conn, adapter) overload. keep_alive
+        // each reference param so it outlives the extractor.
+        .def(py::init([](starling::persistence::Connection& conn,
+                         starling::extractor::LLMAdapter& a,
+                         starling::persistence::SqliteAdapter& store_adapter,
+                         const std::string& prompt_template) {
+            return new starling::extractor::EpisodicExtractor(conn, a, store_adapter, prompt_template);
+        }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
+           py::arg("connection"), py::arg("adapter"), py::arg("store_adapter"),
+           py::arg("prompt_template") = "")
         .def("extract",
              [](starling::extractor::EpisodicExtractor& self,
                 const std::string& passage,

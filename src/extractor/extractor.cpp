@@ -3,6 +3,8 @@
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/bus/pipeline_ledger.hpp"
+#include "starling/cognizer/cognizer_hub.hpp"
+#include "starling/cognizer/name_resolver.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/bus/statement_writer.hpp"
 #include "starling/crypto/sha256.hpp"
@@ -177,6 +179,14 @@ ExtractionRunResult Extractor::run(
     // (TransactionGuard does it).
     starling::persistence::TransactionGuard tx(conn_);
 
+    // Phase 2 (Task 2.2): when a store adapter was provided, resolve each
+    // statement's subject_id (a cognizer surface) to its canonical first-seen
+    // name so name-surface drift grounds to one entity. The Hub's register-on-miss
+    // writes join this run's open transaction. Best-effort: the resolver returns
+    // the raw surface on any error.
+    std::optional<starling::cognizer::CognizerHub> cog_hub;
+    if (store_adapter_ != nullptr) cog_hub.emplace(*store_adapter_);
+
     PipelineLedger ledger(conn_);
     const std::string run_id = ledger.start_run(holder_tenant_id, engram_ref_id, "{}");
     const std::string run_started_event_id = emit_pipeline_event(
@@ -247,6 +257,13 @@ ExtractionRunResult Extractor::run(
             stmt.chunk_index      = chunk_index;
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
+            }
+            // Resolve the cognizer subject surface to its canonical first-seen
+            // name (no-op when no store adapter was wired, or for non-cognizer
+            // subjects — those carry an external ref, not a name surface).
+            if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
+                stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
+                    *cog_hub, holder_tenant_id, stmt.subject_id);
             }
             if (!interlocutor.empty()) {
                 // 对话语境：grounding 参与方 + 可见性都含 self+interlocutor（#2 前提 perceived_by⊇parties）。

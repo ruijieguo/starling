@@ -5,6 +5,8 @@
 //         选最高 position(rbegin)的匹配 dim 行 → observer 对 x 的心智模型。
 // content 维推断留给 phase 4。
 #include "starling/tom/mentalizing.hpp"
+#include "starling/cognizer/cognizer_hub.hpp"
+#include "starling/cognizer/name_resolver.hpp"
 #include "starling/schema/normalize_theme.hpp"
 #include "starling/store/perception_state_store.hpp"
 #include <optional>
@@ -20,6 +22,15 @@ StateBelief what_does_X_think(
     (void)frontier;  // reserved for does_X_know-aligned access checks (phase 5)
     auto& conn = adapter.connection();
     const std::string theme_n = schema::normalize_theme(theme);  // match the write side
+    // Resolve cognizer surfaces to their canonical first-seen name (query-side:
+    // lookup-only, never register) so a drifted query surface ("XiaoHong") grounds
+    // against the canonical name stored by the write path. Best-effort: unknown
+    // surfaces pass through unchanged.
+    cognizer::CognizerHub hub(adapter);
+    const std::string x_n   = cognizer::resolve_cognizer(hub, tenant, x);
+    const std::string obs_n = observer.empty()
+        ? std::string()
+        : cognizer::resolve_cognizer(hub, tenant, observer);
     store::PerceptionStateStore ps(conn);
     StateBelief out;
     // phase 4: infer the dimension the theme is tracked in — "content" if the theme
@@ -28,12 +39,12 @@ StateBelief what_does_X_think(
     const std::string dim = ps.dim_for_theme(tenant, theme_n, as_of);
     if (dim.empty()) return out;
     std::optional<store::PerceptionStateRow> row;
-    if (observer.empty()) {
-        row = ps.last_known(tenant, x, theme_n, dim, as_of);   // first-order
+    if (obs_n.empty()) {
+        row = ps.last_known(tenant, x_n, theme_n, dim, as_of);   // first-order
     } else {
         // observer's model of x: events both perceived (single-scene co-presence).
-        auto x_rows   = ps.perceived_for_theme(tenant, x, theme_n, as_of);
-        auto obs_rows = ps.perceived_for_theme(tenant, observer, theme_n, as_of);
+        auto x_rows   = ps.perceived_for_theme(tenant, x_n, theme_n, as_of);
+        auto obs_rows = ps.perceived_for_theme(tenant, obs_n, theme_n, as_of);
         std::unordered_set<std::string> obs_events;
         for (const auto& r : obs_rows) obs_events.insert(r.source_event_id);
         for (auto it = x_rows.rbegin(); it != x_rows.rend(); ++it) {   // highest position first
