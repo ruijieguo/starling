@@ -6,7 +6,7 @@ from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
 
 def _install_spies(monkeypatch, captured):
     def fake_remember(adapter, llm, prompt, **kw):
-        captured["belief"] = prompt
+        captured.setdefault("belief", prompt)
         return {"engram_ref": "eng-1", "statement_ids": [], "outcome": "stub"}
 
     class FakeEpisodic:
@@ -79,3 +79,33 @@ def test_default_policy_built(tmp_path, monkeypatch):
     assert list(pol.extra_core_predicates) == []
     assert pol.confidence_drop_floor == 0.30
     assert pol.weak_inference_floor == 0.50
+
+
+def test_third_general_pass_runs_with_self_filled_prompt(tmp_path, monkeypatch):
+    import starling._memory_core as mc
+    from starling.extractor.config import ExtractionConfig
+    prompts = []
+
+    def spy(adapter, llm, prompt, **kw):
+        prompts.append(prompt)
+        return {"engram_ref": "eng-1", "statement_ids": [], "outcome": "stub"}
+
+    class FakeEpisodic:
+        def __init__(self, *a):
+            pass
+
+        def extract(self, **kw):
+            return []
+
+    monkeypatch.setattr(mc._core, "memory_remember", spy)
+    monkeypatch.setattr(mc._core, "EpisodicExtractor", FakeEpisodic)
+    mem = starling.Memory.open(
+        str(tmp_path / "m.db"), agent="self",
+        llm=starling.make_stub_llm(default_response="[]"))
+    mem._core.remember("Postgres is a relational database.")
+
+    assert len(prompts) == 2  # belief (#1) then general (#2)
+    assert prompts[0] == ExtractionConfig().belief_prompt
+    expected_general = ExtractionConfig().general_fact_prompt.replace("{self}", "self")
+    assert prompts[1] == expected_general
+    assert "{self}" not in prompts[1]

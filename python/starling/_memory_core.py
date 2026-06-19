@@ -163,6 +163,22 @@ class MemoryCore:
                         self.conn, self.rt.adapter).reconstruct(tenant=self.tenant)
                 except Exception:  # noqa: BLE001 — perception is best-effort; never fail remember
                     pass
+
+        # 第三条:general-fact 抽取(陈述性世界事实)。复用 belief Extractor:
+        # 同一(idempotent)engram 上再跑一次 memory_remember,用 general prompt。
+        # {self} 由 holder_id(=self.agent)填充,使事实 holder=self.agent → 默认
+        # recall(holder=self) 命中。best-effort 第三条,空集正常。
+        gf_prompt = self._extraction.general_fact_prompt.replace("{self}", holder_id)
+        gf = _core.memory_remember(
+            self.rt.adapter, self.llm, gf_prompt,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, payload=text.encode("utf-8"),
+            policy=_build_policy(self._extraction))
+        gf_ids = gf.get("statement_ids", []) if gf else []
+        if gf_ids:
+            out["statement_ids"] = list(out.get("statement_ids", [])) + list(gf_ids)
         return out
 
     def recall(self, query: str, *, perspective: str = "first_person",
