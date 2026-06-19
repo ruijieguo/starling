@@ -30,10 +30,10 @@ RULES:
 - Extract EVERY physical event/action — object manipulations AND movements of people.
 - PRESENCE-CHANGES ARE EVENTS. Emit enter / leave / arrive / return as their OWN events. A departure is exactly what makes a LATER event unwitnessed by the person who left, so it MUST NOT be dropped. Never skip a "leaves the room" / "comes back" / "walks out" — give each its own array element in order.
 - actor = the cognizer (person) performing the action.
-- action = the verb. PREFER one of: put, place, move, take, give, remove, transfer, leave, open, close, tell, inform when it fits the event. For enter/arrive/return use the closest verb ("enter", "return"); for leave/exit/walk-out use "leave"; for communication of a state use "tell" or "inform".
+- action = the verb. PREFER one of: put, place, move, take, give, remove, transfer, leave, open, close, tell, inform, find, discover when it fits the event. For enter/arrive/return use the closest verb ("enter", "return"); for leave/exit/walk-out use "leave"; for communication of a state use "tell" or "inform"; for discovering / noticing an object that is already in a place use "find".
 - theme = the object acted on. For a presence-change (leave/enter/arrive/return), theme = the PLACE (e.g. "room").
-- location = the object's RESULTING place after the action (where the theme ends up), or null for a non-spatial action. For "put the ball in the basket", location = "basket". For "leaves the room" (non-spatial w.r.t. an object), location = null.
-- participants = ONLY the cognizers NAMED in THAT event. Do NOT infer who else is present, watching, or in the room. If the event names one person, participants has exactly that one person.
+- location = WHERE THE THEME IS by virtue of the event — either the RESULTING place after an action (where the theme ends up), OR the INITIAL place where the theme is FOUND/located. For "put the ball in the basket", location = "basket". For "they find the hat in the suitcase" / "the hat is in the suitcase" (a state-establishing INITIAL location), action = "find", theme = "hat", location = "suitcase" — capture this, because a person who later leaves keeps believing this initial location. For "leaves the room" (non-spatial w.r.t. an object), location = null. For "took the keys" (custody transfer, no resulting place), location = null.
+- participants = ONLY the cognizers NAMED in THAT event. Do NOT infer who else is present, watching, or in the room. If the event names one person, participants has exactly that one person. If a clause has a conjoined subject ("X and Y …") or a plural pronoun referring to people named earlier ("they …" / "them"), RESOLVE it to the individual names: list each person in participants (e.g. ["Xiao Li", "Youyou"]) and pick one named individual as the actor — NEVER emit a single "X and Y" string, or a bare "they", as a person.
 - time = an explicit timestamp/clock phrase if the event states one, else null.
 - Array order = narrative order. One JSON object per event.
 - If nothing physical happens, output [].
@@ -85,6 +85,18 @@ JSON array:
   {"actor":"Tom","action":"open","theme":"Smarties tube","location":"pencils","participants":["Tom"],"time":null}
 ]
 (For a closed labelled container, "see" records the APPARENT content from the label (location="Smarties"); "open"/"reveal" records the ACTUAL content (location="pencils"). The container is the theme in both; the content goes in the location field.)
+
+WORKED EXAMPLE 5 (find = initial location; conjoined subject resolved):
+
+Passage:
+  Xiao Li and Youyou are in the basement. They find a hat in the suitcase. Youyou leaves the basement. Xiao Li moves the hat to the storage locker.
+JSON array:
+[
+  {"actor":"Xiao Li","action":"find","theme":"hat","location":"suitcase","participants":["Xiao Li","Youyou"],"time":null},
+  {"actor":"Youyou","action":"leave","theme":"basement","location":null,"participants":["Youyou"],"time":null},
+  {"actor":"Xiao Li","action":"move","theme":"hat","location":"storage locker","participants":["Xiao Li"],"time":null}
+]
+(The "find" establishes the hat's INITIAL location — location="suitcase" — which is what someone who later leaves keeps believing. The conjoined "they find" is resolved to the two individuals in participants (NOT a "Xiao Li and Youyou" string). Youyou's leave is its own event; she does not witness the later move, so she still believes the hat is in the suitcase.)
 
 Passage:
 {passage}
