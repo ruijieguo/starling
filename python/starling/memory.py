@@ -112,25 +112,26 @@ class TickStats:
 class Memory:
     """Public facade over the Starling write path."""
 
-    def __init__(self, rt, *, agent: str, tenant_id: str, llm):
+    def __init__(self, rt, *, agent: str, tenant_id: str, llm, extraction=None):
         # `_rt` stays addressable: examples/quickstart.py and tests use
         # `mem._rt.adapter` as the single WAL adapter for C++ engine calls.
         self._rt = rt
         self._core = MemoryCore(rt, agent=agent, tenant_id=tenant_id, llm=llm,
-                                adapter_name="facade", source_prefix="mem-")
+                                adapter_name="facade", source_prefix="mem-",
+                                extraction=extraction)
         # Embedded facade: deterministic stub embedder (no network).
         self._core.set_embedder(_core.StubEmbeddingAdapter(8))
 
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
-             llm=None) -> "Memory":
+             llm=None, extraction=None) -> "Memory":
         # The embedded single-process facade can't satisfy the full local-store
         # preflight (testing_helper_marker is test-only; engram_per_record_key is
         # deferred to M0.4+KMS); relax to the embedded subset so it reaches READY.
         _runtime.relax_preflight_for_embedded()
         rt = _runtime._build_local_store_sqlite_runtime(Path(db_path))
         rt.start()
-        return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm)
+        return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm, extraction=extraction)
 
     def remember(self, text: str, *, holder: Optional[str] = None,
                  interlocutor: Optional[str] = None,

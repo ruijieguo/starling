@@ -21,6 +21,7 @@ from typing import Optional
 from starling import _core
 from starling.extractor.prompts import EXTRACTION_PROMPT
 from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
+from starling.extractor.config import ExtractionConfig
 
 
 def _make_vector_index(backend: str, dim: int, store_path):
@@ -72,13 +73,15 @@ class MemoryCore:
 
     def __init__(self, rt, *, agent: str, tenant_id: str, llm=None,
                  adapter_name: str, source_prefix: str,
-                 vector_backend: str = "sqlite", vector_store_path=None):
+                 vector_backend: str = "sqlite", vector_store_path=None,
+                 extraction: "ExtractionConfig | None" = None):
         self.rt = rt
         self.agent = agent
         self.tenant = tenant_id
         self.llm = llm
         self.adapter_name = adapter_name
         self.source_prefix = source_prefix
+        self._extraction = extraction or ExtractionConfig()
         # Shared connection handle for the extractor (keep-alive in binding).
         self.conn = rt.adapter.connection()
         # 向量后端在 set_embedder 时按 embedder 维度创建(zvec collection 需固定 dim)。
@@ -122,7 +125,7 @@ class MemoryCore:
         created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         holder_id = holder or self.agent
         out = _core.memory_remember(
-            self.rt.adapter, self.llm, EXTRACTION_PROMPT,
+            self.rt.adapter, self.llm, self._extraction.belief_prompt,
             tenant_id=self.tenant, holder_id=holder_id,
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
@@ -135,7 +138,7 @@ class MemoryCore:
             # surface resolves to its canonical first-seen cognizer name, grounding
             # name drift ("Xiao Hong"/"XiaoHong") to one entity.
             episodic = _core.EpisodicExtractor(
-                self.conn, self.llm, self.rt.adapter, EPISODIC_EXTRACTION_PROMPT)
+                self.conn, self.llm, self.rt.adapter, self._extraction.episodic_prompt)
             event_ids = episodic.extract(
                 passage=text, engram_ref=engram_ref, tenant=self.tenant,
                 agent_self=holder_id, now=created_iso)
