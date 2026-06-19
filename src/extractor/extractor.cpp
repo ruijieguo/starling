@@ -274,7 +274,7 @@ ExtractionRunResult Extractor::run(
             } else if (stmt.perceived_by.empty()) {
                 stmt.perceived_by = {std::string(holder_id)};
             }
-            const ValidationOutcome v = validate_extracted_statement(stmt);
+            const ValidationOutcome v = validate_extracted_statement(stmt, policy_);
             if (!v.ok()) {
                 any_rejected_this_attempt = true;
                 continue;

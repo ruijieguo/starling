@@ -2,6 +2,7 @@
 
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/llm_adapter.hpp"
+#include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 
@@ -27,9 +28,9 @@ struct ExtractionRunResult {
 class Extractor {
 public:
     Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter,
-              std::string prompt_template = "")
+              std::string prompt_template = "", ValidationPolicy policy = {})
         : conn_(conn), adapter_(adapter),
-          prompt_template_(std::move(prompt_template)) {}
+          prompt_template_(std::move(prompt_template)), policy_(std::move(policy)) {}
 
     // Phase 2 (Task 2.2): an OPTIONAL SqliteAdapter enables cognizer-name
     // resolution. When present, each parsed statement's subject_id (a cognizer
@@ -41,9 +42,9 @@ public:
     // store_adapter and conn MUST back the same database.
     Extractor(starling::persistence::Connection& conn, LLMAdapter& adapter,
               starling::persistence::SqliteAdapter& store_adapter,
-              std::string prompt_template = "")
+              std::string prompt_template = "", ValidationPolicy policy = {})
         : conn_(conn), adapter_(adapter), store_adapter_(&store_adapter),
-          prompt_template_(std::move(prompt_template)) {}
+          prompt_template_(std::move(prompt_template)), policy_(std::move(policy)) {}
 
     ExtractionRunResult run(
         std::string_view                        engram_ref_id,
@@ -84,6 +85,7 @@ private:
     LLMAdapter& adapter_;
     starling::persistence::SqliteAdapter* store_adapter_ = nullptr;  // null → raw subject_id (no name resolution)
     std::string prompt_template_;
+    ValidationPolicy policy_;
 };
 
 }  // namespace starling::extractor

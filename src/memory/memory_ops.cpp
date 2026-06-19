@@ -20,7 +20,8 @@ namespace starling::memoryops {
 RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& llm,
                          std::string_view prompt_template,
-                         const RememberParams& p) {
+                         const RememberParams& p,
+                         const extractor::ValidationPolicy& policy) {
     evidence::EngramInput in;
     in.tenant_id              = p.tenant_id;
     in.source.adapter_name    = p.adapter_name;
@@ -62,7 +63,7 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
     // Pass the adapter (Phase 2 Task 2.2) so the belief subject surface resolves
     // to its canonical first-seen cognizer name (CognizerHub) before the write,
     // grounding name drift to one entity. Best-effort + inside the run's txn.
-    extractor::Extractor ex(adapter.connection(), llm, adapter, std::string(prompt_template));
+    extractor::Extractor ex(adapter.connection(), llm, adapter, std::string(prompt_template), policy);
     const auto run = ex.run(r.engram_ref, p.payload, p.holder_id, p.tenant_id,
                             /*existing_ref_map=*/{}, p.interlocutor);
     r.statement_ids = run.accepted_statement_ids;

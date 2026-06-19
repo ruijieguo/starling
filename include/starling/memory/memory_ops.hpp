@@ -14,6 +14,7 @@
 
 #include "starling/embedding/embedding_worker.hpp"
 #include "starling/extractor/llm_adapter.hpp"
+#include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
 
@@ -45,7 +46,8 @@ struct RememberOutcome {
 RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& llm,
                          std::string_view prompt_template,
-                         const RememberParams& params);
+                         const RememberParams& params,
+                         const extractor::ValidationPolicy& policy = {});
 
 struct TickOutcome {
     int embedded = 0;
