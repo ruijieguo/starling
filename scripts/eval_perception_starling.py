@@ -106,6 +106,11 @@ _SINGULAR_S_STOPLIST = {"bus", "lens", "series", "species", "news"}
 def _singularize(w: str) -> str:
     if w in _IRREGULAR_PLURALS:
         return _IRREGULAR_PLURALS[w]
+    # Uninflected guard hoisted to the top to match C++ normalize_theme's
+    # is_singular_s early-return (else "series"/"species" hit the -ies rule
+    # below and become "sery"/"specy", drifting from the C++ side).
+    if w.endswith(("ss", "us", "is")) or w in _SINGULAR_S_STOPLIST:
+        return w
     if len(w) > 3 and w.endswith("ies"):
         return w[:-3] + "y"
     if len(w) > 3 and w.endswith("es"):
