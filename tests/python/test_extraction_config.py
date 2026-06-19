@@ -6,12 +6,14 @@ import starling
 from starling.extractor.config import ExtractionConfig
 from starling.extractor.prompts import EXTRACTION_PROMPT
 from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
+from starling.extractor.general_fact_prompt import GENERAL_FACT_EXTRACTION_PROMPT
 
 
 def test_defaults_match_module_constants():
     c = ExtractionConfig()
     assert c.belief_prompt == EXTRACTION_PROMPT
     assert c.episodic_prompt == EPISODIC_EXTRACTION_PROMPT
+    assert c.general_fact_prompt == GENERAL_FACT_EXTRACTION_PROMPT
     assert c.extra_core_predicates == ()
     assert c.confidence_drop_floor == 0.30
     assert c.weak_inference_floor == 0.50

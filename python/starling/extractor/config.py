@@ -15,12 +15,14 @@ from dataclasses import dataclass
 
 from .prompts import EXTRACTION_PROMPT
 from .episodic_prompt import EPISODIC_EXTRACTION_PROMPT
+from .general_fact_prompt import GENERAL_FACT_EXTRACTION_PROMPT
 
 
 @dataclass(frozen=True)
 class ExtractionConfig:
     belief_prompt: str = EXTRACTION_PROMPT
     episodic_prompt: str = EPISODIC_EXTRACTION_PROMPT
+    general_fact_prompt: str = GENERAL_FACT_EXTRACTION_PROMPT
     extra_core_predicates: tuple[str, ...] = ()
     confidence_drop_floor: float = 0.30
     weak_inference_floor: float = 0.50
