@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "starling/extractor/statement_validator.hpp"
 #include "starling/memory/memory_ops.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/store/episodic_event_store.hpp"
@@ -27,7 +28,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& tenant_id, const std::string& holder_id,
              const std::string& interlocutor, const std::string& adapter_name,
              const std::string& source_prefix, const std::string& created_at_iso8601,
-             const py::bytes& payload) {
+             const py::bytes& payload,
+             starling::extractor::ValidationPolicy policy) {
               starling::memoryops::RememberParams p;
               p.tenant_id         = tenant_id;
               p.holder_id         = holder_id;
@@ -42,7 +44,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
               starling::memoryops::RememberOutcome r;
               {
                   py::gil_scoped_release release;
-                  r = starling::memoryops::remember(adapter, llm, prompt_template, p);
+                  r = starling::memoryops::remember(adapter, llm, prompt_template, p, policy);
               }
               return py::dict("engram_ref"_a = r.engram_ref,
                               "statement_ids"_a = r.statement_ids,
@@ -51,7 +53,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("adapter"), py::arg("llm"), py::arg("prompt_template"),
           py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
           py::arg("adapter_name"), py::arg("source_prefix"),
-          py::arg("created_at_iso8601"), py::arg("payload"));
+          py::arg("created_at_iso8601"), py::arg("payload"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
 
     m.def("memory_tick_all",
           [](starling::persistence::SqliteAdapter& adapter,

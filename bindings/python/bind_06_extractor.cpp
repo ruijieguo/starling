@@ -18,6 +18,7 @@
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/openai_adapter.hpp"
 #include "starling/extractor/anthropic_adapter.hpp"
+#include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/connection.hpp"
 
 namespace starling::bindings {
@@ -166,6 +167,19 @@ void bind_06_extractor(pybind11::module_& m) {
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>());
     }
+
+    // ----- configurability: deployment-tunable validator policy -----
+    // Bound here in bind_06 (before bind_13) so that bind_13_memory_ops can use
+    // `py::arg("policy") = ValidationPolicy{}` as a default — that default
+    // materializes the type at binding-definition time, so it must already be
+    // registered. A default-constructed ValidationPolicy reproduces today's
+    // built-in behaviour (extra_core_predicates additive to the constexpr core
+    // set; floors equal the historical 0.30 / 0.50 literals).
+    py::class_<starling::extractor::ValidationPolicy>(m, "ValidationPolicy")
+        .def(py::init<>())
+        .def_readwrite("extra_core_predicates", &starling::extractor::ValidationPolicy::extra_core_predicates)
+        .def_readwrite("confidence_drop_floor", &starling::extractor::ValidationPolicy::confidence_drop_floor)
+        .def_readwrite("weak_inference_floor", &starling::extractor::ValidationPolicy::weak_inference_floor);
 
     // ----- P2.l: AnthropicAdapter (native Messages API) -----
     {
