@@ -24,6 +24,15 @@ from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
 from starling.extractor.config import ExtractionConfig
 
 
+def _build_policy(extraction):
+    """Build a _core.ValidationPolicy from an ExtractionConfig."""
+    pol = _core.ValidationPolicy()
+    pol.extra_core_predicates = list(extraction.extra_core_predicates)
+    pol.confidence_drop_floor = extraction.confidence_drop_floor
+    pol.weak_inference_floor = extraction.weak_inference_floor
+    return pol
+
+
 def _make_vector_index(backend: str, dim: int, store_path):
     """P3.b1 phase 5 Task 5.3:按 vector_backend 创建向量后端句柄(回滚留好)。
 
@@ -129,7 +138,8 @@ class MemoryCore:
             tenant_id=self.tenant, holder_id=holder_id,
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
-            created_at_iso8601=created_iso, payload=text.encode("utf-8"))
+            created_at_iso8601=created_iso, payload=text.encode("utf-8"),
+            policy=_build_policy(self._extraction))
 
         # 第二条:episodic 抽取(叙事事件)。挂在第一条返回的同一 engram 上。
         engram_ref = out.get("engram_ref") or ""

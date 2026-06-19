@@ -40,3 +40,42 @@ def test_default_prompts_forwarded(tmp_path, monkeypatch):
     mem._core.remember("hi")
     assert captured["belief"] == EXTRACTION_PROMPT
     assert captured["episodic"] == EPISODIC_EXTRACTION_PROMPT
+
+
+def test_policy_built_from_config(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_remember(adapter, llm, prompt, *, policy=None, **kw):
+        captured["policy"] = policy
+        return {"engram_ref": "", "statement_ids": [], "outcome": "stub"}
+
+    monkeypatch.setattr(mc._core, "memory_remember", fake_remember)
+    mem = starling.Memory.open(
+        str(tmp_path / "m.db"), llm=starling.make_stub_llm(default_response="[]"),
+        extraction=starling.ExtractionConfig(extra_core_predicates=("annotates",),
+                                             confidence_drop_floor=0.15,
+                                             weak_inference_floor=0.7))
+    mem._core.remember("hi")
+    pol = captured["policy"]
+    assert pol is not None
+    assert list(pol.extra_core_predicates) == ["annotates"]
+    assert pol.confidence_drop_floor == 0.15
+    assert pol.weak_inference_floor == 0.7
+
+
+def test_default_policy_built(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_remember(adapter, llm, prompt, *, policy=None, **kw):
+        captured["policy"] = policy
+        return {"engram_ref": "", "statement_ids": [], "outcome": "stub"}
+
+    monkeypatch.setattr(mc._core, "memory_remember", fake_remember)
+    mem = starling.Memory.open(
+        str(tmp_path / "m.db"), llm=starling.make_stub_llm(default_response="[]"))
+    mem._core.remember("hi")
+    pol = captured["policy"]
+    assert pol is not None
+    assert list(pol.extra_core_predicates) == []
+    assert pol.confidence_drop_floor == 0.30
+    assert pol.weak_inference_floor == 0.50
