@@ -3,6 +3,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "starling/extractor/predicate_registry.hpp"
 
@@ -14,16 +15,22 @@ const std::set<std::string> kKnownObjectKinds = {
     "bool", "int", "float", "str", "datetime", "cognizer", "entity", "statement",
 };
 
-bool is_weak_inference(const ExtractedStatement& s) {
+bool is_weak_inference(const ExtractedStatement& s, double weak_floor) {
     return s.holder_perspective == schema::Perspective::HEARSAY
         || s.holder_perspective == schema::Perspective::INFERRED
         || s.provenance == schema::StatementProvenance::TOM_INFERRED
-        || s.confidence < 0.5;
+        || s.confidence < weak_floor;
+}
+
+bool in_extra_set(const std::vector<std::string>& extra, const std::string& pred) {
+    for (const auto& p : extra) { if (p == pred) return true; }
+    return false;
 }
 
 }  // namespace
 
-ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
+ValidationOutcome validate_extracted_statement(const ExtractedStatement& s,
+                                               const ValidationPolicy& policy) {
     ValidationOutcome out;
 
     auto missing = [&](const char* field) {
@@ -55,7 +62,7 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
         out.detail = "confidence must be in [0.0, 1.0]";
         return out;
     }
-    if (s.confidence < 0.3) {
+    if (s.confidence < policy.confidence_drop_floor) {
         out.accepted = false;
         out.error_kind = "below_minimum_confidence";
         out.detail = "confidence < 0.3 — extractor drops per §15.3.2";
@@ -63,7 +70,7 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
     }
 
     out.accepted = true;
-    if (is_weak_inference(s)) {
+    if (is_weak_inference(s, policy.weak_inference_floor)) {
         out.review_status_override = schema::ReviewStatus::INFERRED_UNREVIEWED;
     }
     // Controlled predicate set (system_design §3.3, P2 lightweight tier): an
@@ -78,7 +85,9 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
     // For OCCURRED rows an out-of-set predicate is kept verbatim (NOT downgraded);
     // the curated action class (put/place/move/...) covers the common cases for
     // all modalities. Non-OCCURRED predicate validation is unchanged.
-    if (!is_core_predicate(s.predicate) && s.modality != schema::Modality::OCCURRED) {
+    if (!is_core_predicate(s.predicate)
+        && !in_extra_set(policy.extra_core_predicates, s.predicate)
+        && s.modality != schema::Modality::OCCURRED) {
         out.review_status_override = schema::ReviewStatus::REVIEW_REQUESTED;
     }
     return out;
@@ -87,10 +96,11 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s) {
 // M0.7: cross-tenant derivation gate (§15.3.1 TC-NEG-CROSSTENANT).
 ValidationOutcome validate_for_write(
     const ExtractedStatement& s,
-    const std::function<std::string(const std::string&)>& resolve_parent_tenant)
+    const std::function<std::string(const std::string&)>& resolve_parent_tenant,
+    const ValidationPolicy& policy)
 {
     // Run base field + confidence rules first.
-    auto base = validate_extracted_statement(s);
+    auto base = validate_extracted_statement(s, policy);
     if (!base.ok()) return base;
 
     bool any_cross_tenant_with_protocol = false;
