@@ -46,7 +46,8 @@ def make_stub_llm(*, default_response: str, responses: Optional[dict] = None):
 
 
 def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
-                    timeout_ms: int = 0, max_retries: int = 0):
+                    timeout_ms: int = 0, max_retries: int = 0,
+                    max_tokens: int = 0):
     """Production LLM adapter (`_core.OpenAIAdapter`).
 
     The API key is read from the environment (`OPENAI_API_KEY`) by the C++
@@ -64,11 +65,14 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
         cfg.timeout_ms = timeout_ms
     if max_retries:
         cfg.max_retries = max_retries
+    if max_tokens:
+        cfg.max_tokens = max_tokens
     return _core.OpenAIAdapter(cfg)
 
 
 def make_anthropic_llm(*, model: str = "", base_url: str = "",
-                       timeout_ms: int = 0, max_retries: int = 0):
+                       timeout_ms: int = 0, max_retries: int = 0,
+                       max_tokens: int = 0):
     """Production Anthropic LLM adapter (`_core.AnthropicAdapter`).
 
     The API key is read from the environment (`ANTHROPIC_API_KEY`) by the C++
@@ -85,6 +89,8 @@ def make_anthropic_llm(*, model: str = "", base_url: str = "",
         cfg.timeout_ms = timeout_ms
     if max_retries:
         cfg.max_retries = max_retries
+    if max_tokens:
+        cfg.max_tokens = max_tokens
     return _core.AnthropicAdapter(cfg)
 
 
