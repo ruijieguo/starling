@@ -64,6 +64,7 @@ target_sources(starling_core PRIVATE
     src/final_query_assertion.cpp
     src/runtime_health.cpp
     src/schema/canonicalize.cpp
+    src/schema/normalize_theme.cpp
     src/schema/statement_enums.cpp
     src/schema/enums.cpp
     src/persistence/migration_runner.cpp

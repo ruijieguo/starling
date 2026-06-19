@@ -28,6 +28,7 @@ add_executable(starling_tests
     test_preflight.cpp
     test_final_query_assertion.cpp
     test_canonicalize.cpp
+    test_normalize_theme.cpp
     test_schema_enums.cpp
     test_statement_enums.cpp
     test_sqlite_link.cpp
