@@ -1,6 +1,7 @@
 #include "starling/extractor/json_parser.hpp"
 
 #include "starling/schema/canonicalize.hpp"
+#include "starling/schema/normalize_theme.hpp"
 #include "starling/schema/statement_enums.hpp"
 
 #include <nlohmann/json.hpp>
@@ -112,7 +113,8 @@ ParseResult parse_extractor_json(
                 continue;  // lenient: skip incomplete element
             }
             // canonical_object_hash is COMPUTED C++-side (never trusted from LLM);
-            // object_value stays the raw object text (matches the old XML path).
+            // normalize_theme runs before canonicalize_object (M8: str-kind theme).
+            s.object_value = schema::normalize_theme(s.object_value);
             const schema::CanonicalResult cr =
                 schema::canonicalize_object(schema::CanonicalInput{std::string(s.object_value)});
             s.canonical_object_hash = cr.sha256_hex;

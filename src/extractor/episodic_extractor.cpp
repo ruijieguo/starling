@@ -13,6 +13,7 @@
 #include "starling/extractor/extraction_span_key.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/schema/canonicalize.hpp"
+#include "starling/schema/normalize_theme.hpp"
 #include "starling/schema/statement_enums.hpp"
 #include "starling/store/episodic_event_store.hpp"
 
@@ -141,9 +142,9 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         stmt.subject_id         = actor;
         stmt.predicate          = action;
         stmt.object_kind        = "entity";
-        stmt.object_value       = theme;
+        stmt.object_value       = schema::normalize_theme(theme);  // M8: entity-kind theme
         const schema::CanonicalResult cr =
-            schema::canonicalize_object(schema::CanonicalInput{theme});
+            schema::canonicalize_object(schema::CanonicalInput{stmt.object_value});
         stmt.canonical_object_hash = cr.sha256_hex;
         stmt.modality    = schema::Modality::OCCURRED;
         stmt.polarity    = schema::Polarity::POS;

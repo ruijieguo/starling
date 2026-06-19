@@ -5,6 +5,7 @@
 //         选最高 position(rbegin)的匹配 dim 行 → observer 对 x 的心智模型。
 // content 维推断留给 phase 4。
 #include "starling/tom/mentalizing.hpp"
+#include "starling/schema/normalize_theme.hpp"
 #include "starling/store/perception_state_store.hpp"
 #include <optional>
 #include <string>
@@ -18,20 +19,21 @@ StateBelief what_does_X_think(
     std::string_view observer) {
     (void)frontier;  // reserved for does_X_know-aligned access checks (phase 5)
     auto& conn = adapter.connection();
+    const std::string theme_n = schema::normalize_theme(theme);  // match the write side
     store::PerceptionStateStore ps(conn);
     StateBelief out;
     // phase 4: infer the dimension the theme is tracked in — "content" if the theme
     // has any content-dim perception (a closed labelled container that was seen/opened),
     // else "location". "" → the theme was never perceived → has_belief stays false.
-    const std::string dim = ps.dim_for_theme(tenant, theme, as_of);
+    const std::string dim = ps.dim_for_theme(tenant, theme_n, as_of);
     if (dim.empty()) return out;
     std::optional<store::PerceptionStateRow> row;
     if (observer.empty()) {
-        row = ps.last_known(tenant, x, theme, dim, as_of);   // first-order
+        row = ps.last_known(tenant, x, theme_n, dim, as_of);   // first-order
     } else {
         // observer's model of x: events both perceived (single-scene co-presence).
-        auto x_rows   = ps.perceived_for_theme(tenant, x, theme, as_of);
-        auto obs_rows = ps.perceived_for_theme(tenant, observer, theme, as_of);
+        auto x_rows   = ps.perceived_for_theme(tenant, x, theme_n, as_of);
+        auto obs_rows = ps.perceived_for_theme(tenant, observer, theme_n, as_of);
         std::unordered_set<std::string> obs_events;
         for (const auto& r : obs_rows) obs_events.insert(r.source_event_id);
         for (auto it = x_rows.rbegin(); it != x_rows.rend(); ++it) {   // highest position first
@@ -46,7 +48,7 @@ StateBelief what_does_X_think(
     // Ground truth: highest-position non-empty located state across ALL cognizers,
     // bounded by observed_at <= as_of. B-owned, NULL-free by construction (reconstructor
     // skips empty locations). Fixes: (1) as_of-bounded; (2) no NULL-location pollution.
-    const std::string truth = ps.latest_actual(tenant, theme, dim, as_of);
+    const std::string truth = ps.latest_actual(tenant, theme_n, dim, as_of);
     out.is_stale = (!truth.empty() && truth != out.state_value);
     return out;
 }
