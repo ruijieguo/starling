@@ -54,14 +54,18 @@ Modes
   (real)      Default. Reads --corpus, extracts each narrative with a REAL model,
               runs the pipeline, scores accuracy. Burns API; run on demand only.
 
-On-demand real run (DeepSeek convention; reasoning models need the large cap):
+On-demand real run (funded tokenkey.dev creds; reasoning models need the large cap):
 
-    OPENAI_API_KEY=$DEEPSEEK_API_KEY \\
-    OPENAI_BASE_URL=https://api.deepseek.com/v1 \\
+    eval "$(grep -E '^export (DEEPSEEK_API_KEY|DEEPSEEK_BASE_URL)=' ~/.zshrc)" && \\
+    OPENAI_API_KEY="$DEEPSEEK_API_KEY" \\
+    OPENAI_BASE_URL="$DEEPSEEK_BASE_URL/v1" \\
     .venv/bin/python scripts/eval_perception_starling.py \\
         --corpus tests/data/eval_tom_bench/full.jsonl \\
         --model deepseek-v4-pro \\
         --report build/eval_perception_starling.md
+
+    NOTE: No fixed lift is promised (G3). The real run measures grounding-rate and
+    the name-drift vs extraction-incompleteness decomposition after Phase 1/2 changes.
 
 Exit code: 0 if precision >= PRECISION_THRESHOLD (0.70), else 1.
 """
@@ -71,6 +75,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -83,6 +88,62 @@ from starling.tom import what_does_X_think
 PRECISION_THRESHOLD = 0.70
 _NOW = "2026-06-16T10:00:00Z"
 _MAX_ANSWER_TOKENS = 32768  # reasoning models count hidden CoT toward the budget
+
+# ---------------------------------------------------------------------------
+# Theme normalization (Python mirror of C++ schema::normalize_theme, M8)
+# Used exclusively for the M5 decomposition SQL query — same logic: lowercase +
+# leading-article strip + conservative singularization.  Keeps the eval
+# self-contained without requiring a pybind11 binding for normalize_theme.
+# ---------------------------------------------------------------------------
+
+_IRREGULAR_PLURALS: dict[str, str] = {
+    "leaves": "leaf", "knives": "knife", "lives": "life",
+    "wolves": "wolf", "shelves": "shelf", "children": "child",
+}
+_SINGULAR_S_STOPLIST = {"bus", "lens", "series", "species", "news"}
+
+
+def _singularize(w: str) -> str:
+    if w in _IRREGULAR_PLURALS:
+        return _IRREGULAR_PLURALS[w]
+    if len(w) > 3 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 3 and w.endswith("es"):
+        stem = w[:-2]
+        if stem[-1:] in ("s", "x", "z") or stem.endswith("ch") or stem.endswith("sh") or stem.endswith("o"):
+            return stem
+    if len(w) > 1 and w.endswith("s") and not (
+        w.endswith("ss") or w.endswith("us") or w.endswith("is") or w in _SINGULAR_S_STOPLIST
+    ):
+        return w[:-1]
+    return w
+
+
+def _normalize_theme_py(surface: str) -> str:
+    """Python mirror of C++ starling::schema::normalize_theme (deterministic).
+
+    Lowercase + trim + leading article strip + conservative singularization.
+    Applied only to string/entity themes in the M5 decomposition query so that
+    the SQL lookup matches the normalized object_value written by the C++ side.
+    """
+    s = surface.strip().lower()
+    for art in ("the ", "a ", "an "):
+        if s.startswith(art):
+            s = s[len(art):].lstrip()
+            break
+    return _singularize(s)
+
+
+# SQL to detect whether ANY OCCURRED event exists for a normalized theme,
+# regardless of cognizer (any actor/participant).  event_exists True  →
+# name-drift / resolution-addressable; event_exists False → extraction-
+# incompleteness (the target of the next spec).
+_SQL_OCCURRED_THEME = """
+    SELECT 1 FROM episodic_events e
+    JOIN statements s ON s.id = e.statement_id AND s.tenant_id = e.tenant_id
+    WHERE e.tenant_id = ? AND s.object_value = ? AND s.modality = 'occurred'
+    LIMIT 1
+"""
 
 # The ToMBench ability slug B scores (full-prose slug as it appears in full.jsonl).
 LOCATION_FALSE_BELIEF_ABILITY = "Belief: Location false beliefs"
@@ -170,8 +231,20 @@ def map_to_option(perceived: str, options: list[str]) -> str | None:
 # Per-item pipeline: remember -> A -> B -> what_does_X_think -> score
 # ---------------------------------------------------------------------------
 
-def run_probe(probe: Probe, narrative: str, llm) -> tuple[bool, str]:
-    """Run ONE probe through the full pipeline. Returns (correct, detail).
+def run_probe(probe: Probe, narrative: str, llm) -> tuple[bool, bool, str]:
+    """Run ONE probe through the full pipeline.
+
+    Returns ``(correct, grounded, detail)`` where:
+    - ``correct``  — True iff the perceived location matched the gold option.
+    - ``grounded`` — True iff ``belief.has_belief`` (the engine returned a belief
+                     at all, regardless of correctness).  Tracks grounding-rate
+                     (Phase 3 M5) separately from precision.
+    - ``detail``   — human-readable diagnostic string.
+
+    On a ``no belief`` miss the detail also carries an M5 decomposition tag:
+    ``[name-drift]`` when ANY OCCURRED event for the normalized theme exists (so
+    the miss is resolution-addressable) or ``[extraction-incomplete]`` when no
+    such event exists (the extraction simply never fired).
 
     narrative is the text fed to remember(); llm is the adapter that drives the
     extraction (a real model in real mode, a canned-episodic stub in fixture
@@ -183,20 +256,32 @@ def run_probe(probe: Probe, narrative: str, llm) -> tuple[bool, str]:
         try:
             mem.remember(narrative, now=_NOW)
         except Exception as exc:  # extraction/remember failure → miss this probe, don't abort
-            return False, f"remember failed: {exc}"
+            return False, False, f"remember failed: {exc}"
         adapter = mem._rt.adapter
         tenant = mem._core.tenant
+        db_path = adapter.db_path  # capture before close for decomposition query
         frontier = _core.KnowledgeFrontier(adapter)
         belief = what_does_X_think(
             adapter, frontier, x=probe.asked, theme=probe.theme, tenant_id=tenant)
-        if not belief.has_belief:
-            return False, f"no belief for ({probe.asked!r},{probe.theme!r})"
+        grounded = belief.has_belief
+        if not grounded:
+            # M5 decomposition: classify the no-belief miss.
+            norm_theme = _normalize_theme_py(probe.theme)
+            try:
+                with sqlite3.connect(db_path) as _conn:
+                    row = _conn.execute(_SQL_OCCURRED_THEME, (tenant, norm_theme)).fetchone()
+                event_exists = row is not None
+            except Exception:
+                event_exists = False
+            tag = "[name-drift]" if event_exists else "[extraction-incomplete]"
+            return False, False, (
+                f"no belief for ({probe.asked!r},{probe.theme!r}) {tag}")
         picked = map_to_option(belief.state_value, probe.options)
         if picked is None:
-            return False, f"perceived={belief.state_value!r} maps to no option"
+            return False, True, f"perceived={belief.state_value!r} maps to no option"
         correct = _norm(picked) == _norm(probe.gold)
-        return correct, (f"perceived={belief.state_value!r} -> option={picked!r} "
-                         f"gold={probe.gold!r}")
+        return correct, True, (f"perceived={belief.state_value!r} -> option={picked!r} "
+                               f"gold={probe.gold!r}")
     finally:
         mem.close()
         if os.path.exists(db):
@@ -269,14 +354,18 @@ FIXTURES: list[dict[str, Any]] = [
 ]
 
 
-def run_fixture_self_test() -> tuple[int, int, list[str]]:
+def run_fixture_self_test() -> tuple[int, int, int, list[str]]:
     """Run every FIXTURE through the full pipeline with a stub LLM.
 
-    Returns (correct, total, detail_lines). Used by both --fixture CLI mode and
-    the pytest self-test. NO network.
+    Returns ``(correct, total, grounded, detail_lines)``.  Used by both
+    --fixture CLI mode and the pytest self-test.  NO network.
+
+    All well-formed fixtures are expected to ground (``grounded == total``),
+    which yields grounding-rate 1.0 in ``write_report``.
     """
     correct = 0
     total = 0
+    grounded = 0
     details: list[str] = []
     for fx in FIXTURES:
         record = fx["record"]
@@ -286,13 +375,15 @@ def run_fixture_self_test() -> tuple[int, int, list[str]]:
             total += 1
             continue
         llm = starling.make_stub_llm(default_response=fx["episodic"])
-        ok, detail = run_probe(probe, record["context"], llm)
+        ok, grnd, detail = run_probe(probe, record["context"], llm)
         total += 1
         correct += int(ok)
+        grounded += int(grnd)
         details.append(
             f"{'OK  ' if ok else 'MISS'} qid={record['question_id']} "
-            f"asked={probe.asked!r} theme={probe.theme!r} {detail}")
-    return correct, total, details
+            f"asked={probe.asked!r} theme={probe.theme!r} "
+            f"grounded={grnd} {detail}")
+    return correct, total, grounded, details
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +391,16 @@ def run_fixture_self_test() -> tuple[int, int, list[str]]:
 # ---------------------------------------------------------------------------
 
 def write_report(path: Path, mode: str, total: int, correct: int,
-                 skipped: int) -> None:
+                 skipped: int, grounded: int = 0,
+                 name_drift: int = 0, extraction_incomplete: int = 0) -> None:
+    """Write a Markdown eval report.
+
+    Phase 3 (M5) adds three new rows — grounding-rate (grounded/total, separate
+    from precision), and the decomposition of ``no belief`` misses into
+    resolution-addressable (name-drift) vs extraction-incomplete categories.
+    """
     precision = correct / total if total else 0.0
+    grounding_rate = grounded / total if total else 0.0
     verdict = "PASS" if precision >= PRECISION_THRESHOLD else "**FAIL**"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -313,6 +412,9 @@ def write_report(path: Path, mode: str, total: int, correct: int,
         "|---|---|---|---|\n"
         f"| precision | {precision:.4f} ({correct}/{total}) | "
         f"{PRECISION_THRESHOLD:.2f} | {verdict} |\n"
+        f"| grounding-rate | {grounding_rate:.4f} ({grounded}/{total}) | | |\n"
+        f"| miss: name-drift (resolution-addressable) | {name_drift} | | |\n"
+        f"| miss: extraction-incomplete | {extraction_incomplete} | | |\n"
         f"| skipped (unparseable / wrong shape) | {skipped} | | |\n")
 
 
@@ -337,17 +439,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- fixture / deterministic self-test ----
     if args.fixture:
-        correct, total, details = run_fixture_self_test()
+        correct, total, grounded, details = run_fixture_self_test()
         for d in details:
             print("  " + d, file=sys.stderr)
-        write_report(args.report, "fixture", total, correct, skipped=0)
+        grounding_rate = grounded / total if total else 0.0
+        write_report(args.report, "fixture", total, correct, skipped=0,
+                     grounded=grounded)
         precision = correct / total if total else 0.0
+        print(f"  grounding-rate: {grounding_rate:.4f} ({grounded}/{total})",
+              file=sys.stderr)
         if total > 0 and correct == total:
             print(f"PASS — fixture self-test {correct}/{total} correct "
-                  f"(precision {precision:.4f})")
+                  f"(precision {precision:.4f}, grounding-rate {grounding_rate:.4f})")
             return 0
         print(f"BLOCKED — fixture self-test {correct}/{total} correct "
-              f"(precision {precision:.4f})")
+              f"(precision {precision:.4f}, grounding-rate {grounding_rate:.4f})")
         return 1
 
     # ---- real mode ----
@@ -407,21 +513,36 @@ def main(argv: list[str] | None = None) -> int:
     _cfg.timeout_ms = 180000
     llm = _core.OpenAIAdapter(_cfg)
 
-    total = correct = 0
+    total = correct = grounded = name_drift = extraction_incomplete = 0
     for idx, probe in enumerate(probes):
-        ok, detail = run_probe(probe, probe.context, llm)
+        ok, grnd, detail = run_probe(probe, probe.context, llm)
         total += 1
         correct += int(ok)
+        grounded += int(grnd)
+        # Accumulate M5 decomposition counters from detail tag on no-belief misses.
+        if not grnd:
+            if "[name-drift]" in detail:
+                name_drift += 1
+            elif "[extraction-incomplete]" in detail:
+                extraction_incomplete += 1
         if not ok:
             print(f"  MISS asked={probe.asked!r} theme={probe.theme!r} {detail}",
                   file=sys.stderr)
         if (idx + 1) % 20 == 0:
-            print(f"  [{idx + 1}/{len(probes)}] {correct}/{total} correct",
+            grounding_rate = grounded / total if total else 0.0
+            print(f"  [{idx + 1}/{len(probes)}] {correct}/{total} correct  "
+                  f"grounding-rate {grounding_rate:.4f}",
                   file=sys.stderr)
 
-    write_report(args.report, "real", total, correct, skipped)
+    write_report(args.report, "real", total, correct, skipped,
+                 grounded=grounded, name_drift=name_drift,
+                 extraction_incomplete=extraction_incomplete)
     precision = correct / total if total else 0.0
+    grounding_rate = grounded / total if total else 0.0
     print(f"Report written to {args.report} (skipped {skipped})", file=sys.stderr)
+    print(f"  grounding-rate: {grounding_rate:.4f} ({grounded}/{total})  "
+          f"name-drift: {name_drift}  extraction-incomplete: {extraction_incomplete}",
+          file=sys.stderr)
     if precision >= PRECISION_THRESHOLD:
         print(f"PASS — precision {precision:.4f} ({correct}/{total}) "
               f">= {PRECISION_THRESHOLD}")

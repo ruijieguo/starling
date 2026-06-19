@@ -36,12 +36,19 @@ def _load_harness():
 def test_fixture_self_test_scores_all_correct():
     """The full harness pipeline scores every hand-built fixture correctly with a
     stub LLM — proving the parse/remember/A/B/what_does_X_think/score wiring works
-    with zero network."""
+    with zero network.
+
+    Phase 3 (M5): run_fixture_self_test now returns (correct, total, grounded,
+    details).  Both well-formed fixtures must ground (grounding-rate == 1.0).
+    """
     harness = _load_harness()
-    correct, total, details = harness.run_fixture_self_test()
+    correct, total, grounded, details = harness.run_fixture_self_test()
     assert total >= 2, f"expected >=2 fixtures, got {total}: {details}"
     assert correct == total, (
         f"harness must score every fixture correctly: {correct}/{total}\n"
+        + "\n".join(details))
+    assert grounded == total, (
+        f"all fixtures must ground (grounding-rate 1.0): {grounded}/{total}\n"
         + "\n".join(details))
 
 
