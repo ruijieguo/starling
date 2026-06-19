@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/extractor/predicate_registry.hpp"
 #include "starling/schema/statement_enums.hpp"
 
 #include <string>
@@ -75,6 +76,23 @@ TEST(ValidationPolicy, RaisedWeakFloorFlagsModerateConfidence) {
 }
 TEST(ValidationPolicy, OccurredUnknownPredicateKeptVerbatim) {
     auto s = make_valid_belief("teleported"); s.modality = Modality::OCCURRED;
+    auto out = validate_extracted_statement(s);  // default policy
+    EXPECT_TRUE(out.accepted);
+    EXPECT_FALSE(out.review_status_override.has_value());
+}
+TEST(GeneralFactPredicates, AreCorePredicates) {
+    EXPECT_TRUE(is_core_predicate("is_a"));
+    EXPECT_TRUE(is_core_predicate("instance_of"));
+    EXPECT_TRUE(is_core_predicate("has_property"));
+    EXPECT_TRUE(is_core_predicate("has_value"));
+    EXPECT_TRUE(is_core_predicate("part_of"));
+    EXPECT_TRUE(is_core_predicate("related_to"));
+    EXPECT_TRUE(is_core_predicate("depends_on"));
+    EXPECT_TRUE(is_core_predicate("reports_to"));
+    EXPECT_FALSE(is_core_predicate("frobnicates"));
+}
+TEST(GeneralFactPredicates, GeneralPredicateNotReviewedUnderDefaultPolicy) {
+    auto s = make_valid_belief("is_a");
     auto out = validate_extracted_statement(s);  // default policy
     EXPECT_TRUE(out.accepted);
     EXPECT_FALSE(out.review_status_override.has_value());

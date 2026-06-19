@@ -36,6 +36,15 @@ inline constexpr std::array<std::string_view, 4> kPerceptionPredicates = {
     "tell", "inform", "see", "look",
 };
 
+// General-fact predicate class (sub-project C): attributive + relational
+// predicates for arbitrary declarative world-facts ("X is a Y", quantities,
+// relationships). In-vocab so general facts are approved, not REVIEW_REQUESTED.
+// No overlap with kCoreBeliefPredicates (located_at/member_of/knows already core).
+inline constexpr std::array<std::string_view, 8> kGeneralFactPredicates = {
+    "is_a", "instance_of", "has_property", "has_value",
+    "part_of", "related_to", "depends_on", "reports_to",
+};
+
 inline bool is_core_predicate(std::string_view predicate) {
     for (const auto p : kCoreBeliefPredicates) {
         if (p == predicate) return true;
@@ -44,6 +53,9 @@ inline bool is_core_predicate(std::string_view predicate) {
         if (p == predicate) return true;
     }
     for (const auto p : kPerceptionPredicates) {
+        if (p == predicate) return true;
+    }
+    for (const auto p : kGeneralFactPredicates) {
         if (p == predicate) return true;
     }
     return false;
