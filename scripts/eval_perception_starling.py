@@ -78,6 +78,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -438,6 +439,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-url", default=None,
                    help="Override the LLM base url (else OPENAI_BASE_URL or OpenAI)")
     p.add_argument("--max-items", type=int, default=None)
+    p.add_argument("--delay-s", type=float, default=0.0,
+                   help="Seconds to sleep between probes (paces load to avoid "
+                        "proxy token/rate-window throttling under sustained runs)")
     p.add_argument("--report", type=Path,
                    default=Path("build/eval_perception_starling.md"))
     args = p.parse_args(argv)
@@ -538,6 +542,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{idx + 1}/{len(probes)}] {correct}/{total} correct  "
                   f"grounding-rate {grounding_rate:.4f}",
                   file=sys.stderr)
+        if args.delay_s:
+            time.sleep(args.delay_s)
 
     write_report(args.report, "real", total, correct, skipped,
                  grounded=grounded, name_drift=name_drift,
