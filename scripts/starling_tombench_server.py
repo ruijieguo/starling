@@ -55,9 +55,15 @@ _MAX_TOKENS = 32768
 # The eval harnesses pass --model deepseek-v4-pro explicitly; we must too.
 _MODEL = os.environ.get("STARLING_TOMBENCH_MODEL", "deepseek-v4-pro")
 
-# [Story] … [Question]  (English) / [故事] … [问题]  (Chinese)
-_STORY_EN = re.compile(r"\[Story\]\s*(.*?)\s*\[Question\]", re.S)
-_STORY_ZH = re.compile(r"\[故事\]\s*(.*?)\s*\[问题\]", re.S)
+# Story-section patterns per benchmark prompt layout:
+#   ToMBench: "[Story] … [Question]" (EN) / "[故事] … [问题]" (ZH)
+#   HiToM:    "Story: … Question:"  (numbered event sequence)
+_STORY_PATTERNS = (
+    re.compile(r"\[Story\]\s*(.*?)\s*\[Question\]", re.S),
+    re.compile(r"\[故事\]\s*(.*?)\s*\[问题\]", re.S),
+    re.compile(r"Story:\s*(.*?)\s*Question:", re.S),
+    re.compile(r"故事[:：]\s*(.*?)\s*问题[:：]", re.S),
+)
 
 
 def _new_adapter() -> "_core.OpenAIAdapter":
@@ -69,7 +75,7 @@ def _new_adapter() -> "_core.OpenAIAdapter":
 
 
 def _extract_story(user_content: str) -> str:
-    for rx in (_STORY_EN, _STORY_ZH):
+    for rx in _STORY_PATTERNS:
         m = rx.search(user_content)
         if m:
             return m.group(1).strip()
