@@ -55,6 +55,13 @@ _MAX_TOKENS = 32768
 # The eval harnesses pass --model deepseek-v4-pro explicitly; we must too.
 _MODEL = os.environ.get("STARLING_TOMBENCH_MODEL", "deepseek-v4-pro")
 
+# from_env's default timeout is 60s. Long HiToM stories make the extraction/answer
+# reasoning calls slow (~27-40s in isolation; remember's 3 calls ~80s), and under
+# concurrent load the endpoint slows each call past 60s -> the adapter times out ->
+# transient_after_retry -> empty answer -> fallback. Give a generous ceiling (still
+# under ToMEval's 1200s client timeout) so slow long-story calls complete.
+_TIMEOUT_MS = int(os.environ.get("STARLING_TOMBENCH_TIMEOUT_MS", "600000"))
+
 # Story-section patterns per benchmark prompt layout:
 #   ToMBench: "[Story] … [Question]" (EN) / "[故事] … [问题]" (ZH)
 #   HiToM:    "Story: … Question:"  (numbered event sequence)
@@ -71,6 +78,7 @@ def _new_adapter() -> "_core.OpenAIAdapter":
     cfg = _core.OpenAIAdapterConfig.from_env()
     cfg.model = _MODEL
     cfg.max_tokens = _MAX_TOKENS
+    cfg.timeout_ms = _TIMEOUT_MS
     return _core.OpenAIAdapter(cfg)
 
 
