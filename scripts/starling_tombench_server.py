@@ -36,8 +36,11 @@ import gc
 import os
 import re
 import sqlite3
+import sys
 import tempfile
+import threading
 import time
+import traceback
 import uuid
 
 from fastapi import FastAPI
@@ -73,13 +76,28 @@ _STORY_PATTERNS = (
 )
 
 
+_thread_local = threading.local()
+
+
 def _new_adapter() -> "_core.OpenAIAdapter":
-    """A fresh deepseek adapter per request (thread isolation + env-read key)."""
-    cfg = _core.OpenAIAdapterConfig.from_env()
-    cfg.model = _MODEL
-    cfg.max_tokens = _MAX_TOKENS
-    cfg.timeout_ms = _TIMEOUT_MS
-    return _core.OpenAIAdapter(cfg)
+    """A per-THREAD cached adapter (reuse the SSL connection, keep-alive).
+
+    Creating a fresh adapter per call opened a fresh SSL connection every time; at
+    concurrency the connection churn produced `transport_error:SSL connect error`
+    (instant 0s failures) -> empty answers (the HiToM fallback root cause, NOT
+    tokenkey.dev rate-limit). uvicorn runs the sync handler in a bounded threadpool,
+    so caching one adapter per thread gives a bounded set of persistent connections,
+    each used sequentially within a request (safe — libcurl handles are not shared
+    across threads, and a thread serves one request at a time)."""
+    ad = getattr(_thread_local, "adapter", None)
+    if ad is None:
+        cfg = _core.OpenAIAdapterConfig.from_env()
+        cfg.model = _MODEL
+        cfg.max_tokens = _MAX_TOKENS
+        cfg.timeout_ms = _TIMEOUT_MS
+        ad = _core.OpenAIAdapter(cfg)
+        _thread_local.adapter = ad
+    return ad
 
 
 def _extract_story(user_content: str) -> str:
@@ -128,6 +146,7 @@ def _starling_memory_for(story: str) -> str:
         mem.remember(story)
         return _memory_dump(db_path, mem._core.tenant)
     except Exception:  # extraction can fail (parse); degrade to no scaffold
+        print(f"[REMEMBER-EXC]\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         return ""
     finally:
         # CRITICAL under sustained load: close + GC-release the Memory runtime so its
@@ -157,11 +176,20 @@ def _answer(system: str, user: str, memdump: str) -> str:
             "knows / believes what) to reason step by step, then give the final answer "
             "as \\boxed{X}."
         )
-    try:
-        resp = _new_adapter().extract(prompt)
-        return (resp.raw_xml or "").strip()
-    except Exception:
-        return ""
+    for attempt in range(4):
+        t = time.time()
+        try:
+            resp = _new_adapter().extract(prompt)
+            out = (resp.raw_xml or "").strip()
+            if out:
+                return out
+            print(f"[ANSWER-EMPTY] attempt={attempt} ok={resp.ok} err={resp.error!r} "
+                  f"lat={time.time() - t:.0f}s plen={len(prompt)}", file=sys.stderr, flush=True)
+        except Exception:
+            print(f"[ANSWER-EXC] attempt={attempt} lat={time.time() - t:.0f}s\n"
+                  f"{traceback.format_exc()}", file=sys.stderr, flush=True)
+        time.sleep(0.6 * (attempt + 1))  # brief backoff; the reused conn re-establishes
+    return ""
 
 
 app = FastAPI()
