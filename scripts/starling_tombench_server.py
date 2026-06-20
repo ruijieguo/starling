@@ -32,6 +32,7 @@ honoured; a fresh adapter + temp db per request keeps the threads isolated.
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 import re
 import sqlite3
@@ -107,13 +108,25 @@ def _starling_memory_for(story: str) -> str:
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db_path = tmp.name
     tmp.close()
+    mem = None
     try:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
         return _memory_dump(db_path, mem._core.tenant)
-    except Exception:  # extraction can fail (budget/parse); degrade to no scaffold
+    except Exception:  # extraction can fail (parse); degrade to no scaffold
         return ""
     finally:
+        # CRITICAL under sustained load: close + GC-release the Memory runtime so its
+        # SQLite connection fd is freed. close() only drops the cached handle; the
+        # SqliteAdapter fd is released only when rt/adapter is GC'd (the embedded
+        # core relies on GC). Without this, ~thousands of requests leak fds (the
+        # unlinked temp-db connection stays open) -> the libcurl deepseek call can't
+        # get a socket fd -> empty answers (the full-run 70% fallback root cause).
+        if mem is not None:
+            with contextlib.suppress(Exception):
+                mem.close()
+        mem = None
+        gc.collect()
         for path in (db_path, db_path + "-wal", db_path + "-shm"):
             with contextlib.suppress(OSError):
                 os.unlink(path)
