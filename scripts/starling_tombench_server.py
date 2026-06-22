@@ -109,28 +109,43 @@ def _extract_story(user_content: str) -> str:
 
 
 def _memory_dump(db_path: str, tenant: str) -> str:
-    """A readable dump of what Starling extracted: statements + perception state."""
-    lines: list[str] = []
+    """A structured ToM scaffold from Starling's extraction:
+      (1) the object-location trail (initial stative + each move, parsed into
+          located_at facts), and
+      (2) each character's LAST DIRECTLY-OBSERVED location (perception_state —
+          who-knows-what; the load-bearing nested-belief signal).
+    The raw event list is omitted: the story already carries it, so the value Starling
+    adds is the parsed trail + the computed per-character beliefs. NOTE the column is
+    `theme_id` (querying `theme` silently raised OperationalError, so perception_state
+    — Starling's core ToM signal — never reached the dump before)."""
+    facts: list[str] = []
+    beliefs: list[str] = []
     con = sqlite3.connect(db_path)
     try:
         with contextlib.suppress(sqlite3.OperationalError):
-            for holder, subj, pred, obj, mod in con.execute(
-                "SELECT holder_id, subject_id, predicate, object_value, modality "
-                "FROM statements WHERE tenant_id=? AND review_status!='forgotten' "
-                "ORDER BY rowid",
+            for subj, obj in con.execute(
+                "SELECT subject_id, object_value FROM statements "
+                "WHERE tenant_id=? AND predicate='located_at' ORDER BY rowid",
                 (tenant,),
             ):
-                lines.append(f"- {holder} [{mod}] {subj} {pred} {obj}")
+                facts.append(f"  - {subj} -> {obj}")
         with contextlib.suppress(sqlite3.OperationalError):
-            for cog, theme, dim, val in con.execute(
-                "SELECT cognizer_id, theme, state_dim, state_value "
-                "FROM perception_state WHERE tenant_id=? ORDER BY rowid",
+            for cog, theme, val in con.execute(
+                "SELECT cognizer_id, theme_id, state_value FROM perception_state "
+                "WHERE tenant_id=? AND state_dim='location' ORDER BY rowid",
                 (tenant,),
             ):
-                lines.append(f"- (perception) {cog} takes {theme}'s {dim} to be {val}")
+                beliefs.append(f"  - {cog} last directly observed the {theme} at: {val}")
     finally:
         con.close()
-    return "\n".join(lines)
+    out = []
+    if facts:
+        out.append("Object-location trail my memory extracted (chronological):\n" + "\n".join(facts))
+    if beliefs:
+        out.append("Each character's LAST DIRECTLY-OBSERVED location (= what they still believe "
+                   "if they left before a later move; a character ABSENT for a move does NOT learn it):\n"
+                   + "\n".join(beliefs))
+    return "\n\n".join(out)
 
 
 def _starling_memory_for(story: str) -> str:
