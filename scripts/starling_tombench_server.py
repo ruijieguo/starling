@@ -58,12 +58,28 @@ _MAX_TOKENS = 32768
 # The eval harnesses pass --model deepseek-v4-pro explicitly; we must too.
 _MODEL = os.environ.get("STARLING_TOMBENCH_MODEL", "deepseek-v4-pro")
 
-# from_env's default timeout is 60s. Long HiToM stories make the extraction/answer
-# reasoning calls slow (~27-40s in isolation; remember's 3 calls ~80s), and under
-# concurrent load the endpoint slows each call past 60s -> the adapter times out ->
-# transient_after_retry -> empty answer -> fallback. Give a generous ceiling (still
-# under ToMEval's 1200s client timeout) so slow long-story calls complete.
-_TIMEOUT_MS = int(os.environ.get("STARLING_TOMBENCH_TIMEOUT_MS", "600000"))
+# PER-REQUEST TIME BUDGET MUST STAY UNDER ToMEval's client timeout (~20 min/request).
+# One request makes up to (3 remember extraction calls + _ANSWER_TRIES answer calls),
+# each bounded by _TIMEOUT_MS, times the adapter's own max_retries. If that product
+# exceeds the client timeout, a slow/empty item gets orphaned, the client times out
+# and RE-SENDS, and the re-sends pile onto an already-slow endpoint -> compounding
+# stall. That is exactly what hung a 300-item run at 227/300: the old 600s timeout x
+# 4 answer-retries = 40 min >> the 20-min client timeout. The fix is a bounded budget:
+#   3 remember x 180s  +  2 answer x 180s  =  15 min  <  20-min client timeout.
+# Empties here are NOT a timeout symptom — they are deepseek-v4-pro exhausting its
+# 32768-token budget on hidden reasoning and returning http-200 with content="" (seen
+# clustered at lat~480s). A shorter timeout just fails those faster (they fall back and
+# are excluded); it does not lose answers the model would otherwise have produced.
+_TIMEOUT_MS = int(os.environ.get("STARLING_TOMBENCH_TIMEOUT_MS", "180000"))
+
+# 0: the adapter does NO internal HTTP retry, so a stuck call cannot multiply the
+# budget (the _answer loop below owns answer-level retries; remember degrades to
+# no-scaffold on failure). With HTTP/1.1 forced, transport errors are rare anyway.
+_MAX_RETRIES = int(os.environ.get("STARLING_TOMBENCH_MAX_RETRIES", "0"))
+
+# Answer attempts. Empties at temp=0 are near-deterministic, so 4 retries was mostly
+# futile budget-burn; 2 catches a genuinely transient empty without blowing the budget.
+_ANSWER_TRIES = int(os.environ.get("STARLING_TOMBENCH_ANSWER_TRIES", "2"))
 
 # Story-section patterns per benchmark prompt layout:
 #   ToMBench: "[Story] … [Question]" (EN) / "[故事] … [问题]" (ZH)
@@ -95,6 +111,7 @@ def _new_adapter() -> "_core.OpenAIAdapter":
         cfg.model = _MODEL
         cfg.max_tokens = _MAX_TOKENS
         cfg.timeout_ms = _TIMEOUT_MS
+        cfg.max_retries = _MAX_RETRIES
         ad = _core.OpenAIAdapter(cfg)
         _thread_local.adapter = ad
     return ad
@@ -191,7 +208,7 @@ def _answer(system: str, user: str, memdump: str) -> str:
             "knows / believes what) to reason step by step, then give the final answer "
             "as \\boxed{X}."
         )
-    for attempt in range(4):
+    for attempt in range(_ANSWER_TRIES):
         t = time.time()
         try:
             resp = _new_adapter().extract(prompt)
