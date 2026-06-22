@@ -62,6 +62,8 @@ bool is_retryable_curl_code(CURLcode rc) {
         case CURLE_RECV_ERROR:
         case CURLE_GOT_NOTHING:
         case CURLE_PARTIAL_FILE:
+        case CURLE_HTTP2:          // "Error in the HTTP2 framing layer" — torn H2
+        case CURLE_HTTP2_STREAM:   // stream-level H2 failure; the request can be re-sent
             return true;
         default:
             return false;
@@ -102,6 +104,13 @@ HttpResult http_post_json(const std::string& url,
         curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &resp_buf);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,    static_cast<long>(timeout_ms));
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL,      1L);
+        // Pin HTTP/1.1. The default negotiates HTTP/2 (ALPN), whose multiplexed
+        // framing intermittently fails as CURLE_HTTP2 "Error in the HTTP2 framing
+        // layer" under sustained concurrent load through the funded proxy (observed
+        // 13/53 answer failures in a HiToM in-loop run). HTTP/1.1 keep-alive over the
+        // reused per-thread handle is robust, and our one-request-at-a-time-per-thread
+        // pattern gains nothing from H2 multiplexing anyway.
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,  CURL_HTTP_VERSION_1_1);
 
         const CURLcode rc = curl_easy_perform(curl);
         long http_code = 0;
