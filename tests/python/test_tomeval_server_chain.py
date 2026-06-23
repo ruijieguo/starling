@@ -25,3 +25,12 @@ def test_first_order_simple_think_not_a_chain():
 
 def test_non_hitom_question_ignored():
     assert srv._parse_chain_question("[Question] Which of the following best describes X? [Candidate Answers]") is None
+
+
+def test_chain_injection_format():
+    txt = srv._format_chain_injection(["Aiden", "Avery", "Carter"], "cabbage", "blue_bathtub")
+    assert "blue_bathtub" in txt
+    assert "Aiden thinks Avery thinks Carter thinks" in txt
+    assert "deterministic" in txt.lower()
+    # the lie hedge must be present so deepseek can override on explicit deception
+    assert "lied" in txt.lower()

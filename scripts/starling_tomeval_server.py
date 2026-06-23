@@ -194,7 +194,38 @@ def _memory_dump(db_path: str, tenant: str) -> str:
     return "\n\n".join(out)
 
 
-def _starling_memory_for(story: str) -> str:
+def _format_chain_injection(chain: list[str], theme: str, location: str) -> str:
+    nested = " thinks ".join(chain) + " thinks"
+    return (
+        "Starling's deterministic ToM engine computed the answer to this exact "
+        "nested-belief question:\n"
+        f"  {nested} the {theme} is in: {location}\n"
+        "Use this as the primary answer (match it to the lettered choice). If the story "
+        "explicitly shows a character LIED about the location, adjust accordingly."
+    )
+
+
+def _chain_injection_for(mem, user_content: str) -> str:
+    """If the question is an order>=2 HiToM chain, compute the nested belief via Starling
+    and return a definitive injection string; else "" (caller keeps the plain dump)."""
+    parsed = _parse_chain_question(user_content)
+    if not parsed:
+        return ""
+    chain, theme = parsed
+    try:
+        frontier = _core.KnowledgeFrontier(mem._rt.adapter)
+        sb = _core.what_does_X_think_chain(
+            mem._rt.adapter, frontier, chain, theme, mem._core.tenant,
+            "9999-12-31T23:59:59Z")
+    except Exception:
+        print("[CHAIN-EXC]\n" + traceback.format_exc(), file=sys.stderr, flush=True)
+        return ""
+    if not sb.has_belief or not sb.state_value:
+        return ""  # incomplete perception -> fall back to the plain dump
+    return _format_chain_injection(chain, theme, sb.state_value)
+
+
+def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
     if not story:
         return ""
@@ -205,7 +236,9 @@ def _starling_memory_for(story: str) -> str:
     try:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
-        return _memory_dump(db_path, mem._core.tenant)
+        dump = _memory_dump(db_path, mem._core.tenant)
+        inject = _chain_injection_for(mem, user_content)
+        return (dump + "\n\n" + inject) if inject else dump
     except Exception:  # extraction can fail (parse); degrade to no scaffold
         print(f"[REMEMBER-EXC]\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         return ""
@@ -269,7 +302,7 @@ def chat_completions(body: dict) -> JSONResponse:
     system = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
     user = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
 
-    memdump = _starling_memory_for(_extract_story(user))
+    memdump = _starling_memory_for(_extract_story(user), user)
     content = _answer(system, user, memdump)
     if not content:
         # Never return empty: ToMEval scores content_none as wrong AND retries 5×
