@@ -149,6 +149,7 @@ add_executable(starling_tests
     test_perception_state_store.cpp
     test_perception_reconstructor.cpp
     test_mentalizing_think.cpp
+    test_mentalizing_chain.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

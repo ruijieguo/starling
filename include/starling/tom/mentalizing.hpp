@@ -172,4 +172,16 @@ StateBelief what_does_X_think(
     std::string_view as_of,
     std::string_view observer = "");
 
+// 9. 任意多阶感知 ToM:chain=[c1..cN],"c1 think c2 think … cN think theme is where"。
+//    holder=cN,observers=c1..c_{N-1}。返回 holder 在「所有链成员都感知过的事件」中
+//    position 最高的状态。N=1 等价一阶;N=2 等价 what_does_X_think 的 observer 分支。
+//    空链 / dim 不可定 / 无交集行 → has_belief=false。
+StateBelief what_does_X_think_chain(
+    persistence::SqliteAdapter& adapter,
+    cognizer::KnowledgeFrontier& frontier,
+    const std::vector<std::string>& chain,
+    std::string_view theme,
+    std::string_view tenant,
+    std::string_view as_of);
+
 }  // namespace starling::tom::mentalizing
