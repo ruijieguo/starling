@@ -190,6 +190,19 @@ void bind_08_tom(pybind11::module_& m) {
         py::arg("tenant"), py::arg("as_of"), py::arg("observer") = "",
         "First/second-order: X's last-perceived state of a theme (possibly stale).");
 
+    m.def("what_does_X_think_chain",
+        [](starling::persistence::SqliteAdapter& adapter,
+           starling::cognizer::KnowledgeFrontier& frontier,
+           const std::vector<std::string>& chain, const std::string& theme,
+           const std::string& tenant, const std::string& as_of) {
+            return starling::tom::mentalizing::what_does_X_think_chain(
+                adapter, frontier, chain, theme, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("frontier"), py::arg("chain"), py::arg("theme"),
+        py::arg("tenant"), py::arg("as_of"),
+        "Arbitrary multi-order: holder cN's last-perceived state among events all "
+        "chain members perceived (chain=[c1..cN]). Returns a StateBelief.");
+
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
     // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
     py::class_<starling::tom::mentalizing::ChainLevel>(m, "ChainLevel")

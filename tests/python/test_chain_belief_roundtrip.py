@@ -45,3 +45,9 @@ def test_bare_stative_perceived_by_all_present_then_leaver_keeps_it(tmp_path):
     emma = what_does_X_think(mem._rt.adapter, frontier, x="Emma", theme="watermelon", tenant_id=tenant)
     assert emma.has_belief
     assert emma.state_value == "blue_chest"
+
+
+def test_chain_query_is_bound_and_callable():
+    from starling import _core
+    assert hasattr(_core, "what_does_X_think_chain")
+    from starling.tom.primitives import what_does_X_think_chain  # wrapper exists

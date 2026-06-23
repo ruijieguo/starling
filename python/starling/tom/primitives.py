@@ -171,3 +171,28 @@ def what_does_X_think(
     """
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.what_does_X_think(adapter, frontier, x, theme, tenant_id, as_of_iso, observer)
+
+
+def what_does_X_think_chain(
+    adapter,
+    frontier,
+    *,
+    chain: list[str],
+    theme: str,
+    tenant_id: str = "default",
+    as_of: Optional[datetime] = None,
+):
+    """Arbitrary multi-order belief: "chain[0] thinks chain[1] thinks … chain[-1] thinks
+    the theme is where". holder = chain[-1]; observers = the rest. Returns StateBelief.
+
+    Parameters
+    ----------
+    adapter   : SqliteAdapter
+    frontier  : KnowledgeFrontier
+    chain     : cognizer ids, outermost first, belief-holder (deepest) last.
+    theme     : theme id (statements.object_value, e.g. 'watermelon')
+    tenant_id : tenant scope
+    as_of     : time anchor; defaults to now (UTC). Must be tz-aware.
+    """
+    as_of_iso = _iso_now_or_convert(as_of)
+    return _core.what_does_X_think_chain(adapter, frontier, chain, theme, tenant_id, as_of_iso)
