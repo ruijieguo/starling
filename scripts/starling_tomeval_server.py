@@ -90,6 +90,11 @@ _STORY_PATTERNS = (
     re.compile(r"\[故事\]\s*(.*?)\s*\[问题\]", re.S),
     re.compile(r"Story:\s*(.*?)\s*Question:", re.S),
     re.compile(r"故事[:：]\s*(.*?)\s*问题[:：]", re.S),
+    # EmoBench (and other ToMEval datasets) render the passage under a markdown
+    # "## Scenario" header, the question under "## Question". Non-greedy so a single
+    # scenario is captured; grouped multi-scenario prompts get the first (degraded).
+    re.compile(r"##\s*Scenario\s*(.*?)\s*##\s*Question", re.S),
+    re.compile(r"##\s*情景\s*(.*?)\s*##\s*问题", re.S),
 )
 
 
