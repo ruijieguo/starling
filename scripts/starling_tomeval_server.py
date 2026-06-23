@@ -1,8 +1,9 @@
-"""Starling-in-the-loop ToMBench answering server (OpenAI-compatible).
+"""Starling-in-the-loop answering server for the ToMEval harness (OpenAI-compatible).
 
 ToMEval (/Users/jaredguo-mini/develop/ToMEval) evaluates a "model" by POSTing
-ToMBench multiple-choice items to an OpenAI `/v1/chat/completions` endpoint. This
-server IS that endpoint, but the "model" is **Starling-with-deepseek-in-the-loop**:
+multiple-choice items (ToMBench AND HiToM) to an OpenAI `/v1/chat/completions`
+endpoint. This server IS that endpoint, but the "model" is
+**Starling-with-deepseek-in-the-loop**:
 
   per request:
     1. parse the STORY out of the `[Story] … [Question]` block of the user message,
@@ -22,7 +23,7 @@ to the deterministic location-FB perception eval.
 Run (from the starling repo root, with the funded deepseek endpoint in env):
     eval "$(grep -E '^[[:space:]]*export (DEEPSEEK_API_KEY|DEEPSEEK_BASE_URL)=' ~/.zshrc)"
     OPENAI_API_KEY="$DEEPSEEK_API_KEY" OPENAI_BASE_URL="$DEEPSEEK_BASE_URL/v1" \
-      .venv/bin/python -m uvicorn scripts.starling_tombench_server:app \
+      .venv/bin/python -m uvicorn scripts.starling_tomeval_server:app \
         --host 127.0.0.1 --port 8900 --workers 1
 
 The OpenAIAdapter reads OPENAI_API_KEY/OPENAI_BASE_URL from the env (never logged).
