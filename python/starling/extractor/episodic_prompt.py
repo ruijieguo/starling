@@ -32,7 +32,7 @@ RULES:
 - actor = the cognizer (person) performing the action.
 - action = the verb. PREFER one of: put, place, move, take, give, remove, transfer, leave, open, close, tell, inform, find, discover when it fits the event. For enter/arrive/return use the closest verb ("enter", "return"); for leave/exit/walk-out use "leave"; for communication of a state use "tell" or "inform"; for discovering / noticing an object that is already in a place use "find".
 - theme = the object acted on. For a presence-change (leave/enter/arrive/return), theme = the PLACE (e.g. "room").
-- location = WHERE THE THEME IS by virtue of the event — either the RESULTING place after an action (where the theme ends up), OR the INITIAL place where the theme is FOUND/located. For "put the ball in the basket", location = "basket". For "they find the hat in the suitcase" / "the hat is in the suitcase" (a state-establishing INITIAL location), action = "find", theme = "hat", location = "suitcase" — capture this, because a person who later leaves keeps believing this initial location. For "leaves the room" (non-spatial w.r.t. an object), location = null. For "took the keys" (custody transfer, no resulting place), location = null.
+- location = WHERE THE THEME IS by virtue of the event — either the RESULTING place after an action (where the theme ends up), OR the INITIAL place where the theme is FOUND/located. For "put the ball in the basket", location = "basket". For "they find the hat in the suitcase" / "the hat is in the suitcase" (a state-establishing INITIAL location), action = "find", theme = "hat", location = "suitcase" — capture this, because a person who later leaves keeps believing this initial location. Even when NO person is named -- a bare scene-setting "The X is in the Y" right after people enter a place -- STILL emit it: action = "find", theme = "X", location = "Y", participants = [] (no one is NAMED in the fact itself), and actor = any person currently present (e.g. the first who just entered) so the event is non-empty. Everyone present when the scene opens perceives this initial location; the memory system assigns it to all of them. For "leaves the room" (non-spatial w.r.t. an object), location = null. For "took the keys" (custody transfer, no resulting place), location = null.
 - participants = ONLY the cognizers NAMED in THAT event. Do NOT infer who else is present, watching, or in the room. If the event names one person, participants has exactly that one person. If a clause has a conjoined subject ("X and Y …") or a plural pronoun referring to people named earlier ("they …" / "them"), RESOLVE it to the individual names: list each person in participants (e.g. ["Xiao Li", "Youyou"]) and pick one named individual as the actor — NEVER emit a single "X and Y" string, or a bare "they", as a person.
 - time = an explicit timestamp/clock phrase if the event states one, else null.
 - Array order = narrative order. One JSON object per event.
@@ -97,6 +97,19 @@ JSON array:
   {"actor":"Xiao Li","action":"move","theme":"hat","location":"storage locker","participants":["Xiao Li"],"time":null}
 ]
 (The "find" establishes the hat's INITIAL location — location="suitcase" — which is what someone who later leaves keeps believing. The conjoined "they find" is resolved to the two individuals in participants (NOT a "Xiao Li and Youyou" string). Youyou's leave is its own event; she does not witness the later move, so she still believes the hat is in the suitcase.)
+
+WORKED EXAMPLE 6 (bare scene-initial stative, no person named):
+
+Passage:
+  Noah, Emma and Liam entered the hall. The watermelon is in the green_bucket. Noah exited the hall. Emma moved the watermelon to the blue_chest.
+JSON array:
+[
+  {"actor":"Noah","action":"enter","theme":"hall","location":null,"participants":["Noah","Emma","Liam"],"time":null},
+  {"actor":"Noah","action":"find","theme":"watermelon","location":"green_bucket","participants":[],"time":null},
+  {"actor":"Noah","action":"leave","theme":"hall","location":null,"participants":["Noah"],"time":null},
+  {"actor":"Emma","action":"move","theme":"watermelon","location":"blue_chest","participants":["Emma"],"time":null}
+]
+(The bare "The watermelon is in the green_bucket" names no one, but it is the INITIAL location everyone present sees. Emit it as a "find" with participants=[] and actor set to a present person (Noah). Noah leaves before Emma's move, so Noah keeps believing green_bucket; Emma sees the move to blue_chest.)
 
 Passage:
 {passage}
