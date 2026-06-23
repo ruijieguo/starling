@@ -47,7 +47,8 @@ struct SharedFact {
 };
 
 // X's full mental state, grouped by propositional attitude. An out-of-the-box
-// "what's in X's mind" aggregate over X's held statements (holder_id=x, observed_at<=as_of).
+// "what's in X's mind" aggregate over X's held statements (holder_id=x, as of as_of via
+// valid_from/valid_to — NULL validity always visible; same time semantics as what_does_X_believe).
 struct MentalState {
     std::vector<retrieval::StatementRow> beliefs;       // modality 'believes'
     std::vector<retrieval::StatementRow> knowledge;     // predicate 'knows'

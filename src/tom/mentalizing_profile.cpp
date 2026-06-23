@@ -22,8 +22,11 @@ MentalState mental_state_of(
 
     MentalState out;
     for (const auto& r : rows) {
-        if (r.predicate == "prefers")      out.preferences.push_back(r);   // predicate-first
-        else if (r.predicate == "knows")   out.knowledge.push_back(r);
+        // predicate-first (extraction emits knows/prefers as predicates); modality
+        // KNOWS/PREFERS (valid enum values from non-extraction write paths) also route
+        // here as fallback so knowledge/preferences are caught either way.
+        if (r.predicate == "prefers" || r.modality == "prefers")  out.preferences.push_back(r);
+        else if (r.predicate == "knows" || r.modality == "knows") out.knowledge.push_back(r);
         else if (r.modality == "believes") out.beliefs.push_back(r);
         else if (r.modality == "desires")  out.desires.push_back(r);
         else if (r.modality == "intends")  out.intentions.push_back(r);
