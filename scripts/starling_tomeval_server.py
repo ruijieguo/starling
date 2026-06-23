@@ -230,6 +230,46 @@ def _chain_injection_for(mem, user_content: str) -> str:
     return _format_chain_injection(chain, theme, sb.state_value)
 
 
+# Question families whose answer turns on a character's BDI+K mental state. Emotion /
+# belief / non-literal are GATED OFF (mental-state dump is noise there -> existing dump/chain).
+_MENTAL_STATE_CUES = ("plan to", "want", "wants", "intend", "knows", "know that",
+                      "most likely do", "decide", "prefer")
+_GATE_OFF_CUES = ("emotion", "feel", "feeling", "think the", "thinks the", "really think")
+
+
+def _wants_mental_state(question: str) -> bool:
+    q = (question or "").lower()
+    if any(c in q for c in _GATE_OFF_CUES):
+        return False
+    return any(c in q for c in _MENTAL_STATE_CUES)
+
+
+def _format_mental_state(ms) -> str:
+    def line(label, rows):
+        items = [f"{r.subject_id} {r.predicate} {r.object_value}" for r in rows]
+        return f"  {label}: " + "; ".join(items) if items else ""
+    parts = [line("knows", ms.knowledge), line("wants", ms.desires), line("intends", ms.intentions),
+             line("prefers", ms.preferences), line("committed", ms.commitments), line("believes", ms.beliefs)]
+    return "\n".join(p for p in parts if p)
+
+
+def _mental_state_injection_for(mem, user_content: str) -> str:
+    if not _wants_mental_state(user_content):
+        return ""
+    try:
+        mem.tick()  # consolidate fresh volatile statements so mental_state_of sees them
+        agent = getattr(mem._core, "agent", None) or "narrator"
+        ms = _core.mental_state_of(mem._rt.adapter, agent, mem._core.tenant, "9999-12-31T23:59:59Z")
+        body = _format_mental_state(ms)
+    except Exception:
+        print("[MENTALSTATE-EXC]\n" + traceback.format_exc(), file=sys.stderr, flush=True)
+        return ""
+    if not body:
+        return ""
+    return ("[Mental states my memory extracted (subject = the character; use these for "
+            "knowledge/desire/intention questions)]\n" + body)
+
+
 def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
     if not story:
@@ -242,8 +282,9 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
         dump = _memory_dump(db_path, mem._core.tenant)
-        inject = _chain_injection_for(mem, user_content)
-        return (dump + "\n\n" + inject) if inject else dump
+        chain = _chain_injection_for(mem, user_content)
+        extra = chain or _mental_state_injection_for(mem, user_content)
+        return (dump + "\n\n" + extra) if extra else dump
     except Exception:  # extraction can fail (parse); degrade to no scaffold
         print(f"[REMEMBER-EXC]\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         return ""
