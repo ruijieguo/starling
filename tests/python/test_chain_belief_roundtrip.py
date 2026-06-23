@@ -51,3 +51,38 @@ def test_chain_query_is_bound_and_callable():
     from starling import _core
     assert hasattr(_core, "what_does_X_think_chain")
     from starling.tom.primitives import what_does_X_think_chain  # wrapper exists
+
+
+_CANNED_O3 = json.dumps([
+    {"actor": "Aiden", "action": "enter", "theme": "hall", "location": None,
+     "participants": ["Aiden", "Avery", "Carter"], "time": None},
+    {"actor": "Aiden", "action": "find", "theme": "cabbage", "location": "blue_bathtub",
+     "participants": [], "time": None},
+    {"actor": "Carter", "action": "leave", "theme": "hall", "location": None,
+     "participants": ["Carter"], "time": None},
+    {"actor": "Avery", "action": "move", "theme": "cabbage", "location": "red_box",
+     "participants": ["Avery"], "time": None},
+])
+
+
+def test_order3_chain_resolves_to_initial_for_early_leaver(tmp_path):
+    from starling.tom.primitives import what_does_X_think_chain
+    from datetime import datetime, timezone
+    # The `enter` event seats the cast {Aiden, Avery, Carter}; all are present at the find ->
+    # all perceive blue_bathtub. Carter leaves before Avery's move (so Carter still believes
+    # blue_bathtub). Aiden is the outermost observer who never leaves/moves -- WITHOUT the
+    # enter event he would be absent from the cast, get no perception, and the chain query
+    # would return has_belief=false.
+    mem = starling.Memory.open(
+        str(tmp_path / "m.db"), agent="narrator",
+        llm=starling.make_stub_llm(default_response=_CANNED_O3))
+    mem.remember("Aiden, Avery and Carter entered the hall. The cabbage is in the blue_bathtub. "
+                 "Carter exited the hall. Avery moved the cabbage to the red_box.")
+    frontier = starling._core.KnowledgeFrontier(mem._rt.adapter)
+    # "Aiden think Avery think Carter think the cabbage is": Carter (deepest) left before the
+    # move; all three co-saw the initial blue_bathtub -> blue_bathtub.
+    sb = what_does_X_think_chain(
+        mem._rt.adapter, frontier, chain=["Aiden", "Avery", "Carter"], theme="cabbage",
+        tenant_id=mem._core.tenant, as_of=datetime(9999, 1, 1, tzinfo=timezone.utc))
+    assert sb.has_belief
+    assert sb.state_value == "blue_bathtub"
