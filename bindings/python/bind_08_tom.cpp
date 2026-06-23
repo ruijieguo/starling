@@ -203,6 +203,26 @@ void bind_08_tom(pybind11::module_& m) {
         "Arbitrary multi-order: holder cN's last-perceived state among events all "
         "chain members perceived (chain=[c1..cN]). Returns a StateBelief.");
 
+    py::class_<starling::tom::mentalizing::MentalState>(m, "MentalState")
+        .def_readonly("beliefs",     &starling::tom::mentalizing::MentalState::beliefs)
+        .def_readonly("knowledge",   &starling::tom::mentalizing::MentalState::knowledge)
+        .def_readonly("desires",     &starling::tom::mentalizing::MentalState::desires)
+        .def_readonly("intentions",  &starling::tom::mentalizing::MentalState::intentions)
+        .def_readonly("commitments", &starling::tom::mentalizing::MentalState::commitments)
+        .def_readonly("preferences", &starling::tom::mentalizing::MentalState::preferences);
+
+    m.def("mental_state_of",
+        [](starling::persistence::SqliteAdapter& adapter, const std::string& x,
+           const std::string& tenant, const std::string& as_of) {
+            starling::tom::mentalizing::MentalState out;
+            { py::gil_scoped_release release;
+              out = starling::tom::mentalizing::mental_state_of(adapter, x, tenant, as_of); }
+            return out;
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("tenant"), py::arg("as_of"),
+        "X's full mental state grouped by attitude (beliefs/knowledge/desires/intentions/"
+        "commitments/preferences).");
+
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
     // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
     py::class_<starling::tom::mentalizing::ChainLevel>(m, "ChainLevel")

@@ -196,3 +196,16 @@ def what_does_X_think_chain(
     """
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.what_does_X_think_chain(adapter, frontier, chain, theme, tenant_id, as_of_iso)
+
+
+def mental_state_of(
+    adapter,
+    *,
+    x: str,
+    tenant_id: str = "default",
+    as_of: Optional[datetime] = None,
+):
+    """X's full mental state grouped by attitude: beliefs / knowledge / desires /
+    intentions / commitments / preferences. Returns a MentalState."""
+    as_of_iso = _iso_now_or_convert(as_of)
+    return _core.mental_state_of(adapter, x, tenant_id, as_of_iso)
