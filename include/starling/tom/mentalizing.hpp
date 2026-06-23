@@ -46,6 +46,17 @@ struct SharedFact {
     std::vector<std::string> source_statement_ids;
 };
 
+// X's full mental state, grouped by propositional attitude. An out-of-the-box
+// "what's in X's mind" aggregate over X's held statements (holder_id=x, observed_at<=as_of).
+struct MentalState {
+    std::vector<retrieval::StatementRow> beliefs;       // modality 'believes'
+    std::vector<retrieval::StatementRow> knowledge;     // predicate 'knows'
+    std::vector<retrieval::StatementRow> desires;       // modality 'desires'
+    std::vector<retrieval::StatementRow> intentions;    // modality 'intends'
+    std::vector<retrieval::StatementRow> commitments;   // modality 'commits'
+    std::vector<retrieval::StatementRow> preferences;   // predicate 'prefers'
+};
+
 // ─── Free functions ───────────────────────────────────────────────────────────
 
 // 1. Returns all statements held by cognizer X about subject Y (subject_kind='cognizer').
@@ -181,6 +192,15 @@ StateBelief what_does_X_think_chain(
     cognizer::KnowledgeFrontier& frontier,
     const std::vector<std::string>& chain,
     std::string_view theme,
+    std::string_view tenant,
+    std::string_view as_of);
+
+// 10. X's full mental state, bucketed by attitude. Predicate-first ('prefers'->preferences,
+//     'knows'->knowledge), else by modality. occurred/norm_*/enforces/observes dropped
+//     (not propositional attitudes). Unknown X -> all empty.
+MentalState mental_state_of(
+    persistence::SqliteAdapter& adapter,
+    std::string_view x,
     std::string_view tenant,
     std::string_view as_of);
 

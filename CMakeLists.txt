@@ -130,6 +130,7 @@ target_sources(starling_core PRIVATE
     src/tom/mentalizing_misalign.cpp
     src/tom/mentalizing_shared.cpp
     src/tom/mentalizing_more.cpp
+    src/tom/mentalizing_profile.cpp
     src/tom/belief_tracker.cpp
     src/tom/belief_tracker_handlers.cpp
     src/replay/forgetting_curve.cpp
