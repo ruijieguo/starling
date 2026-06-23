@@ -211,6 +211,15 @@ JSON array:
 ]
 (Multi-speaker depth-2: Carol introduces NEW content about Bob's said belief → Carol is the holder, perspective=HEARSAY. Alice's responsible_for is INFERRED — judged from the duty roster, not directly self-attributed.)
 
+WORKED EXAMPLE (non-belief attitudes — capture DESIRES / INTENDS / knowledge, not just beliefs):
+- "Li Hua: I want to spend the weekend outdoors" -> {"holder":"Li Hua","holder_perspective":"FIRST_PERSON","subject":"weekend","predicate":"prefers","object":"outdoors","modality":"DESIRES","polarity":"POS","nesting_depth":0}
+  (a WANT is modality=DESIRES; the predicate is the closest available for the want's target.)
+- "Mei: I'm going to finish the report tonight" -> {"holder":"Mei","holder_perspective":"FIRST_PERSON","subject":"report","predicate":"responsible_for","object":"report","modality":"INTENDS","polarity":"POS","nesting_depth":0}
+  (a plan/INTENT is modality=INTENDS.)
+- "Tom: I know the keys are in the drawer" -> {"holder":"Tom","holder_perspective":"FIRST_PERSON","subject":"keys","predicate":"knows","object":"drawer","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  (explicit knowing uses predicate=knows.)
+Emit these attitudes when present — do NOT collapse every mental state to BELIEVES.
+
 Conversation:
 {convo}
 
