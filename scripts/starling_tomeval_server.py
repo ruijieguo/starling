@@ -126,6 +126,34 @@ def _extract_story(user_content: str) -> str:
     return ""
 
 
+# HiToM nested-belief question: "Where does A think B thinks … the THEME is?".
+# The `\s+thinks?\s+the\s+` REQUIRES a think/thinks immediately before "the THEME" — that
+# consumes the FINAL verb so it does not cling to the last cognizer (without it,
+# "Carter thinks" would survive the split and fail the single-token guard). `re` is the
+# module-level import at the top of the server file.
+_CHAIN_RX = re.compile(r"\bdoes\s+(.+?)\s+thinks?\s+the\s+([A-Za-z][\w ]*?)\s+is\b", re.I)
+_THINK_SPLIT = re.compile(r"\s+thinks?\s+", re.I)
+
+
+def _parse_chain_question(question: str):
+    """Return (chain, theme) for an order>=2 HiToM nested-belief question, else None.
+    chain is outermost-first; the deepest (belief-holder) is last. Single-cognizer
+    ("really think" / plain "think") and non-HiToM questions return None (the caller
+    falls back to the existing dump scaffold)."""
+    m = _CHAIN_RX.search(question or "")
+    if not m:
+        return None
+    span, theme = m.group(1).strip(), m.group(2).strip()
+    parts = [p.strip() for p in _THINK_SPLIT.split(span) if p.strip()]
+    if len(parts) < 2:
+        return None  # one cognizer (e.g. "Isla" / "Isla really") -> not a nested chain
+    # Each part must be a single name token (HiToM uses single first names); a multi-word
+    # part is a parse artifact -> skip and fall back to the plain dump.
+    if any(len(p.split()) != 1 for p in parts):
+        return None
+    return parts, theme
+
+
 def _memory_dump(db_path: str, tenant: str) -> str:
     """A structured ToM scaffold from Starling's extraction:
       (1) the object-location trail (initial stative + each move, parsed into
