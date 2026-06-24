@@ -89,6 +89,7 @@ add_executable(starling_tests
     test_rate_limiter_tom.cpp
     test_depth_estimator_cache.cpp
     test_mentalizing.cpp
+    test_faux_pas.cpp
     test_belief_tracker.cpp
     test_forgetting_curve.cpp
     test_swr_sampler.cpp

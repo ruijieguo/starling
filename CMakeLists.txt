@@ -124,6 +124,7 @@ target_sources(starling_core PRIVATE
     src/tom/second_order.cpp
     src/hippocampus/affect_buffer.cpp
     src/tom/mentalizing_believe.cpp
+    src/tom/mentalizing_fauxpas.cpp
     src/tom/mentalizing_know.cpp
     src/tom/mentalizing_think.cpp
     src/tom/mentalizing_chain.cpp

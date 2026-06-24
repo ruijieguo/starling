@@ -161,6 +161,28 @@ std::vector<CommitmentFact> who_committed(
     std::string_view tenant,
     std::string_view as_of);
 
+// ─── per-family social-cognition operators ────────────────────────────────────
+
+// A faux-pas precondition: `ignorant` doesn't know `unknown_fact`, which co-present
+// `who_knows` cognizers DO know. The structural setup of a faux pas (the speaker may
+// then say something inappropriate). Semantic sensitivity is NOT judged here.
+struct FauxPasCandidate {
+    std::string ignorant;
+    retrieval::StatementRow unknown_fact;
+    std::vector<std::string> who_knows;
+};
+
+// Scan cast × established facts: for each fact F, classify each cast cognizer via
+// does_X_know (Unknowable -> ignorant; NotKnown/FullKnowledge -> knower). Emit a
+// candidate per ignorant cognizer when at least one cast cognizer knows F. Cast =
+// distinct cognizers in perception_state; facts = distinct (subject_kind,subject_id,
+// predicate,canonical_object_hash) over consolidated statements.
+std::vector<FauxPasCandidate> detect_faux_pas(
+    persistence::SqliteAdapter& adapter,
+    cognizer::KnowledgeFrontier& frontier,
+    std::string_view tenant,
+    std::string_view as_of);
+
 // ─── sub-project B: perception → belief ──────────────────────────────────────
 
 // X's last-perceived state of a theme (sub-project B). has_belief=false → X never
