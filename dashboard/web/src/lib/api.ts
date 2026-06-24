@@ -61,7 +61,8 @@ async function req<T>(path: string, init: ReqInit = {}): Promise<T> {
 export const api = {
 	get: <T>(p: string, init?: ReqInit) => req<T>(p, init),
 	post: <T>(p: string, body: unknown, init?: ReqInit) =>
-		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) })
+		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) }),
+	del: <T>(p: string, init?: ReqInit) => req<T>(p, { ...init, method: 'DELETE' })
 };
 
 // 归因 receipt(Phase 0 起 plan_query 纯增量带出;runtime_health 不暴露)。

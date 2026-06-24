@@ -123,8 +123,12 @@ class DashboardEngine:
         # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
         self._tick_thread: threading.Thread | None = None
         self._tick_stop: threading.Event | None = None
-        self.set_llm(config.llm)
-        self.rebuild_embedder(config.embedder, reembed=False)
+        # Roles → adapters. Only extraction (the chat/LLM adapter MemoryCore
+        # uses for remember) and embedding have live consumers today; chat is
+        # wired in Phase 2c (converse). Unbound role → {} → no api_key → None /
+        # stub, matching the pre-registry "no key configured" behaviour.
+        self.set_llm(config.resolve_role("extraction") or {})
+        self.rebuild_embedder(config.embedding() or {}, reembed=False)
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
     # FakeLLMAdapter directly (`eng.llm = fake`).

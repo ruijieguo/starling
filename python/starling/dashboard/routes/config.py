@@ -1,12 +1,19 @@
-"""Config routes — read (masked) and update LLM/embedder config + hot-swap."""
+"""Config routes — multi-model provider registry (read masked, upsert, bind, test).
+
+The registry is `providers` (named secret-bearing configs) + `roles` (which
+provider each job uses). extraction/embedding are live; chat is consumed by
+converse() (2c); consolidation is reserved. Hot-swap is per affected role:
+rebinding/editing the extraction provider re-swaps the LLM adapter (O(1));
+the embedding provider triggers a re-embed (expensive). GET never leaks keys.
+"""
 from __future__ import annotations
 
 from anyio import to_thread
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 
-class ProviderBody(BaseModel):
+class ProviderFields(BaseModel):
     provider: str | None = None
     model: str | None = None
     base_url: str | None = None
@@ -14,13 +21,15 @@ class ProviderBody(BaseModel):
     dim: int | None = None
 
 
-class TestBody(ProviderBody):
-    kind: str = "llm"  # "llm" | "embedder"
-
-
 class ConfigBody(BaseModel):
-    llm: ProviderBody | None = None
-    embedder: ProviderBody | None = None
+    # Partial registry update: upsert these providers and/or (re)bind these roles.
+    providers: dict[str, ProviderFields] | None = None
+    roles: dict[str, str] | None = None
+
+
+class TestBody(ProviderFields):
+    name: str | None = None       # probe a stored provider by name (reuses its key)
+    kind: str = "llm"             # "llm" | "embedder" — which live call to make
 
 
 def _mask(d: dict) -> dict:
@@ -34,18 +43,21 @@ def _mask(d: dict) -> dict:
 
 def _public(cfg) -> dict:
     return {"agent": cfg.agent, "tenant": cfg.tenant, "host": cfg.host, "port": cfg.port,
-            "llm": _mask(cfg.llm), "embedder": _mask(cfg.embedder)}
+            "providers": {name: _mask(p) for name, p in cfg.providers.items()},
+            "roles": dict(cfg.roles)}
 
 
-def _merge(dst: dict, body) -> None:
-    if body is None:
-        return
+def _merge_provider(dst: dict, body: ProviderFields) -> None:
+    """Merge edits into a provider dict. Omitted/None fields are untouched, so an
+    empty api_key on edit keeps the stored secret. Non-positive dim is ignored."""
     for k in ("provider", "model", "base_url", "api_key", "dim"):
         v = getattr(body, k, None)
         if v is None:
             continue
+        if k == "api_key" and v == "":
+            continue  # blank key on edit → keep existing secret
         if k == "dim" and (not isinstance(v, int) or v <= 0):
-            continue  # ignore non-positive dim (invalid embedding dimension)
+            continue
         dst[k] = v
 
 
@@ -60,41 +72,64 @@ def build_config_router(require_token) -> APIRouter:
     async def post_config(body: ConfigBody, request: Request):
         cfg = request.app.state.config
         eng = request.app.state.engine
-        llm_changed = body.llm is not None
-        emb_changed = body.embedder is not None
-        _merge(cfg.llm, body.llm)
-        _merge(cfg.embedder, body.embedder)
+        # Upsert providers (preserve stored keys on blank-key edits).
+        for name, pf in (body.providers or {}).items():
+            _merge_provider(cfg.providers.setdefault(name, {}), pf)
+        # Bind roles (validate target provider exists).
+        for role, name in (body.roles or {}).items():
+            if name and name not in cfg.providers:
+                raise HTTPException(status_code=400, detail=f"unknown provider: {name}")
+            cfg.roles[role] = name
         cfg.save()                                   # persist starling.json (0600)
+        # Hot-swap only the live roles whose resolved provider changed: a role
+        # was (re)bound, or its currently-bound provider was edited.
+        touched_providers = set(body.providers or {})
+        rebound = set(body.roles or {})
+        def _affected(role: str) -> bool:
+            return role in rebound or cfg.roles.get(role) in touched_providers
         if eng is not None:
-            # rebuild_embedder(reembed=True) re-embeds every statement over the
-            # network — must not run on the event loop.
             def _apply() -> None:
-                if llm_changed:
-                    eng.set_llm(cfg.llm)
-                if emb_changed:
-                    eng.rebuild_embedder(cfg.embedder)   # rebuild + re-embed
+                if _affected("extraction"):
+                    eng.set_llm(cfg.resolve_role("extraction") or {})
+                if _affected("embedding"):
+                    eng.rebuild_embedder(cfg.embedding() or {})   # rebuild + re-embed
+            await to_thread.run_sync(_apply)
+        return _public(cfg)
+
+    @router.delete("/config/provider/{name}")
+    async def delete_provider(name: str, request: Request):
+        cfg = request.app.state.config
+        eng = request.app.state.engine
+        cfg.providers.pop(name, None)
+        # Unbind any role pointing at the removed provider, then hot-swap it off.
+        unbound = [r for r, n in cfg.roles.items() if n == name]
+        for r in unbound:
+            cfg.roles[r] = ""
+        cfg.save()
+        if eng is not None and unbound:
+            def _apply() -> None:
+                if "extraction" in unbound:
+                    eng.set_llm({})            # → None (remember will 409 until rebound)
+                if "embedding" in unbound:
+                    eng.rebuild_embedder({})   # → stub (recall degraded)
             await to_thread.run_sync(_apply)
         return _public(cfg)
 
     @router.post("/config/test")
     async def test_config(body: TestBody, request: Request):
-        """Probe a candidate provider config WITHOUT persisting it.
+        """Probe a provider config WITHOUT persisting it. Builds a transient
+        adapter from (stored provider, by name, overlaid with inline fields) and
+        issues one minimal live call. Never saves, never returns/logs the key.
 
-        Builds a transient adapter from (saved config overlaid with the body)
-        and issues one minimal live call. Never saves, never returns/logs the
-        key; detail carries only a status/error code, never secret material.
-
-        SECURITY: the PERSISTED api_key is never sent to a caller-supplied
-        endpoint. A caller-supplied key may go to a caller-supplied base_url
-        (their own risk), but the stored secret may only probe its own stored
-        base_url — any base_url override (or a provider with no stored key)
-        requires a fresh api_key in the body. Blocks credential exfiltration via
-        a redirected probe.
+        SECURITY: the stored key for provider `name` may only probe its own
+        stored base_url. A base_url override (or a name with no stored key)
+        requires a fresh api_key in the body — blocks credential exfiltration via
+        a redirected probe. A caller-supplied key may go to a caller URL (their risk).
         """
         import time
         from starling.dashboard.engine import _build_chat_adapter, _build_embed_adapter
         cfg = request.app.state.config
-        src = cfg.embedder if body.kind == "embedder" else cfg.llm
+        src = cfg.providers.get(body.name or "", {})
         probe = dict(src)
         for k in ("provider", "model", "base_url", "dim"):
             v = getattr(body, k, None)
@@ -104,15 +139,14 @@ def build_config_router(require_token) -> APIRouter:
                 continue
             probe[k] = v
         if body.api_key:
-            probe["api_key"] = body.api_key  # caller key may go to caller URL (their own risk)
+            probe["api_key"] = body.api_key
         else:
             overrides_endpoint = body.base_url is not None and body.base_url != src.get("base_url", "")
             if overrides_endpoint or not src.get("api_key"):
                 return {"ok": False, "latency_ms": 0,
-                        "detail": "需提供 api_key（改了 base_url 时不复用已存密钥）"}
+                        "detail": "需提供 api_key（改了 base_url 或未存密钥时不复用已存密钥）"}
+
         def _probe() -> tuple[bool, str]:
-            # Live network call with C++-side retry backoff — runs in a worker
-            # thread so the probe can't freeze the event loop.
             if body.kind == "embedder":
                 vec = _build_embed_adapter(probe).embed("ping")
                 return True, f"dim={len(vec)}"
