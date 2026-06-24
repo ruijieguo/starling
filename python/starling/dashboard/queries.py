@@ -215,3 +215,132 @@ def queues(db_path: str, tenant: str) -> dict:
             "embedding_backlog": backlog,
             "vectors_by_status": {r["status"]: r["n"] for r in vec},
         }
+
+
+# ── Vitals: Phase 0 read-only observability (pipeline lag + lifecycle stuck) ──
+#
+#   subscriber-pump checkpoints (global single-row) ─┐
+#   bus_events.outbox_sequence (global monotonic) ───┼─► lag = head − cursor
+#                                                     │   (GLOBAL signal, not
+#                                                     │    tenant-scoped: the
+#                                                     │    pumps process every
+#                                                     │    tenant's events)
+#   statements (tenant) ─► VOLATILE-stuck ────────────┤
+#   extraction_attempt⋈pipeline_run (tenant) ─► fails ─┤  (tenant-scoped)
+#   reconsolidation_windows (tenant) ─► overdue ──────┘
+#
+# Each block degrades to ok=False (empty) if its table is absent (migration not
+# run) rather than 500-ing — the dashboard is a diagnostic surface, the worst
+# case is a missing panel, never a crash. Embedded-mode caveat for the UI: lag
+# reflects "distance since the last tick processed events", not a distributed
+# queue depth — pumps advance synchronously inside tick()/remember().
+_PUMP_CHECKPOINTS = (
+    # (pump label, checkpoint table, cursor column)
+    ("belief_tracker", "tom_belief_tracker_checkpoint", "last_processed_outbox_sequence"),
+    ("reconsolidation", "reconsolidation_checkpoint", "last_processed_outbox_sequence"),
+    ("projection", "projection_subscriber_checkpoint", "last_processed_outbox_sequence"),
+    ("common_ground", "common_ground_subscriber_checkpoint", "last_processed_outbox_sequence"),
+    ("policy_engine", "policy_engine_checkpoint", "seq"),
+)
+
+
+def _rows_or_empty(conn, sql: str, params: tuple = ()):
+    """(rows, ok) — ok=False (empty rows) when the table is absent."""
+    try:
+        return _rows(conn, sql, params), True
+    except sqlite3.OperationalError:
+        return [], False
+
+
+def _count_or_zero(conn, sql: str, params: tuple = ()) -> int:
+    try:
+        return conn.execute(sql, params).fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+
+
+def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict:
+    """Phase 0 observability: per-subscriber outbox lag (global) + VOLATILE-stuck
+    / extraction failures / overdue reconsolidation windows (tenant-scoped)."""
+    with open_ro(db_path) as conn:
+        head_row = conn.execute(
+            "SELECT MAX(outbox_sequence) AS head FROM bus_events").fetchone()
+        head = head_row["head"] if head_row and head_row["head"] is not None else 0
+
+        lag: list[dict] = []
+        for label, table, col in _PUMP_CHECKPOINTS:
+            try:
+                r = conn.execute(f"SELECT {col} AS cur FROM {table} LIMIT 1").fetchone()
+            except sqlite3.OperationalError:
+                lag.append({"pump": label, "ok": False, "cursor": None,
+                            "head": head, "lag": None})
+                continue
+            cur = r["cur"] if r and r["cur"] is not None else 0
+            lag.append({"pump": label, "ok": True, "cursor": cur,
+                        "head": head, "lag": max(0, head - cur)})
+        # in-process dispatcher checkpoint(s), keyed per consumer_id
+        disp, _ = _rows_or_empty(
+            conn, "SELECT consumer_id, last_delivered_sequence FROM consumer_checkpoint")
+        for r in disp:
+            cur = r["last_delivered_sequence"] or 0
+            lag.append({"pump": f"dispatcher:{r['consumer_id']}", "ok": True,
+                        "cursor": cur, "head": head, "lag": max(0, head - cur)})
+
+        volatile_stuck, _ = _rows_or_empty(
+            conn,
+            "SELECT id, subject_id, predicate, object_value, salience, replay_count, "
+            "consolidation_state, created_at, observed_at, last_replayed "
+            "FROM statements WHERE tenant_id=? "
+            "AND consolidation_state IN ('volatile','replaying_consolidating') "
+            "ORDER BY created_at ASC LIMIT ?",
+            (tenant, list_limit),
+        )
+        volatile_stuck_total = _count_or_zero(
+            conn,
+            "SELECT COUNT(*) FROM statements WHERE tenant_id=? "
+            "AND consolidation_state IN ('volatile','replaying_consolidating')",
+            (tenant,),
+        )
+
+        extraction_failures, _ = _rows_or_empty(
+            conn,
+            "SELECT a.id, a.pipeline_run_id, a.extraction_span_key, a.attempt_number, "
+            "a.status, a.error, a.raw_output, a.created_at "
+            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "WHERE p.tenant_id=? AND a.status='failed' "
+            "ORDER BY a.created_at DESC LIMIT ?",
+            (tenant, list_limit),
+        )
+        extraction_failures_total = _count_or_zero(
+            conn,
+            "SELECT COUNT(*) FROM extraction_attempt a JOIN pipeline_run p "
+            "ON p.id = a.pipeline_run_id WHERE p.tenant_id=? AND a.status='failed'",
+            (tenant,),
+        )
+
+        overdue_windows, _ = _rows_or_empty(
+            conn,
+            "SELECT stmt_id, opened_at, close_deadline, status FROM reconsolidation_windows "
+            "WHERE tenant_id=? AND status='open' AND close_deadline < ? "
+            "ORDER BY close_deadline ASC LIMIT ?",
+            (tenant, now, list_limit),
+        )
+        overdue_windows_total = _count_or_zero(
+            conn,
+            "SELECT COUNT(*) FROM reconsolidation_windows WHERE tenant_id=? "
+            "AND status='open' AND close_deadline < ?",
+            (tenant, now),
+        )
+
+        max_lag = max((l["lag"] for l in lag if l["lag"] is not None), default=0)
+        return {
+            "outbox_head": head,
+            "max_lag": max_lag,
+            "lag": lag,
+            "volatile_stuck": volatile_stuck,
+            "volatile_stuck_total": volatile_stuck_total,
+            "extraction_failures": extraction_failures,
+            "extraction_failures_total": extraction_failures_total,
+            "overdue_windows": overdue_windows,
+            "overdue_windows_total": overdue_windows_total,
+        }

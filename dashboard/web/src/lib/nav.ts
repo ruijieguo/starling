@@ -25,6 +25,7 @@ export const NAV_GROUPS: NavGroup[] = [
 	{
 		title: '诊断',
 		items: [
+			{ href: '/vitals', label: '生命体征', icon: 'activity' },
 			{ href: '/queues', label: '队列', icon: 'list' },
 			{ href: '/conflicts', label: '冲突', icon: 'zap' },
 			{ href: '/replay', label: '回放', icon: 'rotate-ccw' },

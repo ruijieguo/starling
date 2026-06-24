@@ -1,6 +1,8 @@
 """Read-only inspection routes (SQL-backed)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from starling.dashboard import queries
@@ -49,6 +51,16 @@ def build_inspect_router(require_token) -> APIRouter:
     async def queues(request: Request):
         c = _cfg(request)
         return queries.queues(c.db_path, c.tenant)
+
+    @router.get("/vitals")
+    async def vitals(request: Request, limit: int = 50):
+        c = _cfg(request)
+        # Z-suffixed to match the repo's stored-timestamp convention (engine.py
+        # / commands.py _now_iso). The overdue-window filter is a STRING compare
+        # against Z-suffixed close_deadline values, so a "+00:00" suffix here
+        # would be a latent boundary bug.
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return queries.vitals(c.db_path, c.tenant, now=now, list_limit=limit)
 
     @router.get("/statement/{statement_id}")
     async def statement(request: Request, statement_id: str):

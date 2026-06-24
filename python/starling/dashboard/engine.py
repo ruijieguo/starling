@@ -190,7 +190,16 @@ class DashboardEngine:
         with self._lock:
             r = self._core.plan_query(text, intent=intent,
                                       perspective=perspective, target=target, k=k)
-            return {
+            rc = r.receipt
+            cc = rc.candidate_counts
+            # Existing 6 keys stay byte-identical (the interact page depends on
+            # them — regression-pinned). Everything below is purely additive:
+            # the attribution/receipt fields that were previously dropped. Only
+            # fields that are actually populated are surfaced — `runtime_health`
+            # is deliberately omitted (callers never set q.runtime_health, so it
+            # is always the default, and showing it would violate the live-vs-
+            # roadmap honesty rule).
+            out = {
                 "results": [{"subject": e.row.subject_id,
                              "predicate": e.row.predicate,
                              "object": e.row.object_value,
@@ -198,11 +207,44 @@ class DashboardEngine:
                             for e in r.entries],
                 "context_pack": r.context_pack,
                 "abstained": r.abstained,
-                "abstention_reason": r.receipt.abstention_reason,
+                "abstention_reason": rc.abstention_reason,
                 "plan_steps": [{"step": s.step, "detail": s.detail}
-                               for s in r.receipt.plan_steps],
-                "scopes_searched": list(r.receipt.scopes_searched),
+                               for s in rc.plan_steps],
+                "scopes_searched": list(rc.scopes_searched),
             }
+            out["receipt"] = {
+                "trace_id": rc.trace_id,
+                "query_id": rc.query_id,
+                "sufficiency_status": getattr(rc.sufficiency_status, "name",
+                                              str(rc.sufficiency_status)),
+                "filters_applied": [{"name": f.name, "value": f.value}
+                                    for f in rc.filters_applied],
+                "candidate_counts": {
+                    "fetched": cc.fetched,
+                    "returned": cc.returned,
+                    "dropped_by_review": cc.dropped_by_review,
+                    "dropped_by_state": cc.dropped_by_state,
+                    "dropped_by_time_anchor": cc.dropped_by_time_anchor,
+                    "dropped_by_evidence_erasure": cc.dropped_by_evidence_erasure,
+                },
+                "frontier_masked_count": rc.frontier_masked_count,
+                "evidence_erased_count": rc.evidence_erased_count,
+                "projection_lag_events": rc.projection_lag_events,
+                "degraded_paths": [{"path": d.path, "reason": d.reason,
+                                    "fallback": d.fallback}
+                                   for d in rc.degraded_paths],
+                "score_breakdown": [{"statement_id": s.statement_id,
+                                     "base": s.base, "recency": s.recency,
+                                     "salience": s.salience, "activation": s.activation,
+                                     "affect_consistency": s.affect_consistency,
+                                     "temporal_penalty": s.temporal_penalty,
+                                     "final_score": s.final_score}
+                                    for s in rc.score_breakdown],
+                "skipped_scopes": [{"scope": s.scope, "reason": s.reason}
+                                   for s in rc.skipped_scopes],
+                "stop_reason": rc.stop_reason,
+            }
+            return out
 
     def start_background_tick(self, interval_s: float, on_tick=None) -> None:
         """周期维护线程(P2.o 运行时闭环):每 interval_s 秒跑一次 tick

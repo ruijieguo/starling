@@ -160,6 +160,56 @@
 							{/each}
 						</ul>
 					</details>
+					{#if planned.receipt}
+						{@const rc = planned.receipt}
+						<details class="text-xs text-muted">
+							<summary class="cursor-pointer select-none">
+								归因 receipt(充分性 {rc.sufficiency_status} · 取 {rc.candidate_counts.fetched}→返 {rc.candidate_counts.returned}{rc.frontier_masked_count
+									? ` · frontier 屏蔽 ${rc.frontier_masked_count}`
+									: ''})
+							</summary>
+							<div class="mt-1 space-y-2">
+								{#if rc.filters_applied.length}
+									<div>
+										<span class="text-subtle">filters(隐私证明):</span>
+										<span class="font-mono">{rc.filters_applied.map((f) => `${f.name}=${f.value}`).join(', ')}</span>
+									</div>
+								{/if}
+								{#if rc.degraded_paths.length}
+									<div class="text-warn">
+										降级:{rc.degraded_paths.map((d) => `${d.path}→${d.fallback}(${d.reason})`).join('; ')}
+									</div>
+								{/if}
+								{#if rc.score_breakdown.length}
+									<div class="overflow-x-auto">
+										<table class="w-full font-mono text-[11px]">
+											<thead class="text-subtle">
+												<tr>
+													<th class="pr-2 text-left">stmt</th><th class="px-1">base</th>
+													<th class="px-1">recency</th><th class="px-1">sal</th><th class="px-1">act</th>
+													<th class="px-1">affect</th><th class="px-1">tpen</th><th class="px-1">final</th>
+												</tr>
+											</thead>
+											<tbody>
+												{#each rc.score_breakdown as s}
+													<tr>
+														<td class="pr-2">{s.statement_id.slice(0, 8)}…</td>
+														<td class="px-1 text-right">{s.base.toFixed(2)}</td>
+														<td class="px-1 text-right">{s.recency.toFixed(2)}</td>
+														<td class="px-1 text-right">{s.salience.toFixed(2)}</td>
+														<td class="px-1 text-right">{s.activation.toFixed(2)}</td>
+														<td class="px-1 text-right">{s.affect_consistency.toFixed(2)}</td>
+														<td class="px-1 text-right">{s.temporal_penalty.toFixed(2)}</td>
+														<td class="px-1 text-right text-fg">{s.final_score.toFixed(3)}</td>
+													</tr>
+												{/each}
+											</tbody>
+										</table>
+									</div>
+								{/if}
+							</div>
+						</details>
+					{/if}
 				{/if}
 			{/if}
 		</div>

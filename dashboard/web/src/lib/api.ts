@@ -64,6 +64,38 @@ export const api = {
 		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) })
 };
 
+// 归因 receipt(Phase 0 起 plan_query 纯增量带出;runtime_health 不暴露)。
+export type RecallReceipt = {
+	trace_id: string;
+	query_id: string;
+	sufficiency_status: string;
+	filters_applied: { name: string; value: string }[];
+	candidate_counts: {
+		fetched: number;
+		returned: number;
+		dropped_by_review: number;
+		dropped_by_state: number;
+		dropped_by_time_anchor: number;
+		dropped_by_evidence_erasure: number;
+	};
+	frontier_masked_count: number;
+	evidence_erased_count: number;
+	projection_lag_events: number;
+	degraded_paths: { path: string; reason: string; fallback: string }[];
+	score_breakdown: {
+		statement_id: string;
+		base: number;
+		recency: number;
+		salience: number;
+		activation: number;
+		affect_consistency: number;
+		temporal_penalty: number;
+		final_score: number;
+	}[];
+	skipped_scopes: { scope: string; reason: string }[];
+	stop_reason: string;
+};
+
 // P3.a1 检索规划响应(POST /api/recall 带 intent 时)。
 export type PlannedRecallResponse = {
 	results: { subject: string; predicate: string; object: string; score: number; label: string }[];
@@ -72,4 +104,5 @@ export type PlannedRecallResponse = {
 	abstention_reason: string;
 	plan_steps: { step: string; detail: string }[];
 	scopes_searched: string[];
+	receipt?: RecallReceipt; // 纯增量:旧 6 字段不变,归因细节新增于此
 };
