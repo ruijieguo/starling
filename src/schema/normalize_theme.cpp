@@ -42,11 +42,16 @@ std::string normalize_theme(std::string_view surface) {
     std::string s = to_lower(surface);
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
-    for (std::string_view art : {"the ", "a ", "an "}) {
-        if (s.size() > art.size() && s.compare(0, art.size(), art) == 0) {
-            s = s.substr(art.size());
-            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
-            break;
+    bool stripped = true;
+    while (stripped) {
+        stripped = false;
+        for (std::string_view det : {"the ", "a ", "an ", "all ", "both ", "some "}) {
+            if (s.size() > det.size() && s.compare(0, det.size(), det) == 0) {
+                s = s.substr(det.size());
+                while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+                stripped = true;
+                break;
+            }
         }
     }
     return singularize(s);

@@ -22,3 +22,13 @@ TEST(NormalizeTheme, ConservativeFalsePositiveGuards) {
     EXPECT_EQ(normalize_theme("series"), "series"); // -is stoplist
     EXPECT_EQ(normalize_theme("ball"), "ball");     // no trailing s, unchanged
 }
+
+TEST(NormalizeTheme, StripsLeadingQuantifiersAndMerges) {
+    EXPECT_EQ(normalize_theme("all three toys"), "three toy");
+    EXPECT_EQ(normalize_theme("three toys"),     "three toy");
+    EXPECT_EQ(normalize_theme("all three toy"),  "three toy");
+    EXPECT_EQ(normalize_theme("both hands"),     "hand");
+    EXPECT_EQ(normalize_theme("all the marbles"),"marble");
+    EXPECT_EQ(normalize_theme("three toy"),      "three toy");   // idempotent
+    EXPECT_EQ(normalize_theme("allowance"),      "allowance");   // "all" w/o space boundary untouched
+}
