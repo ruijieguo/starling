@@ -9,6 +9,12 @@ struct LLMResponse {
     std::string raw_xml;   // raw LLM body (now a JSON array; name kept for blast-radius); empty when ok=false
     bool        ok = false;
     std::string error;     // semantic error code on ok=false; empty otherwise
+    // 2b 成本采集:真适配器填充网络往返耗时 + token 用量(失败响应也带 latency)。
+    // Fake / 未返回 usage 的端点留 0;采集落在适配器(核心)而非绑定层。
+    int prompt_tokens     = 0;
+    int completion_tokens = 0;
+    int total_tokens      = 0;
+    int latency_ms        = 0;
 };
 
 // Pluggable seam: anything that can turn a prompt + a stable input hash into

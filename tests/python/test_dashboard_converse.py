@@ -44,6 +44,9 @@ def test_converse_three_phase_happy(client):
     assert b["remember_ok"] is True                # exchange consolidated
     assert len(b["statement_ids"]) >= 1            # remember extracted a statement
     assert "context_pack" in b and "abstained" in b
+    # 2b cost fields wired through (0 with the fake adapter — real model fills them).
+    assert b["gen_total_tokens"] == 0 and b["gen_latency_ms"] >= 0
+    assert {"gen_prompt_tokens", "gen_completion_tokens"} <= b.keys()
 
 
 def test_converse_consolidates_then_recallable(client):

@@ -90,7 +90,11 @@ void bind_13_memory_ops(pybind11::module_& m) {
                               "context_pack"_a = r.context_pack, "abstained"_a = r.abstained,
                               "statement_ids"_a = r.statement_ids,
                               "remember_ok"_a = r.remember_ok,
-                              "remember_error"_a = r.remember_error);
+                              "remember_error"_a = r.remember_error,
+                              "gen_prompt_tokens"_a = r.gen_prompt_tokens,
+                              "gen_completion_tokens"_a = r.gen_completion_tokens,
+                              "gen_total_tokens"_a = r.gen_total_tokens,
+                              "gen_latency_ms"_a = r.gen_latency_ms);
           },
           py::arg("adapter"), py::arg("chat_llm"), py::arg("extraction_llm"),
           py::arg("semantic"), py::arg("extraction_prompt"),

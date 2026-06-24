@@ -132,6 +132,10 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
     }
     r.ok = true;
     r.reply = resp.raw_xml;
+    r.gen_prompt_tokens     = resp.prompt_tokens;     // 2b 成本采集(回复生成段)
+    r.gen_completion_tokens = resp.completion_tokens;
+    r.gen_total_tokens      = resp.total_tokens;
+    r.gen_latency_ms        = resp.latency_ms;
 
     // ── 4. remember the exchange (write) ── 失败语义 A:remember 失败绝不
     // 丢用户已看到的回复;记忆缺失记为可观测的 remember_error。

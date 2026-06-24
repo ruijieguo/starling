@@ -74,6 +74,12 @@ struct ConverseOutcome {
     std::vector<std::string> statement_ids;  // 本轮沉淀的语句
     bool remember_ok = false;                // false → 回复保留但记忆未落库
     std::string remember_error;              // remember 失败原因(可观测)
+    // 2b:本轮「回复生成」成本(chat_llm.generate 这一段;remember 的抽取成本
+    // 待 extraction_attempt 持久化后单列)。真模型填充,Fake/stub 留 0。
+    int gen_prompt_tokens     = 0;
+    int gen_completion_tokens = 0;
+    int gen_total_tokens      = 0;
+    int gen_latency_ms        = 0;
 };
 
 // 带记忆的聊天轮(三段式,决策 A):recall(RetrievalPlanner,只读)→ 注入

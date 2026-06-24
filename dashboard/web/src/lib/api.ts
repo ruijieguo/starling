@@ -118,4 +118,9 @@ export type ConverseResponse = {
 	statement_ids: string[]; // 本轮沉淀的语句
 	remember_ok: boolean; // false → 回复在但记忆未落库
 	remember_error: string;
+	// 2b 成本采集:本轮回复生成的 token/延迟(真模型填充,Fake/stub 为 0)。
+	gen_prompt_tokens: number;
+	gen_completion_tokens: number;
+	gen_total_tokens: number;
+	gen_latency_ms: number;
 };

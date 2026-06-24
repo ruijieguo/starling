@@ -85,6 +85,11 @@
 									{#each tr.statement_ids as id}
 										<a href="/statements" title={id}><Chip>{id.slice(0, 8)}…</Chip></a>
 									{/each}
+									{#if tr.gen_total_tokens || tr.gen_latency_ms}
+										<span class="text-subtle"
+											>· 回复 {tr.gen_total_tokens} tok · {tr.gen_latency_ms}ms</span
+										>
+									{/if}
 								</div>
 							</div>
 						</details>
