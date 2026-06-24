@@ -270,6 +270,43 @@ def _mental_state_injection_for(mem, user_content: str) -> str:
             "knowledge/desire/intention questions)]\n" + body)
 
 
+_FAUX_PAS_CUES = ("inappropriate", "faux pas", "faux-pas", "say something", "said something",
+                  "tactless", "offend", "不当", "失礼", "冒犯")
+
+
+def _wants_faux_pas(question: str) -> bool:
+    q = (question or "").lower()
+    return any(c in q for c in _FAUX_PAS_CUES)
+
+
+def _format_faux_pas(cands) -> str:
+    lines = []
+    for c in cands[:5]:
+        lines.append(
+            f"  {c.ignorant} still believes {c.theme} is '{c.stale_value}', but it is now "
+            f"'{c.actual_value}' — {c.ignorant} was absent when it changed, while "
+            f"{', '.join(c.who_knows)} perceived the change.")
+    return "\n".join(lines)
+
+
+def _faux_pas_injection_for(mem, user_content: str) -> str:
+    if not _wants_faux_pas(user_content):
+        return ""
+    try:
+        mem.tick()
+        frontier = _core.KnowledgeFrontier(mem._rt.adapter)
+        cands = _core.detect_faux_pas(mem._rt.adapter, frontier, mem._core.tenant,
+                                      "9999-12-31T23:59:59Z")
+    except Exception:
+        print("[FAUXPAS-EXC]\n" + traceback.format_exc(), file=sys.stderr, flush=True)
+        return ""
+    body = _format_faux_pas(cands)
+    if not body:
+        return ""
+    return ("[Faux-pas preconditions my memory computed — an ignorant party may commit a "
+            "faux pas if they speak about this]\n" + body)
+
+
 def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
     if not story:
@@ -283,7 +320,9 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
         mem.remember(story)
         dump = _memory_dump(db_path, mem._core.tenant)
         chain = _chain_injection_for(mem, user_content)
-        extra = chain or _mental_state_injection_for(mem, user_content)
+        extra = (chain
+                 or _mental_state_injection_for(mem, user_content)
+                 or _faux_pas_injection_for(mem, user_content))
         return (dump + "\n\n" + extra) if extra else dump
     except Exception:  # extraction can fail (parse); degrade to no scaffold
         print(f"[REMEMBER-EXC]\n{traceback.format_exc()}", file=sys.stderr, flush=True)

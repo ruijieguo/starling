@@ -218,7 +218,6 @@ def detect_faux_pas(
     tenant_id: str = "default",
     as_of: Optional[datetime] = None,
 ):
-    """Faux-pas preconditions: ignorance asymmetries — a present cognizer ignorant of a
-    fact a co-present cognizer knows. Returns a list of FauxPasCandidate."""
+    """Faux-pas preconditions: a present cognizer holding an OUTDATED view of a theme's state (absent when it changed) that co-present cognizers perceived. Returns a list of FauxPasCandidate."""
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.detect_faux_pas(adapter, frontier, tenant_id, as_of_iso)
