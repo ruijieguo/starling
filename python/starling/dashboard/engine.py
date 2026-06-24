@@ -128,6 +128,7 @@ class DashboardEngine:
         # wired in Phase 2c (converse). Unbound role → {} → no api_key → None /
         # stub, matching the pre-registry "no key configured" behaviour.
         self.set_llm(config.resolve_role("extraction") or {})
+        self.set_chat(config.chat() or {})   # chat role (2c); falls back to extraction
         self.rebuild_embedder(config.embedding() or {}, reembed=False)
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
@@ -144,6 +145,14 @@ class DashboardEngine:
         with self._lock:
             self._core.llm = (_build_chat_adapter(llm_cfg)
                               if llm_cfg.get("api_key") else None)
+
+    def set_chat(self, chat_cfg: dict) -> None:
+        """Build the chat-role adapter (converse). Unbound chat falls back to
+        the extraction provider's config (DashboardConfig.chat()), so this is
+        O(1) reference swap like set_llm — no re-embed."""
+        with self._lock:
+            self._core.chat_llm = (_build_chat_adapter(chat_cfg)
+                                   if chat_cfg.get("api_key") else None)
 
     def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> None:
         with self._lock:
@@ -173,6 +182,16 @@ class DashboardEngine:
         with self._lock:
             return self._core.remember(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
+
+    def converse(self, message: str, *, holder=None, interlocutor=None,
+                 k: int = 6, now=None) -> dict:
+        # Same lock discipline as remember (which also holds it during its LLM
+        # call). The three-phase no-write-txn-across-generate guarantee is
+        # structural inside C++ converse (remember's write txn is phase 4, after
+        # generate); the C++ binding releases the GIL during the network legs.
+        with self._lock:
+            return self._core.converse(message, holder=holder,
+                                       interlocutor=interlocutor, k=k, now=now)
 
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
                holder=None) -> list:

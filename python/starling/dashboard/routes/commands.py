@@ -37,6 +37,14 @@ class RecallBody(BaseModel):
     holder: str | None = None    # override recall holder 维度(默认 dashboard agent)
 
 
+class ConverseBody(BaseModel):
+    message: str
+    holder: str | None = None
+    interlocutor: str | None = None
+    k: int = 6                   # relevant memories to inject
+    now: str | None = None
+
+
 class TickBody(BaseModel):
     now: str | None = None  # defaults to current UTC time at request handling
 
@@ -94,6 +102,23 @@ def build_commands_router(require_token) -> APIRouter:
                 "score": h["score"]} for h in hits]
         await _broadcast(request, "recall", {"n": len(out)})
         return {"results": out}
+
+    @router.post("/converse")
+    async def converse(body: ConverseBody, request: Request):
+        from starling.dashboard.engine import _LLMNotConfigured
+        eng = _engine(request)
+        try:
+            r = await to_thread.run_sync(partial(
+                eng.converse, body.message, holder=body.holder,
+                interlocutor=body.interlocutor, k=body.k, now=body.now))
+        except _LLMNotConfigured:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="llm_not_configured")
+        # The turn consolidated the exchange → tell other views to refresh.
+        if r.get("statement_ids"):
+            await _broadcast(request, "statement_added",
+                             {"statement_ids": r["statement_ids"]})
+        return r
 
     @router.post("/tick")
     async def tick(body: TickBody, request: Request):

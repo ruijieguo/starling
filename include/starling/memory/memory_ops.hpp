@@ -17,6 +17,7 @@
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
+#include "starling/retrieval/semantic_retriever.hpp"
 
 namespace starling::memoryops {
 
@@ -47,6 +48,42 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& llm,
                          std::string_view prompt_template,
                          const RememberParams& params,
+                         const extractor::ValidationPolicy& policy = {});
+
+// ── converse — chat-with-memory turn (Phase 2c) ──
+struct ConverseParams {
+    std::string tenant_id;
+    std::string holder_id;            // querier (recall) + holder (remember) = agent/self
+    std::string interlocutor;         // 可空;沉淀对话时带 scope_parties
+    std::string adapter_name;         // 来源标识:"dashboard"
+    std::string source_prefix;        // 幂等键前缀:"dash-"
+    std::string created_at_iso8601;   // 签名归一(datetime→ISO)
+    std::string message;              // 用户本轮输入
+    int recall_k = 6;                 // 注入的相关记忆条数上限
+};
+
+struct ConverseOutcome {
+    std::string reply;                       // ok=false 时空(generate 失败)
+    bool ok = false;                         // generate 成功 → 有回复
+    std::string error;                       // ok=false 时的错误码
+    std::string context_pack;                // 注入的记忆(带标签),供轨迹展示
+    bool abstained = false;                  // recall 主动拒答
+    std::vector<std::string> statement_ids;  // 本轮沉淀的语句
+    bool remember_ok = false;                // false → 回复保留但记忆未落库
+    std::string remember_error;              // remember 失败原因(可观测)
+};
+
+// 带记忆的聊天轮(三段式,决策 A):recall(RetrievalPlanner,只读)→ 注入
+// context_pack → chat_llm.generate(网络,不持写事务)→ remember 对话
+// (extraction_llm,写)。失败语义:generate 失败 → ok=false 且无回复;
+// remember 失败 → 回复保留(ok=true)且 remember_ok=false——用户已看到的回复
+// 绝不因事后抽取失败而丢。网络 generate 期间不持任何写事务。
+ConverseOutcome converse(persistence::SqliteAdapter& adapter,
+                         extractor::LLMAdapter& chat_llm,
+                         extractor::LLMAdapter& extraction_llm,
+                         retrieval::SemanticRetriever& semantic,
+                         std::string_view extraction_prompt,
+                         const ConverseParams& params,
                          const extractor::ValidationPolicy& policy = {});
 
 struct TickOutcome {

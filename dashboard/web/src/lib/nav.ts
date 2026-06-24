@@ -17,6 +17,7 @@ export const NAV_GROUPS: NavGroup[] = [
 	{
 		title: '交互',
 		items: [
+			{ href: '/converse', label: '对话', icon: 'message' },
 			{ href: '/interact', label: '交互', icon: 'terminal' },
 			{ href: '/working-set', label: '工作集', icon: 'layers' },
 			{ href: '/reminders', label: '承诺提醒', icon: 'bell' }

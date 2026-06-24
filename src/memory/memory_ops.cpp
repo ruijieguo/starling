@@ -12,6 +12,7 @@
 #include "starling/extractor/extractor.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/retrieval/retrieval_planner.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
 #include "starling/tom/common_ground_subscriber.hpp"
 
@@ -74,6 +75,73 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
     // 泵一次;now 用调用方时间,保持与本次写入一致且测试可控。
     bus::SubscriberPump::run_post_write(adapter, adapter.connection(),
                                         p.created_at_iso8601);
+    return r;
+}
+
+ConverseOutcome converse(persistence::SqliteAdapter& adapter,
+                         extractor::LLMAdapter& chat_llm,
+                         extractor::LLMAdapter& extraction_llm,
+                         retrieval::SemanticRetriever& semantic,
+                         std::string_view extraction_prompt,
+                         const ConverseParams& p,
+                         const extractor::ValidationPolicy& policy) {
+    ConverseOutcome r;
+
+    // ── 1. recall (read) ── RetrievalPlanner 要求非空 trace/query id;由
+    // message+时间戳派生确定性非空 id(避免引入 uuid 依赖)。
+    const std::string h = crypto::sha256_hex(
+        p.tenant_id + "|" + p.created_at_iso8601 + "|" + p.message);
+    retrieval::PlannerQuery q;
+    q.tenant_id     = p.tenant_id;
+    q.querier       = p.holder_id;
+    q.intent        = retrieval::QueryIntent::FACT_LOOKUP;
+    q.text          = p.message;
+    q.as_of_iso8601 = p.created_at_iso8601;
+    q.k             = p.recall_k;
+    q.trace_id      = "conv-" + h.substr(0, 16);
+    q.query_id      = "convq-" + h.substr(16, 16);
+    retrieval::RetrievalPlanner planner(adapter, semantic);
+    const auto plan = planner.run(q);
+    r.context_pack = plan.context_pack;
+    r.abstained    = plan.abstained;
+
+    // ── 2. inject ── 召回记忆(带标签)+ 用户本轮 → chat prompt。
+    const std::string prompt =
+        "You are an assistant with a long-term memory. Use the recalled memory "
+        "below (each line tagged with an epistemic label + confidence) to answer. "
+        "If it says [ABSTAIN] or is irrelevant, say you don't know rather than "
+        "inventing facts.\n\n=== Recalled memory ===\n" + plan.context_pack +
+        "\n\n=== Conversation ===\nUser: " + p.message + "\nAssistant:";
+
+    // ── 3. generate (network, 不持写事务) ──
+    const auto resp = chat_llm.generate(prompt);
+    if (!resp.ok) {
+        r.ok = false;
+        r.error = resp.error.empty() ? "generate_failed" : resp.error;
+        return r;   // generate 失败 → 干净的无回复轮,什么都不沉淀
+    }
+    r.ok = true;
+    r.reply = resp.raw_xml;
+
+    // ── 4. remember the exchange (write) ── 失败语义 A:remember 失败绝不
+    // 丢用户已看到的回复;记忆缺失记为可观测的 remember_error。
+    try {
+        const std::string exchange = "User: " + p.message + "\nAssistant: " + r.reply;
+        RememberParams rp;
+        rp.tenant_id          = p.tenant_id;
+        rp.holder_id          = p.holder_id;
+        rp.interlocutor       = p.interlocutor;
+        rp.adapter_name       = p.adapter_name;
+        rp.source_prefix      = p.source_prefix;
+        rp.created_at_iso8601 = p.created_at_iso8601;
+        rp.payload.assign(exchange.begin(), exchange.end());
+        const auto rem = remember(adapter, extraction_llm, extraction_prompt, rp, policy);
+        r.statement_ids = rem.statement_ids;
+        r.remember_ok = true;
+    } catch (const std::exception& e) {
+        r.remember_ok = false;
+        r.remember_error = e.what();
+    }
     return r;
 }
 

@@ -56,6 +56,49 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("created_at_iso8601"), py::arg("payload"),
           py::arg("policy") = starling::extractor::ValidationPolicy{});
 
+    // Phase 2c: chat-with-memory turn. chat_llm + extraction_llm may be the same
+    // object (chat role falls back to extraction). GIL released around the whole
+    // C++ converse (recall + generate network + remember); the adapters are C++
+    // objects so their virtuals run lock-free during the release.
+    m.def("memory_converse",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& chat_llm,
+             starling::extractor::LLMAdapter& extraction_llm,
+             starling::retrieval::SemanticRetriever& semantic,
+             const std::string& extraction_prompt,
+             const std::string& tenant_id, const std::string& holder_id,
+             const std::string& interlocutor, const std::string& adapter_name,
+             const std::string& source_prefix, const std::string& created_at_iso8601,
+             const std::string& message, int recall_k,
+             starling::extractor::ValidationPolicy policy) {
+              starling::memoryops::ConverseParams p;
+              p.tenant_id          = tenant_id;
+              p.holder_id          = holder_id;
+              p.interlocutor       = interlocutor;
+              p.adapter_name       = adapter_name;
+              p.source_prefix      = source_prefix;
+              p.created_at_iso8601 = created_at_iso8601;
+              p.message            = message;
+              p.recall_k           = recall_k;
+              starling::memoryops::ConverseOutcome r;
+              {
+                  py::gil_scoped_release release;
+                  r = starling::memoryops::converse(adapter, chat_llm, extraction_llm,
+                                                    semantic, extraction_prompt, p, policy);
+              }
+              return py::dict("reply"_a = r.reply, "ok"_a = r.ok, "error"_a = r.error,
+                              "context_pack"_a = r.context_pack, "abstained"_a = r.abstained,
+                              "statement_ids"_a = r.statement_ids,
+                              "remember_ok"_a = r.remember_ok,
+                              "remember_error"_a = r.remember_error);
+          },
+          py::arg("adapter"), py::arg("chat_llm"), py::arg("extraction_llm"),
+          py::arg("semantic"), py::arg("extraction_prompt"),
+          py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
+          py::arg("adapter_name"), py::arg("source_prefix"),
+          py::arg("created_at_iso8601"), py::arg("message"), py::arg("recall_k") = 6,
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
     m.def("memory_tick_all",
           [](starling::persistence::SqliteAdapter& adapter,
              starling::embedding::EmbeddingWorker& worker,

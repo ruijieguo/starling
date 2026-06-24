@@ -107,3 +107,15 @@ export type PlannedRecallResponse = {
 	scopes_searched: string[];
 	receipt?: RecallReceipt; // 纯增量:旧 6 字段不变,归因细节新增于此
 };
+
+// Phase 2c 带记忆聊天一轮的响应(POST /api/converse)。
+export type ConverseResponse = {
+	reply: string;
+	ok: boolean; // generate 成功 → 有回复
+	error: string;
+	context_pack: string; // 本轮注入的记忆(带标签)
+	abstained: boolean;
+	statement_ids: string[]; // 本轮沉淀的语句
+	remember_ok: boolean; // false → 回复在但记忆未落库
+	remember_error: string;
+};

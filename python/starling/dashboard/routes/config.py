@@ -91,6 +91,10 @@ def build_config_router(require_token) -> APIRouter:
             def _apply() -> None:
                 if _affected("extraction"):
                     eng.set_llm(cfg.resolve_role("extraction") or {})
+                # chat: rebound/edited, or unbound-and-extraction-changed (chat
+                # falls back to the extraction provider).
+                if _affected("chat") or (not cfg.roles.get("chat") and _affected("extraction")):
+                    eng.set_chat(cfg.chat() or {})
                 if _affected("embedding"):
                     eng.rebuild_embedder(cfg.embedding() or {})   # rebuild + re-embed
             await to_thread.run_sync(_apply)
@@ -110,6 +114,8 @@ def build_config_router(require_token) -> APIRouter:
             def _apply() -> None:
                 if "extraction" in unbound:
                     eng.set_llm({})            # → None (remember will 409 until rebound)
+                if "chat" in unbound or "extraction" in unbound:
+                    eng.set_chat(cfg.chat() or {})   # re-resolve (may fall back / go None)
                 if "embedding" in unbound:
                     eng.rebuild_embedder({})   # → stub (recall degraded)
             await to_thread.run_sync(_apply)

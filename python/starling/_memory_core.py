@@ -87,7 +87,8 @@ class MemoryCore:
         self.rt = rt
         self.agent = agent
         self.tenant = tenant_id
-        self.llm = llm
+        self.llm = llm           # extraction adapter (remember); also chat fallback
+        self.chat_llm = None     # chat adapter (converse); None → falls back to self.llm
         self.adapter_name = adapter_name
         self.source_prefix = source_prefix
         self._extraction = extraction or ExtractionConfig()
@@ -227,6 +228,31 @@ class MemoryCore:
         q.query_id = str(uuid.uuid4())
         planner = _core.RetrievalPlanner(self.rt.adapter, self.semantic)
         return planner.run(q)
+
+    def converse(self, message: str, *, holder=None, interlocutor=None,
+                 k: int = 6, now=None) -> dict:
+        """Phase 2c chat-with-memory turn — thin forward to C++
+        `memory_converse` (3-phase orchestration居 C++,与 remember/plan_query
+        同层;网络段释放 GIL)。chat 适配器缺省回退到抽取适配器(self.llm)。
+
+        返回 {reply, ok, error, context_pack, abstained, statement_ids,
+        remember_ok, remember_error}。失败语义 A:generate 失败 → ok=False 无
+        回复;remember 失败 → 回复保留、remember_ok=False(可观测)。"""
+        if self.llm is None:
+            raise LLMNotConfigured(
+                "converse requires an extraction llm adapter "
+                "(configure a provider + bind the extraction role)")
+        chat = self.chat_llm or self.llm
+        holder_id = holder or self.agent
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _core.memory_converse(
+            self.rt.adapter, chat, self.llm, self.semantic,
+            self._extraction.belief_prompt,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, message=message, recall_k=k,
+            policy=_build_policy(self._extraction))
 
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +
