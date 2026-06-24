@@ -163,20 +163,24 @@ std::vector<CommitmentFact> who_committed(
 
 // ─── per-family social-cognition operators ────────────────────────────────────
 
-// A faux-pas precondition: `ignorant` doesn't know `unknown_fact`, which co-present
-// `who_knows` cognizers DO know. The structural setup of a faux pas (the speaker may
-// then say something inappropriate). Semantic sensitivity is NOT judged here.
+// A faux-pas precondition: `ignorant` holds an OUTDATED view of `theme` (still believes
+// `stale_value`), while co-present `who_knows` cognizers have perceived the current
+// `actual_value`. Perception-derived (per-event, per-character via what_does_X_think).
+// The structural setup of a faux pas; semantic sensitivity is NOT judged here.
 struct FauxPasCandidate {
     std::string ignorant;
-    retrieval::StatementRow unknown_fact;
+    std::string theme;
+    std::string state_dim;                 // "location" | "content"
+    std::string stale_value;               // what the ignorant party still believes
+    std::string actual_value;              // the current state they don't know
     std::vector<std::string> who_knows;
 };
 
-// Scan cast × established facts: for each fact F, classify each cast cognizer via
-// does_X_know (Unknowable -> ignorant; NotKnown/FullKnowledge -> knower). Emit a
-// candidate per ignorant cognizer when at least one cast cognizer knows F. Cast =
-// distinct cognizers in perception_state; facts = distinct (subject_kind,subject_id,
-// predicate,canonical_object_hash) over consolidated statements.
+// Scan cast × themes via what_does_X_think.is_stale: for each theme, classify each cast
+// cognizer's last-perceived view — is_stale -> ignorant (left before the state changed);
+// !is_stale -> knower (perceived the current state). Emit a candidate per ignorant
+// cognizer when at least one cast cognizer is current. Cast / themes = distinct
+// cognizer_id / theme_id in perception_state.
 std::vector<FauxPasCandidate> detect_faux_pas(
     persistence::SqliteAdapter& adapter,
     cognizer::KnowledgeFrontier& frontier,

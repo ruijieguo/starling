@@ -226,7 +226,10 @@ void bind_08_tom(pybind11::module_& m) {
     // ── SP-B: faux-pas detection ──
     py::class_<starling::tom::mentalizing::FauxPasCandidate>(m, "FauxPasCandidate")
         .def_readonly("ignorant",     &starling::tom::mentalizing::FauxPasCandidate::ignorant)
-        .def_readonly("unknown_fact", &starling::tom::mentalizing::FauxPasCandidate::unknown_fact)
+        .def_readonly("theme",        &starling::tom::mentalizing::FauxPasCandidate::theme)
+        .def_readonly("state_dim",    &starling::tom::mentalizing::FauxPasCandidate::state_dim)
+        .def_readonly("stale_value",  &starling::tom::mentalizing::FauxPasCandidate::stale_value)
+        .def_readonly("actual_value", &starling::tom::mentalizing::FauxPasCandidate::actual_value)
         .def_readonly("who_knows",    &starling::tom::mentalizing::FauxPasCandidate::who_knows);
 
     m.def("detect_faux_pas",
@@ -239,7 +242,8 @@ void bind_08_tom(pybind11::module_& m) {
             return out;
         },
         py::arg("adapter"), py::arg("frontier"), py::arg("tenant"), py::arg("as_of"),
-        "Faux-pas preconditions: ignorance asymmetries (ignorant + unknown_fact + who_knows).");
+        "Faux-pas preconditions: per-event stale-view asymmetries "
+        "(ignorant + theme/state_dim/stale_value/actual_value + who_knows).");
 
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
     // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
