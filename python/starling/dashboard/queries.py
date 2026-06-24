@@ -156,7 +156,8 @@ def replay(db_path: str, tenant: str) -> dict:
         state = _rows(conn, "SELECT * FROM replay_scheduler_state WHERE id=1")
         ledger = _rows(
             conn,
-            "SELECT replay_batch_id, mode, sampled_count, started_at, finished_at "
+            "SELECT replay_batch_id, mode, sampled_count, ops_applied_json, "
+            "started_at, finished_at "
             "FROM replay_ledger ORDER BY started_at DESC LIMIT 100",
         )
         windows = _rows(
