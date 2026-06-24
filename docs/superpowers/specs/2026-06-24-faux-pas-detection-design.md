@@ -2,6 +2,12 @@
 
 > 「per-family 确定性社会认知计算算子」arc 的第一个算子。承接 SP-A 教训:surface 心智态 ≈ baseline(deepseek 能从故事读);增益在 COMPUTE deepseek 系统性失败/跟丢的东西(#3 链查询 COMPUTE 嵌套信念 +4.4)。
 
+## 0. 修订 (Amendment 2026-06-24) — 改走 per-event 感知
+
+实施中 Task 3 round-trip 可行性 gate 揭示:`does_X_know` 的知/不知经 `KnowledgeFrontier.presence_log`,而 presence_log 锚在 **OCCURRED 语句的 engram_ref**,**同一次 `remember()` 抽出的所有事件共享一个 engram**(整段一个 engram)→ 单次 `remember(整故事)`(eval server 的摄入方式)下全员 `NotKnown` → **零候选,注入失效**。而 `perception_state` 是 reconstructor 按 cognizer **per-event** 归属的(单 passage 内已正确排除不在场者)。
+
+**裁定(用户)**:内化 — 算子改走 **per-event 感知**(`what_does_X_think` 的 `is_stale`),不在外围改 server 摄入。faux-pas 的结构 = **不在场者持有过期(stale)的主题状态**(他离场前的旧值,而全局已变),即 false-belief 结构;`what_does_X_think(X,theme).is_stale` 正好刻画它,且 per-event、holder-robust、在自然单 passage 上 fire。**D3、§5.1、§5.2 据此改写(下文)**;§8 ctest 改为 seed perception_state 状态变更而非 frontier/engram 三态。
+
 ## 1. 动机 (Motivation)
 
 ToMBench-400 逐家族:Non-Literal Communication(含 Faux pas)83% baseline。faux-pas 题(「故事里有没有人说了不当的话?」)的核心 = **有人在不知道某敏感事实时说话,因为他在该事实确立时不在场**。deepseek 在多步故事里容易**跟丢「谁在场、谁因此知道/不知道什么」**——而这正是 Starling 的强项:`perception_state` 是 reconstructor 按 cognizer 归属的、per-character、绕开 SP-A 暴露的 holder 坑。
@@ -26,7 +32,7 @@ ToMBench-400 逐家族:Non-Literal Communication(含 Faux pas)83% baseline。fau
 |---|---|---|
 | D1 | arc 内定序 | detect_faux_pas 先行(感知派生稳健、复用现有原语、输出干净) |
 | D2 | 算子边界 | 核心算**无知不对称前置**(确定性);语义敏感性留 deepseek |
-| D3 | 知识机制 | 用 `does_X_know` 三值映射(已核 `mentalizing_know.cpp`):**ignorant = Unknowable**(无可见证据路径 = 不在场/不可知)、**knower = NotKnown ∪ FullKnowledge**(证据可见 = 在场可知 / 已断言)。其 Step 2 经 `KnowledgeFrontier.visible_engrams_at` 的**证据 engram 可见性**即 per-character 感知,绕开 holder 坑(不依赖人物 assert——人物因 holder=narrator 几乎不进 FullKnowledge,但 NotKnown/Unknowable 的区分正是「证据是否可见 = 是否在场」) |
+| D3 | 知识机制 | **(修订)** 用 `what_does_X_think(X, theme).is_stale`(per-event 感知,`perception_state`):**ignorant = is_stale**(X 最后感知的状态 ≠ 全局最新 truth = 持过期视图 = 不在场/没看到变更)、**knower = has_belief && !is_stale**(感知到最新 = 在场知情);`!has_belief` = 从未感知该主题 → 跳过(无可作的信念)。`is_stale` 经 `PerceptionStateStore.latest_actual` 比对,per-character、reconstructor 归属、绕 holder 坑,**且单 passage 内 per-event 区分**(原 `does_X_know`/frontier 是 per-passage,单次 remember 失效——见 §0)。 |
 | D4 | 注入 | 定论式(「Starling 检测到 faux-pas 前置:X 不知 F」)+ gated |
 
 ## 4. 架构 (Architecture) — 核心算子 + 瘦消费方
@@ -49,15 +55,21 @@ story → remember()(belief/episodic/general-fact;perception_reconstructor 按 c
 
 `include/starling/tom/mentalizing.hpp`(新增):
 ```cpp
-// faux-pas 候选:ignorant 不知 unknown_fact,而 who_knows 中的在场他人知道它。
+// (修订) faux-pas 候选:ignorant 对 theme 持过期视图(stale_value),而 who_knows
+// 已感知到最新 actual_value。perception-native(无 StatementRow 依赖),便于绑定/格式化,
+// 且 stale↔actual 对比正是给 deepseek 的 faux-pas 信号。
 struct FauxPasCandidate {
-    std::string ignorant;                   // 不知情的 cognizer
-    retrieval::StatementRow unknown_fact;   // 他不知道的事实(定位列)
-    std::vector<std::string> who_knows;     // 在场且知道该事实的其他 cognizer
+    std::string ignorant;                // 持过期视图的 cognizer(faux-pas 风险方)
+    std::string theme;                   // 状态过期的主题
+    std::string state_dim;               // "location" | "content"
+    std::string stale_value;             // ignorant 仍以为的旧状态
+    std::string actual_value;            // 他不知道的当前真值
+    std::vector<std::string> who_knows;  // 已感知到 actual_value 的在场他人
 };
 
-// 扫 cast × 已确立事实:某在场 X 不知 F、而某在场 Y 知 F → 候选(faux-pas 前置)。
-// 知/不知按感知派生(per-character)。语义敏感性不在此判。
+// 扫 cast × themes:某在场 X 对 theme 持过期视图(is_stale)、而某在场 Y 已知最新 →
+// 候选(faux-pas 前置)。知/过期按 what_does_X_think 感知派生(per-event、per-character)。
+// 语义敏感性不在此判。
 std::vector<FauxPasCandidate> detect_faux_pas(
     persistence::SqliteAdapter& adapter,
     cognizer::KnowledgeFrontier& frontier,
@@ -68,16 +80,22 @@ std::vector<FauxPasCandidate> detect_faux_pas(
 ### 5.2 语义与算法
 
 ```
-cast   = 故事里的 cognizer 集合(perception_state 的 distinct cognizer_id / 或 cognizer 表)
-facts  = 已确立事实集合(statements 的 distinct (subject_kind,subject_id,predicate,canonical_object_hash))
-for F in facts:
-    knowers  = [X in cast | does_X_know(X,F) ∈ {NotKnown, FullKnowledge}]  # 证据可见=在场可知
-    ignorant = [X in cast | does_X_know(X,F) == Unknowable]                # 无可见证据=不在场不可知
-    if knowers 非空 and ignorant 非空:
-        for X in ignorant: emit {ignorant=X, unknown_fact=F 的代表行, who_knows=knowers}
+cast   = perception_state 的 distinct cognizer_id(在场者)
+themes = perception_state 的 distinct theme_id(被感知的主题)
+for T in themes:
+    knowers = [], stale = []
+    for X in cast:
+        sb = what_does_X_think(X, T)          # 一阶,perception_state last_known + is_stale
+        if not sb.has_belief: continue        # 从未感知 T → 跳过
+        if sb.is_stale: stale.push(X)         # 持过期视图 = faux-pas 风险
+        else: knowers.push(X)                 # 已感知最新
+    if knowers 非空 and stale 非空:
+        actual = knowers[0] 的 sb.state_value  # 当前真值(知情者均一致)
+        for X in stale: emit {ignorant=X, theme=T, state_dim=sb.state_dim,
+                              stale_value=X 的 sb.state_value, actual_value=actual, who_knows=knowers}
 ```
-- **机制(D3,已核 `mentalizing_know.cpp`)**:`does_X_know(X, FactKey(F))` 的三值经 `KnowledgeFrontier.visible_engrams_at` 区分「F 的证据 engram 对 X 是否可见」=「X 是否在场/可知」。所以 **Unknowable = 不在场 → ignorant**,**NotKnown/FullKnowledge = 在场可知 → knower**——per-character、绕 holder 坑(不依赖人物 assert)。**ctest 用构造场景钉死「A 见证 F、B 不在场 → does_X_know(B,F)=Unknowable(ignorant)、does_X_know(A,F)=NotKnown(knower)」契约**。
-- 复用 `does_X_know`/`KnowledgeFrontier`/`FactKey`(`mentalizing.hpp:17`);facts 的 FactKey 即 statements 的 (subject_kind,subject_id,predicate,canonical_object_hash)。
+- **机制(修订 D3,已核 `mentalizing_think.cpp`)**:`what_does_X_think(X,T).is_stale = (truth != X 的 last_known)`,truth = `PerceptionStateStore.latest_actual`(全 cognizer 最高 position)。所以 **is_stale = 持过期视图 → ignorant**,**!is_stale = 已知最新 → knower**——per-event(单 passage 内区分,因 perception_state 按事件归属)、per-character、绕 holder 坑。**ctest seed perception_state 状态变更钉死「B 离场前感知旧值、A/C 感知新值 → what_does_X_think(B)=stale(ignorant)、A/C=current(knower)」契约**。
+- 复用 `what_does_X_think`/`PerceptionStateStore`(`mentalizing_think.cpp`);themes/cast 即 perception_state 的 distinct theme_id/cognizer_id。`frontier` 形参透传给 `what_does_X_think`(其当前忽略,签名稳定留 seam)。
 - 落点 `src/tom/mentalizing_fauxpas.cpp`(单一职责,进 starling_core);既有原语本体不动。
 - cognizer 查询侧 lookup-only;holder/感知归属复用既有。
 
@@ -99,7 +117,7 @@ for F in facts:
 - server 注入异常 → `contextlib.suppress` 回落裸 dump。
 
 ## 8. 测试 (Testing, TDD)
-- **C++ ctest**(`tests/cpp/test_faux_pas.cpp`,构造 perception_state/events):场景——A、B、C 在场;A 见证 F(如 result located_at lost),B 在 F 前离场不见证;C 见证 → `detect_faux_pas` 产候选 {ignorant=B, unknown_fact=F, who_knows⊇{A,C}};无不对称(全员见证)→ 空;单人 cast → 空。**此 ctest 钉死无知不对称契约 + D3 的知识机制**。
+- **C++ ctest**(`tests/cpp/test_faux_pas.cpp`,seed perception_state 状态变更):场景——主题 T 在 position 0 旧值(B 感知),position 1 新值(A、C 感知,B 不在场)→ `detect_faux_pas` 产候选 {ignorant=B, theme=T, stale_value=旧, actual_value=新, who_knows⊇{A,C}};无不对称(全员感知最新)→ 空;单人 cast → 空。**此 ctest 钉死过期不对称契约 + 修订 D3 的感知机制**。
 - **绑定 smoke**(pytest):`_core.detect_faux_pas` 可调 + POD 字段 + `primitives.detect_faux_pas` 包装。
 - **round-trip**(stub-LLM):一段「A 见证结果、B 不在场后说话」的故事 → remember → tick → `detect_faux_pas` 标记 B。
 - **server pytest**:gating(faux-pas 题触发、belief/emotion 题不触发)+ 注入格式。
