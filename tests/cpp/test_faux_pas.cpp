@@ -197,3 +197,20 @@ TEST(DetectFauxPas, NoAsymmetryWhenAllKnow) {
     auto cands = detect_faux_pas(*a, frontier, T, "2026-05-26T12:00:00Z");
     EXPECT_TRUE(cands.empty());
 }
+
+TEST(DetectFauxPas, SingleCastMemberNoCandidate) {
+    auto a = make_adapter();
+    sqlite3* db = a->connection().raw();
+    const char* T = "t3";
+    seed_cast_member(*a, T, "A");          // only one cognizer present
+    insert_engram(db, "engram-H", T);
+    StmtSpec h; h.id = "h1"; h.tenant_id = T; h.holder_id = "narrator"; h.subject_kind = "cognizer";
+    h.subject_id = "bob"; h.predicate = "lost"; h.canon_hash = "hash-lost3"; h.polarity = "pos";
+    h.evidence_json = R"([{"engram_ref":"engram-H","content_hash":"x"}])";
+    insert_statement(db, h);
+    KnowledgeFrontier frontier(*a);
+    frontier.record_explicit_told(T, {"A"}, "stmt-told", "engram-H",
+                                  "2026-05-26T09:00:00Z", a->connection());
+    auto cands = detect_faux_pas(*a, frontier, T, "2026-05-26T12:00:00Z");
+    EXPECT_TRUE(cands.empty()) << "single-member cast -> no asymmetry possible";
+}

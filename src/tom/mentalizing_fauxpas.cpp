@@ -18,8 +18,10 @@ std::vector<std::string> cast_of(persistence::SqliteAdapter& a, std::string_view
         return out;
     persistence::StmtHandle h{raw};
     sqlite3_bind_text(raw, 1, tenant.data(), static_cast<int>(tenant.size()), SQLITE_TRANSIENT);
-    while (sqlite3_step(raw) == SQLITE_ROW)
-        out.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(raw, 0)));
+    while (sqlite3_step(raw) == SQLITE_ROW) {
+        const unsigned char* t = sqlite3_column_text(raw, 0);
+        if (t) out.emplace_back(reinterpret_cast<const char*>(t));
+    }
     return out;
 }
 
@@ -50,6 +52,13 @@ std::vector<FauxPasCandidate> detect_faux_pas(
         std::vector<std::string> knowers, ignorant;
         for (const auto& x : cast) {
             const auto k = does_X_know(adapter, frontier, x, fk, tenant, as_of);
+            // Knower = NotKnown ∪ FullKnowledge, by design (spec decision D3). Narrated
+            // facts are held by holder='narrator', so a character rarely reaches
+            // FullKnowledge (that needs the character's OWN assertion). The per-character
+            // signal that survives the holder gap is evidence VISIBILITY: NotKnown means
+            // F's evidence engram is visible to X (X witnessed it / was present =
+            // effectively knows); Unknowable means no visible evidence (X was absent =
+            // ignorant). Hence Unknowable -> ignorant, everything else -> knower.
             if (k == KnowsResult::Unknowable)
                 ignorant.push_back(x);
             else
