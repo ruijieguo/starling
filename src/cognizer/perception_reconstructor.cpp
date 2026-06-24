@@ -143,6 +143,13 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     if (adapter_) frontier = std::make_unique<KnowledgeFrontier>(*adapter_);
     persistence::TransactionGuard tx(conn_);  // own top-level tx (events already committed)
     std::set<std::string> present(cast.begin(), cast.end());
+    // L1b: themes whose ACTUAL content has been revealed by an open/reveal. A label's
+    // apparent reading (see/look) seeds the initial content-BELIEF, but once the
+    // container is opened the truth is authoritative: a later see/look that merely
+    // re-states the label must NOT be re-emitted as a content perception at a higher
+    // position (the cabbage->hat->cabbage thrash that made latest_actual / the deepest
+    // chain belief pick the label instead of the opened truth).
+    std::set<std::string> revealed_themes;
     long long position = 0;
     for (const auto& ev : events) {
         const auto evp = participants_of(ev);
@@ -175,7 +182,16 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             // Present witnesses (present ∪ actor/participants) learn the container's
             // content. Ordered BEFORE the physical-location branch so a see/open writes
             // state_dim="content", not "location". The see/open actor is present.
-            if (!ev.location.empty()) {
+            //
+            // L1b: an open/reveal exposes the TRUTH and marks the theme revealed; a
+            // see/look is only the APPARENT label reading. Once the truth is out, a
+            // later see/look that re-states the label is suppressed — it must NOT be
+            // re-emitted as a content perception after the opened truth (no A→B→A
+            // content thrash). An apparent reading BEFORE the open is unaffected (it
+            // seeds the initial content-belief). reveal always emits.
+            const bool reveal = is_reveal(ev.predicate);
+            const bool suppressed = !reveal && revealed_themes.count(ev.theme) != 0;
+            if (!ev.location.empty() && !suppressed) {
                 for (const auto& w : witnesses) {
                     store::PerceptionStateRow row;
                     row.tenant_id = std::string(tenant); row.cognizer_id = w;
@@ -185,6 +201,7 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                     perceived_set.insert(w);
                 }
             }
+            if (reveal) revealed_themes.insert(ev.theme);  // truth established for this theme
         } else if (is_close(ev.predicate)) {
             // Closing a container hides its contents but conveys no new state to
             // witnesses — write no perception (physical state change only). Present

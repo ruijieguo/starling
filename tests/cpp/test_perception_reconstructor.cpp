@@ -297,6 +297,57 @@ TEST(PerceptionReconstructor, CloseEventWritesNoPerception) {
     EXPECT_EQ(tom_content->state_value, "pencils");
 }
 
+// L1b: content-vs-label disambiguation. A labelled container's label seeds the
+// initial content BELIEF (apparent reading); OPENING reveals the TRUTH. A label
+// that is re-stated as content AFTER the open ("see/look" emitted again at a later
+// seq) must NOT supersede the opened truth — otherwise latest_actual / the deepest
+// chain belief pick the re-emitted label, computing the wrong content.
+//
+// Scene (Smarties/unexpected-contents, handbag labelled "cabbage"):
+//   e0 A see   handbag → "cabbage" (seq 1) — apparent label (A+B both present)
+//   e1 B leave room                (seq 2) — B departs before the reveal
+//   e2 A open  handbag → "hat"     (seq 3) — A reveals the TRUTH (A is the opener)
+//   e3 A look  handbag → "cabbage" (seq 4) — the label re-stated as content AFTER
+//                                            the open; the bug re-emitted this as a
+//                                            content perception, so latest_actual
+//                                            picked the label, not the opened truth.
+// Assert: the HIGHEST-position content value for the theme is "hat" (truth), NOT a
+// re-emitted "cabbage"; A (opened) last-perceived content == "hat"; B (left before
+// the open) last-perceived content == "cabbage" (label-belief / false belief).
+TEST(PerceptionReconstructor, LabelNotReEmittedAsContentAfterOpen) {
+    auto a = open_migrated();
+    const char* T = "t-label-after-open";
+    seed_event(*a, T, "e0", "A", "see",   "handbag", "cabbage", R"(["A","B"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "e1", "B", "leave", "room",    "",        R"(["B"])",     2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "e2", "A", "open",  "handbag", "hat",     R"(["A"])",     3, "2026-01-01T00:00:03Z");
+    // The label re-read as a content event AFTER the open — the cabbage->hat->cabbage
+    // thrash. This is just the label being re-stated as content, not a new reveal.
+    seed_event(*a, T, "e3", "A", "look",  "handbag", "cabbage", R"(["A"])",     4, "2026-01-01T00:00:04Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Ground truth = highest-position content value across ALL cognizers. The opened
+    // "hat" must win; a label re-emitted at a LATER seq must NOT supersede the truth.
+    EXPECT_EQ(ps.latest_actual(T, "handbag", "content", AS_OF), "hat")
+        << "the opened truth (hat) must be the highest-position content, not the re-emitted label";
+
+    // A opened the container → last content perception is the truth "hat".
+    auto a_content = ps.last_known(T, "A", "handbag", "content", AS_OF);
+    ASSERT_TRUE(a_content.has_value()) << "A's open must write a content perception";
+    EXPECT_EQ(a_content->state_value, "hat")
+        << "the opener's last content perception is the truth, not a later re-emitted label";
+
+    // B never opened → keeps the label-belief "cabbage" (false belief about content).
+    auto b_content = ps.last_known(T, "B", "handbag", "content", AS_OF);
+    ASSERT_TRUE(b_content.has_value()) << "B saw the label → has a content perception";
+    EXPECT_EQ(b_content->state_value, "cabbage")
+        << "B never opened the container → still believes content == label (cabbage)";
+}
+
 // Task 5.1: does_X_know event-awareness. The adapter-aware reconstructor ctor feeds
 // each physical witness's perceived-event engram into the KnowledgeFrontier
 // presence_log, so does_X_know() can tell a witness apart from a non-witness.
