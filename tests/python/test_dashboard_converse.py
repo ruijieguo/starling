@@ -67,6 +67,29 @@ def test_converse_generate_failure_preserves_no_reply_and_skips_remember(tmp_pat
     assert b["statement_ids"] == []
 
 
+def test_converse_remember_failure_preserves_reply(tmp_path, monkeypatch):
+    # decision-A: generate succeeds (reply shown) but the extraction LLM fails.
+    # The Extractor swallows the failure (FAILED, no throw), so remember_ok must be
+    # derived honestly — reply preserved, remember_ok=False, observable reason.
+    # Distinct chat (ok) vs extraction (fail) adapters isolate the remember leg.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = DashboardConfig(db_path=str(tmp_path / "rf.db"), token="")
+    eng = DashboardEngine(cfg)
+    chat = _core.FakeLLMAdapter()
+    chat.set_default_response("Bob owns auth.", True, "")
+    extract = _core.FakeLLMAdapter()
+    extract.set_default_response("", False, "extract-boom")
+    eng.llm = extract              # extraction adapter (fails)
+    eng._core.chat_llm = chat      # distinct chat adapter (succeeds)
+    c = TestClient(create_app(cfg, engine=eng))
+    b = c.post("/api/converse", json={"message": "who owns auth?"}).json()
+    assert b["ok"] is True                       # generate succeeded
+    assert b["reply"] == "Bob owns auth."         # reply preserved, not dropped
+    assert b["remember_ok"] is False             # extraction failed → honest signal
+    assert b["remember_error"] == "extraction_failed"
+    assert b["statement_ids"] == []
+
+
 def test_converse_409_when_llm_unconfigured(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfg = DashboardConfig(db_path=str(tmp_path / "nollm.db"), token="")

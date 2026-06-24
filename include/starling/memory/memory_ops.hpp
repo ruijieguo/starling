@@ -35,6 +35,9 @@ struct RememberOutcome {
     std::string engram_ref;                   // 空 = 未入库(no_store/rejected)
     std::vector<std::string> statement_ids;   // 本次新写入的语句
     std::string outcome;                      // accepted/idempotent/no_store/rejected
+    bool extraction_failed = false;           // 证据已入库但抽取 LLM 失败(Extractor
+                                              // 吞失败返回 FAILED 而非抛异常)——供
+                                              // converse 区分「抽取失败」与「抽取空」。
 };
 
 // 标准写管线:内容确定性幂等键 → Bus::append_evidence(证据入库)→
