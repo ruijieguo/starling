@@ -19,6 +19,11 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.overview(c.db_path, c.tenant)
 
+    @router.get("/brain_map")
+    async def brain_map(request: Request):   # Phase 3 片 1 — 类脑 IA 落地页 9 脑区计数
+        c = _cfg(request)
+        return queries.brain_map(c.db_path, c.tenant)
+
     @router.get("/statements")
     async def statements(request: Request, holder: str = "", perspective: str = "",
                          predicate: str = "", limit: int = 100, offset: int = 0):

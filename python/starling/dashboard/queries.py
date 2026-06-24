@@ -259,6 +259,48 @@ def _count_or_zero(conn, sql: str, params: tuple = ()) -> int:
         return 0
 
 
+def brain_map(db_path: str, tenant: str) -> dict:
+    """Phase 3 片 1 — 类脑 IA 落地页:9 脑区活体计数(经 plan-design-review 定稿)。
+    每区一个只读计数(tenant-scoped,逐区 _count_or_zero 独立降级,缺表→0);
+    dormant=True 标记尚未落地的区(透视镜/Lens 待片 3),落地页静默显、导航不渲染。
+    对话/配置无「容量」语义 → count=None(落地页不显计数徽标)。脑区句式与排序
+    与 nav 一致:功能名 + 脑区 gloss,按记忆流(输入→快存→慢存→他者→意图→固化→
+    内省→体征→配置)。consolidation_state 在 DB 存小写串。"""
+    with open_ro(db_path) as conn:
+        def n(sql: str, params: tuple = ()) -> int:
+            return _count_or_zero(conn, sql, params)
+        regions = [
+            {"key": "converse", "label": "对话", "region": None,
+             "href": "/converse", "count": None, "dormant": False},
+            {"key": "short_term", "label": "短期记忆", "region": "海马",
+             "href": "/working-set", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM statements WHERE tenant_id=? AND "
+                        "consolidation_state IN ('volatile','replaying_consolidating')", (tenant,))},
+            {"key": "long_term", "label": "长期记忆", "region": "新皮层",
+             "href": "/statements", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM statements WHERE tenant_id=? AND "
+                        "consolidation_state='consolidated'", (tenant,))},
+            {"key": "theory_of_mind", "label": "他者心智", "region": "心智化",
+             "href": "/cognizers", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM cognizers WHERE tenant_id=?", (tenant,))},
+            {"key": "prospective", "label": "意图与承诺", "region": "前额叶",
+             "href": "/commitments", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM commitments WHERE tenant_id=?", (tenant,))},
+            {"key": "consolidation", "label": "睡眠与固化", "region": "回放",
+             "href": "/replay", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM replay_ledger")},
+            {"key": "lens", "label": "透视镜", "region": None,
+             "href": "/lens", "count": None, "dormant": True},   # 片 3 落地后转 active
+            {"key": "vitals", "label": "生命体征", "region": "脑干",
+             "href": "/vitals", "dormant": False,
+             "count": n("SELECT COUNT(*) FROM bus_events WHERE tenant_id=? AND "
+                        "dispatch_status='pending'", (tenant,))},   # 出箱待派发(0=健康)
+            {"key": "config", "label": "配置", "region": None,
+             "href": "/settings", "count": None, "dormant": False},
+        ]
+        return {"regions": regions}
+
+
 def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict:
     """Phase 0 observability: per-subscriber outbox lag (global) + VOLATILE-stuck
     / extraction failures / overdue reconsolidation windows (tenant-scoped)."""
