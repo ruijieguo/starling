@@ -40,7 +40,7 @@ ToMBench-400 逐家族:Non-Literal Communication(含 Faux pas)83% baseline。fau
 ```
 story → remember()(belief/episodic/general-fact;perception_reconstructor 按 cognizer 建 perception_state)
      → detect_faux_pas(adapter, frontier, tenant, as_of)  (核心 C++,新)
-         → [FauxPasCandidate{ignorant, unknown_fact, who_knows}]
+         → [FauxPasCandidate{ignorant, theme, state_dim, stale_value, actual_value, who_knows}]
      → server 瘦 gated 注入(Non-Literal 题)→ deepseek 判 faux-pas
 ```
 
@@ -100,7 +100,7 @@ for T in themes:
 - cognizer 查询侧 lookup-only;holder/感知归属复用既有。
 
 ### 5.3 绑定
-- `bind_08_tom.cpp`:`FauxPasCandidate` POD(`def_readonly`:ignorant/unknown_fact/who_knows)+ `detect_faux_pas` `.def`(镜像 `what_does_X_think_chain`,GIL release)。
+- `bind_08_tom.cpp`:`FauxPasCandidate` POD(`def_readonly`:ignorant/theme/state_dim/stale_value/actual_value/who_knows)+ `detect_faux_pas` `.def`(镜像 `what_does_X_think_chain`,GIL release)。
 - `primitives.py`:瘦包装 `detect_faux_pas(adapter, frontier, *, tenant_id='default', as_of=None)`。
 
 ## 6. 组件② 瘦 gated 消费方 (server)
