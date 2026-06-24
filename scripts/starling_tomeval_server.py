@@ -332,6 +332,17 @@ def _distinct_perc(db_path: str, tenant: str, col: str) -> list:
     return []
 
 
+def _thrashes(values) -> bool:
+    """A theme's perception 'thrashes' if a value reappears after changing
+    (A...B...A) — a sign of label/content conflation (e.g. cabbage->hat->cabbage).
+    Collapse consecutive duplicates, then a repeat means thrash."""
+    seq = []
+    for v in values:
+        if not seq or seq[-1] != v:
+            seq.append(v)
+    return len(seq) != len(set(seq))
+
+
 def _belief_digest_for(mem, db_path: str, user_content: str) -> str:
     """Compute each cognizer's belief per theme via what_does_X_think_chain and return
     a definitive injection string for Belief/Knowledge questions; else ""."""
@@ -360,6 +371,15 @@ def _belief_digest_for(mem, db_path: str, user_content: str) -> str:
             stale = [(X, v) for X, (v, s) in bel.items() if s]
             if actual is None and not stale:
                 continue
+            con = sqlite3.connect(db_path)
+            try:
+                _vals = [r[0] for r in con.execute(
+                    "SELECT state_value FROM perception_state WHERE tenant_id=? AND theme_id=? "
+                    "ORDER BY position", (tenant, T)).fetchall()]
+            finally:
+                con.close()
+            if _thrashes(_vals):
+                continue
             seg = f"- {T}: actual state now is '{actual}'." if actual else f"- {T}:"
             for X, v in stale:
                 seg += f" {X} last knew it as '{v}' (was absent for the change -> acts/looks there)."
@@ -384,13 +404,12 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
     try:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
-        dump = _memory_dump(db_path, mem._core.tenant)
         chain = _chain_injection_for(mem, user_content)
-        extra = (chain
-                 or _belief_digest_for(mem, db_path, user_content)
-                 or _mental_state_injection_for(mem, user_content)
-                 or _faux_pas_injection_for(mem, user_content))
-        return (dump + "\n\n" + extra) if extra else dump
+        computed = (chain
+                    or _belief_digest_for(mem, db_path, user_content)
+                    or _mental_state_injection_for(mem, user_content)
+                    or _faux_pas_injection_for(mem, user_content))
+        return computed
     except Exception:  # extraction can fail (parse); degrade to no scaffold
         print(f"[REMEMBER-EXC]\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         return ""
@@ -411,17 +430,22 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
                 os.unlink(path)
 
 
-def _answer(system: str, user: str, memdump: str) -> str:
-    """deepseek-v4-pro answers the MCQ, scaffolded by Starling's extracted memory."""
+def _build_answer_prompt(system: str, user: str, memdump: str) -> str:
+    """Build the prompt sent to deepseek. Separated so tests can inspect the frame
+    without needing a live adapter."""
     prompt = f"{system}\n\n{user}"
     if memdump:
         prompt += (
-            "\n\n[Structured memory my memory system extracted from the story]\n"
-            f"{memdump}\n\n"
-            "Use BOTH the story and this extracted memory (especially who perceived / "
-            "knows / believes what) to reason step by step, then give the final answer "
-            "as \\boxed{X}."
+            "\n\n[Verified facts my memory computed — these are correct; use them "
+            f"directly to answer, do not re-derive them]\n{memdump}\n\n"
+            "Give the final answer as \\boxed{X}."
         )
+    return prompt
+
+
+def _answer(system: str, user: str, memdump: str) -> str:
+    """deepseek-v4-pro answers the MCQ, scaffolded by Starling's extracted memory."""
+    prompt = _build_answer_prompt(system, user, memdump)
     for attempt in range(_ANSWER_TRIES):
         t = time.time()
         try:
