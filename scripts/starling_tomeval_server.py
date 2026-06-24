@@ -307,6 +307,72 @@ def _faux_pas_injection_for(mem, user_content: str) -> str:
             "faux pas if they speak about this]\n" + body)
 
 
+_BELIEF_CUES = ("where ", "where's", "where is", "where does", "where will", "look for",
+                "look in", "find the", "think is", "thinks the", "believe", "perceiv",
+                "what does", "most likely do", "在哪", "认为", "去哪", "找", "里面")
+
+
+def _wants_belief_digest(question: str) -> bool:
+    q = (question or "").lower()
+    return any(c in q for c in _BELIEF_CUES)
+
+
+def _distinct_perc(db_path: str, tenant: str, col: str) -> list:
+    """Return distinct values of `col` from perception_state for the tenant.
+    Opens sqlite3.connect(db_path) — the same access pattern as _memory_dump."""
+    con = sqlite3.connect(db_path)
+    try:
+        with contextlib.suppress(sqlite3.OperationalError):
+            return [r[0] for r in con.execute(
+                f"SELECT DISTINCT {col} FROM perception_state WHERE tenant_id=?",
+                (tenant,),
+            ).fetchall()]
+    finally:
+        con.close()
+    return []
+
+
+def _belief_digest_for(mem, db_path: str, user_content: str) -> str:
+    """Compute each cognizer's belief per theme via what_does_X_think_chain and return
+    a definitive injection string for Belief/Knowledge questions; else ""."""
+    if not _wants_belief_digest(user_content):
+        return ""
+    try:
+        mem.tick()
+        adapter = mem._rt.adapter
+        frontier = _core.KnowledgeFrontier(adapter)
+        tenant = mem._core.tenant
+        cogs = _distinct_perc(db_path, tenant, "cognizer_id")
+        themes = _distinct_perc(db_path, tenant, "theme_id")
+        lines = []
+        for T in themes:
+            bel = {}
+            actual = None
+            for X in cogs:
+                sb = _core.what_does_X_think_chain(adapter, frontier, [X], T, tenant,
+                                                   "9999-12-31T23:59:59Z")
+                if sb.has_belief:
+                    bel[X] = (sb.state_value, sb.is_stale)
+                    if not sb.is_stale:
+                        actual = sb.state_value
+            if not bel:
+                continue
+            stale = [(X, v) for X, (v, s) in bel.items() if s]
+            if actual is None and not stale:
+                continue
+            seg = f"- {T}: actual state now is '{actual}'." if actual else f"- {T}:"
+            for X, v in stale:
+                seg += f" {X} last knew it as '{v}' (was absent for the change -> acts/looks there)."
+            lines.append(seg)
+    except Exception:
+        print("[BELIEF-EXC]\n" + traceback.format_exc(), file=sys.stderr, flush=True)
+        return ""
+    if not lines:
+        return ""
+    return ("[Verified belief states my memory computed — trust these for who-believes-what]\n"
+            + "\n".join(lines))
+
+
 def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
     if not story:
@@ -321,6 +387,7 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
         dump = _memory_dump(db_path, mem._core.tenant)
         chain = _chain_injection_for(mem, user_content)
         extra = (chain
+                 or _belief_digest_for(mem, db_path, user_content)
                  or _mental_state_injection_for(mem, user_content)
                  or _faux_pas_injection_for(mem, user_content))
         return (dump + "\n\n" + extra) if extra else dump
