@@ -223,6 +223,24 @@ void bind_08_tom(pybind11::module_& m) {
         "X's full mental state grouped by attitude (beliefs/knowledge/desires/intentions/"
         "commitments/preferences).");
 
+    // ── SP-B: faux-pas detection ──
+    py::class_<starling::tom::mentalizing::FauxPasCandidate>(m, "FauxPasCandidate")
+        .def_readonly("ignorant",     &starling::tom::mentalizing::FauxPasCandidate::ignorant)
+        .def_readonly("unknown_fact", &starling::tom::mentalizing::FauxPasCandidate::unknown_fact)
+        .def_readonly("who_knows",    &starling::tom::mentalizing::FauxPasCandidate::who_knows);
+
+    m.def("detect_faux_pas",
+        [](starling::persistence::SqliteAdapter& adapter,
+           starling::cognizer::KnowledgeFrontier& frontier,
+           const std::string& tenant, const std::string& as_of) {
+            std::vector<starling::tom::mentalizing::FauxPasCandidate> out;
+            { py::gil_scoped_release release;
+              out = starling::tom::mentalizing::detect_faux_pas(adapter, frontier, tenant, as_of); }
+            return out;
+        },
+        py::arg("adapter"), py::arg("frontier"), py::arg("tenant"), py::arg("as_of"),
+        "Faux-pas preconditions: ignorance asymmetries (ignorant + unknown_fact + who_knows).");
+
     // ── P3.a2: mentalizing 后三 API + 二阶生产端 ──
     // Phase 5: ChainLevel = one unwrapped level of the nested-belief chain.
     py::class_<starling::tom::mentalizing::ChainLevel>(m, "ChainLevel")

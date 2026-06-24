@@ -209,3 +209,16 @@ def mental_state_of(
     intentions / commitments / preferences. Returns a MentalState."""
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.mental_state_of(adapter, x, tenant_id, as_of_iso)
+
+
+def detect_faux_pas(
+    adapter,
+    frontier,
+    *,
+    tenant_id: str = "default",
+    as_of: Optional[datetime] = None,
+):
+    """Faux-pas preconditions: ignorance asymmetries — a present cognizer ignorant of a
+    fact a co-present cognizer knows. Returns a list of FauxPasCandidate."""
+    as_of_iso = _iso_now_or_convert(as_of)
+    return _core.detect_faux_pas(adapter, frontier, tenant_id, as_of_iso)
