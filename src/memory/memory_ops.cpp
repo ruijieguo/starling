@@ -104,7 +104,8 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
                          retrieval::SemanticRetriever& semantic,
                          std::string_view extraction_prompt,
                          const ConverseParams& p,
-                         const extractor::ValidationPolicy& policy) {
+                         const extractor::ValidationPolicy& policy,
+                         const extractor::TokenSink& on_token) {
     ConverseOutcome r;
 
     // ── 1. recall (read) ── RetrievalPlanner 要求非空 trace/query id;由
@@ -143,8 +144,9 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
         "facts.\n\n<recalled_memory>\n" + fenced +
         "\n</recalled_memory>\n\nUser: " + p.message + "\nAssistant:";
 
-    // ── 3. generate (network, 不持写事务) ──
-    const auto resp = chat_llm.generate(prompt);
+    // ── 3. generate (network, 不持写事务) ── 流式:on_token 非空时回复逐 token
+    // 增量回传(仍在不持写事务的网络段);返回的 resp 仍是完整回复 + 成本,第四段照常。
+    const auto resp = chat_llm.generate_stream(prompt, on_token);
     if (!resp.ok) {
         r.ok = false;
         r.error = resp.error.empty() ? "generate_failed" : resp.error;
