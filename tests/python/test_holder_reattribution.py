@@ -1,0 +1,76 @@
+"""Flag-gated first-order mental-state holder re-attribution (additive).
+
+The belief extractor emits a per-statement `holder` field (the narrated attitude
+bearer). The default write path IGNORES it and attributes every attitude to the
+agent. With ExtractionConfig.attribute_first_order_mental_to_holder=True, a
+FIRST-ORDER mental-state statement is instead attributed to its LLM-named bearer
+(cognizer-resolved), so a narrated 3rd-person desire ("Xiao Ming wants a
+computer") lands under holder_id="Xiao Ming" and mental_state_of("Xiao Ming")
+finds it.
+
+Mirrors tests/python/test_mental_state_roundtrip.py's stub-LLM + Memory.open
+style. The stub's canned JSON carries the `holder` field (the parser now reads
+it). The stub returns this for ANY prompt, so all three remember() passes
+(belief / episodic / general-fact) see it; the belief pass is the one under test.
+"""
+import json
+
+import starling
+from starling.extractor.config import ExtractionConfig
+from starling.tom.primitives import mental_state_of
+
+# A narrated first-order desire: holder names the CHARACTER (Xiao Ming), the
+# claim is about a computer, modality=DESIRES, nesting_depth=0. predicate=desires
+# is non-core so it never trips the validator's review downgrade path either way.
+_DESIRE_JSON = json.dumps([
+    {"holder": "Xiao Ming", "holder_perspective": "INFERRED", "subject": "computer",
+     "predicate": "desires", "object": "computer", "modality": "DESIRES",
+     "polarity": "POS", "nesting_depth": 0},
+])
+
+_STORY = "Xiao Ming wants a computer for his birthday."
+
+
+def _desire_objs(ms):
+    return [r.object_value for r in ms.desires]
+
+
+def test_flag_on_attributes_narrated_desire_to_character(tmp_path):
+    mem = starling.Memory.open(
+        str(tmp_path / "on.db"), agent="narrator",
+        llm=starling.make_stub_llm(default_response=_DESIRE_JSON),
+        extraction=ExtractionConfig(attribute_first_order_mental_to_holder=True))
+    mem.remember(_STORY)
+    # tick() consolidates volatile rows so mental_state_of (which filters
+    # consolidation_state IN ('consolidated','archived')) can find them.
+    mem.tick()
+
+    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Ming", tenant_id=mem._core.tenant)
+    assert "computer" in _desire_objs(ms_char), (
+        f"desire not attributed to character; got {_desire_objs(ms_char)}")
+
+    ms_narr = mental_state_of(mem._rt.adapter, x="narrator", tenant_id=mem._core.tenant)
+    assert "computer" not in _desire_objs(ms_narr), (
+        f"desire leaked onto the agent holder; got {_desire_objs(ms_narr)}")
+
+
+def test_flag_off_keeps_agent_holder(tmp_path):
+    # Default-OFF: identical story, no extraction override -> the attitude stays
+    # with the agent ("narrator"), exactly as before (additive guarantee).
+    mem = starling.Memory.open(
+        str(tmp_path / "off.db"), agent="narrator",
+        llm=starling.make_stub_llm(default_response=_DESIRE_JSON))
+    mem.remember(_STORY)
+    mem.tick()
+
+    ms_narr = mental_state_of(mem._rt.adapter, x="narrator", tenant_id=mem._core.tenant)
+    assert "computer" in _desire_objs(ms_narr), (
+        f"flag-OFF must keep agent holder; got {_desire_objs(ms_narr)}")
+
+    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Ming", tenant_id=mem._core.tenant)
+    assert "computer" not in _desire_objs(ms_char), (
+        f"flag-OFF must NOT re-attribute; got {_desire_objs(ms_char)}")
+
+
+def test_flag_default_is_off():
+    assert ExtractionConfig().attribute_first_order_mental_to_holder is False

@@ -99,6 +99,26 @@ std::string emit_extraction_event(
     return ev.event_id;
 }
 
+// First-order mental-state predicate/modality test for the opt-in holder
+// re-attribution (ValidationPolicy.attribute_first_order_mental_to_holder).
+// Mirrors how mental_state_of buckets attitudes (mentalizing_profile.cpp):
+// modality in {believes,desires,intends,commits} OR predicate in {knows,prefers}.
+// Norm / occurred / doubts / assumes are NOT mental for this purpose.
+bool is_mental_first_order(schema::Modality m, std::string_view predicate) {
+    if (predicate == "knows" || predicate == "prefers") return true;
+    switch (m) {
+        case schema::Modality::BELIEVES:
+        case schema::Modality::KNOWS:
+        case schema::Modality::DESIRES:
+        case schema::Modality::INTENDS:
+        case schema::Modality::COMMITS:
+        case schema::Modality::PREFERS:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool extraction_span_key_already_succeeded(
         starling::persistence::Connection& conn,
         std::string_view span_key) {
@@ -252,7 +272,28 @@ ExtractionRunResult Extractor::run(
         // inside PipelineLedger::record_attempt (INSERT OR IGNORE).
         std::set<std::string> written_span_keys;
         for (auto& stmt : parsed.statements) {
-            stmt.holder_id        = std::string(holder_id);
+            // Holder attribution. Default (and historical) behaviour: the agent
+            // (the run arg) holds every extracted attitude. OPT-IN
+            // (ValidationPolicy.attribute_first_order_mental_to_holder, default
+            // OFF): a FIRST-ORDER mental-state statement is instead attributed to
+            // its LLM-named bearer (cognizer-resolved), so a narrated 3rd-person
+            // attitude lands under holder_id=<character>. Gated to nesting_depth==0
+            // + mental modality/predicate + a non-empty llm_holder; anything else
+            // (incl. an empty/absent llm_holder, or no store adapter for cognizer
+            // resolution) falls back to the agent — strictly additive.
+            if (policy_.attribute_first_order_mental_to_holder
+                    && stmt.llm_nesting_depth == 0
+                    && is_mental_first_order(stmt.modality, stmt.predicate)
+                    && !stmt.llm_holder.empty()) {
+                if (cog_hub) {
+                    stmt.holder_id = starling::cognizer::resolve_or_register_cognizer(
+                        *cog_hub, holder_tenant_id, stmt.llm_holder);
+                } else {
+                    stmt.holder_id = stmt.llm_holder;
+                }
+            } else {
+                stmt.holder_id = std::string(holder_id);
+            }
             stmt.holder_tenant_id = std::string(holder_tenant_id);
             stmt.chunk_index      = chunk_index;
             if (stmt.source_hash.empty()) {

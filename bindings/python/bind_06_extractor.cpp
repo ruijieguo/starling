@@ -179,7 +179,9 @@ void bind_06_extractor(pybind11::module_& m) {
         .def(py::init<>())
         .def_readwrite("extra_core_predicates", &starling::extractor::ValidationPolicy::extra_core_predicates)
         .def_readwrite("confidence_drop_floor", &starling::extractor::ValidationPolicy::confidence_drop_floor)
-        .def_readwrite("weak_inference_floor", &starling::extractor::ValidationPolicy::weak_inference_floor);
+        .def_readwrite("weak_inference_floor", &starling::extractor::ValidationPolicy::weak_inference_floor)
+        .def_readwrite("attribute_first_order_mental_to_holder",
+                       &starling::extractor::ValidationPolicy::attribute_first_order_mental_to_holder);
 
     // ----- P2.l: AnthropicAdapter (native Messages API) -----
     {

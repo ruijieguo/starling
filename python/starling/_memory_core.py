@@ -30,6 +30,8 @@ def _build_policy(extraction):
     pol.extra_core_predicates = list(extraction.extra_core_predicates)
     pol.confidence_drop_floor = extraction.confidence_drop_floor
     pol.weak_inference_floor = extraction.weak_inference_floor
+    pol.attribute_first_order_mental_to_holder = (
+        extraction.attribute_first_order_mental_to_holder)
     return pol
 
 

@@ -234,4 +234,105 @@ TEST(ExtractorOrchestrator, SecondOrderNestedEmissionDoesNotAbortRun) {
     EXPECT_EQ(row_count(conn, "statements", "nesting_depth=0"), 1);  // flat-text in P2
 }
 
+// Helper: read the single statements row's holder_id.
+namespace {
+std::string single_holder_id(persistence::Connection& conn) {
+    sqlite3* db = conn.raw();
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT holder_id FROM statements LIMIT 1",
+                           -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error(std::string("single_holder_id prepare: ") + sqlite3_errmsg(db));
+    }
+    persistence::StmtHandle h(raw);
+    if (sqlite3_step(h.get()) != SQLITE_ROW) return "";
+    const unsigned char* t = sqlite3_column_text(h.get(), 0);
+    return t ? reinterpret_cast<const char*>(t) : "";
+}
+
+constexpr const char* kNarratedDesireJson =
+    R"JSON([{"holder":"Xiao Ming","holder_perspective":"FIRST_PERSON","subject":"computer","predicate":"desires","object":"computer","modality":"DESIRES","polarity":"POS","nesting_depth":0}])JSON";
+}  // namespace
+
+// Flag DEFAULT-OFF: a narrated first-order desire ("Xiao Ming wants a computer")
+// is still attributed to the agent (holder_id == the run arg), exactly as before.
+TEST(ExtractorOrchestrator, NarratedMentalStateKeepsAgentHolderWhenFlagOff) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm, *a);  // store-adapter ctor; default policy (flag OFF)
+    llm.set_default_response(LLMResponse{.raw_xml = kNarratedDesireJson, .ok = true});
+
+    auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(row_count(conn, "statements"), 1);
+    EXPECT_EQ(single_holder_id(conn), "narrator");  // unchanged: agent holds it
+}
+
+// Flag ON: the same narrated first-order desire is re-attributed to its
+// LLM-named bearer (cognizer-resolved). mental_state_of("Xiao Ming") will now
+// find it; mental_state_of("narrator") will not.
+TEST(ExtractorOrchestrator, NarratedMentalStateReattributedToHolderWhenFlagOn) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    ValidationPolicy pol;
+    pol.attribute_first_order_mental_to_holder = true;
+    Extractor ex(conn, llm, *a, /*prompt_template=*/"", pol);
+    llm.set_default_response(LLMResponse{.raw_xml = kNarratedDesireJson, .ok = true});
+
+    auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(row_count(conn, "statements"), 1);
+    // Re-attributed to the character (cognizer-resolved first-seen surface).
+    EXPECT_EQ(single_holder_id(conn), "Xiao Ming");
+    EXPECT_EQ(row_count(conn, "statements", "holder_id='narrator'"), 0);
+}
+
+// Flag ON but the LLM marked the statement second-order (nesting_depth=2):
+// re-attribution is gated to first-order only, so holder stays the agent.
+TEST(ExtractorOrchestrator, SecondOrderNotReattributedEvenWhenFlagOn) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    ValidationPolicy pol;
+    pol.attribute_first_order_mental_to_holder = true;
+    Extractor ex(conn, llm, *a, "", pol);
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"believes","object":"Bob wants a raise","modality":"BELIEVES","polarity":"POS","nesting_depth":2}])JSON",
+        .ok = true});
+
+    auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(single_holder_id(conn), "narrator");  // second-order stays with agent
+}
+
+// Flag ON, non-mental modality (OCCURRED-style / norm): re-attribution does not
+// fire (gated to mental modalities), holder stays the agent.
+TEST(ExtractorOrchestrator, NonMentalModalityNotReattributedWhenFlagOn) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    ValidationPolicy pol;
+    pol.attribute_first_order_mental_to_holder = true;
+    Extractor ex(conn, llm, *a, "", pol);
+    // modality NORM_OUGHT (via the prompt alias "ENFORCES" → norm_ought) is not mental.
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"公司政策","holder_perspective":"QUOTED","subject":"production","predicate":"requires","object":"two approvals","modality":"ENFORCES","polarity":"POS","nesting_depth":0}])JSON",
+        .ok = true});
+
+    auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(single_holder_id(conn), "narrator");
+}
+
 }  // namespace starling::extractor

@@ -28,6 +28,14 @@ struct ValidationPolicy {
     std::vector<std::string> extra_core_predicates;   // ADDITIVE to the constexpr core set
     double confidence_drop_floor = 0.30;
     double weak_inference_floor  = 0.50;
+
+    // OPT-IN (default OFF → fully additive): when ON, a FIRST-ORDER mental-state
+    // statement (llm_nesting_depth==0, mental modality/predicate) is attributed
+    // to its LLM-named bearer (cognizer-resolved) instead of the agent, so a
+    // narrated 3rd-person attitude ("Xiao Ming wants a computer") lands under
+    // holder_id=Xiao Ming and mental_state_of(character) finds it. Consumed only
+    // by Extractor::run; the validator itself ignores this field.
+    bool attribute_first_order_mental_to_holder = false;
 };
 
 // M0.4 minimal validator. Enforces the §15.3.1 EXTRACTOR contracts

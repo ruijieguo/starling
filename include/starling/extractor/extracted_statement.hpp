@@ -45,6 +45,20 @@ struct ExtractedStatement {
 
     std::vector<std::string>     derived_from;         // parent Statement.id list; empty for ingestion-root
     std::string                  provenance_protocol_id; // cross-tenant protocol key; empty = absent (§15.3.1)
+
+    // ---- LLM-advisory fields (read from the extractor JSON, NOT trusted by the
+    // writer; carried so the orchestrator can make attribution decisions) ----
+    // The LLM's named attitude bearer ("holder" in the JSON). The default write
+    // path IGNORES this (holder_id is the agent); it is consulted only when the
+    // opt-in ValidationPolicy.attribute_first_order_mental_to_holder flag is ON,
+    // to re-attribute first-order mental states to the narrated character. Empty
+    // when the model omitted it.
+    std::string                  llm_holder;
+    // The LLM's emitted nesting_depth ("A believes B believes Z" => 2). The DB
+    // nesting_depth is computed from object_kind (always 0 for str-objects), so
+    // this advisory copy is the only signal of the model's first/second-order
+    // intent. Default 0 (flat / first-order).
+    std::int32_t                 llm_nesting_depth = 0;
 };
 
 }  // namespace starling::extractor

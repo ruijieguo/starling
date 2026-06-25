@@ -26,3 +26,11 @@ class ExtractionConfig:
     extra_core_predicates: tuple[str, ...] = ()
     confidence_drop_floor: float = 0.30
     weak_inference_floor: float = 0.50
+    # OPT-IN (default OFF → today's behaviour byte-for-byte): when True, a
+    # first-order mental-state statement (nesting_depth==0, modality
+    # believes/desires/intends/commits or predicate knows/prefers) is attributed
+    # to its LLM-named bearer (cognizer-resolved) instead of the agent, so a
+    # narrated 3rd-person attitude ("Xiao Ming wants a computer") lands under
+    # holder_id=Xiao Ming and mental_state_of(character) finds it. Threaded to the
+    # C++ ValidationPolicy at the write boundary (see MemoryCore._build_policy).
+    attribute_first_order_mental_to_holder: bool = False

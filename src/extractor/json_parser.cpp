@@ -90,8 +90,14 @@ ParseResult parse_extractor_json(
             ExtractedStatement s;
             // NOTE: holder_id is NOT set here — Extractor::run overrides it with
             // the run arg (the agent, e.g. "self"), matching the existing XML path.
-            // The LLM "holder" field is advisory; multi-holder attribution is
-            // deferred (out-of-scope).
+            // The LLM "holder" field is carried as an ADVISORY copy (llm_holder)
+            // so the orchestrator can OPT-IN to re-attributing first-order mental
+            // states to the narrated bearer; the default write path still ignores
+            // it. llm_nesting_depth carries the model's first/second-order intent
+            // (the DB nesting_depth is computed from object_kind and is 0 for all
+            // str-objects, so this is the only signal available downstream).
+            s.llm_holder        = el.value("holder", std::string());
+            s.llm_nesting_depth = el.value("nesting_depth", 0);
             s.holder_perspective = schema::perspective_from_string(
                 to_lower(el.value("holder_perspective", std::string("inferred"))));
             s.subject_kind = "cognizer";
