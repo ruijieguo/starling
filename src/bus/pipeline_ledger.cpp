@@ -11,6 +11,9 @@
 
 namespace starling::bus {
 
+// CANARY (throwaway): proves CI clang-tidy gates changed *lines*, not files.
+// Linting this .cpp under the old changed-files rule would surface pre-existing
+// pipeline_ledger.hpp header debt; the changed-lines gate must stay green.
 using persistence::detail::bind_sv;
 using persistence::detail::iso8601_utc;
 using persistence::detail::make_sqlite_error;
