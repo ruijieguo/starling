@@ -238,6 +238,45 @@ def test_provenance_surfaces_failed_attempt_raw_output(tmp_path):
     assert ex["failed_attempts"][0]["error"] == "json_parse"
 
 
+def test_provenance_surfaces_attempt_cost(tmp_path):
+    # 0027:lens 抬出权威行(success)的 token/latency,失败尝试各带自己那次调用的成本。
+    db = str(tmp_path / "cost.db")
+    conn = _fresh_db(db)
+    _ins(conn, "S", subj="Bob", predicate="responsible_for", obj="auth")
+    conn.execute("INSERT INTO pipeline_run (id, tenant_id, started_at, status) "
+                 "VALUES ('run1','default','2026-04-10T10:00:00Z','done')")
+    conn.execute(
+        "INSERT INTO extraction_attempt (id, pipeline_run_id, extraction_span_key, "
+        "attempt_number, status, raw_output, error, created_at, "
+        "prompt_tokens, completion_tokens, total_tokens, latency_ms) VALUES "
+        "('a1','run1','SK',1,'failed','garbage','json_parse','2026-04-10T10:00:00Z',"
+        "11,0,11,77)")
+    conn.execute(
+        "INSERT INTO extraction_attempt (id, pipeline_run_id, extraction_span_key, "
+        "attempt_number, status, raw_output, error, created_at, "
+        "prompt_tokens, completion_tokens, total_tokens, latency_ms) VALUES "
+        "('a2','run1','SK',2,'success',NULL,NULL,'2026-04-10T10:00:01Z',"
+        "200,40,240,512)")
+    conn.execute(
+        "INSERT INTO bus_events (event_id, tenant_id, event_type, primary_id, "
+        "aggregate_id, outbox_sequence, idempotency_key, payload_json, created_at) "
+        "VALUES ('e1','default','statement.written','S','S',1,'idem1',?,"
+        "'2026-04-10T10:00:01Z')",
+        ('{"stmt_id":"S","extraction_span_key":"SK"}',))
+    conn.commit()
+    conn.close()
+    ex = queries.provenance(db, "default", "S")["origin"]["extraction"]
+    # 权威行 = success(a2)的成本
+    assert ex["status"] == "success"
+    assert ex["prompt_tokens"] == 200
+    assert ex["completion_tokens"] == 40
+    assert ex["total_tokens"] == 240
+    assert ex["latency_ms"] == 512
+    # 失败尝试各带自己那次调用的成本
+    assert ex["failed_attempts"][0]["total_tokens"] == 11
+    assert ex["failed_attempts"][0]["latency_ms"] == 77
+
+
 def test_provenance_non_extraction_origin_has_no_attempt(tmp_path):
     # 裸插(无 bus 事件)的派生语句 → extraction=None(诚实:非抽取来源)。
     db = str(tmp_path / "n.db")

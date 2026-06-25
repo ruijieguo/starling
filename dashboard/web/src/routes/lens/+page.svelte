@@ -176,6 +176,9 @@
 					<Badge tone={statusLabel(ex.status).tone}>{statusLabel(ex.status).label}</Badge>
 					{#if ex.attempt_number != null}<span class="text-subtle">第 {ex.attempt_number} 次尝试</span>{/if}
 					{#if ex.created_at}<span class="text-subtle">{ex.created_at}</span>{/if}
+					{#if ex.total_tokens || ex.latency_ms}
+						<span class="text-subtle tabular-nums">· {ex.total_tokens ?? 0} tok（prompt {ex.prompt_tokens ?? 0} / completion {ex.completion_tokens ?? 0}）· {ex.latency_ms ?? 0} ms</span>
+					{/if}
 				</div>
 				{#if ex.error}<p class="mt-2 text-sm text-danger">错误:{ex.error}</p>{/if}
 				{#if ex.raw_output}
@@ -193,6 +196,7 @@
 									<Badge tone={statusLabel(fa.status).tone}>{statusLabel(fa.status).label}</Badge>
 									{#if fa.attempt_number != null}<span class="text-subtle">第 {fa.attempt_number} 次</span>{/if}
 									{#if fa.error}<span class="text-danger">{fa.error}</span>{/if}
+									{#if fa.total_tokens || fa.latency_ms}<span class="text-subtle tabular-nums">{fa.total_tokens ?? 0} tok · {fa.latency_ms ?? 0} ms</span>{/if}
 								</div>
 								{#if fa.raw_output}
 									<div class="mt-2"><CodeBlock content={fa.raw_output} language="json" /></div>

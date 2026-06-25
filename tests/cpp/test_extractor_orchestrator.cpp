@@ -177,6 +177,64 @@ TEST(ExtractorOrchestrator, DualStatementSharedSpanKeyDoesNotDuplicateAttempt) {
     EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
 }
 
+// 0027 cost attribution: ONE extract() call per attempt, but the success path
+// writes one ledger row PER statement-span. take_cost() must charge the call's
+// cost to exactly ONE row (the first written this iteration) so SUM(total_tokens)
+// over the run equals the per-call cost — not N×. Two HEARSAY statements with
+// DIFFERENT objects (billing/auth) → two distinct span_keys → two success rows
+// from a single extract() call.
+TEST(ExtractorOrchestrator, CostAttributedOncePerExtractCallNotPerSpanRow) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{
+        .raw_xml =
+            R"JSON([{"holder":"self","holder_perspective":"HEARSAY","subject":"Carol","predicate":"responsible_for","object":"billing","modality":"BELIEVES","polarity":"POS","nesting_depth":0},)JSON"
+            R"JSON({"holder":"self","holder_perspective":"HEARSAY","subject":"Dana","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}])JSON",
+        .ok = true,
+        .prompt_tokens = 120, .completion_tokens = 34,
+        .total_tokens = 154, .latency_ms = 512});
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    ASSERT_EQ(r.accepted_statement_ids.size(), 2u);   // two distinct spans written
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='success'"), 2);
+    // The call's cost lands on exactly ONE success row (no double-count)...
+    EXPECT_EQ(row_count(conn, "extraction_attempt",
+        "prompt_tokens=120 AND completion_tokens=34 AND total_tokens=154 "
+        "AND latency_ms=512"), 1);
+    // ...and the other success row of the same call carries zero.
+    EXPECT_EQ(row_count(conn, "extraction_attempt",
+        "status='success' AND total_tokens=0"), 1);
+    // So the run's total token cost equals the single call's cost, not 2×.
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "total_tokens=154"), 1);
+}
+
+// Failed responses still carry latency/tokens (see LLMResponse). Each retry is a
+// distinct extract() call → its own attempt row → charged once. 3 retries → 3
+// failed rows each bearing the call cost (SUM = 3×, correct: three real calls).
+TEST(ExtractorOrchestrator, FailedAttemptsPersistPerCallCost) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{
+        .ok = false, .error = "boom",
+        .prompt_tokens = 10, .completion_tokens = 0,
+        .total_tokens = 10, .latency_ms = 99});
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::FAILED);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='failed'"), 3);
+    EXPECT_EQ(row_count(conn, "extraction_attempt",
+        "status='failed' AND total_tokens=10 AND latency_ms=99"), 3);
+}
+
 // Regression(noop 分支的同型洞): the Accepted-branch guard alone is not
 // enough — on a RE-REMEMBER of an already-extracted text, BOTH same-span
 // statements hit the cross-run noop branch, and the second noop record

@@ -113,7 +113,8 @@ std::optional<std::string> PipelineLedger::record_attempt(
         int attempt_number,
         ExtractionStatus status,
         std::string_view raw_output,
-        std::string_view error) {
+        std::string_view error,
+        const AttemptCost& cost) {
     sqlite3* const db = conn_.raw();
     const std::string id = random_id();
     const std::string ts = iso8601_utc(std::chrono::system_clock::now());
@@ -125,7 +126,9 @@ std::optional<std::string> PipelineLedger::record_attempt(
     if (sqlite3_prepare_v2(db,
             "INSERT OR IGNORE INTO extraction_attempt("
             "id,pipeline_run_id,extraction_span_key,attempt_number,"
-            "status,raw_output,error,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            "status,raw_output,error,created_at,"
+            "prompt_tokens,completion_tokens,total_tokens,latency_ms) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "PipelineLedger::record_attempt: prepare failed");
     }
@@ -140,6 +143,10 @@ std::optional<std::string> PipelineLedger::record_attempt(
     if (error.empty())      sqlite3_bind_null(h.get(), 7);
     else                    bind_sv(h.get(), 7, error);
     bind_sv(h.get(), 8, ts);
+    sqlite3_bind_int(h.get(), 9,  cost.prompt_tokens);
+    sqlite3_bind_int(h.get(), 10, cost.completion_tokens);
+    sqlite3_bind_int(h.get(), 11, cost.total_tokens);
+    sqlite3_bind_int(h.get(), 12, cost.latency_ms);
     if (sqlite3_step(h.get()) != SQLITE_DONE) {
         throw make_sqlite_error(db, "PipelineLedger::record_attempt: INSERT step failed");
     }

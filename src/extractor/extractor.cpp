@@ -24,6 +24,7 @@ namespace starling::extractor {
 
 using starling::bus::compute_idempotency_key;
 using starling::bus::compute_window_bucket;
+using starling::bus::AttemptCost;
 using starling::bus::BusEvent;
 using starling::bus::ExtractionStatus;
 using starling::bus::OutboxWriter;
@@ -227,11 +228,26 @@ ExtractionRunResult Extractor::run(
     for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
         const std::string attempt_suffix = "attempt=" + std::to_string(attempt);
         const LLMResponse resp = adapter_.extract(prompt_body, prompt_input_hash);
+        // One extract() call per iteration, but the success path records one
+        // ledger row PER statement-span. Attribute this call's cost to exactly
+        // the FIRST row written this iteration; take_cost() returns it once then
+        // {} so SUM(total_tokens) over a run's rows equals the per-call cost
+        // (no double-counting). The first record_attempt of any iteration always
+        // writes a fresh (run,span,attempt) row — dups only hit on a span's 2nd
+        // occurrence — so the cost always lands on a persisted row.
+        bool attempt_cost_used = false;
+        auto take_cost = [&]() -> AttemptCost {
+            if (attempt_cost_used) return {};
+            attempt_cost_used = true;
+            return {resp.prompt_tokens, resp.completion_tokens,
+                    resp.total_tokens, resp.latency_ms};
+        };
         if (!resp.ok) {
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::Failed,
                                   /*raw_output=*/{},
-                                  resp.error);
+                                  resp.error,
+                                  take_cost());
             emit_extraction_event(conn_, "extraction.failed",
                                   holder_tenant_id, run_id, chunk_span_key,
                                   run_started_event_id, attempt_suffix);
@@ -248,7 +264,8 @@ ExtractionRunResult Extractor::run(
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::Failed,
                                   resp.raw_xml,
-                                  parsed.errors.front().kind);
+                                  parsed.errors.front().kind,
+                                  take_cost());
             emit_extraction_event(conn_, "extraction.failed",
                                   holder_tenant_id, run_id, chunk_span_key,
                                   run_started_event_id, attempt_suffix);
@@ -340,7 +357,8 @@ ExtractionRunResult Extractor::run(
                 if (ledger.record_attempt(run_id, span_key, attempt,
                                           ExtractionStatus::Noop,
                                           /*raw_output=*/{},
-                                          /*error=*/"noop:extraction_span_key_hit")) {
+                                          /*error=*/"noop:extraction_span_key_hit",
+                                          take_cost())) {
                     emit_extraction_event(conn_, "extraction.noop",
                                           holder_tenant_id, run_id, span_key,
                                           run_started_event_id);
@@ -362,7 +380,8 @@ ExtractionRunResult Extractor::run(
                 ledger.record_attempt(run_id, span_key, attempt,
                                       ExtractionStatus::Success,
                                       /*raw_output=*/{},
-                                      /*error=*/{});
+                                      /*error=*/{},
+                                      take_cost());
             } else {
                 // StatementWriteChunkDuplicate: statement written (review_requested);
                 // the span's Success row already exists from the first duplicate —
@@ -383,12 +402,14 @@ ExtractionRunResult Extractor::run(
                                           : ExtractionStatus::Success;
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   attempt_status,
-                                  resp.raw_xml, /*error=*/{});
+                                  resp.raw_xml, /*error=*/{},
+                                  take_cost());
         } else if (wrote_anything_this_attempt && any_rejected_this_attempt) {
             // Partial success: at least one statement written, at least one rejected.
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::PartialSuccess,
-                                  resp.raw_xml, /*error=*/{});
+                                  resp.raw_xml, /*error=*/{},
+                                  take_cost());
             result_partial = true;
         }
         if (wrote_anything_this_attempt) any_accepted = true;

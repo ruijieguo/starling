@@ -42,6 +42,22 @@ export type OverdueWindow = {
 	status: string;
 };
 
+// 历史成本(0027):租户级 token 用量 + 时延汇总。成本只在适配器(核心)采集,
+// 这里只读聚合;fake/未采集端点 → 0(诚实「无成本数据」,非缺失)。
+export type ExtractionCost = {
+	attempts: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	latency_ms: number;
+};
+
+// 近 N 次 pipeline_run 的逐次成本(按 run 汇总,DESC by started_at)。
+export type ExtractionCostRun = ExtractionCost & {
+	run_id: string;
+	started_at: string | null;
+};
+
 export type VitalsResponse = {
 	outbox_head: number;
 	max_lag: number;
@@ -50,6 +66,8 @@ export type VitalsResponse = {
 	volatile_stuck_total: number;
 	extraction_failures: ExtractionFailure[];
 	extraction_failures_total: number;
+	extraction_cost: ExtractionCost;
+	extraction_cost_runs: ExtractionCostRun[];
 	overdue_windows: OverdueWindow[];
 	overdue_windows_total: number;
 };
