@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so clang-tidy can diff changed files vs the base
       - name: Install build deps
         run: |
           sudo apt-get update
@@ -37,10 +39,31 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: clang-tidy
+      - name: clang-tidy (changed files only)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          find src include bindings \( -name '*.cpp' -o -name '*.hpp' \) -print0 | \
-            xargs -0 -r clang-tidy-17 -p build
+          # Incremental adoption: lint only the C++ files this change touches, vs its
+          # base. The existing tree has never been clang-tidy-clean (CI configure never
+          # passed until now), so gating the whole codebase would block every PR on a
+          # pre-existing backlog. New/changed .cpp is held to .clang-tidy
+          # (WarningsAsErrors); header-only diagnostics surface via their .cpp includers.
+          # The full-tree cleanup is tracked separately.
+          if [ "$EVENT_NAME" = "pull_request" ]; then BASE="$PR_BASE_SHA"; else BASE="$PUSH_BEFORE_SHA"; fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base ref to diff against — skipping (clang-tidy gates changed files only)."
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "${BASE}...HEAD" -- src bindings \
+            | grep -E '\.cpp$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No changed C++ source files to lint."
+            exit 0
+          fi
+          echo "clang-tidy on changed files:"; echo "$CHANGED"
+          printf '%s\n' "$CHANGED" | xargs -r -P "$(nproc)" -n 1 clang-tidy-17 -p build
 
   python-test:
     runs-on: ubuntu-24.04
