@@ -280,4 +280,35 @@ TEST(StatementStore, ForgetIsIdempotentAndTenantScoped) {
     EXPECT_EQ(state_of(a->connection(), "s2"), "consolidated");
 }
 
+// 片 6:approve_review —— review_requested → approved,守卫幂等。
+void set_review_requested(persistence::Connection& conn, const char* id) {
+    std::string sql = std::string("UPDATE statements SET review_status='review_requested' WHERE id='") + id + "'";
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(conn.raw(), sql.c_str(), nullptr, nullptr, &err), SQLITE_OK) << (err ? err : "");
+}
+
+TEST(StatementStore, ApproveReviewOnlyFromReviewRequested) {
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "rr", "volatile");          // 翻成 review_requested(seed 默认 approved)
+    seed(a->connection(), "ap", "volatile");          // 留 approved —— 守卫拦住
+    set_review_requested(a->connection(), "rr");
+
+    EXPECT_EQ(st.approve_review("rr", "default", "2026-06-25T00:00:00Z"), 1);
+    EXPECT_EQ(scol(a->connection(), "SELECT review_status FROM statements WHERE id='rr'"), "approved");
+    EXPECT_EQ(scol(a->connection(), "SELECT updated_at FROM statements WHERE id='rr'"), "2026-06-25T00:00:00Z");
+    // 守卫:非 review_requested(approved)0-change;幂等:再 approve 已 approved 行 → 0。
+    EXPECT_EQ(st.approve_review("ap", "default", "2026-06-25T00:00:00Z"), 0);
+    EXPECT_EQ(st.approve_review("rr", "default", "2026-06-25T00:00:00Z"), 0);
+}
+
+TEST(StatementStore, ApproveReviewTenantScoped) {
+    auto a = make_adapter();
+    SqliteStatementStore st(a->connection());
+    seed(a->connection(), "rr", "volatile");
+    set_review_requested(a->connection(), "rr");
+    EXPECT_EQ(st.approve_review("rr", "other-tenant", "2026-06-25T00:00:00Z"), 0);   // 跨租户不动
+    EXPECT_EQ(scol(a->connection(), "SELECT review_status FROM statements WHERE id='rr'"), "review_requested");
+}
+
 }  // namespace starling::store

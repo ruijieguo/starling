@@ -46,4 +46,12 @@ double compute_s_t(const ForgettingInputs& in, std::string_view now_iso) {
     return std::exp(-dt / s0);
 }
 
+double seconds_until_retrievability(const ForgettingInputs& in, double target) {
+    const double s0 = compute_s0(in);
+    if (s0 <= 0.0) return -1.0;
+    if (target <= 0.0 || target >= 1.0) return -1.0;
+    // S(t)=exp(-Δt/S0)=target → Δt = -S0·ln(target), measured from last_accessed.
+    return -s0 * std::log(target);
+}
+
 }  // namespace starling::replay

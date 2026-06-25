@@ -92,6 +92,7 @@ add_executable(starling_tests
     test_faux_pas.cpp
     test_belief_tracker.cpp
     test_forgetting_curve.cpp
+    test_recall_fence.cpp
     test_swr_sampler.cpp
     test_consolidation_compress.cpp
     test_consolidation_abstract_reinforce.cpp

@@ -7,6 +7,7 @@ freeze every other request and the WS heartbeat for the whole call.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from functools import partial
 
@@ -37,6 +38,14 @@ class RecallBody(BaseModel):
     holder: str | None = None    # override recall holder 维度(默认 dashboard agent)
 
 
+class ConverseBody(BaseModel):
+    message: str
+    holder: str | None = None
+    interlocutor: str | None = None
+    k: int = 6                   # relevant memories to inject
+    now: str | None = None
+
+
 class TickBody(BaseModel):
     now: str | None = None  # defaults to current UTC time at request handling
 
@@ -44,6 +53,17 @@ class TickBody(BaseModel):
 class ForgetBody(BaseModel):
     ids: list[str]
     now: str | None = None  # None → MemoryCore resolves to current UTC time
+
+
+# ── 片 6 干预集 ──────────────────────────────────────────────────────────
+class ReviewBody(BaseModel):
+    stmt_id: str            # approve(review_requested→approved);reject 走 /api/forget
+
+class ReplayTriggerBody(BaseModel):
+    mode: str = "idle"      # "sleep"(批 200,真新)| "idle"(批 30,已被 tick 驱动)
+
+class ReconsolidateBody(BaseModel):
+    stmt_id: str            # 仅对 consolidated 行有效(下游守卫)
 
 
 def _engine(request: Request):
@@ -95,6 +115,23 @@ def build_commands_router(require_token) -> APIRouter:
         await _broadcast(request, "recall", {"n": len(out)})
         return {"results": out}
 
+    @router.post("/converse")
+    async def converse(body: ConverseBody, request: Request):
+        from starling.dashboard.engine import _LLMNotConfigured
+        eng = _engine(request)
+        try:
+            r = await to_thread.run_sync(partial(
+                eng.converse, body.message, holder=body.holder,
+                interlocutor=body.interlocutor, k=max(1, min(body.k, 50)), now=body.now))
+        except _LLMNotConfigured:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="llm_not_configured")
+        # The turn consolidated the exchange → tell other views to refresh.
+        if r.get("statement_ids"):
+            await _broadcast(request, "statement_added",
+                             {"statement_ids": r["statement_ids"]})
+        return r
+
     @router.post("/tick")
     async def tick(body: TickBody, request: Request):
         eng = _engine(request)
@@ -117,6 +154,35 @@ def build_commands_router(require_token) -> APIRouter:
         eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.forget, body.ids, now=body.now))
         await _broadcast(request, "statement_forgotten", r)
+        return r
+
+    # ── 片 6 干预集:触发式安全写(全经 engine self._lock 串行) ─────────────
+    @router.post("/review")
+    async def review(body: ReviewBody, request: Request):
+        # approve:review_requested→approved(守卫幂等;非该态返回 approved=0)。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(eng.approve_review, body.stmt_id))
+        await _broadcast(request, "statement_added", {"statement_ids": [body.stmt_id]})
+        return r
+
+    @router.post("/replay_trigger")
+    async def replay_trigger(body: ReplayTriggerBody, request: Request):
+        # 手动触发 replay;持写锁整段(操作者发起)。新批次 → 刷新梦境/生命周期。
+        eng = _engine(request)
+        mode = body.mode if body.mode in ("sleep", "idle") else "idle"
+        r = await to_thread.run_sync(partial(eng.run_replay, mode))
+        await _broadcast(request, "tick", r)
+        return r
+
+    @router.post("/reconsolidate")
+    async def reconsolidate(body: ReconsolidateBody, request: Request):
+        # 请求再固化(发 reconsolidate.requested 事件,引擎异步开可塑窗)。每次发新 uuid
+        # request_id;真正的重复去重在引擎侧按 stmt_id+tenant 归并到同一窗口(open_or_append),
+        # 故连点不会建重复窗口(非「当日去重」——那个键因 uuid 唯一从不命中)。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(
+            eng.request_reconsolidation, body.stmt_id, request_id=uuid.uuid4().hex))
+        await _broadcast(request, "tick", {"reconsolidate_requested": body.stmt_id})
         return r
 
     return router

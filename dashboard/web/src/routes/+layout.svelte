@@ -7,6 +7,7 @@
 	import { api } from '$lib/api';
 	import { connectWs } from '$lib/ws';
 	import { wsConn, llmConfigured, embedderConfigured, lastWsEvent } from '$lib/health';
+	import { type Config, roleConfigured } from '$lib/models';
 	import { ALL_NAV_ITEMS, NAV_GROUPS } from '$lib/nav';
 	import NavIcon from '$lib/components/NavIcon.svelte';
 	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
@@ -81,10 +82,12 @@
 	});
 	$effect(() => {
 		api
-			.get<{ llm: { key_set: boolean }; embedder: { key_set: boolean } }>('/api/config')
+			.get<Config>('/api/config')
 			.then((c) => {
-				llmConfigured.set(c.llm.key_set ?? null);
-				embedderConfigured.set(c.embedder.key_set ?? null);
+				// Header dots derive from role bindings now (extraction→LLM,
+				// embedding→Embedder), not the removed flat llm/embedder shape.
+				llmConfigured.set(roleConfigured(c, 'extraction'));
+				embedderConfigured.set(roleConfigured(c, 'embedding'));
 			})
 			.catch(() => {
 				llmConfigured.set(null);

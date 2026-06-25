@@ -87,7 +87,8 @@ class MemoryCore:
         self.rt = rt
         self.agent = agent
         self.tenant = tenant_id
-        self.llm = llm
+        self.llm = llm           # extraction adapter (remember); also chat fallback
+        self.chat_llm = None     # chat adapter (converse); None → falls back to self.llm
         self.adapter_name = adapter_name
         self.source_prefix = source_prefix
         self._extraction = extraction or ExtractionConfig()
@@ -228,6 +229,31 @@ class MemoryCore:
         planner = _core.RetrievalPlanner(self.rt.adapter, self.semantic)
         return planner.run(q)
 
+    def converse(self, message: str, *, holder=None, interlocutor=None,
+                 k: int = 6, now=None) -> dict:
+        """Phase 2c chat-with-memory turn — thin forward to C++
+        `memory_converse` (3-phase orchestration居 C++,与 remember/plan_query
+        同层;网络段释放 GIL)。chat 适配器缺省回退到抽取适配器(self.llm)。
+
+        返回 {reply, ok, error, context_pack, abstained, statement_ids,
+        remember_ok, remember_error}。失败语义 A:generate 失败 → ok=False 无
+        回复;remember 失败 → 回复保留、remember_ok=False(可观测)。"""
+        if self.llm is None:
+            raise LLMNotConfigured(
+                "converse requires an extraction llm adapter "
+                "(configure a provider + bind the extraction role)")
+        chat = self.chat_llm or self.llm
+        holder_id = holder or self.agent
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _core.memory_converse(
+            self.rt.adapter, chat, self.llm, self.semantic,
+            self._extraction.belief_prompt,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, message=message, recall_k=k,
+            policy=_build_policy(self._extraction))
+
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +
         flush grounding 滞后事件 (P2.j)。三连组合在 C++ `memoryops::tick_all`
@@ -264,6 +290,35 @@ class MemoryCore:
         n = _core.memory_forget(self.rt.adapter, tenant=self.tenant,
                                 ids=list(ids), now_iso=now_iso)
         return {"forgotten": n}
+
+    # ── 片 6 干预集:触发式安全写(全经核心,这里只薄转发) ─────────────────
+    def approve_review(self, stmt_id: str, *, now=None) -> dict:
+        """人工审批 review_requested → approved(守卫幂等)。核心 `memoryops::approve_review`。
+        reject 不在此 —— reject = forget(→forgotten 终态)。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        n = _core.memory_approve_review(self.rt.adapter, tenant=self.tenant,
+                                        stmt_id=stmt_id, now_iso=now_iso)
+        return {"approved": n}
+
+    def run_replay(self, mode: str, *, now=None) -> dict:
+        """手动触发 replay。复用 C++ `ReplayScheduler`(sleep 批 200 / idle 批 30)。
+        sleep 今天无调用方=真新能力;idle 已被 tick_all 驱动→手动=按需刷新。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sched = _core.ReplayScheduler(self.rt.adapter)
+        rs = sched.run_sleep(now_iso) if mode == "sleep" else sched.run_idle(now_iso)
+        return {"mode": mode, "sampled": rs.sampled, "compressed": rs.compressed,
+                "abstracted": rs.abstracted, "reinforced": rs.reinforced,
+                "decayed": rs.decayed, "reconciled": rs.reconciled,
+                "forced_consolidated": rs.forced_consolidated,
+                "ttl_archived": rs.ttl_archived, "replay_batch_id": rs.replay_batch_id}
+
+    def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
+        """请求再固化:发 reconsolidate.requested 事件,引擎异步开可塑窗。复用现有绑定。
+        仅对 consolidated 行有效(enter_reconsolidating 守卫),否则下游静默 no-op。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        eid = _core.request_reconsolidation(self.rt.adapter, self.tenant, stmt_id,
+                                            request_id, now_iso)
+        return {"event_id": eid}
 
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing

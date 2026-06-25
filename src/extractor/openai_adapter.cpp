@@ -1,5 +1,6 @@
 #include "starling/extractor/openai_adapter.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -33,19 +34,30 @@ LLMResponse OpenAIAdapter::extract(std::string_view prompt,
         {"temperature", 0},
         {"max_tokens",  cfg_.max_tokens}
     };
+    const auto t0 = std::chrono::steady_clock::now();
     const auto r = net::http_post_json(
         cfg_.base_url + "/chat/completions",
         {"Authorization: Bearer " + cfg_.api_key},
         body.dump(), cfg_.timeout_ms, cfg_.max_retries);
+    const int latency_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count());
     if (!r.ok) {
-        return {.raw_xml = {}, .ok = false, .error = r.error};
+        return {.raw_xml = {}, .ok = false, .error = r.error, .latency_ms = latency_ms};
     }
     try {
         auto j = nlohmann::json::parse(r.body);
         const std::string content = j["choices"][0]["message"]["content"].get<std::string>();
-        return {.raw_xml = content, .ok = true, .error = {}};
+        LLMResponse out{.raw_xml = content, .ok = true, .error = {}, .latency_ms = latency_ms};
+        if (j.contains("usage")) {                    // OpenAI usage block (best-effort)
+            const auto& u = j["usage"];
+            out.prompt_tokens     = u.value("prompt_tokens", 0);
+            out.completion_tokens = u.value("completion_tokens", 0);
+            out.total_tokens      = u.value("total_tokens", out.prompt_tokens + out.completion_tokens);
+        }
+        return out;
     } catch (const std::exception&) {
-        return {.raw_xml = {}, .ok = false, .error = "malformed_response"};
+        return {.raw_xml = {}, .ok = false, .error = "malformed_response", .latency_ms = latency_ms};
     }
 }
 

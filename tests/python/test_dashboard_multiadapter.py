@@ -1,6 +1,6 @@
-"""P2.l: multi-provider config — provider factory dispatch, config v2, and the
-/api/config/test connectivity probe (no real network; adapters monkeypatched or
-constructed without HTTP)."""
+"""P2.l/2a: multi-provider config — provider factory dispatch, the named-provider
+registry, and the /api/config/test connectivity probe (no real network; adapters
+monkeypatched or constructed without HTTP)."""
 import json
 
 import pytest
@@ -18,7 +18,7 @@ def test_build_chat_adapter_dispatches_by_provider():
     assert isinstance(a, _core.AnthropicAdapter)
     o = _build_chat_adapter({"provider": "openai", "api_key": "k", "model": "gpt-x"})
     assert isinstance(o, _core.OpenAIAdapter)
-    # Backward-compat: a legacy config without a provider key defaults to OpenAI.
+    # A provider dict without a provider key defaults to OpenAI-compatible.
     legacy = _build_chat_adapter({"api_key": "k"})
     assert isinstance(legacy, _core.OpenAIAdapter)
 
@@ -32,21 +32,23 @@ def test_real_adapters_expose_extract():
     assert callable(getattr(a, "extract", None))
 
 
-def test_config_v2_has_provider_and_roundtrips(tmp_path):
+def test_registry_roundtrips(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfgfile = tmp_path / "starling.json"
     cfg = DashboardConfig(db_path=str(tmp_path / "c.db"), token="t", config_path=str(cfgfile))
-    assert cfg.llm["provider"] == "openai"
-    assert cfg.embedder["provider"] == "openai"
-    cfg.llm["provider"] = "anthropic"
-    cfg.llm["api_key"] = "sk-x"  # set so the OPENAI_* env-overlay does not reseed llm
+    cfg.providers["claude"] = {"provider": "anthropic", "model": "claude-x",
+                               "base_url": "", "api_key": "sk-x"}
+    cfg.roles["extraction"] = "claude"
     cfg.save()
     loaded = DashboardConfig.load(str(cfgfile))
-    assert loaded.llm["provider"] == "anthropic"
-    assert loaded.llm["api_key"] == "sk-x"
+    ex = loaded.extraction()
+    assert ex["provider"] == "anthropic" and ex["api_key"] == "sk-x"
+    assert loaded.roles["extraction"] == "claude"
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfgfile = tmp_path / "starling.json"
     cfg = DashboardConfig(db_path=str(tmp_path / "c.db"), token="", config_path=str(cfgfile))
     eng = DashboardEngine(cfg)
@@ -64,14 +66,12 @@ def test_config_test_llm_probes_without_persisting(ctx, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and "latency_ms" in body
-    # never persisted, never leaks the key
-    assert not cfgfile.exists()
-    assert "sk-secret-xyz" not in json.dumps(body)
+    assert not cfgfile.exists()                       # never persisted
+    assert "sk-secret-xyz" not in json.dumps(body)    # never leaks the key
 
 
 def test_config_test_embedder_uses_real_embed_binding(ctx, monkeypatch):
     cfg, eng, client, _ = ctx
-    # StubEmbeddingAdapter.embed (via the new EmbeddingAdapter.embed binding) → 8-dim vector.
     monkeypatch.setattr(engmod, "_build_embed_adapter", lambda c: _core.StubEmbeddingAdapter(8))
     r = client.post("/api/config/test", json={"kind": "embedder", "api_key": "sk-x"})
     assert r.status_code == 200
@@ -86,13 +86,12 @@ def test_config_test_no_key_is_failure(ctx):
 
 
 def test_config_test_never_sends_stored_key_to_overridden_base_url(ctx, monkeypatch):
-    # SECURITY: the persisted api_key must never be sent to a caller-supplied
-    # endpoint (credential exfiltration). Overriding base_url without a fresh key
-    # is refused; the stored key may only probe its own stored base_url; a fresh
-    # caller key may probe a caller URL (the caller's own key, not the secret).
+    # SECURITY: a stored provider's api_key may only probe its own stored base_url.
+    # Overriding base_url without a fresh key is refused; a fresh caller key may
+    # probe a caller URL (the caller's own key, not the stored secret).
     cfg, eng, client, _ = ctx
-    cfg.llm["api_key"] = "sk-stored-secret"
-    cfg.llm["base_url"] = "https://api.openai.com/v1"
+    cfg.providers["stored"] = {"provider": "openai", "model": "m",
+                               "base_url": "https://api.openai.com/v1", "api_key": "sk-stored-secret"}
     built = {}
 
     def fake_build(c):
@@ -105,16 +104,18 @@ def test_config_test_never_sends_stored_key_to_overridden_base_url(ctx, monkeypa
     monkeypatch.setattr(engmod, "_build_chat_adapter", fake_build)
 
     # 1. override base_url, no fresh key → refused; builder never invoked → secret never left.
-    r = client.post("/api/config/test", json={"kind": "llm", "base_url": "https://evil.example"})
+    r = client.post("/api/config/test",
+                    json={"kind": "llm", "name": "stored", "base_url": "https://evil.example"})
     assert r.json()["ok"] is False
     assert built == {}
 
     # 2. probe the STORED endpoint with the stored key → allowed.
-    r2 = client.post("/api/config/test", json={"kind": "llm", "base_url": "https://api.openai.com/v1"})
+    r2 = client.post("/api/config/test",
+                     json={"kind": "llm", "name": "stored", "base_url": "https://api.openai.com/v1"})
     assert r2.json()["ok"] is True
     assert built["api_key"] == "sk-stored-secret" and built["base_url"] == "https://api.openai.com/v1"
 
-    # 3. a fresh caller key may go to a caller URL — it's the caller's own key, not the secret.
+    # 3. a fresh caller key may go to a caller URL — it's the caller's own key.
     built.clear()
     r3 = client.post("/api/config/test",
                      json={"kind": "llm", "base_url": "https://my.proxy", "api_key": "sk-mine"})

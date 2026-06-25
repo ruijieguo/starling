@@ -53,6 +53,28 @@ def test_recall_with_intent_goes_through_planner(client):
     assert [s["step"] for s in body["plan_steps"]][:3] == ["parse", "mask", "plan"]
 
 
+def test_recall_intent_receipt_additive_regression(client):
+    """REGRESSION (Phase 0): plan_query gained a `receipt` block. The original
+    six keys the interact page depends on MUST stay; the new attribution fields
+    are purely additive; runtime_health stays hidden (honesty: never populated)."""
+    client.post("/api/remember", json={"text": "Bob owns auth"})
+    client.post("/api/tick", json={})
+    body = client.post("/api/recall", json={
+        "query": "auth", "intent": "FACT_LOOKUP", "k": 5}).json()
+    # 1) the six legacy keys remain (interact page contract)
+    assert {"results", "context_pack", "abstained", "abstention_reason",
+            "plan_steps", "scopes_searched"} <= set(body)
+    # 2) the new receipt block is present with the previously-dropped fields
+    rc = body["receipt"]
+    assert {"filters_applied", "candidate_counts", "score_breakdown",
+            "frontier_masked_count", "evidence_erased_count", "sufficiency_status",
+            "degraded_paths", "trace_id", "query_id"} <= set(rc)
+    assert isinstance(rc["filters_applied"], list)
+    assert {"fetched", "returned", "dropped_by_review"} <= set(rc["candidate_counts"])
+    # 3) runtime_health is deliberately NOT surfaced (live-vs-roadmap honesty)
+    assert "runtime_health" not in rc and "runtime_health" not in body
+
+
 def test_remember_409_when_llm_unconfigured(tmp_path):
     cfg = DashboardConfig(db_path=str(tmp_path / "nollm.db"), token="")
     eng = DashboardEngine(cfg)            # llm unset

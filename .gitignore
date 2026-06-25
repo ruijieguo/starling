@@ -35,3 +35,6 @@ tests/data/eval_fantom/
 starling.json
 dashboard/web/build
 .gstack/
+
+# clangd / cmake tooling cache
+.cache/
