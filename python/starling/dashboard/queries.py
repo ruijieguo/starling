@@ -314,6 +314,9 @@ def brain_map(db_path: str, tenant: str) -> dict:
 # payload 同时带 stmt_id 与 extraction_span_key → extraction_attempt。Python 只读。
 
 _PROV_PREVIEW_CHARS = 280   # engram 源文预览上限(privacy:只取 inline、未抹除的前 N 字符)
+# 预览抑制:除已抹除/非 inline 外,也尊重系统隐私分级——regulated/sensitive 不显源文
+# (检索层早有抹除过滤,但 provenance 直读 payload_inline 绕过它,故在此守同一隐私不变式)。
+_PREVIEW_SUPPRESS_PRIVACY = ("regulated", "sensitive", "personal")  # PII 级也不显源文
 
 _PROV_STMT_COLS = (
     "id, holder_id, holder_perspective, subject_kind, subject_id, predicate, "
@@ -345,9 +348,12 @@ def _extraction_for(conn, tenant: str, stmt_id: str) -> dict | None:
       ① 权威行 = 优先 success/partial(语句真正的创建),noop/failed 次之;
       ② raw LLM 输出从同一 pipeline_run 的失败/部分尝试取(failed_attempts)——这才是
          「回溯到原始 LLM 输出」的落点。span_key 哈希由 C++ 算,Python 只读、绝不复算。"""
+    # 过滤 aggregate_id(非 primary_id):二者对 statement.written 同为 stmt_id
+    # (statement_writer.cpp:349-350),但 aggregate_id 有 idx_bus_events_aggregate
+    # → 索引检索而非全表扫(否则 provenance 递归每节点全扫 append-only 出箱表)。
     ev, _ = _rows_or_empty(
         conn,
-        "SELECT payload_json FROM bus_events WHERE tenant_id=? AND primary_id=? "
+        "SELECT payload_json FROM bus_events WHERE tenant_id=? AND aggregate_id=? "
         "AND event_type='statement.written' ORDER BY outbox_sequence ASC LIMIT 1",
         (tenant, stmt_id),
     )
@@ -411,7 +417,8 @@ def _engrams_for(conn, tenant: str, evidence) -> list[dict]:
             if rows:
                 g = rows[0]
                 preview = None
-                if g["erased_at"] is None and g["payload_inline"] is not None:
+                if (g["erased_at"] is None and g["payload_inline"] is not None
+                        and (g["privacy_class"] or "").lower() not in _PREVIEW_SUPPRESS_PRIVACY):
                     blob = g["payload_inline"]
                     try:
                         text = (blob.decode("utf-8", "replace")

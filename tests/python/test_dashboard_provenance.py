@@ -62,6 +62,22 @@ def _engine(db, *, body=_STUB_JSON, ok=True, error=""):
     return eng
 
 
+def _eng_row(conn, eid, *, tenant="default", privacy="internal", erased=None,
+             payload=b"the source sentence", content_hash="ch1"):
+    # source_item_id=eid:满足 idx_engrams_source_identity 唯一(否则各默认值撞键)。
+    conn.execute(
+        "INSERT INTO engrams (id, tenant_id, content_hash, source_kind, ingest_policy, "
+        "ingest_mode, privacy_class, retention_mode, payload_inline, created_at, erased_at, "
+        "source_item_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (eid, tenant, content_hash, "user_input", "store", "inline", privacy,
+         "default", payload, "2026-04-10T10:00:00Z", erased, eid),
+    )
+
+
+def _ev_ref(eid, content_hash="ch1"):
+    return f'[{{"engram_ref":"{eid}","content_hash":"{content_hash}","status":"active"}}]'
+
+
 # ── ① 真实链路 ────────────────────────────────────────────────────────────
 def test_provenance_traces_real_extraction(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -232,6 +248,33 @@ def test_provenance_non_extraction_origin_has_no_attempt(tmp_path):
     tree = queries.provenance(db, "default", "D")
     assert tree["origin"]["extraction"] is None
     assert tree["origin"]["provenance"] == "reconsolidation_derived"
+
+
+def test_provenance_engram_preview_privacy_guard(tmp_path):
+    # 证据源文预览:仅 inline + 未抹除 + 非 regulated/sensitive 才显;否则抑制(节点仍在)。
+    # 钉死隐私不变式——provenance 直读 payload_inline 绕过检索层抹除过滤,故须自守。
+    db = str(tmp_path / "eng.db")
+    conn = _fresh_db(db)
+    _eng_row(conn, "e_ok", privacy="internal")
+    _eng_row(conn, "e_reg", privacy="regulated")
+    _eng_row(conn, "e_personal", privacy="personal")
+    _eng_row(conn, "e_sensitive", privacy="sensitive")
+    _eng_row(conn, "e_erased", privacy="internal", erased="2026-05-01T00:00:00Z")
+    _ins(conn, "S_ok", evidence=_ev_ref("e_ok"))
+    _ins(conn, "S_reg", evidence=_ev_ref("e_reg"))
+    _ins(conn, "S_personal", evidence=_ev_ref("e_personal"))
+    _ins(conn, "S_sensitive", evidence=_ev_ref("e_sensitive"))
+    _ins(conn, "S_erased", evidence=_ev_ref("e_erased"))
+    conn.commit()
+    conn.close()
+    ok = queries.provenance(db, "default", "S_ok")["evidence"][0]["engram"]
+    assert ok is not None and ok["payload_preview"] == "the source sentence"   # internal → 显
+    # regulated / personal / sensitive 三个 PII/受控级都抑制源文(节点与 privacy_class 仍在)。
+    for sid, pc in (("S_reg", "regulated"), ("S_personal", "personal"), ("S_sensitive", "sensitive")):
+        eng = queries.provenance(db, "default", sid)["evidence"][0]["engram"]
+        assert eng["payload_preview"] is None and eng["privacy_class"] == pc
+    er = queries.provenance(db, "default", "S_erased")["evidence"][0]["engram"]
+    assert er["payload_preview"] is None and er["erased"] is True                  # 抹除抑制
 
 
 # ── 取镜:只读文本查找 ────────────────────────────────────────────────────

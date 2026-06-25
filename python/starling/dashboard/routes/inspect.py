@@ -79,7 +79,8 @@ def build_inspect_router(require_token) -> APIRouter:
         # against Z-suffixed close_deadline values, so a "+00:00" suffix here
         # would be a latent boundary bug.
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        return queries.vitals(c.db_path, c.tenant, now=now, list_limit=limit)
+        return queries.vitals(c.db_path, c.tenant, now=now,
+                              list_limit=max(1, min(limit, 500)))   # clamp(同 forecast/search 一致)
 
     @router.get("/statement/{statement_id}")
     async def statement(request: Request, statement_id: str):

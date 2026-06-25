@@ -122,7 +122,7 @@ def build_commands_router(require_token) -> APIRouter:
         try:
             r = await to_thread.run_sync(partial(
                 eng.converse, body.message, holder=body.holder,
-                interlocutor=body.interlocutor, k=body.k, now=body.now))
+                interlocutor=body.interlocutor, k=max(1, min(body.k, 50)), now=body.now))
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")
@@ -176,7 +176,9 @@ def build_commands_router(require_token) -> APIRouter:
 
     @router.post("/reconsolidate")
     async def reconsolidate(body: ReconsolidateBody, request: Request):
-        # 请求再固化(发事件,引擎异步开窗);request_id 当日去重键。
+        # 请求再固化(发 reconsolidate.requested 事件,引擎异步开可塑窗)。每次发新 uuid
+        # request_id;真正的重复去重在引擎侧按 stmt_id+tenant 归并到同一窗口(open_or_append),
+        # 故连点不会建重复窗口(非「当日去重」——那个键因 uuid 唯一从不命中)。
         eng = _engine(request)
         r = await to_thread.run_sync(partial(
             eng.request_reconsolidation, body.stmt_id, request_id=uuid.uuid4().hex))
