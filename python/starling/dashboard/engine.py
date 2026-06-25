@@ -178,18 +178,45 @@ class DashboardEngine:
     def llm_configured(self) -> bool:
         return self._core.llm is not None
 
-    def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
-        with self._lock:
+    @contextmanager
+    def _role_override(self, attr: str, provider: str | None):
+        """Per-turn model selection: temporarily point a core adapter slot
+        (`attr` = 'chat_llm' for converse, 'llm' for remember's extraction) at a
+        registry provider's adapter, then restore. The caller holds self._lock, so
+        the swap is never visible to a concurrent engine call or the background tick.
+        Empty/None provider → no-op (use the role-bound adapter).
+
+        Boundary: this is adapter *selection* (dashboard config policy) — the C++
+        converse/remember take the adapter as a parameter, unchanged. No core
+        orchestration or shared MemoryCore signature is touched."""
+        if not provider:
+            yield
+            return
+        cfg = self._cfg.resolve_provider(provider)
+        if not cfg or not cfg.get("api_key"):
+            raise LLMNotConfigured(f"selected provider '{provider}' is not configured")
+        saved = getattr(self._core, attr)
+        setattr(self._core, attr, _build_chat_adapter(cfg))
+        try:
+            yield
+        finally:
+            setattr(self._core, attr, saved)
+
+    def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
+                 provider: str | None = None) -> dict:
+        # provider (optional) overrides the bound extraction role for this turn.
+        with self._lock, self._role_override("llm", provider):
             return self._core.remember(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
 
     def converse(self, message: str, *, holder=None, interlocutor=None,
-                 k: int = 6, now=None) -> dict:
+                 k: int = 6, now=None, provider: str | None = None) -> dict:
         # Same lock discipline as remember (which also holds it during its LLM
         # call). The three-phase no-write-txn-across-generate guarantee is
         # structural inside C++ converse (remember's write txn is phase 4, after
         # generate); the C++ binding releases the GIL during the network legs.
-        with self._lock:
+        # provider (optional) overrides the bound chat role for this turn only.
+        with self._lock, self._role_override("chat_llm", provider):
             return self._core.converse(message, holder=holder,
                                        interlocutor=interlocutor, k=k, now=now)
 

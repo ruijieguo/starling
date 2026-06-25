@@ -26,6 +26,7 @@ class RememberBody(BaseModel):
     holder: str | None = None
     interlocutor: str | None = None
     now: str | None = None
+    provider: str | None = None  # per-turn extraction-model override (registry name); None = bound role
 
 
 class RecallBody(BaseModel):
@@ -44,6 +45,7 @@ class ConverseBody(BaseModel):
     interlocutor: str | None = None
     k: int = 6                   # relevant memories to inject
     now: str | None = None
+    provider: str | None = None  # per-turn chat-model override (registry name); None = bound role
 
 
 class TickBody(BaseModel):
@@ -90,7 +92,7 @@ def build_commands_router(require_token) -> APIRouter:
         try:
             r = await to_thread.run_sync(partial(
                 eng.remember, body.text, holder=body.holder,
-                interlocutor=body.interlocutor, now=body.now))
+                interlocutor=body.interlocutor, now=body.now, provider=body.provider))
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")
@@ -122,7 +124,8 @@ def build_commands_router(require_token) -> APIRouter:
         try:
             r = await to_thread.run_sync(partial(
                 eng.converse, body.message, holder=body.holder,
-                interlocutor=body.interlocutor, k=max(1, min(body.k, 50)), now=body.now))
+                interlocutor=body.interlocutor, k=max(1, min(body.k, 50)), now=body.now,
+                provider=body.provider))
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")

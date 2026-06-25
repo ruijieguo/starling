@@ -20,6 +20,22 @@
 	let busyR = $state(false);
 	let busyQ = $state(false);
 
+	// Per-turn model selection (#35): pick a registry provider for remember's
+	// extraction, or '' to use the bound extraction role. (Recall uses the embedder,
+	// which is bound — changing it re-embeds — so it has no per-turn override.)
+	let providers = $state<string[]>([]);
+	let extractProvider = $state('');
+	$effect(() => {
+		api
+			.get<{ providers?: Record<string, unknown> }>('/api/config')
+			.then((c) => (providers = Object.keys(c.providers ?? {})))
+			.catch(() => {});
+	});
+	const providerOpts = () => [
+		{ value: '', label: '模型:默认(extraction 角色)' },
+		...providers.map((p) => ({ value: p, label: '模型:' + p }))
+	];
+
 	// 'semantic'/'completion' 走原 recall;'intent:*' 走 RetrievalPlanner(P3.a1)。
 	const MODE_OPTIONS = [
 		{ value: 'semantic', label: '语义检索' },
@@ -44,6 +60,7 @@
 			const body: Record<string, unknown> = { text };
 			if (holder) body.holder = holder;
 			if (interlocutor) body.interlocutor = interlocutor;
+			if (extractProvider) body.provider = extractProvider;
 			// 真模型抽取实测 20-110s(长文本更慢),放宽到 180s(后端有自己的重试与超时)。
 			const r = await api.post<{ statement_ids: string[]; outcome: string }>('/api/remember', body, {
 				timeoutMs: 180_000
@@ -95,6 +112,9 @@
 			<div class="flex flex-wrap gap-2">
 				<Input bind:value={holder} placeholder="holder (默认 self)" class="max-w-44" />
 				<Input bind:value={interlocutor} placeholder="interlocutor (可选)" class="max-w-44" />
+				{#if providers.length}
+					<Select bind:value={extractProvider} options={providerOpts()} class="max-w-52" aria-label="抽取模型" />
+				{/if}
 			</div>
 			<div class="flex items-center gap-3">
 				<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>

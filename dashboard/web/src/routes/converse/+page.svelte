@@ -2,12 +2,28 @@
 	import { api, ApiError, type ConverseResponse } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot } from '$lib/components/ui';
+	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot, Select } from '$lib/components/ui';
 
 	type Turn = { role: 'user' | 'assistant'; text: string; trace?: ConverseResponse };
 	let turns = $state<Turn[]>([]);
 	let input = $state('');
 	let busy = $state(false);
+
+	// Per-turn model selection (#35): pick a registry provider for the chat reply,
+	// or '' to use the bound chat role. Names come from the same provider registry
+	// the Settings page manages.
+	let providers = $state<string[]>([]);
+	let chatProvider = $state('');
+	$effect(() => {
+		api
+			.get<{ providers?: Record<string, unknown> }>('/api/config')
+			.then((c) => (providers = Object.keys(c.providers ?? {})))
+			.catch(() => {});
+	});
+	const providerOpts = () => [
+		{ value: '', label: '模型:默认(chat 角色)' },
+		...providers.map((p) => ({ value: p, label: '模型:' + p }))
+	];
 
 	async function send() {
 		const msg = input.trim();
@@ -19,7 +35,7 @@
 			// 一轮 = recall + 生成 + 沉淀,真模型可达数十秒,放宽超时。
 			const r = await api.post<ConverseResponse>(
 				'/api/converse',
-				{ message: msg },
+				{ message: msg, ...(chatProvider ? { provider: chatProvider } : {}) },
 				{ timeoutMs: 120_000 }
 			);
 			turns = [
@@ -99,10 +115,15 @@
 		{/each}
 	</ul>
 
-	<div class="sticky bottom-4 flex items-end gap-2 rounded-control border border-border bg-card p-2">
-		<div class="flex-1">
-			<Textarea bind:value={input} rows={2} placeholder="说点什么…" />
+	<div class="sticky bottom-4 space-y-2 rounded-control border border-border bg-card p-2">
+		{#if providers.length}
+			<Select bind:value={chatProvider} options={providerOpts()} class="max-w-56" />
+		{/if}
+		<div class="flex items-end gap-2">
+			<div class="flex-1">
+				<Textarea bind:value={input} rows={2} placeholder="说点什么…" />
+			</div>
+			<Button loading={busy} disabled={!input.trim()} onclick={send}>发送</Button>
 		</div>
-		<Button loading={busy} disabled={!input.trim()} onclick={send}>发送</Button>
 	</div>
 </div>

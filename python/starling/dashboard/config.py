@@ -80,6 +80,13 @@ class DashboardConfig:
         # converse falls back to the extraction provider when chat is unbound.
         return self.resolve_role("chat") or self.resolve_role("extraction")
 
+    def resolve_provider(self, name: str | None) -> dict | None:
+        """The provider config dict for a registry name, or None when the name is
+        empty/absent. Distinct from resolve_role (which goes through a role binding):
+        this powers per-turn model selection on the converse / interact pages, where
+        the operator picks a registry provider directly for one request."""
+        return self.providers.get(name) if name else None
+
     @classmethod
     def from_env(cls) -> "DashboardConfig":
         origins = os.environ.get("STARLING_DASH_CORS_ORIGINS", "")
