@@ -73,7 +73,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # The editable install builds the _core C++ extension, so python-test needs
+      # the same native deps as cpp-build-test (SQLite >= 3.46, OpenSSL, CURL, ICU).
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-17 libssl-dev libcurl4-openssl-dev libicu-dev
+      - name: Build SQLite 3.46 from amalgamation (ubuntu apt ships 3.45 < required 3.46)
+        run: |
+          SQLITE_VER=3460100   # 3.46.1
+          curl -fsSL "https://sqlite.org/2024/sqlite-autoconf-${SQLITE_VER}.tar.gz" -o /tmp/sqlite.tar.gz
+          tar -xzf /tmp/sqlite.tar.gz -C /tmp
+          cd "/tmp/sqlite-autoconf-${SQLITE_VER}"
+          ./configure --prefix=/usr/local && make -j"$(nproc)" && sudo make install
+          sudo ldconfig
       - name: Install
+        env:
+          CC: clang-17
+          CXX: clang++-17
+          CMAKE_ARGS: "-DSQLite3_INCLUDE_DIR=/usr/local/include -DSQLite3_LIBRARY=/usr/local/lib/libsqlite3.so"
         run: pip install -e ".[dev]"
       - name: pytest
         run: pytest
