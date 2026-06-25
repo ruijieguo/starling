@@ -9,6 +9,7 @@
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/replay/forgetting_curve.hpp"
 #include "starling/reconsolidation/reconsolidation_engine.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -196,6 +197,42 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
           py::arg("request_id"), py::arg("now_iso"),
           "Emit reconsolidate.requested (explicit trigger #4); engine opens "
           "the plastic window asynchronously.");
+
+    // ── P3 片 5: 衰减曲线只读投影(forgetting_curve 纯函数转发,无 DB/无状态) ──
+    // 公式与其逆都在 src/replay/forgetting_curve.cpp;这里仅构造 ForgettingInputs
+    // 转发,绝不在绑定层复算(换绑定语言不需重写 = 守边界)。dashboard 只读消费。
+    m.def("forgetting_s_t",
+          [](double salience, std::int64_t access_count, bool active_grounded,
+             const std::string& modality, double affect_valence,
+             const std::string& last_accessed_iso, const std::string& now_iso) {
+              starling::replay::ForgettingInputs in;
+              in.salience          = salience;
+              in.access_count      = access_count;
+              in.active_grounded   = active_grounded;
+              in.modality          = modality;
+              in.affect_valence    = affect_valence;
+              in.last_accessed_iso = last_accessed_iso;
+              return starling::replay::compute_s_t(in, now_iso);
+          },
+          py::arg("salience"), py::arg("access_count"), py::arg("active_grounded"),
+          py::arg("modality"), py::arg("affect_valence"),
+          py::arg("last_accessed_iso"), py::arg("now_iso"),
+          "Read-only projection of the C++ forgetting curve S(t)=exp(-Δt/S0).");
+
+    m.def("forgetting_seconds_until",
+          [](double salience, std::int64_t access_count, bool active_grounded,
+             const std::string& modality, double affect_valence, double target) {
+              starling::replay::ForgettingInputs in;
+              in.salience        = salience;
+              in.access_count    = access_count;
+              in.active_grounded = active_grounded;
+              in.modality        = modality;
+              in.affect_valence  = affect_valence;
+              return starling::replay::seconds_until_retrievability(in, target);
+          },
+          py::arg("salience"), py::arg("access_count"), py::arg("active_grounded"),
+          py::arg("modality"), py::arg("affect_valence"), py::arg("target"),
+          "Seconds from last_accessed until S(t) reaches target (curve inverse).");
 }
 
 }  // namespace starling::bindings

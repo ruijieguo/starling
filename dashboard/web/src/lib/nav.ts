@@ -45,6 +45,7 @@ export const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{ href: '/replay', label: '回放', icon: 'rotate-ccw' },
 			{ href: '/lifecycle', label: '生命周期', icon: 'git-branch' },
+			{ href: '/forecast', label: '衰减预报', icon: 'trending-down' },
 			{ href: '/conflicts', label: '冲突', icon: 'zap' }
 		]
 	},

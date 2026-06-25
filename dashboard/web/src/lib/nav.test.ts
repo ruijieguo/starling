@@ -31,8 +31,8 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 	it('orphans no existing route in the reorg', () => {
 		for (const href of [
 			'/', '/converse', '/interact', '/working-set', '/statements', '/cognizers',
-			'/commitments', '/reminders', '/replay', '/lifecycle', '/conflicts', '/vitals',
-			'/queues', '/eval', '/settings'
+			'/commitments', '/reminders', '/replay', '/lifecycle', '/forecast', '/conflicts',
+			'/vitals', '/queues', '/eval', '/settings'
 		]) {
 			expect(allHrefs).toContain(href);
 		}

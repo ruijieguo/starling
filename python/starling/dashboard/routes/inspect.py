@@ -52,6 +52,14 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.lifecycle(c.db_path, c.tenant)
 
+    @router.get("/forecast")
+    async def forecast(request: Request, limit: int = 200):
+        # Phase 3 片 5 — 衰减预报:C++ forgetting_curve 只读投影(server now)。
+        c = _cfg(request)
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return queries.forecast(c.db_path, c.tenant, now=now,
+                                limit=max(1, min(limit, 1000)))
+
     @router.get("/conflicts")
     async def conflicts(request: Request):
         c = _cfg(request)

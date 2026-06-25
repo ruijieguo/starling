@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -525,6 +526,66 @@ def lifecycle(db_path: str, tenant: str) -> dict:
             "occupancy": {r["state"]: r["n"] for r in occ_rows},
             "events": {r["event_type"]: r["n"] for r in ev_rows},
         }
+
+
+def _project_iso(last_accessed_iso: str, seconds: float):
+    """投影绝对时点 = last_accessed + Δt(纯日期算术;曲线数学全在 C++)。
+    seconds<0(S0<=0 / target 出界)或 None / 溢出 → None。"""
+    if seconds is None or seconds < 0 or not last_accessed_iso:
+        return None
+    try:
+        base = datetime.fromisoformat(last_accessed_iso.replace("Z", "+00:00"))
+        return (base + timedelta(seconds=seconds)).astimezone(
+            timezone.utc).isoformat().replace("+00:00", "Z")
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def forecast(db_path: str, tenant: str, *, now: str, limit: int = 200,
+             threshold: float = 0.05) -> dict:
+    """Phase 3 片 5 — 衰减预报:把 C++ forgetting_curve 投影到候选语句,排「最快被遗忘」。
+    **公式与其逆全在 C++**(compute_s_t / seconds_until_retrievability);这里只做只读
+    候选装载 + 调绑定 + 排序(换绑定语言不需重写=守边界,绝不在 Python 复算公式)。
+    输入**镜像 op_decay**:salience/access_count/modality/last_accessed + active_grounded
+    =受 ACTIVE commitment 保护;op_decay 不读 affect → valence 传 0,保持预报与实际衰减
+    一致。候选**有界 LIMIT**(按 last_accessed ASC,最久未访问优先=最可能低 S(t)),
+    不全表算。只取 VOLATILE/CONSOLIDATED(archived/forgotten 已终态)。threshold=0.05
+    与 op_decay 归档阈值一致。tenant-scoped。"""
+    from starling import _core
+    with open_ro(db_path) as conn:
+        prot_rows, _ = _rows_or_empty(
+            conn,
+            "SELECT DISTINCT cp.protected_stmt_id AS sid FROM commitment_protection cp "
+            "JOIN commitments c ON c.tenant_id=cp.tenant_id AND c.stmt_id=cp.commitment_stmt_id "
+            "WHERE cp.tenant_id=? AND c.state='ACTIVE'",
+            (tenant,),
+        )
+        protected = {r["sid"] for r in prot_rows}
+        rows, _ = _rows_or_empty(
+            conn,
+            "SELECT id, subject_id, predicate, object_value, modality, salience, "
+            "access_count, last_accessed, consolidation_state FROM statements "
+            "WHERE tenant_id=? AND consolidation_state IN ('volatile','consolidated') "
+            "ORDER BY last_accessed ASC LIMIT ?",
+            (tenant, limit),
+        )
+    out = []
+    for r in rows:
+        grounded = r["id"] in protected
+        modality = r["modality"] or ""
+        la = r["last_accessed"] or ""
+        sal = r["salience"] or 0.0
+        acc = r["access_count"] or 0
+        s_t = _core.forgetting_s_t(
+            salience=sal, access_count=acc, active_grounded=grounded,
+            modality=modality, affect_valence=0.0, last_accessed_iso=la, now_iso=now)
+        secs = _core.forgetting_seconds_until(
+            salience=sal, access_count=acc, active_grounded=grounded,
+            modality=modality, affect_valence=0.0, target=threshold)
+        out.append({**r, "active_grounded": grounded, "s_t": s_t,
+                    "forget_at": _project_iso(la, secs)})
+    out.sort(key=lambda x: x["s_t"])   # 升序:最可能被遗忘在前
+    return {"rows": out, "threshold": threshold, "now": now, "candidate_limit": limit}
 
 
 def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict:

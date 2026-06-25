@@ -194,3 +194,25 @@ export type LifecycleResponse = {
 	occupancy: Record<string, number>; // consolidation_state → 当前条数(精确)
 	events: Record<string, number>; // statement.* 事件 → 累计计数(事件派生)
 };
+
+// Phase 3 片 5 — 衰减预报(GET /api/forecast):C++ forgetting_curve 只读投影,排「最快被遗忘」。
+export type ForecastRow = {
+	id: string;
+	subject_id: string;
+	predicate: string;
+	object_value: string;
+	modality: string;
+	salience: number;
+	access_count: number;
+	last_accessed: string;
+	consolidation_state: string;
+	active_grounded: boolean; // 受 ACTIVE commitment 保护 → 不会被 decay 归档
+	s_t: number; // 当前 retrievability ∈ (0,1],升序排列(最低在前)
+	forget_at: string | null; // 预计 S(t) 跌至 threshold 的时点;null=无投影/溢出
+};
+export type ForecastResponse = {
+	rows: ForecastRow[];
+	threshold: number; // 归档阈值(0.05,同 op_decay)
+	now: string;
+	candidate_limit: number; // 候选有界上限
+};
