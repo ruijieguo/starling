@@ -13,9 +13,20 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-17 clang-tidy-17 libsqlite3-dev libssl-dev
+          sudo apt-get install -y ninja-build clang-17 clang-tidy-17 libssl-dev
+      - name: Build SQLite 3.46 from amalgamation (ubuntu apt ships 3.45 < required 3.46)
+        run: |
+          SQLITE_VER=3460100   # 3.46.1
+          curl -fsSL "https://sqlite.org/2024/sqlite-autoconf-${SQLITE_VER}.tar.gz" -o /tmp/sqlite.tar.gz
+          tar -xzf /tmp/sqlite.tar.gz -C /tmp
+          cd "/tmp/sqlite-autoconf-${SQLITE_VER}"
+          ./configure --prefix=/usr/local && make -j"$(nproc)" && sudo make install
+          sudo ldconfig
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTARLING_BUILD_PYTHON=ON
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSTARLING_BUILD_PYTHON=ON \
+            -DSQLite3_INCLUDE_DIR=/usr/local/include \
+            -DSQLite3_LIBRARY=/usr/local/lib/libsqlite3.so
         env:
           CC: clang-17
           CXX: clang++-17
