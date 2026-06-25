@@ -291,6 +291,35 @@ class MemoryCore:
                                 ids=list(ids), now_iso=now_iso)
         return {"forgotten": n}
 
+    # ── 片 6 干预集:触发式安全写(全经核心,这里只薄转发) ─────────────────
+    def approve_review(self, stmt_id: str, *, now=None) -> dict:
+        """人工审批 review_requested → approved(守卫幂等)。核心 `memoryops::approve_review`。
+        reject 不在此 —— reject = forget(→forgotten 终态)。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        n = _core.memory_approve_review(self.rt.adapter, tenant=self.tenant,
+                                        stmt_id=stmt_id, now_iso=now_iso)
+        return {"approved": n}
+
+    def run_replay(self, mode: str, *, now=None) -> dict:
+        """手动触发 replay。复用 C++ `ReplayScheduler`(sleep 批 200 / idle 批 30)。
+        sleep 今天无调用方=真新能力;idle 已被 tick_all 驱动→手动=按需刷新。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sched = _core.ReplayScheduler(self.rt.adapter)
+        rs = sched.run_sleep(now_iso) if mode == "sleep" else sched.run_idle(now_iso)
+        return {"mode": mode, "sampled": rs.sampled, "compressed": rs.compressed,
+                "abstracted": rs.abstracted, "reinforced": rs.reinforced,
+                "decayed": rs.decayed, "reconciled": rs.reconciled,
+                "forced_consolidated": rs.forced_consolidated,
+                "ttl_archived": rs.ttl_archived, "replay_batch_id": rs.replay_batch_id}
+
+    def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
+        """请求再固化:发 reconsolidate.requested 事件,引擎异步开可塑窗。复用现有绑定。
+        仅对 consolidated 行有效(enter_reconsolidating 守卫),否则下游静默 no-op。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        eid = _core.request_reconsolidation(self.rt.adapter, self.tenant, stmt_id,
+                                            request_id, now_iso)
+        return {"event_id": eid}
+
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing
         # to release explicitly in the embedded core.

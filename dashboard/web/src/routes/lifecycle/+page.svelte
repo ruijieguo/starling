@@ -80,7 +80,7 @@
 				<p
 					class="mb-2 rounded-control border border-dashed border-border bg-bg px-3 py-2 text-xs text-subtle"
 				>
-					固化通道尚未明显驱动:SLEEP/IDLE 回放暂无调用方,只有 ONLINE 随手固化会累计 statement.consolidated。
+					固化通道暂无明显积累:空闲(IDLE)回放由后台 tick 驱动、ONLINE 随手固化在 remember/tick 后累计,但本租户尚无 statement.consolidated 事件。深度睡眠(SLEEP)批可在「回放」页手动触发。
 				</p>
 			{/if}
 			<ul class="space-y-2">

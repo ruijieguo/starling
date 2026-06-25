@@ -123,4 +123,9 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso);
 
+// 片 6 干预集:人工审批 review_requested → approved(守卫幂等、tenant-scoped),返回转换计数(0/1)。
+// reject 不在此 —— reject = forget(→forgotten 终态)。
+int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
+                   std::string_view stmt_id, std::string_view now_iso);
+
 }  // namespace starling::memoryops

@@ -7,6 +7,7 @@ freeze every other request and the WS heartbeat for the whole call.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from functools import partial
 
@@ -52,6 +53,17 @@ class TickBody(BaseModel):
 class ForgetBody(BaseModel):
     ids: list[str]
     now: str | None = None  # None → MemoryCore resolves to current UTC time
+
+
+# ── 片 6 干预集 ──────────────────────────────────────────────────────────
+class ReviewBody(BaseModel):
+    stmt_id: str            # approve(review_requested→approved);reject 走 /api/forget
+
+class ReplayTriggerBody(BaseModel):
+    mode: str = "idle"      # "sleep"(批 200,真新)| "idle"(批 30,已被 tick 驱动)
+
+class ReconsolidateBody(BaseModel):
+    stmt_id: str            # 仅对 consolidated 行有效(下游守卫)
 
 
 def _engine(request: Request):
@@ -142,6 +154,33 @@ def build_commands_router(require_token) -> APIRouter:
         eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.forget, body.ids, now=body.now))
         await _broadcast(request, "statement_forgotten", r)
+        return r
+
+    # ── 片 6 干预集:触发式安全写(全经 engine self._lock 串行) ─────────────
+    @router.post("/review")
+    async def review(body: ReviewBody, request: Request):
+        # approve:review_requested→approved(守卫幂等;非该态返回 approved=0)。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(eng.approve_review, body.stmt_id))
+        await _broadcast(request, "statement_added", {"statement_ids": [body.stmt_id]})
+        return r
+
+    @router.post("/replay_trigger")
+    async def replay_trigger(body: ReplayTriggerBody, request: Request):
+        # 手动触发 replay;持写锁整段(操作者发起)。新批次 → 刷新梦境/生命周期。
+        eng = _engine(request)
+        mode = body.mode if body.mode in ("sleep", "idle") else "idle"
+        r = await to_thread.run_sync(partial(eng.run_replay, mode))
+        await _broadcast(request, "tick", r)
+        return r
+
+    @router.post("/reconsolidate")
+    async def reconsolidate(body: ReconsolidateBody, request: Request):
+        # 请求再固化(发事件,引擎异步开窗);request_id 当日去重键。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(
+            eng.request_reconsolidation, body.stmt_id, request_id=uuid.uuid4().hex))
+        await _broadcast(request, "tick", {"reconsolidate_requested": body.stmt_id})
         return r
 
     return router

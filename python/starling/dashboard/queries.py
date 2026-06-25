@@ -68,11 +68,13 @@ def overview(db_path: str, tenant: str) -> dict:
 
 
 def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str = "",
-               predicate: str = "", limit: int = 100, offset: int = 0) -> dict:
+               predicate: str = "", review_status: str = "", limit: int = 100,
+               offset: int = 0) -> dict:
     where = ["tenant_id = ?"]
     params: list = [tenant]
+    # review_status 过滤(片 6 审批队列复用本查询:筛 review_requested)。
     for col, val in (("holder_id", holder), ("holder_perspective", perspective),
-                     ("predicate", predicate)):
+                     ("predicate", predicate), ("review_status", review_status)):
         if val:
             where.append(f"{col} = ?")
             params.append(val)

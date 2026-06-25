@@ -3,8 +3,9 @@
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Card, EmptyState, Skeleton, Badge } from '$lib/components/ui';
-	import { modeLabel, opsSummary, hasSleepOrIdle, type LedgerRow } from '$lib/dream';
+	import { Card, EmptyState, Skeleton, Badge, Button } from '$lib/components/ui';
+	import { toast } from '$lib/ui/toast';
+	import { modeLabel, opsSummary, type LedgerRow } from '$lib/dream';
 
 	type ReplayData = {
 		scheduler: Record<string, unknown>;
@@ -15,6 +16,25 @@
 	$effect(() => {
 		q.refetch();
 	});
+
+	// 片 6:手动触发回放(写动作,持写锁整段 → 放宽超时)。
+	let triggering = $state(false);
+	async function trigger(mode: 'sleep' | 'idle') {
+		triggering = true;
+		try {
+			const r = await api.post<{ mode: string; sampled: number; compressed: number }>(
+				'/api/replay_trigger',
+				{ mode },
+				{ timeoutMs: 60000 }
+			);
+			toast.success(`${mode === 'sleep' ? '睡眠' : '空闲'}回放:采样 ${r.sampled} · 固化 ${r.compressed}`);
+			await q.refetch();
+		} catch (e) {
+			toast.error(`触发失败:${e instanceof Error ? e.message : String(e)}`);
+		} finally {
+			triggering = false;
+		}
+	}
 
 	const LABELS: Record<string, string> = {
 		online_trigger_counter: '在线触发计数',
@@ -28,7 +48,6 @@
 	const fmt = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 
 	let ledger = $derived(q.data?.ledger ?? []);
-	let sleepIdleSeen = $derived(hasSleepOrIdle(ledger));
 </script>
 
 <PageHeader
@@ -57,14 +76,22 @@
 		</Card>
 
 		<div>
-			<h2 class="mb-2 text-sm font-semibold text-muted">梦境日志(回放批次)</h2>
-			{#if !sleepIdleSeen}
-				<p
-					class="mb-2 rounded-control border border-dashed border-border bg-bg px-3 py-2 text-xs text-subtle"
-				>
-					空闲 / 睡眠固化通道尚未接通(run_idle / run_sleep 暂无调用方),目前只有在线(ONLINE)回放有记录。
-				</p>
-			{/if}
+			<div class="mb-2 flex flex-wrap items-center justify-between gap-3">
+				<h2 class="text-sm font-semibold text-muted">梦境日志(回放批次)</h2>
+				<div class="flex gap-2">
+					<Button variant="soft" loading={triggering} disabled={triggering} onclick={() => trigger('sleep')}>
+						触发睡眠回放
+					</Button>
+					<Button variant="ghost" loading={triggering} disabled={triggering} onclick={() => trigger('idle')}>
+						空闲回放
+					</Button>
+				</div>
+			</div>
+			<p
+				class="mb-2 rounded-control border border-dashed border-border bg-bg px-3 py-2 text-xs text-subtle"
+			>
+				空闲(IDLE)回放由后台 tick 每 30s 驱动;睡眠(SLEEP,深度批 200)无自动调用方 —— 用上方「触发睡眠回放」按需运行。在线(ONLINE)随手固化在 remember / tick 后产生。
+			</p>
 			{#if ledger.length === 0}
 				<EmptyState title="还没有梦" description="尚无回放批次。在线固化会在 remember / tick 后产生记录。" />
 			{:else}

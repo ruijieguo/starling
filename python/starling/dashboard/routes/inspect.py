@@ -26,11 +26,12 @@ def build_inspect_router(require_token) -> APIRouter:
 
     @router.get("/statements")
     async def statements(request: Request, holder: str = "", perspective: str = "",
-                         predicate: str = "", limit: int = 100, offset: int = 0):
+                         predicate: str = "", review_status: str = "",
+                         limit: int = 100, offset: int = 0):
         c = _cfg(request)
         return queries.statements(c.db_path, c.tenant, holder=holder,
                                   perspective=perspective, predicate=predicate,
-                                  limit=limit, offset=offset)
+                                  review_status=review_status, limit=limit, offset=offset)
 
     @router.get("/cognizers")
     async def cognizers(request: Request):

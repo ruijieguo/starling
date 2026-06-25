@@ -207,6 +207,19 @@ class DashboardEngine:
         with self._lock:
             return self._core.forget(ids, now=now)
 
+    # 片 6 干预集:全经 self._lock 串行(对单写者 + 后台 tick)。
+    def approve_review(self, stmt_id: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.approve_review(stmt_id, now=now)
+
+    def run_replay(self, mode: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.run_replay(mode, now=now)
+
+    def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
+        with self._lock:
+            return self._core.request_reconsolidation(stmt_id, request_id=request_id, now=now)
+
     def plan_query(self, text: str, *, intent: str, perspective=None,
                    target=None, k: int = 10) -> dict:
         """P3.a1 检索规划(9 意图 + 8 标签 + 拒答);JSON-able 摘要给路由层。"""

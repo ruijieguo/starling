@@ -216,4 +216,10 @@ int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
     return n;
 }
 
+int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
+                   std::string_view stmt_id, std::string_view now_iso) {
+    auto& conn = adapter.connection();
+    return store::SqliteStatementStore(conn).approve_review(stmt_id, tenant, now_iso);
+}
+
 }  // namespace starling::memoryops

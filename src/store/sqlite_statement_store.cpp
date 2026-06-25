@@ -236,6 +236,28 @@ int SqliteStatementStore::forget(std::string_view id, std::string_view tenant,
     return sqlite3_changes(db);
 }
 
+int SqliteStatementStore::approve_review(std::string_view id, std::string_view tenant,
+                                         std::string_view updated_at) {
+    // 片 6 干预集:人工审批 review_requested → approved。守卫:仅 review_requested 转,
+    // 故非 review_requested 行(已 approved / pending_review / rejected 等)0-change no-op,
+    // 重复 approve 幂等。tenant-scoped。reject 不在此(=forget,→forgotten 终态)。
+    sqlite3* db = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET review_status='approved', updated_at=? "
+        "WHERE id=? AND tenant_id=? "
+        "  AND review_status='review_requested'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "StatementStore::approve_review prepare");
+    StmtHandle h(raw);
+    bind_sv(h.get(), 1, updated_at);
+    bind_sv(h.get(), 2, id);
+    bind_sv(h.get(), 3, tenant);
+    if (sqlite3_step(h.get()) != SQLITE_DONE)
+        throw make_sqlite_error(db, "StatementStore::approve_review step");
+    return sqlite3_changes(db);
+}
+
 void SqliteStatementStore::set_confidence_consolidated(
     std::string_view id, std::string_view tenant, double confidence) {
     // exact 自 src/reconsolidation/arbitration.cpp:204(apply_supports)。

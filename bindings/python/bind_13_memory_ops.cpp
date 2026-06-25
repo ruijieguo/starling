@@ -136,6 +136,21 @@ void bind_13_memory_ops(pybind11::module_& m) {
           },
           py::arg("adapter"), py::arg("tenant"), py::arg("ids"), py::arg("now_iso"));
 
+    // 片 6 干预集:人工审批 review_requested → approved(守卫幂等、tenant-scoped)。
+    // 返回转换计数(1=已批准,0=非 review_requested 行 no-op)。reject 不在此(=memory_forget)。
+    m.def("memory_approve_review",
+          [](starling::persistence::SqliteAdapter& adapter,
+             const std::string& tenant, const std::string& stmt_id,
+             const std::string& now_iso) {
+              int n = 0;
+              {
+                  py::gil_scoped_release release;
+                  n = starling::memoryops::approve_review(adapter, tenant, stmt_id, now_iso);
+              }
+              return n;
+          },
+          py::arg("adapter"), py::arg("tenant"), py::arg("stmt_id"), py::arg("now_iso"));
+
     // sub-project A phase 6 Task 6.1:暴露 EpisodicEventStore::latest_event_location。
     // 主题 theme 的最高 seq 事件的 location(地面真值「当前所在」),无事件返回 ""。
     // 纯本地 SQLite 读(无网络),薄绑定转发到核心层单属主 store。
