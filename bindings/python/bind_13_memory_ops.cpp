@@ -89,8 +89,27 @@ void bind_13_memory_ops(pybind11::module_& m) {
               starling::extractor::TokenSink sink;
               if (!on_token.is_none()) {
                   sink = [on_token](std::string_view delta) {
-                      py::gil_scoped_acquire gil;
-                      on_token(py::str(std::string(delta)));
+                      // Relay one delta to the Python callback under the GIL.
+                      // EVERYTHING is inside the try (incl. the GIL acquire) and
+                      // we call via the C-API (which sets PyErr instead of
+                      // throwing), so NOTHING — a raised callback, OOM, a failed
+                      // GIL acquire — can escape into the C++ converse across the
+                      // released GIL. A failed relay just drops this delta; the
+                      // reply is still generated + persisted. PyErr is cleared
+                      // under the held GIL (no error_already_set to destruct).
+                      try {
+                          py::gil_scoped_acquire gil;
+                          const py::object arg = py::reinterpret_steal<py::object>(
+                              PyUnicode_FromStringAndSize(
+                                  delta.data(), static_cast<Py_ssize_t>(delta.size())));
+                          if (arg) {
+                              Py_XDECREF(PyObject_CallOneArg(on_token.ptr(), arg.ptr()));
+                          }
+                          if (PyErr_Occurred() != nullptr) {
+                              PyErr_Clear();
+                          }
+                      } catch (...) {  // hard guarantee: never escape into the core
+                      }
                   };
               }
               starling::memoryops::ConverseOutcome r;
