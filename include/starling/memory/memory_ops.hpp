@@ -95,6 +95,10 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
                          const ConverseParams& params,
                          const extractor::ValidationPolicy& policy = {});
 
+// 二阶提示注入防御:中和召回文本里的围栏定界符 token,使存储数据无法伪造
+// <recalled_memory> 开/闭标签提前闭合围栏(converse 拼 prompt 前调用)。导出以便单测。
+std::string neutralize_recall_fence(std::string_view context_pack);
+
 struct TickOutcome {
     int embedded = 0;
     int fired = 0;
