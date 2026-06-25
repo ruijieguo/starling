@@ -47,6 +47,11 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.replay(c.db_path, c.tenant)
 
+    @router.get("/lifecycle")
+    async def lifecycle(request: Request):   # Phase 3 片 4 — 生命周期(只读事件派生)
+        c = _cfg(request)
+        return queries.lifecycle(c.db_path, c.tenant)
+
     @router.get("/conflicts")
     async def conflicts(request: Request):
         c = _cfg(request)

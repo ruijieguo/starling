@@ -500,6 +500,33 @@ def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> 
         return {"rows": rows, "query": text}
 
 
+def lifecycle(db_path: str, tenant: str) -> dict:
+    """Phase 3 片 4 — 生命周期:记忆从 VOLATILE 经固化到 CONSOLIDATED,再 ARCHIVED/FORGOTTEN。
+    两层只读派生(决策 F4=A,零 migration,不新增状态转移审计表):
+      ① 当前占用 occupancy = statements 按 consolidation_state 分组(**精确快照**)。
+      ② 流转 events = bus_events 按 typed 'statement.*' 事件计数(**事件派生·累计**)。
+    遗忘无 typed 事件(forget 直接 UPDATE→forgotten),故 FORGOTTEN 量由占用快照给出
+    (forgotten 是终态,快照即累计)。tenant-scoped。run_sleep/idle 未驱动 → consolidated
+    事件偏少,前端据 events 诚实标注(非静默空白)。缺表逐项降级。"""
+    with open_ro(db_path) as conn:
+        occ_rows, _ = _rows_or_empty(
+            conn,
+            "SELECT consolidation_state AS state, COUNT(*) AS n FROM statements "
+            "WHERE tenant_id=? GROUP BY consolidation_state",
+            (tenant,),
+        )
+        ev_rows, _ = _rows_or_empty(
+            conn,
+            "SELECT event_type, COUNT(*) AS n FROM bus_events "
+            "WHERE tenant_id=? AND event_type LIKE 'statement.%' GROUP BY event_type",
+            (tenant,),
+        )
+        return {
+            "occupancy": {r["state"]: r["n"] for r in occ_rows},
+            "events": {r["event_type"]: r["n"] for r in ev_rows},
+        }
+
+
 def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict:
     """Phase 0 observability: per-subscriber outbox lag (global) + VOLATILE-stuck
     / extraction failures / overdue reconsolidation windows (tenant-scoped)."""

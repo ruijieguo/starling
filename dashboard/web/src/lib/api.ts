@@ -188,3 +188,9 @@ export type StatementSearchResponse = {
 	}[];
 	query: string;
 };
+
+// Phase 3 片 4 — 生命周期(GET /api/lifecycle):占用快照 + 事件派生流转(累计)。
+export type LifecycleResponse = {
+	occupancy: Record<string, number>; // consolidation_state → 当前条数(精确)
+	events: Record<string, number>; // statement.* 事件 → 累计计数(事件派生)
+};
