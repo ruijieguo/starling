@@ -6,6 +6,7 @@ robust to schema column additions. The engine remains the single writer.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -263,8 +264,8 @@ def _count_or_zero(conn, sql: str, params: tuple = ()) -> int:
 def brain_map(db_path: str, tenant: str) -> dict:
     """Phase 3 片 1 — 类脑 IA 落地页:9 脑区活体计数(经 plan-design-review 定稿)。
     每区一个只读计数(tenant-scoped,逐区 _count_or_zero 独立降级,缺表→0);
-    dormant=True 标记尚未落地的区(透视镜/Lens 待片 3),落地页静默显、导航不渲染。
-    对话/配置无「容量」语义 → count=None(落地页不显计数徽标)。脑区句式与排序
+    dormant=True 标记尚未落地的区(片 3 落地后全 9 区皆 active);落地页静默显、
+    导航空组不渲染。对话/配置/透视镜无「容量」语义 → count=None(不显计数徽标)。脑区句式与排序
     与 nav 一致:功能名 + 脑区 gloss,按记忆流(输入→快存→慢存→他者→意图→固化→
     内省→体征→配置)。consolidation_state 在 DB 存小写串。"""
     with open_ro(db_path) as conn:
@@ -291,7 +292,7 @@ def brain_map(db_path: str, tenant: str) -> dict:
              "href": "/replay", "dormant": False,
              "count": n("SELECT COUNT(*) FROM replay_ledger")},
             {"key": "lens", "label": "透视镜", "region": None,
-             "href": "/lens", "count": None, "dormant": True},   # 片 3 落地后转 active
+             "href": "/lens", "count": None, "dormant": False},  # 片 3 已落地(来源取证)
             {"key": "vitals", "label": "生命体征", "region": "脑干",
              "href": "/vitals", "dormant": False,
              "count": n("SELECT COUNT(*) FROM bus_events WHERE tenant_id=? AND "
@@ -300,6 +301,203 @@ def brain_map(db_path: str, tenant: str) -> dict:
              "href": "/settings", "count": None, "dormant": False},
         ]
         return {"regions": regions}
+
+
+# ── Phase 3 片 3 — 透视镜(Lens):来源取证(只读检视) ─────────────────────
+# statement 不直接存 extraction_span_key;它的 source_spans 存 engram_ref/chunk,
+# span_key = sha256(engram_ref⏟chunk⏟predicate⏟canonical_object_hash)由 C++
+# compute_extraction_span_key 算出。**绝不在 Python 复算该哈希**(那是核心语义、
+# 换绑定语言要重写=出界)。链路改走 C++ 已写入的 bus event:statement.written 事件
+# payload 同时带 stmt_id 与 extraction_span_key → extraction_attempt。Python 只读。
+
+_PROV_PREVIEW_CHARS = 280   # engram 源文预览上限(privacy:只取 inline、未抹除的前 N 字符)
+
+_PROV_STMT_COLS = (
+    "id, holder_id, holder_perspective, subject_kind, subject_id, predicate, "
+    "object_kind, object_value, modality, polarity, confidence, salience, "
+    "consolidation_state, review_status, provenance, derived_depth, nesting_depth, "
+    "observed_at, created_at, updated_at, evidence_json, derived_from_json, supersedes_id"
+)
+
+
+def _safe_json(raw, fallback):
+    """(value, ok) — ok=False(→fallback)当列为 malformed/NULL/空。片 3 失败模式:
+    遇坏 JSON 列不崩树,节点标注「无法解析」。"""
+    if raw is None or raw == "":
+        return fallback, True
+    try:
+        return json.loads(raw), True
+    except (ValueError, TypeError):
+        return fallback, False
+
+
+def _extraction_for(conn, tenant: str, stmt_id: str) -> dict | None:
+    """回溯某语句到创建它的 extraction_attempt(状态/原始 LLM 输出/error),只读。
+    链路:bus_events(event_type=statement.written, primary_id=stmt_id)的 C++ 写入
+    payload 带 extraction_span_key → extraction_attempt。派生/推断/系统写入无此事件
+    → None(诚实:非抽取来源)。缺表(bus_events/extraction_attempt)→ 降级 None。
+
+    实证发现(extractor.cpp):每 span_key 可有多行——创建语句的 success + 重复 remember
+    的 noop;**原始 LLM 输出只在失败/解析失败行留底**(成功路径不存 raw)。故:
+      ① 权威行 = 优先 success/partial(语句真正的创建),noop/failed 次之;
+      ② raw LLM 输出从同一 pipeline_run 的失败/部分尝试取(failed_attempts)——这才是
+         「回溯到原始 LLM 输出」的落点。span_key 哈希由 C++ 算,Python 只读、绝不复算。"""
+    ev, _ = _rows_or_empty(
+        conn,
+        "SELECT payload_json FROM bus_events WHERE tenant_id=? AND primary_id=? "
+        "AND event_type='statement.written' ORDER BY outbox_sequence ASC LIMIT 1",
+        (tenant, stmt_id),
+    )
+    if not ev:
+        return None
+    payload, ok = _safe_json(ev[0]["payload_json"], {})
+    span_key = payload.get("extraction_span_key") if ok and isinstance(payload, dict) else None
+    if not span_key:
+        return None
+    empty = {"span_key": span_key, "status": None, "attempt_number": None,
+             "raw_output": None, "error": None, "created_at": None,
+             "run_id": None, "failed_attempts": []}
+    rows, _ = _rows_or_empty(
+        conn,
+        "SELECT pipeline_run_id, status, attempt_number, raw_output, error, created_at "
+        "FROM extraction_attempt WHERE extraction_span_key=? "
+        "ORDER BY CASE status WHEN 'success' THEN 0 WHEN 'partial_success' THEN 1 "
+        "WHEN 'failed' THEN 2 ELSE 3 END, created_at ASC LIMIT 1",
+        (span_key,),
+    )
+    if not rows:
+        return empty   # event 记了 span_key 但 ledger 无对应行(罕见:非抽取写入路径)
+    a = rows[0]
+    run_id = a["pipeline_run_id"]
+    failed: list = []
+    if run_id:
+        # 同一 run 的失败/部分尝试携带原始 LLM 输出(成功不留底)——取证关键。
+        failed, _ = _rows_or_empty(
+            conn,
+            "SELECT attempt_number, status, raw_output, error, created_at "
+            "FROM extraction_attempt WHERE pipeline_run_id=? "
+            "AND status IN ('failed','partial_success') "
+            "ORDER BY attempt_number ASC LIMIT 10",
+            (run_id,),
+        )
+    return {"span_key": span_key, "status": a["status"],
+            "attempt_number": a["attempt_number"], "raw_output": a["raw_output"],
+            "error": a["error"], "created_at": a["created_at"],
+            "run_id": run_id, "failed_attempts": failed}
+
+
+def _engrams_for(conn, tenant: str, evidence) -> list[dict]:
+    """解析 evidence_json([{engram_ref,content_hash,status}])→ 逐条挂上 engram 元数据
+    + 有界源文预览(只读)。privacy:仅 inline 且未抹除取前 _PROV_PREVIEW_CHARS 字符;
+    uri-only / 已抹除 → 无预览。engram 缺失 → engram=None(孤儿证据,不崩)。"""
+    out: list[dict] = []
+    if not isinstance(evidence, list):
+        return out
+    for e in evidence:
+        d = e if isinstance(e, dict) else {}
+        ref = d.get("engram_ref")
+        node = {"engram_ref": ref, "content_hash": d.get("content_hash"),
+                "status": d.get("status"), "engram": None}
+        if ref:
+            rows, _ = _rows_or_empty(
+                conn,
+                "SELECT source_kind, privacy_class, created_at, erased_at, "
+                "payload_inline FROM engrams WHERE tenant_id=? AND id=?",
+                (tenant, ref),
+            )
+            if rows:
+                g = rows[0]
+                preview = None
+                if g["erased_at"] is None and g["payload_inline"] is not None:
+                    blob = g["payload_inline"]
+                    try:
+                        text = (blob.decode("utf-8", "replace")
+                                if isinstance(blob, (bytes, bytearray)) else str(blob))
+                        preview = text[:_PROV_PREVIEW_CHARS]
+                    except Exception:
+                        preview = None
+                node["engram"] = {
+                    "source_kind": g["source_kind"], "privacy_class": g["privacy_class"],
+                    "created_at": g["created_at"], "erased": g["erased_at"] is not None,
+                    "payload_preview": preview,
+                }
+        out.append(node)
+    return out
+
+
+def provenance(db_path: str, tenant: str, statement_id: str, *, max_depth: int = 6) -> dict | None:
+    """片 3 透视镜:某语句的来源取证树(只读检视)。open_ro = 物理只读(query_only),
+    故保证不写 statement.recalled、不沉淀(片 3 验收的「不 emit / 不写」由构造满足)。
+    递归解析 statements 的 JSON 列 derived_from / supersedes(**非 SQL join**),逐节点
+    回溯 extraction_attempt + 证据 engram。返回 None 当根语句缺失/跨租户(路由→404)。
+    有界:max_depth 截断 + seen 去重(共享父 / supersedes 环 → 标 repeat,不展开,不爆栈)。"""
+    with open_ro(db_path) as conn:
+        seen: set[str] = set()
+
+        def build(sid: str, depth: int) -> dict:
+            rows, _ = _rows_or_empty(
+                conn,
+                f"SELECT {_PROV_STMT_COLS} FROM statements WHERE tenant_id=? AND id=?",
+                (tenant, sid),
+            )
+            if not rows:
+                return {"id": sid, "found": False}   # 孤儿父 / 跨租户引用,不崩
+            r = rows[0]
+            summary = {"subject_id": r["subject_id"], "predicate": r["predicate"],
+                       "object_value": r["object_value"]}
+            if sid in seen:
+                # 已在上文展开(共享父或环):给摘要,不再递归。
+                return {"id": sid, "found": True, "repeat": True, "summary": summary}
+            seen.add(sid)
+            ev, ev_ok = _safe_json(r["evidence_json"], [])
+            df, df_ok = _safe_json(r["derived_from_json"], [])
+            stmt = {k: r[k] for k in r.keys()
+                    if k not in ("evidence_json", "derived_from_json")}
+            node = {
+                "id": sid, "found": True,
+                "statement": stmt,
+                "summary": summary,
+                "origin": {"provenance": r["provenance"],
+                           "extraction": _extraction_for(conn, tenant, sid)},
+                "evidence": _engrams_for(conn, tenant, ev),
+                "evidence_parse_error": not ev_ok,
+                "derived_from_parse_error": not df_ok,
+                "derived_from": [],
+                "supersedes": None,
+                "truncated": False,
+            }
+            has_deeper = bool((isinstance(df, list) and df) or r["supersedes_id"])
+            if depth >= max_depth:
+                node["truncated"] = has_deeper   # 到顶不再展开,诚实标注还有更深来源
+                return node
+            if isinstance(df, list):
+                node["derived_from"] = [build(str(p), depth + 1) for p in df if p]
+            if r["supersedes_id"]:
+                node["supersedes"] = build(str(r["supersedes_id"]), depth + 1)
+            return node
+
+        root = build(str(statement_id), 0)
+        return root if root.get("found") else None
+
+
+def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> dict:
+    """透视镜取镜:按文本找语句(只读 LIKE over subject/predicate/object_value,
+    tenant-scoped,有界 LIMIT)。副作用自由(open_ro)——故意不用语义召回,绕开
+    recalled 旁路争议(片 3 验收:不 emit statement.recalled)。空 query → 空结果。"""
+    text = (q or "").strip()
+    if not text:
+        return {"rows": [], "query": ""}
+    like = f"%{text}%"
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT id, holder_id, subject_id, predicate, object_value, "
+            "consolidation_state, review_status, observed_at FROM statements "
+            "WHERE tenant_id=? AND (subject_id LIKE ? OR predicate LIKE ? "
+            "OR object_value LIKE ?) ORDER BY observed_at DESC LIMIT ?",
+            (tenant, like, like, like, limit),
+        )
+        return {"rows": rows, "query": text}
 
 
 def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict:

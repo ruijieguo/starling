@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -93,6 +94,14 @@
 
 <Drawer bind:open={detailOpen} title="Statement 详情">
 	{#if detail}
+		{@const sid = String(detail.id ?? '')}
+		{#if sid}
+			<div class="mb-3">
+				<Button variant="soft" onclick={() => goto(`/lens?stmt=${encodeURIComponent(sid)}`)}>
+					透视来源 →
+				</Button>
+			</div>
+		{/if}
 		<dl class="space-y-2 text-sm">
 			{#each Object.entries(detail) as [k, v]}
 				<div>

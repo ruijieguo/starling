@@ -124,3 +124,67 @@ export type ConverseResponse = {
 	gen_total_tokens: number;
 	gen_latency_ms: number;
 };
+
+// Phase 3 片 3 — 透视镜(Lens)来源取证(GET /api/provenance/{id})。
+export type ExtractionAttemptRow = {
+	attempt_number: number | null;
+	status: string | null;
+	raw_output: string | null; // 原始 LLM 输出(仅失败/解析失败留底)
+	error: string | null;
+	created_at: string | null;
+};
+
+export type ExtractionAttempt = {
+	span_key: string;
+	status: string | null; // 权威行:success|partial_success|failed|noop(DB 无 CHECK)
+	attempt_number: number | null;
+	raw_output: string | null; // 权威行的 raw(成功路径通常 null)
+	error: string | null;
+	created_at: string | null;
+	run_id: string | null;
+	failed_attempts: ExtractionAttemptRow[]; // 同 run 失败/部分尝试(带原始 LLM 输出)
+};
+
+export type EngramEvidence = {
+	engram_ref: string | null;
+	content_hash: string | null;
+	status: string | null;
+	engram: {
+		source_kind: string;
+		privacy_class: string;
+		created_at: string;
+		erased: boolean;
+		payload_preview: string | null; // 仅 inline 且未抹除取前 280 字符
+	} | null;
+};
+
+// 递归节点:完整节点带 statement/origin/evidence/子树;折叠节点(repeat / found=false)只带 summary/id。
+export type ProvenanceNode = {
+	id: string;
+	found: boolean; // false → 孤儿父 / 跨租户引用(只有 id)
+	repeat?: boolean; // 已在上文展开(共享父 / 环)→ 不再递归
+	summary?: { subject_id: string; predicate: string; object_value: string };
+	statement?: Record<string, unknown>;
+	origin?: { provenance: string; extraction: ExtractionAttempt | null };
+	evidence?: EngramEvidence[];
+	evidence_parse_error?: boolean;
+	derived_from_parse_error?: boolean;
+	derived_from?: ProvenanceNode[];
+	supersedes?: ProvenanceNode | null;
+	truncated?: boolean; // 到深度上限,更深来源未展开
+};
+
+// 透视镜取镜:只读文本查找(GET /api/statement_search)。
+export type StatementSearchResponse = {
+	rows: {
+		id: string;
+		holder_id: string;
+		subject_id: string;
+		predicate: string;
+		object_value: string;
+		consolidation_state: string;
+		review_status: string;
+		observed_at: string;
+	}[];
+	query: string;
+};

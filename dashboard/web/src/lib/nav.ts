@@ -1,6 +1,6 @@
 // 导航的单一来源(Phase 3 片 1:类脑 IA 重组,经 plan-design-review 定稿)。
-// 9 脑区按记忆流排序,组名统一「功能 · 脑区 gloss」全中文。subtraction default:
-// 尚未落地的脑区(透视镜 · Lens,待片 3)不在此渲染——空组不出占位。
+// 脑区按记忆流排序,组名统一「功能 · 脑区 gloss」全中文。subtraction default:
+// 尚未落地的脑区不在此渲染——空组不出占位(透视镜 · Lens 已随片 3 落地,加入下方)。
 // 后续 i18n(跟随系统语言):把 label 改成 { zh, en } 字典并按
 // navigator.language 解析成当前文案——壳与面包屑只读这里,届时不动调用方。
 export type NavItem = { href: string; label: string; icon: string };
@@ -48,6 +48,10 @@ export const NAV_GROUPS: NavGroup[] = [
 		]
 	},
 	{
+		title: '透视镜',
+		items: [{ href: '/lens', label: '透视镜', icon: 'eye' }]
+	},
+	{
 		title: '生命体征 · 脑干',
 		items: [
 			{ href: '/vitals', label: '生命体征', icon: 'activity' },
@@ -59,7 +63,6 @@ export const NAV_GROUPS: NavGroup[] = [
 		title: '配置',
 		items: [{ href: '/settings', label: '设置', icon: 'sliders' }]
 	}
-	// 透视镜 · Lens(/lens)随片 3 落地后加入(subtraction default:空组不渲染)。
 ];
 
 // 扁平条目,每条带回所属组名(面包屑 Starling › 组 › 页 + ⌘K 搜索用,壳只读这里)。

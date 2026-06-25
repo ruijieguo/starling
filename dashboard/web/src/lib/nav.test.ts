@@ -5,7 +5,7 @@ import { NAV_GROUPS } from './nav';
 describe('NAV_GROUPS — 类脑 IA', () => {
 	const allHrefs = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.href));
 
-	it('has 9 groups in memory-flow order with 功能·脑区 titles', () => {
+	it('has 10 groups in memory-flow order, 透视镜 landed between 回放 and 脑干', () => {
 		expect(NAV_GROUPS.map((g) => g.title)).toEqual([
 			'总览',
 			'对话',
@@ -14,6 +14,7 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 			'他者心智 · 心智化',
 			'意图与承诺 · 前额叶',
 			'睡眠与固化 · 回放',
+			'透视镜',
 			'生命体征 · 脑干',
 			'配置'
 		]);
@@ -23,8 +24,8 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		expect(allHrefs).toContain('/brain');
 	});
 
-	it('hides dormant 透视镜 / lens until slice 3 (subtraction default)', () => {
-		expect(allHrefs).not.toContain('/lens');
+	it('surfaces /lens now that slice 3 landed (透视镜 un-dormanted)', () => {
+		expect(allHrefs).toContain('/lens');
 	});
 
 	it('orphans no existing route in the reorg', () => {

@@ -75,4 +75,21 @@ def build_inspect_router(require_token) -> APIRouter:
             raise HTTPException(status_code=404, detail="not_found")
         return row
 
+    @router.get("/statement_search")
+    async def statement_search(request: Request, q: str = "", limit: int = 20):
+        # Phase 3 片 3 — 透视镜取镜:只读文本查找(副作用自由,不走语义召回)。
+        c = _cfg(request)
+        return queries.search_statements(c.db_path, c.tenant, q,
+                                         limit=max(1, min(limit, 100)))
+
+    @router.get("/provenance/{statement_id}")
+    async def provenance(request: Request, statement_id: str, max_depth: int = 6):
+        # Phase 3 片 3 — 透视镜:来源取证树(只读)。max_depth 钳制防递归滥用。
+        c = _cfg(request)
+        tree = queries.provenance(c.db_path, c.tenant, statement_id,
+                                  max_depth=max(1, min(max_depth, 12)))
+        if tree is None:
+            raise HTTPException(status_code=404, detail="not_found")
+        return tree
+
     return router

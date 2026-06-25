@@ -2,7 +2,7 @@
 
 Seeds 2 VOLATILE + 1 CONSOLIDATED statement via the runtime-built schema, then
 asserts brain_map returns the 9 regions in memory-flow order, with the
-consolidation_state-filtered counts correct, lens dormant, and对话/配置 count=None.
+consolidation_state-filtered counts correct, lens active (片 3 落地), 对话/配置 count=None.
 """
 import sqlite3
 from pathlib import Path
@@ -62,8 +62,8 @@ def test_brain_map_counts_and_flags(tmp_path):
     # consolidation_state-filtered, tenant-scoped (other-tenant s4 excluded)
     assert regions["short_term"]["count"] == 2 and regions["short_term"]["region"] == "海马"
     assert regions["long_term"]["count"] == 1 and regions["long_term"]["region"] == "新皮层"
-    # lens is the only dormant region (slice 3); converse/config carry no count
-    assert regions["lens"]["dormant"] is True and regions["lens"]["count"] is None
+    # lens landed (slice 3) → no longer dormant; still no count (a tool, not a store)
+    assert regions["lens"]["dormant"] is False and regions["lens"]["count"] is None
     assert regions["converse"]["count"] is None and regions["converse"]["dormant"] is False
     assert regions["config"]["count"] is None
     # the remaining live counts are present integers (>=0), degrade-safe
