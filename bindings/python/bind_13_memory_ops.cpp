@@ -70,7 +70,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& interlocutor, const std::string& adapter_name,
              const std::string& source_prefix, const std::string& created_at_iso8601,
              const std::string& message, int recall_k,
-             starling::extractor::ValidationPolicy policy, py::object on_token) {
+             const starling::extractor::ValidationPolicy& policy,
+             const py::object& on_token) {
               starling::memoryops::ConverseParams p;
               p.tenant_id          = tenant_id;
               p.holder_id          = holder_id;
