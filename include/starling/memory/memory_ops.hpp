@@ -83,17 +83,25 @@ struct ConverseOutcome {
 };
 
 // 带记忆的聊天轮(三段式,决策 A):recall(RetrievalPlanner,只读)→ 注入
-// context_pack → chat_llm.generate(网络,不持写事务)→ remember 对话
+// context_pack → chat_llm.generate_stream(网络,不持写事务)→ remember 对话
 // (extraction_llm,写)。失败语义:generate 失败 → ok=false 且无回复;
 // remember 失败 → 回复保留(ok=true)且 remember_ok=false——用户已看到的回复
 // 绝不因事后抽取失败而丢。网络 generate 期间不持任何写事务。
+//
+// on_token(可空):流式回调。非空时,回复在「第二段」生成期间逐 token 经
+// on_token 增量回传(WS token stream);空 = 不流式(等价旧 generate 路径)。
+// 流式只发生在第二段(不持写事务的网络段),沉淀(第四段写)仍在整段回复流完
+// 之后,故 no-write-txn-across-generate 与「回复绝不因 remember 失败而丢」两条
+// 不变式都不受流式影响。on_token 不改变返回的 ConverseOutcome(reply 仍是完整
+// 文本,成本/落库结果照常),只是把同样的文本在生成时先推一遍。
 ConverseOutcome converse(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& chat_llm,
                          extractor::LLMAdapter& extraction_llm,
                          retrieval::SemanticRetriever& semantic,
                          std::string_view extraction_prompt,
                          const ConverseParams& params,
-                         const extractor::ValidationPolicy& policy = {});
+                         const extractor::ValidationPolicy& policy = {},
+                         const extractor::TokenSink& on_token = {});
 
 // 二阶提示注入防御:中和召回文本里的围栏定界符 token,使存储数据无法伪造
 // <recalled_memory> 开/闭标签提前闭合围栏(converse 拼 prompt 前调用)。导出以便单测。

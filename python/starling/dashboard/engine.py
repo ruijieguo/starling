@@ -220,6 +220,24 @@ class DashboardEngine:
             return self._core.converse(message, holder=holder,
                                        interlocutor=interlocutor, k=k, now=now)
 
+    def converse_stream(self, message: str, *, on_token, holder=None,
+                        interlocutor=None, k: int = 6, now=None,
+                        provider: str | None = None) -> dict:
+        """Streaming converse: on_token(delta:str) fires per token during the
+        generation phase (WS token stream). Identical lock + role-override +
+        no-write-txn-across-generate discipline as converse(); on_token only
+        relays the reply incrementally, the returned dict is the same as
+        converse() (reply / statement_ids / remember_ok / gen_* cost).
+
+        on_token runs on the C++ worker thread (the binding re-acquires the GIL
+        per delta), so it must be cheap and thread-safe — the WS bridge hands
+        each delta to the event loop via call_soon_threadsafe and never touches
+        the DB or socket from inside the callback."""
+        with self._lock, self._role_override("chat_llm", provider):
+            return self._core.converse(message, holder=holder,
+                                       interlocutor=interlocutor, k=k, now=now,
+                                       on_token=on_token)
+
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
                holder=None) -> list:
         with self._lock:

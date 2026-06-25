@@ -112,6 +112,107 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         except WebSocketDisconnect:
             app.state.ws_manager.disconnect(ws)
 
+    @app.websocket("/ws/converse")
+    async def ws_converse(ws: WebSocket) -> None:
+        # Streaming converse (#37): a per-turn, per-client token stream. A NEW
+        # endpoint, not the broadcast /ws — tokens are request-scoped and must
+        # never fan out to every dashboard. Auth mirrors /ws (in-band token as
+        # the first text frame). Protocol: client sends one JSON request
+        # {message, provider?, holder?, interlocutor?, k?}; server replies
+        # {"type":"token","delta":...} ×N then {"type":"done", ...outcome}, or
+        # {"type":"error","error":...}. The reply still persists (remember runs
+        # after the stream) — disconnect mid-stream does not abort the turn.
+        from starling.dashboard.engine import _LLMNotConfigured
+
+        origin = ws.headers.get("origin", "")
+        if not _ws_origin_allowed(origin, config.cors_origins):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+        if config.token:
+            try:
+                first = await ws.receive_text()
+            except WebSocketDisconnect:
+                return
+            if not hmac.compare_digest(first, config.token):
+                await ws.close(code=1008)
+                return
+        try:
+            req = await ws.receive_json()
+        except WebSocketDisconnect:
+            return
+        if not isinstance(req, dict) or not isinstance(req.get("message"), str) \
+                or not req["message"]:
+            await ws.send_json({"type": "error", "error": "empty_message"})
+            await ws.close()
+            return
+
+        message = req["message"]
+        holder = req.get("holder")
+        interlocutor = req.get("interlocutor")
+        provider = req.get("provider")
+        try:
+            k = max(1, min(int(req.get("k", 6) or 6), 50))
+        except (TypeError, ValueError):
+            k = 6
+
+        eng = app.state.engine
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        done = object()
+        box: dict = {}
+
+        def on_token(delta: str) -> None:
+            # Runs on the C++ worker thread (binding re-acquires the GIL per
+            # delta). Only hand the delta to the loop — never touch the socket
+            # or DB from here.
+            loop.call_soon_threadsafe(queue.put_nowait, delta)
+
+        def run_blocking() -> None:
+            try:
+                box["result"] = eng.converse_stream(
+                    message, on_token=on_token, holder=holder,
+                    interlocutor=interlocutor, k=k, provider=provider)
+            except Exception as exc:  # surfaced to the client as an error frame
+                box["error"] = exc
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, done)
+
+        loop.run_in_executor(None, run_blocking)
+
+        # Drain deltas until the worker signals done. call_soon_threadsafe
+        # preserves order, so every delta is dequeued before `done`. If the
+        # client vanishes we keep draining (cheap) so converse runs to completion
+        # and the turn still persists — we just stop sending.
+        disconnected = False
+        while True:
+            item = await queue.get()
+            if item is done:
+                break
+            if disconnected:
+                continue
+            try:
+                await ws.send_json({"type": "token", "delta": item})
+            except Exception:  # noqa: BLE001 — client closed; finish server-side quietly
+                disconnected = True
+        if disconnected:
+            return
+
+        if "error" in box:
+            code = "llm_not_configured" if isinstance(box["error"], _LLMNotConfigured) \
+                else "converse_failed"
+            await ws.send_json({"type": "error", "error": code})
+            await ws.close()
+            return
+        result = box.get("result") or {}
+        await ws.send_json({"type": "done", **result})
+        # Mirror POST /converse: a consolidated turn tells other views to refresh.
+        if result.get("statement_ids"):
+            await app.state.ws_manager.broadcast(
+                {"type": "statement_added",
+                 "payload": {"statement_ids": result["statement_ids"]}})
+        await ws.close()
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok", "version": app.version}

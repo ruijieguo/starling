@@ -1,9 +1,19 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <string_view>
 
 namespace starling::extractor {
+
+// Streaming sink: invoked once per generated token delta (incremental reply
+// text) during generate_stream. "Done" is signalled by generate_stream
+// returning — no separate terminal callback. Empty sink = caller wants no
+// streaming (non-streaming generate path). The C++ core owns when/what emits;
+// a binding may wrap a host callback (e.g. pybind re-acquires the GIL per
+// delta). Deltas are reply text only — usage/latency arrive on the returned
+// LLMResponse, exactly as the non-streaming path.
+using TokenSink = std::function<void(std::string_view /*delta*/)>;
 
 struct LLMResponse {
     std::string raw_xml;   // raw LLM body (now a JSON array; name kept for blast-radius); empty when ok=false
@@ -40,6 +50,24 @@ public:
     // (temperature / token usage) in a later phase.
     virtual LLMResponse generate(std::string_view prompt) {
         return extract(prompt, std::string_view{});
+    }
+
+    // generate_stream — like generate(), but emits the reply incrementally via
+    // on_token as it is produced, returning the SAME complete LLMResponse
+    // (full reply in raw_xml + usage/latency) the non-streaming path returns,
+    // so callers do remember/cost accounting identically. The base default is
+    // non-streaming: it calls generate() and emits the whole reply as ONE
+    // delta. Streaming-capable adapters (real SSE) override to emit token-by-
+    // token. An empty on_token means "no streaming" — the whole call collapses
+    // to generate(). This keeps every existing adapter (Fake + real) working
+    // unchanged and lets converse() always call generate_stream().
+    virtual LLMResponse generate_stream(std::string_view prompt,
+                                        const TokenSink& on_token) {
+        LLMResponse resp = generate(prompt);
+        if (resp.ok && on_token && !resp.raw_xml.empty()) {
+            on_token(resp.raw_xml);
+        }
+        return resp;
     }
 };
 

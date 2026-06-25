@@ -57,3 +57,65 @@ export function connectWs(onEvent: (e: WsEvent) => void): () => void {
 		ws?.close();
 	};
 }
+
+import type { ConverseResponse } from './api';
+
+export type ConverseStreamReq = {
+	message: string;
+	provider?: string;
+	holder?: string;
+	interlocutor?: string;
+	k?: number;
+};
+
+export type ConverseStreamHandlers = {
+	onToken: (delta: string) => void;
+	onDone: (outcome: ConverseResponse) => void;
+	onError: (code: string) => void;
+};
+
+/**
+ * 流式 converse(#37):一次性连接 /ws/converse,鉴权(首帧 token)→ 发请求 →
+ * 收 {type:token,delta} 增量 / {type:done,...outcome} / {type:error,error}。
+ * 与广播 /ws 不同——这是 per-turn、per-client 的请求/响应流,完结即关闭(非重连)。
+ * 返回 cancel 函数:调用即关闭(converse 服务端仍跑完并落库,只是不再收帧)。
+ * onDone / onError 至多触发一次(settled 守卫,涵盖连接错误/中途关闭)。
+ */
+export function streamConverse(
+	req: ConverseStreamReq,
+	handlers: ConverseStreamHandlers
+): () => void {
+	const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+	const ws = new WebSocket(`${proto}://${location.host}/ws/converse`);
+	let settled = false;
+	const settle = (fn: () => void) => {
+		if (settled) return;
+		settled = true;
+		fn();
+	};
+	ws.onopen = () => {
+		const t = getToken();
+		if (t) ws.send(t); // auth handshake: in-band token first (mirrors /ws)
+		ws.send(JSON.stringify(req));
+	};
+	ws.onmessage = (m) => {
+		let msg: { type?: string; delta?: string; error?: string } & Partial<ConverseResponse>;
+		try {
+			msg = JSON.parse(m.data);
+		} catch {
+			return; // ignore malformed frame
+		}
+		if (msg.type === 'token') {
+			handlers.onToken(msg.delta ?? '');
+		} else if (msg.type === 'done') {
+			settle(() => handlers.onDone(msg as ConverseResponse));
+			ws.close();
+		} else if (msg.type === 'error') {
+			settle(() => handlers.onError(msg.error ?? 'error'));
+			ws.close();
+		}
+	};
+	ws.onerror = () => settle(() => handlers.onError('ws_error'));
+	ws.onclose = () => settle(() => handlers.onError('ws_closed'));
+	return () => ws.close();
+}
