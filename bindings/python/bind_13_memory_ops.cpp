@@ -88,7 +88,12 @@ void bind_13_memory_ops(pybind11::module_& m) {
               // sink 在 release 块外声明,其析构(decref on_token)在 GIL 重持后发生。
               starling::extractor::TokenSink sink;
               if (!on_token.is_none()) {
-                  sink = [on_token](std::string_view delta) {
+                  // Capture on_token by reference: converse() calls the sink
+                  // synchronously on THIS thread (inside the gil_scoped_release
+                  // block below), so the param outlives every sink invocation,
+                  // and a reference capture keeps the closure trivially
+                  // destructible (no py::object copy/move/dtor to reason about).
+                  sink = [&on_token](std::string_view delta) noexcept {
                       // Relay one delta to the Python callback. Pure C-API + raw
                       // PyGILState ensure/release — all noexcept — so the sink
                       // PROVABLY cannot throw: nothing can escape into the C++
