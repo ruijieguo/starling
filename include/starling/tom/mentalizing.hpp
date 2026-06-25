@@ -187,6 +187,30 @@ std::vector<FauxPasCandidate> detect_faux_pas(
     std::string_view tenant,
     std::string_view as_of);
 
+// ─── appraisal-theory emotion ────────────────────────────────────────────────
+
+// Appraisal-theory emotion: from X's desire vs the actual outcome.
+// goal_congruence (did the outcome realize the desire) × agency (who caused it) → a
+// discrete emotion. Deterministic precondition only; abstains (emotion="") when undecidable.
+struct EmotionAppraisal {
+    std::string cognizer;        // X
+    std::string emotion;          // "joy" | "disappointment" | "anger" | "regret"
+    std::string goal_congruence;  // "congruent" | "incongruent"
+    std::string agency;           // "self" | "other" | "circumstance"
+    retrieval::StatementRow desire;   // the desire appraised (X's, holder=X)
+    std::string outcome_value;    // the actual outcome that (mis)matched the desire
+};
+
+// For each desire X holds (holder=X, modality=desires/intends or predicate prefers/wants),
+// compare its target to the actual outcomes (OCCURRED events involving X). Emits one
+// appraisal per decidable desire; abstains (no emit) when there is no outcome to judge
+// against. Agency from the outcome event's actor.
+std::vector<EmotionAppraisal> appraise_emotion(
+    persistence::SqliteAdapter& adapter,
+    std::string_view x,
+    std::string_view tenant,
+    std::string_view as_of);
+
 // ─── sub-project B: perception → belief ──────────────────────────────────────
 
 // X's last-perceived state of a theme (sub-project B). has_belief=false → X never
