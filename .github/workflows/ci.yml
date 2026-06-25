@@ -39,31 +39,22 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: clang-tidy (changed files only)
+      - name: clang-tidy (changed lines only)
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
+          CLANG_TIDY: clang-tidy-17
         run: |
-          # Incremental adoption: lint only the C++ files this change touches, vs its
-          # base. The existing tree has never been clang-tidy-clean (CI configure never
-          # passed until now), so gating the whole codebase would block every PR on a
-          # pre-existing backlog. New/changed .cpp is held to .clang-tidy
-          # (WarningsAsErrors); header-only diagnostics surface via their .cpp includers.
-          # The full-tree cleanup is tracked separately.
+          # Incremental adoption: gate only the *lines* this change touches, vs its
+          # base. The tree has never been clang-tidy-clean, and .clang-tidy's
+          # HeaderFilterRegex means linting a changed .cpp would otherwise surface
+          # every advisory in the starling headers it includes — failing the PR on
+          # debt that isn't its own. ci_clang_tidy_diff.py builds a -line-filter from
+          # the diff so only NEW diagnostics on changed lines fail. Full-tree cleanup
+          # is tracked separately. (See scripts/ci_clang_tidy_diff.py for the why.)
           if [ "$EVENT_NAME" = "pull_request" ]; then BASE="$PR_BASE_SHA"; else BASE="$PUSH_BEFORE_SHA"; fi
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "No base ref to diff against — skipping (clang-tidy gates changed files only)."
-            exit 0
-          fi
-          CHANGED=$(git diff --name-only --diff-filter=ACMR "${BASE}...HEAD" -- src bindings \
-            | grep -E '\.cpp$' || true)
-          if [ -z "$CHANGED" ]; then
-            echo "No changed C++ source files to lint."
-            exit 0
-          fi
-          echo "clang-tidy on changed files:"; echo "$CHANGED"
-          printf '%s\n' "$CHANGED" | xargs -r -P "$(nproc)" -n 1 clang-tidy-17 -p build
+          python3 scripts/ci_clang_tidy_diff.py "$BASE" build
 
   python-test:
     runs-on: ubuntu-24.04
