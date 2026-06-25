@@ -1,17 +1,18 @@
-"""Flag-gated first-order mental-state holder re-attribution (additive).
+"""Flag-gated first-order desire holder re-attribution (additive).
 
-The belief extractor emits a per-statement `holder` field (the narrated attitude
-bearer). The default write path IGNORES it and attributes every attitude to the
-agent. With ExtractionConfig.attribute_first_order_mental_to_holder=True, a
-FIRST-ORDER mental-state statement is instead attributed to its LLM-named bearer
-(cognizer-resolved), so a narrated 3rd-person desire ("Xiao Ming wants a
-computer") lands under holder_id="Xiao Ming" and mental_state_of("Xiao Ming")
-finds it.
+A validation showed the LLM's `holder` field is always the narrator
+(fragmented narrator/叙述者/Narrator), while `subject` reliably names the
+desirer for the desire family. With
+ExtractionConfig.attribute_first_order_mental_to_holder=True, a FIRST-ORDER
+DESIRE statement is instead attributed to its cognizer-resolved subject, so a
+narrated 3rd-person desire ("Xiao Hong wants the amusement park") lands under
+holder_id="Xiao Hong" and mental_state_of("Xiao Hong") finds it.
+BELIEVES/KNOWS remain agent-attributed (subject is the topic, not the bearer).
 
 Mirrors tests/python/test_mental_state_roundtrip.py's stub-LLM + Memory.open
-style. The stub's canned JSON carries the `holder` field (the parser now reads
-it). The stub returns this for ANY prompt, so all three remember() passes
-(belief / episodic / general-fact) see it; the belief pass is the one under test.
+style. The stub's canned JSON carries `subject` = the character. The stub
+returns this for ANY prompt, so all three remember() passes (belief / episodic /
+general-fact) see it; the belief pass is the one under test.
 """
 import json
 
@@ -19,16 +20,16 @@ import starling
 from starling.extractor.config import ExtractionConfig
 from starling.tom.primitives import mental_state_of
 
-# A narrated first-order desire: holder names the CHARACTER (Xiao Ming), the
-# claim is about a computer, modality=DESIRES, nesting_depth=0. predicate=desires
-# is non-core so it never trips the validator's review downgrade path either way.
+# A narrated first-order desire: subject names the CHARACTER (Xiao Hong),
+# holder is "narrator" (as the LLM always emits in practice), modality=DESIRES,
+# nesting_depth=0. predicate=desires is non-core (no review downgrade).
 _DESIRE_JSON = json.dumps([
-    {"holder": "Xiao Ming", "holder_perspective": "INFERRED", "subject": "computer",
-     "predicate": "desires", "object": "computer", "modality": "DESIRES",
+    {"holder": "narrator", "holder_perspective": "INFERRED", "subject": "Xiao Hong",
+     "predicate": "desires", "object": "amusement park", "modality": "DESIRES",
      "polarity": "POS", "nesting_depth": 0},
 ])
 
-_STORY = "Xiao Ming wants a computer for his birthday."
+_STORY = "Xiao Hong wants to go to the amusement park."
 
 
 def _desire_objs(ms):
@@ -45,12 +46,12 @@ def test_flag_on_attributes_narrated_desire_to_character(tmp_path):
     # consolidation_state IN ('consolidated','archived')) can find them.
     mem.tick()
 
-    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Ming", tenant_id=mem._core.tenant)
-    assert "computer" in _desire_objs(ms_char), (
-        f"desire not attributed to character; got {_desire_objs(ms_char)}")
+    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Hong", tenant_id=mem._core.tenant)
+    assert "amusement park" in _desire_objs(ms_char), (
+        f"desire not attributed to character (subject); got {_desire_objs(ms_char)}")
 
     ms_narr = mental_state_of(mem._rt.adapter, x="narrator", tenant_id=mem._core.tenant)
-    assert "computer" not in _desire_objs(ms_narr), (
+    assert "amusement park" not in _desire_objs(ms_narr), (
         f"desire leaked onto the agent holder; got {_desire_objs(ms_narr)}")
 
 
@@ -64,11 +65,11 @@ def test_flag_off_keeps_agent_holder(tmp_path):
     mem.tick()
 
     ms_narr = mental_state_of(mem._rt.adapter, x="narrator", tenant_id=mem._core.tenant)
-    assert "computer" in _desire_objs(ms_narr), (
+    assert "amusement park" in _desire_objs(ms_narr), (
         f"flag-OFF must keep agent holder; got {_desire_objs(ms_narr)}")
 
-    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Ming", tenant_id=mem._core.tenant)
-    assert "computer" not in _desire_objs(ms_char), (
+    ms_char = mental_state_of(mem._rt.adapter, x="Xiao Hong", tenant_id=mem._core.tenant)
+    assert "amusement park" not in _desire_objs(ms_char), (
         f"flag-OFF must NOT re-attribute; got {_desire_objs(ms_char)}")
 
 

@@ -99,19 +99,18 @@ std::string emit_extraction_event(
     return ev.event_id;
 }
 
-// First-order mental-state predicate/modality test for the opt-in holder
+// First-order DESIRE predicate/modality test for the opt-in holder
 // re-attribution (ValidationPolicy.attribute_first_order_mental_to_holder).
-// Mirrors how mental_state_of buckets attitudes (mentalizing_profile.cpp):
-// modality in {believes,desires,intends,commits} OR predicate in {knows,prefers}.
-// Norm / occurred / doubts / assumes are NOT mental for this purpose.
-bool is_mental_first_order(schema::Modality m, std::string_view predicate) {
-    if (predicate == "knows" || predicate == "prefers") return true;
+// Only the desire-family is included: for DESIRES/INTENDS/PREFERS the subject
+// IS the desirer/intender (the attitude bearer). BELIEVES/KNOWS/COMMITS are
+// excluded — for those, the subject is the topic, not the bearer, so
+// re-attributing holder to subject would be wrong.
+bool is_first_order_desire(schema::Modality m, std::string_view predicate) {
+    if (predicate == "prefers" || predicate == "wants"
+            || predicate == "desires" || predicate == "intends") return true;
     switch (m) {
-        case schema::Modality::BELIEVES:
-        case schema::Modality::KNOWS:
         case schema::Modality::DESIRES:
         case schema::Modality::INTENDS:
-        case schema::Modality::COMMITS:
         case schema::Modality::PREFERS:
             return true;
         default:
@@ -272,39 +271,38 @@ ExtractionRunResult Extractor::run(
         // inside PipelineLedger::record_attempt (INSERT OR IGNORE).
         std::set<std::string> written_span_keys;
         for (auto& stmt : parsed.statements) {
-            // Holder attribution. Default (and historical) behaviour: the agent
-            // (the run arg) holds every extracted attitude. OPT-IN
-            // (ValidationPolicy.attribute_first_order_mental_to_holder, default
-            // OFF): a FIRST-ORDER mental-state statement is instead attributed to
-            // its LLM-named bearer (cognizer-resolved), so a narrated 3rd-person
-            // attitude lands under holder_id=<character>. Gated to nesting_depth==0
-            // + mental modality/predicate + a non-empty llm_holder; anything else
-            // (incl. an empty/absent llm_holder, or no store adapter for cognizer
-            // resolution) falls back to the agent — strictly additive.
-            if (policy_.attribute_first_order_mental_to_holder
-                    && stmt.llm_nesting_depth == 0
-                    && is_mental_first_order(stmt.modality, stmt.predicate)
-                    && !stmt.llm_holder.empty()) {
-                if (cog_hub) {
-                    stmt.holder_id = starling::cognizer::resolve_or_register_cognizer(
-                        *cog_hub, holder_tenant_id, stmt.llm_holder);
-                } else {
-                    stmt.holder_id = stmt.llm_holder;
-                }
-            } else {
-                stmt.holder_id = std::string(holder_id);
-            }
             stmt.holder_tenant_id = std::string(holder_tenant_id);
             stmt.chunk_index      = chunk_index;
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
             }
             // Resolve the cognizer subject surface to its canonical first-seen
-            // name (no-op when no store adapter was wired, or for non-cognizer
-            // subjects — those carry an external ref, not a name surface).
+            // name FIRST (before holder attribution below, which may read it).
+            // No-op when no store adapter was wired, or for non-cognizer subjects.
             if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
                 stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
                     *cog_hub, holder_tenant_id, stmt.subject_id);
+            }
+            // Holder attribution. Default (and historical) behaviour: the agent
+            // (the run arg) holds every extracted attitude. OPT-IN
+            // (ValidationPolicy.attribute_first_order_mental_to_holder, default
+            // OFF): a FIRST-ORDER DESIRE statement is instead attributed to its
+            // cognizer-resolved subject (the desirer), so a narrated 3rd-person
+            // desire ("Xiao Hong wants X") lands under holder_id="Xiao Hong".
+            // Validation showed the LLM's `holder` field is always the narrator
+            // (fragmented narrator/叙述者/Narrator); `subject` is reliably the
+            // desirer for the desire family. BELIEVES/KNOWS are excluded — their
+            // subject is the topic, not the bearer.
+            // Gated to nesting_depth==0 + desire modality/predicate + non-empty
+            // non-agent subject; anything else falls back to the agent — additive.
+            if (policy_.attribute_first_order_mental_to_holder
+                    && stmt.llm_nesting_depth == 0
+                    && is_first_order_desire(stmt.modality, stmt.predicate)
+                    && !stmt.subject_id.empty()
+                    && stmt.subject_id != std::string(holder_id)) {
+                stmt.holder_id = stmt.subject_id;
+            } else {
+                stmt.holder_id = std::string(holder_id);
             }
             if (!interlocutor.empty()) {
                 // 对话语境：grounding 参与方 + 可见性都含 self+interlocutor（#2 前提 perceived_by⊇parties）。

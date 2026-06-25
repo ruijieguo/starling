@@ -249,8 +249,11 @@ std::string single_holder_id(persistence::Connection& conn) {
     return t ? reinterpret_cast<const char*>(t) : "";
 }
 
+// subject="Xiao Hong" is the desirer (character); holder is the narrator.
+// With the flag ON, holder_id is attributed to the cognizer-resolved subject,
+// not to the llm_holder field (which is always the narrator in practice).
 constexpr const char* kNarratedDesireJson =
-    R"JSON([{"holder":"Xiao Ming","holder_perspective":"FIRST_PERSON","subject":"computer","predicate":"desires","object":"computer","modality":"DESIRES","polarity":"POS","nesting_depth":0}])JSON";
+    R"JSON([{"holder":"narrator","holder_perspective":"INFERRED","subject":"Xiao Hong","predicate":"desires","object":"amusement park","modality":"DESIRES","polarity":"POS","nesting_depth":0}])JSON";
 }  // namespace
 
 // Flag DEFAULT-OFF: a narrated first-order desire ("Xiao Ming wants a computer")
@@ -270,10 +273,12 @@ TEST(ExtractorOrchestrator, NarratedMentalStateKeepsAgentHolderWhenFlagOff) {
     EXPECT_EQ(single_holder_id(conn), "narrator");  // unchanged: agent holds it
 }
 
-// Flag ON: the same narrated first-order desire is re-attributed to its
-// LLM-named bearer (cognizer-resolved). mental_state_of("Xiao Ming") will now
-// find it; mental_state_of("narrator") will not.
-TEST(ExtractorOrchestrator, NarratedMentalStateReattributedToHolderWhenFlagOn) {
+// Flag ON: the narrated first-order desire is re-attributed to its subject
+// (the desirer, cognizer-resolved). holder=subject_id="Xiao Hong".
+// The LLM's `holder` field carries "narrator" (as observed in production);
+// we now use `subject` instead because it is reliably the attitude bearer
+// for the desire family.
+TEST(ExtractorOrchestrator, NarratedDesireReattributedToSubjectWhenFlagOn) {
     auto a = make_adapter();
     auto& conn = a->connection();
     seed_engram(conn, "engram-1");
@@ -287,13 +292,15 @@ TEST(ExtractorOrchestrator, NarratedMentalStateReattributedToHolderWhenFlagOn) {
     auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
     ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
     EXPECT_EQ(row_count(conn, "statements"), 1);
-    // Re-attributed to the character (cognizer-resolved first-seen surface).
-    EXPECT_EQ(single_holder_id(conn), "Xiao Ming");
+    // Re-attributed to the subject (cognizer-resolved desirer), not llm_holder.
+    EXPECT_EQ(single_holder_id(conn), "Xiao Hong");
     EXPECT_EQ(row_count(conn, "statements", "holder_id='narrator'"), 0);
 }
 
 // Flag ON but the LLM marked the statement second-order (nesting_depth=2):
 // re-attribution is gated to first-order only, so holder stays the agent.
+// Also doubles as a non-desire modality guard: BELIEVES at nesting_depth=0
+// would also stay with the agent (subject=topic, not bearer).
 TEST(ExtractorOrchestrator, SecondOrderNotReattributedEvenWhenFlagOn) {
     auto a = make_adapter();
     auto& conn = a->connection();
@@ -305,7 +312,7 @@ TEST(ExtractorOrchestrator, SecondOrderNotReattributedEvenWhenFlagOn) {
     Extractor ex(conn, llm, *a, "", pol);
     llm.set_default_response(LLMResponse{
         .raw_xml =
-            R"JSON([{"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"believes","object":"Bob wants a raise","modality":"BELIEVES","polarity":"POS","nesting_depth":2}])JSON",
+            R"JSON([{"holder":"narrator","holder_perspective":"INFERRED","subject":"Alice","predicate":"desires","object":"Bob to get a raise","modality":"DESIRES","polarity":"POS","nesting_depth":2}])JSON",
         .ok = true});
 
     auto r = ex.run("engram-1", {1,2,3}, "narrator", "default", {});
@@ -313,9 +320,9 @@ TEST(ExtractorOrchestrator, SecondOrderNotReattributedEvenWhenFlagOn) {
     EXPECT_EQ(single_holder_id(conn), "narrator");  // second-order stays with agent
 }
 
-// Flag ON, non-mental modality (OCCURRED-style / norm): re-attribution does not
-// fire (gated to mental modalities), holder stays the agent.
-TEST(ExtractorOrchestrator, NonMentalModalityNotReattributedWhenFlagOn) {
+// Flag ON, non-desire modality (norm): re-attribution does not fire
+// (gated to desire-family modalities), holder stays the agent.
+TEST(ExtractorOrchestrator, NonDesireModalityNotReattributedWhenFlagOn) {
     auto a = make_adapter();
     auto& conn = a->connection();
     seed_engram(conn, "engram-1");
@@ -324,7 +331,7 @@ TEST(ExtractorOrchestrator, NonMentalModalityNotReattributedWhenFlagOn) {
     ValidationPolicy pol;
     pol.attribute_first_order_mental_to_holder = true;
     Extractor ex(conn, llm, *a, "", pol);
-    // modality NORM_OUGHT (via the prompt alias "ENFORCES" → norm_ought) is not mental.
+    // modality NORM_OUGHT (via the prompt alias "ENFORCES" → norm_ought) is not desire.
     llm.set_default_response(LLMResponse{
         .raw_xml =
             R"JSON([{"holder":"公司政策","holder_perspective":"QUOTED","subject":"production","predicate":"requires","object":"two approvals","modality":"ENFORCES","polarity":"POS","nesting_depth":0}])JSON",
