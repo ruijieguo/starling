@@ -29,6 +29,11 @@ public:
     int archive_nonterminal(std::string_view, std::string_view,
                             std::string_view) override;
     int forget(std::string_view, std::string_view, std::string_view) override;
+    // 片 6 干预集:review_requested → approved(人工审批清场)。守卫幂等、tenant-scoped。
+    // 仅 SqliteStatementStore 有(memoryops::approve_review 直构造本类调用);不上抽象接口。
+    // reject 不走这里 —— reject = forget(→forgotten 终态,见 forget())。
+    int approve_review(std::string_view id, std::string_view tenant,
+                       std::string_view updated_at);
     void set_confidence_consolidated(std::string_view, std::string_view,
                                      double) override;
     void inherit_salience(std::string_view, std::string_view, double,

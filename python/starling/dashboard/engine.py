@@ -123,8 +123,13 @@ class DashboardEngine:
         # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
         self._tick_thread: threading.Thread | None = None
         self._tick_stop: threading.Event | None = None
-        self.set_llm(config.llm)
-        self.rebuild_embedder(config.embedder, reembed=False)
+        # Roles → adapters. Only extraction (the chat/LLM adapter MemoryCore
+        # uses for remember) and embedding have live consumers today; chat is
+        # wired in Phase 2c (converse). Unbound role → {} → no api_key → None /
+        # stub, matching the pre-registry "no key configured" behaviour.
+        self.set_llm(config.resolve_role("extraction") or {})
+        self.set_chat(config.chat() or {})   # chat role (2c); falls back to extraction
+        self.rebuild_embedder(config.embedding() or {}, reembed=False)
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
     # FakeLLMAdapter directly (`eng.llm = fake`).
@@ -140,6 +145,14 @@ class DashboardEngine:
         with self._lock:
             self._core.llm = (_build_chat_adapter(llm_cfg)
                               if llm_cfg.get("api_key") else None)
+
+    def set_chat(self, chat_cfg: dict) -> None:
+        """Build the chat-role adapter (converse). Unbound chat falls back to
+        the extraction provider's config (DashboardConfig.chat()), so this is
+        O(1) reference swap like set_llm — no re-embed."""
+        with self._lock:
+            self._core.chat_llm = (_build_chat_adapter(chat_cfg)
+                                   if chat_cfg.get("api_key") else None)
 
     def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> None:
         with self._lock:
@@ -170,6 +183,16 @@ class DashboardEngine:
             return self._core.remember(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
 
+    def converse(self, message: str, *, holder=None, interlocutor=None,
+                 k: int = 6, now=None) -> dict:
+        # Same lock discipline as remember (which also holds it during its LLM
+        # call). The three-phase no-write-txn-across-generate guarantee is
+        # structural inside C++ converse (remember's write txn is phase 4, after
+        # generate); the C++ binding releases the GIL during the network legs.
+        with self._lock:
+            return self._core.converse(message, holder=holder,
+                                       interlocutor=interlocutor, k=k, now=now)
+
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
                holder=None) -> list:
         with self._lock:
@@ -184,13 +207,35 @@ class DashboardEngine:
         with self._lock:
             return self._core.forget(ids, now=now)
 
+    # 片 6 干预集:全经 self._lock 串行(对单写者 + 后台 tick)。
+    def approve_review(self, stmt_id: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.approve_review(stmt_id, now=now)
+
+    def run_replay(self, mode: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.run_replay(mode, now=now)
+
+    def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
+        with self._lock:
+            return self._core.request_reconsolidation(stmt_id, request_id=request_id, now=now)
+
     def plan_query(self, text: str, *, intent: str, perspective=None,
                    target=None, k: int = 10) -> dict:
         """P3.a1 检索规划(9 意图 + 8 标签 + 拒答);JSON-able 摘要给路由层。"""
         with self._lock:
             r = self._core.plan_query(text, intent=intent,
                                       perspective=perspective, target=target, k=k)
-            return {
+            rc = r.receipt
+            cc = rc.candidate_counts
+            # Existing 6 keys stay byte-identical (the interact page depends on
+            # them — regression-pinned). Everything below is purely additive:
+            # the attribution/receipt fields that were previously dropped. Only
+            # fields that are actually populated are surfaced — `runtime_health`
+            # is deliberately omitted (callers never set q.runtime_health, so it
+            # is always the default, and showing it would violate the live-vs-
+            # roadmap honesty rule).
+            out = {
                 "results": [{"subject": e.row.subject_id,
                              "predicate": e.row.predicate,
                              "object": e.row.object_value,
@@ -198,11 +243,44 @@ class DashboardEngine:
                             for e in r.entries],
                 "context_pack": r.context_pack,
                 "abstained": r.abstained,
-                "abstention_reason": r.receipt.abstention_reason,
+                "abstention_reason": rc.abstention_reason,
                 "plan_steps": [{"step": s.step, "detail": s.detail}
-                               for s in r.receipt.plan_steps],
-                "scopes_searched": list(r.receipt.scopes_searched),
+                               for s in rc.plan_steps],
+                "scopes_searched": list(rc.scopes_searched),
             }
+            out["receipt"] = {
+                "trace_id": rc.trace_id,
+                "query_id": rc.query_id,
+                "sufficiency_status": getattr(rc.sufficiency_status, "name",
+                                              str(rc.sufficiency_status)),
+                "filters_applied": [{"name": f.name, "value": f.value}
+                                    for f in rc.filters_applied],
+                "candidate_counts": {
+                    "fetched": cc.fetched,
+                    "returned": cc.returned,
+                    "dropped_by_review": cc.dropped_by_review,
+                    "dropped_by_state": cc.dropped_by_state,
+                    "dropped_by_time_anchor": cc.dropped_by_time_anchor,
+                    "dropped_by_evidence_erasure": cc.dropped_by_evidence_erasure,
+                },
+                "frontier_masked_count": rc.frontier_masked_count,
+                "evidence_erased_count": rc.evidence_erased_count,
+                "projection_lag_events": rc.projection_lag_events,
+                "degraded_paths": [{"path": d.path, "reason": d.reason,
+                                    "fallback": d.fallback}
+                                   for d in rc.degraded_paths],
+                "score_breakdown": [{"statement_id": s.statement_id,
+                                     "base": s.base, "recency": s.recency,
+                                     "salience": s.salience, "activation": s.activation,
+                                     "affect_consistency": s.affect_consistency,
+                                     "temporal_penalty": s.temporal_penalty,
+                                     "final_score": s.final_score}
+                                    for s in rc.score_breakdown],
+                "skipped_scopes": [{"scope": s.scope, "reason": s.reason}
+                                   for s in rc.skipped_scopes],
+                "stop_reason": rc.stop_reason,
+            }
+            return out
 
     def start_background_tick(self, interval_s: float, on_tick=None) -> None:
         """周期维护线程(P2.o 运行时闭环):每 interval_s 秒跑一次 tick

@@ -1,10 +1,21 @@
 """Dashboard runtime configuration.
 
 Single source of truth is `~/.starling/starling.json` (0600, gitignored): it
-holds the dashboard fields plus the dashboard bearer `token` and the `llm` /
-`embedder` provider configs (incl. their api_key). The file is the persistent
-secret store — it is NEVER committed to git, written to the SQLite memory DB,
-or logged. `GET /api/config` never returns the token or full keys.
+holds the dashboard fields plus the dashboard bearer `token` and a multi-model
+provider registry. The file is the persistent secret store — it is NEVER
+committed to git, written to the SQLite memory DB, or logged. `GET /api/config`
+never returns the token or full keys.
+
+Model config (Phase 2a) is a named-provider registry + per-job role bindings:
+
+    providers: { "<name>": {provider, model, base_url, api_key, dim?} }
+    roles:     { extraction|embedding|chat|consolidation: "<provider name>" }
+
+`extraction` and `embedding` have live consumers today; `chat` gains one with
+converse() (Phase 2c); `consolidation` is reserved (no LLM consumer yet). The
+old single `{llm, embedder}` shape is auto-migrated on load (llm → provider
+"default" bound to extraction; embedder → provider "embedder" bound to
+embedding), so existing configs keep working with no manual edit.
 """
 from __future__ import annotations
 
@@ -19,19 +30,15 @@ _DEFAULT_DIR = Path.home() / ".starling"
 _DEFAULT_CONFIG = _DEFAULT_DIR / "starling.json"
 _DEFAULT_DB = _DEFAULT_DIR / "dashboard.db"
 
+# Role keys. extraction/embedding are wired today; chat is consumed by
+# converse() (2c); consolidation is reserved (replay uses no LLM yet).
+ROLES = ("extraction", "embedding", "chat", "consolidation")
+
 _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
-    "cors_origins", "llm", "embedder", "tick_interval_s",
+    "cors_origins", "providers", "roles", "tick_interval_s",
     "vector_backend", "vector_store_path",
 )
-
-
-def _default_llm() -> dict:
-    return {"provider": "openai", "model": "", "base_url": "", "api_key": ""}
-
-
-def _default_embedder() -> dict:
-    return {"provider": "openai", "model": "", "base_url": "", "api_key": "", "dim": 1024}
 
 
 @dataclass
@@ -43,17 +50,35 @@ class DashboardConfig:
     host: str = "127.0.0.1"
     port: int = 8787
     cors_origins: list[str] = field(default_factory=list)
-    llm: dict = field(default_factory=_default_llm)
-    embedder: dict = field(default_factory=_default_embedder)
+    # Named provider registry + role bindings (see module docstring).
+    providers: dict = field(default_factory=dict)
+    roles: dict = field(default_factory=dict)
     # P2.o 运行时闭环:后台维护 tick 间隔秒数(嵌入/巩固/投影/出箱收敛)。
     # 0 = 禁用(回到纯手动 tick)。
     tick_interval_s: float = 30.0
-    # P3.b1 phase 5: 向量后端选型。sqlite(默认)=暴力 cosine + SQL scope,任意维、零额外
-    # 依赖;zvec=HNSW(需 STARLING_VECTOR_ZVEC 构建的 _core,否则 MemoryCore 报错)。
-    # vector_store_path 空 → 工厂用 ~/.starling/vectors。
+    # P3.b1 phase 5: 向量后端选型。sqlite(默认)=暴力 cosine + SQL scope。
     vector_backend: str = "sqlite"
     vector_store_path: str = ""
     config_path: str = ""  # not serialized; where load()/save() persist
+
+    # ----- role → provider resolution -----
+    def resolve_role(self, role: str) -> dict | None:
+        """The provider config dict bound to `role`, or None when unbound /
+        unconfigured. Callers treat None as 'no adapter for this job'."""
+        name = self.roles.get(role)
+        if not name:
+            return None
+        return self.providers.get(name)
+
+    def extraction(self) -> dict | None:
+        return self.resolve_role("extraction")
+
+    def embedding(self) -> dict | None:
+        return self.resolve_role("embedding")
+
+    def chat(self) -> dict | None:
+        # converse falls back to the extraction provider when chat is unbound.
+        return self.resolve_role("chat") or self.resolve_role("extraction")
 
     @classmethod
     def from_env(cls) -> "DashboardConfig":
@@ -71,7 +96,7 @@ class DashboardConfig:
 
     @classmethod
     def load(cls, path: str | None = None) -> "DashboardConfig":
-        """Load defaults -> file -> env, then auto-generate+persist a token."""
+        """Load defaults -> file (+ legacy migration) -> env, then ensure token."""
         cfg = cls(db_path=str(_DEFAULT_DB))
         p = Path(path or os.environ.get("STARLING_CONFIG") or _DEFAULT_CONFIG).expanduser()
         cfg.config_path = str(p)
@@ -80,6 +105,7 @@ class DashboardConfig:
             for k in _SERIALIZABLE:
                 if k in data and data[k] is not None:
                     setattr(cfg, k, data[k])
+            _migrate_legacy_model_config(cfg, data)
         _env_overlay(cfg)
         cfg.db_path = str(Path(cfg.db_path).expanduser())
         if not cfg.token:
@@ -115,8 +141,30 @@ class DashboardConfig:
             )
 
 
+def _migrate_legacy_model_config(cfg: DashboardConfig, data: dict) -> None:
+    """Old `{llm, embedder}` files → providers/roles (one-way, on load).
+
+    Only fires when the file predates the registry (no `providers`/`roles`
+    keys). llm → provider "default" bound to extraction; embedder → provider
+    "embedder" bound to embedding. Idempotent: re-saving persists the new shape,
+    so this runs at most once per file.
+    """
+    if "providers" in data or "roles" in data:
+        return
+    legacy_llm = data.get("llm")
+    legacy_emb = data.get("embedder")
+    if legacy_llm and legacy_llm.get("api_key"):
+        cfg.providers["default"] = dict(legacy_llm)
+        cfg.roles["extraction"] = "default"
+    if legacy_emb and legacy_emb.get("api_key"):
+        cfg.providers["embedder"] = dict(legacy_emb)
+        cfg.roles["embedding"] = "embedder"
+
+
 def _env_overlay(cfg: DashboardConfig) -> None:
-    """env > file for dashboard fields; seed llm from OPENAI_* when file empty."""
+    """env > file for dashboard fields; seed an extraction provider from OPENAI_*
+    when no extraction provider is configured (preserves the zero-config-file,
+    OPENAI_API_KEY-only quickstart)."""
     e = os.environ.get
     if e("STARLING_DASH_DB"): cfg.db_path = e("STARLING_DASH_DB")
     if e("STARLING_DASH_AGENT"): cfg.agent = e("STARLING_DASH_AGENT")
@@ -129,8 +177,11 @@ def _env_overlay(cfg: DashboardConfig) -> None:
     if e("STARLING_DASH_VECTOR_STORE_PATH"): cfg.vector_store_path = e("STARLING_DASH_VECTOR_STORE_PATH")
     if e("STARLING_DASH_CORS_ORIGINS"):
         cfg.cors_origins = [o.strip() for o in e("STARLING_DASH_CORS_ORIGINS").split(",") if o.strip()]
-    if not cfg.llm.get("api_key") and e("OPENAI_API_KEY"):
-        cfg.llm = {"provider": cfg.llm.get("provider", "openai"),
-                   "model": e("OPENAI_MODEL", cfg.llm.get("model", "")),
-                   "base_url": e("OPENAI_BASE_URL", cfg.llm.get("base_url", "")),
-                   "api_key": e("OPENAI_API_KEY")}
+    if cfg.resolve_role("extraction") is None and e("OPENAI_API_KEY"):
+        cfg.providers["default"] = {
+            "provider": "openai",
+            "model": e("OPENAI_MODEL", ""),
+            "base_url": e("OPENAI_BASE_URL", ""),
+            "api_key": e("OPENAI_API_KEY"),
+        }
+        cfg.roles["extraction"] = "default"

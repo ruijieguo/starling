@@ -1,5 +1,6 @@
 #include "starling/replay/forgetting_curve.hpp"
 #include <gtest/gtest.h>
+#include <cmath>
 using namespace starling::replay;
 
 TEST(ForgettingCurve, FreshAccessNearOne) {
@@ -27,4 +28,14 @@ TEST(ForgettingCurve, OldStatementBelowThreshold) {
     ForgettingInputs in; in.salience=0.0; in.modality="ASSUMES";
     in.last_accessed_iso="2025-01-01T00:00:00Z";
     EXPECT_LT(compute_s_t(in, "2026-05-27T00:00:00Z"), 0.05);
+}
+TEST(ForgettingCurve, SecondsUntilIsCurveInverse) {
+    // P3 片 5:Δt = -S0·ln(target);把 Δt 加回 last_accessed,S(t) 应回到 target。
+    ForgettingInputs in; in.salience=0.0; in.modality="BELIEVES";
+    const double s0 = compute_s0(in);
+    EXPECT_NEAR(seconds_until_retrievability(in, 0.05), -s0 * std::log(0.05), 1e-6);
+    EXPECT_GT(seconds_until_retrievability(in, 0.05), 0.0);   // target<1 → 正向时间
+    // 出界:target ∉ (0,1) → -1(无投影)。
+    EXPECT_LT(seconds_until_retrievability(in, 0.0), 0.0);
+    EXPECT_LT(seconds_until_retrievability(in, 1.0), 0.0);
 }

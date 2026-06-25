@@ -17,6 +17,7 @@
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
+#include "starling/retrieval/semantic_retriever.hpp"
 
 namespace starling::memoryops {
 
@@ -34,6 +35,9 @@ struct RememberOutcome {
     std::string engram_ref;                   // 空 = 未入库(no_store/rejected)
     std::vector<std::string> statement_ids;   // 本次新写入的语句
     std::string outcome;                      // accepted/idempotent/no_store/rejected
+    bool extraction_failed = false;           // 证据已入库但抽取 LLM 失败(Extractor
+                                              // 吞失败返回 FAILED 而非抛异常)——供
+                                              // converse 区分「抽取失败」与「抽取空」。
 };
 
 // 标准写管线:内容确定性幂等键 → Bus::append_evidence(证据入库)→
@@ -48,6 +52,52 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          std::string_view prompt_template,
                          const RememberParams& params,
                          const extractor::ValidationPolicy& policy = {});
+
+// ── converse — chat-with-memory turn (Phase 2c) ──
+struct ConverseParams {
+    std::string tenant_id;
+    std::string holder_id;            // querier (recall) + holder (remember) = agent/self
+    std::string interlocutor;         // 可空;沉淀对话时带 scope_parties
+    std::string adapter_name;         // 来源标识:"dashboard"
+    std::string source_prefix;        // 幂等键前缀:"dash-"
+    std::string created_at_iso8601;   // 签名归一(datetime→ISO)
+    std::string message;              // 用户本轮输入
+    int recall_k = 6;                 // 注入的相关记忆条数上限
+};
+
+struct ConverseOutcome {
+    std::string reply;                       // ok=false 时空(generate 失败)
+    bool ok = false;                         // generate 成功 → 有回复
+    std::string error;                       // ok=false 时的错误码
+    std::string context_pack;                // 注入的记忆(带标签),供轨迹展示
+    bool abstained = false;                  // recall 主动拒答
+    std::vector<std::string> statement_ids;  // 本轮沉淀的语句
+    bool remember_ok = false;                // false → 回复保留但记忆未落库
+    std::string remember_error;              // remember 失败原因(可观测)
+    // 2b:本轮「回复生成」成本(chat_llm.generate 这一段;remember 的抽取成本
+    // 待 extraction_attempt 持久化后单列)。真模型填充,Fake/stub 留 0。
+    int gen_prompt_tokens     = 0;
+    int gen_completion_tokens = 0;
+    int gen_total_tokens      = 0;
+    int gen_latency_ms        = 0;
+};
+
+// 带记忆的聊天轮(三段式,决策 A):recall(RetrievalPlanner,只读)→ 注入
+// context_pack → chat_llm.generate(网络,不持写事务)→ remember 对话
+// (extraction_llm,写)。失败语义:generate 失败 → ok=false 且无回复;
+// remember 失败 → 回复保留(ok=true)且 remember_ok=false——用户已看到的回复
+// 绝不因事后抽取失败而丢。网络 generate 期间不持任何写事务。
+ConverseOutcome converse(persistence::SqliteAdapter& adapter,
+                         extractor::LLMAdapter& chat_llm,
+                         extractor::LLMAdapter& extraction_llm,
+                         retrieval::SemanticRetriever& semantic,
+                         std::string_view extraction_prompt,
+                         const ConverseParams& params,
+                         const extractor::ValidationPolicy& policy = {});
+
+// 二阶提示注入防御:中和召回文本里的围栏定界符 token,使存储数据无法伪造
+// <recalled_memory> 开/闭标签提前闭合围栏(converse 拼 prompt 前调用)。导出以便单测。
+std::string neutralize_recall_fence(std::string_view context_pack);
 
 struct TickOutcome {
     int embedded = 0;
@@ -76,5 +126,10 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
 // P3.b2:逻辑删除一批 statements(→forgotten),返回实际转换计数。
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso);
+
+// 片 6 干预集:人工审批 review_requested → approved(守卫幂等、tenant-scoped),返回转换计数(0/1)。
+// reject 不在此 —— reject = forget(→forgotten 终态)。
+int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
+                   std::string_view stmt_id, std::string_view now_iso);
 
 }  // namespace starling::memoryops
