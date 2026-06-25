@@ -132,6 +132,11 @@ export type ExtractionAttemptRow = {
 	raw_output: string | null; // 原始 LLM 输出(仅失败/解析失败留底)
 	error: string | null;
 	created_at: string | null;
+	// 成本(0027):每次 LLM 往返的 token 用量 + 时延;fake/未采集端点为 0。
+	prompt_tokens: number | null;
+	completion_tokens: number | null;
+	total_tokens: number | null;
+	latency_ms: number | null;
 };
 
 export type ExtractionAttempt = {
@@ -142,7 +147,12 @@ export type ExtractionAttempt = {
 	error: string | null;
 	created_at: string | null;
 	run_id: string | null;
-	failed_attempts: ExtractionAttemptRow[]; // 同 run 失败/部分尝试(带原始 LLM 输出)
+	// 权威行的成本(0027);无 ledger 行时为 null。
+	prompt_tokens: number | null;
+	completion_tokens: number | null;
+	total_tokens: number | null;
+	latency_ms: number | null;
+	failed_attempts: ExtractionAttemptRow[]; // 同 run 失败/部分尝试(带原始 LLM 输出 + 各自成本)
 };
 
 export type EngramEvidence = {

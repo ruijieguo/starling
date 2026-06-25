@@ -4,6 +4,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/migration_runner.hpp"
 
+using starling::bus::AttemptCost;
 using starling::bus::ExtractionStatus;
 using starling::bus::PipelineLedger;
 using starling::bus::PipelineStatus;
@@ -79,4 +80,30 @@ TEST(PipelineLedger, AttemptStatusEnumStrings) {
     EXPECT_EQ(count(c,
         "SELECT COUNT(*) FROM extraction_attempt "
         "WHERE status='failed' AND error='boom'"), 1);
+}
+
+TEST(PipelineLedger, AttemptPersistsCost) {
+    // 0027:成本采集在适配器(核心),账本只持久化。钉住 token 用量 + latency
+    // 确实写进 extraction_attempt 且可回读。
+    auto c = fresh_db();
+    PipelineLedger l(c);
+    const auto run_id = l.start_run("t1", "ref");
+    const AttemptCost cost{/*prompt=*/120, /*completion=*/34,
+                           /*total=*/154, /*latency_ms=*/512};
+    ASSERT_TRUE(l.record_attempt(run_id, "s1", 1, ExtractionStatus::Success,
+                                 {}, {}, cost).has_value());
+    EXPECT_EQ(count(c,
+        "SELECT COUNT(*) FROM extraction_attempt WHERE prompt_tokens=120 "
+        "AND completion_tokens=34 AND total_tokens=154 AND latency_ms=512"), 1);
+}
+
+TEST(PipelineLedger, AttemptDefaultCostIsZero) {
+    // 不传 cost(fake 适配器 / 未采集 usage 的端点)记 0,而非 NULL/哨兵。
+    auto c = fresh_db();
+    PipelineLedger l(c);
+    const auto run_id = l.start_run("t1", "ref");
+    ASSERT_TRUE(l.record_attempt(run_id, "s1", 1, ExtractionStatus::Success).has_value());
+    EXPECT_EQ(count(c,
+        "SELECT COUNT(*) FROM extraction_attempt WHERE prompt_tokens=0 "
+        "AND completion_tokens=0 AND total_tokens=0 AND latency_ms=0"), 1);
 }

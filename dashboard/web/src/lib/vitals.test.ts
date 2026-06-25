@@ -27,6 +27,14 @@ describe('allHealthy', () => {
 		volatile_stuck_total: 0,
 		extraction_failures: [],
 		extraction_failures_total: 0,
+		extraction_cost: {
+			attempts: 0,
+			prompt_tokens: 0,
+			completion_tokens: 0,
+			total_tokens: 0,
+			latency_ms: 0
+		},
+		extraction_cost_runs: [],
 		overdue_windows: [],
 		overdue_windows_total: 0
 	};
