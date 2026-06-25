@@ -8,6 +8,7 @@
 #include "bind_common.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -99,7 +100,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
                       // under the held GIL (no error_already_set to destruct).
                       try {
                           py::gil_scoped_acquire gil;
-                          const py::object arg = py::reinterpret_steal<py::object>(
+                          const auto arg = py::reinterpret_steal<py::object>(
                               PyUnicode_FromStringAndSize(
                                   delta.data(), static_cast<Py_ssize_t>(delta.size())));
                           if (arg) {
@@ -108,7 +109,12 @@ void bind_13_memory_ops(pybind11::module_& m) {
                           if (PyErr_Occurred() != nullptr) {
                               PyErr_Clear();
                           }
-                      } catch (...) {  // hard guarantee: never escape into the core
+                      } catch (...) {
+                          // Must not escape into the C++ converse; the reply is
+                          // still generated + persisted. No GIL is held here, so
+                          // only touch stderr (never Python) — note and drop.
+                          static_cast<void>(std::fputs(
+                              "converse: dropped a streamed token delta\n", stderr));
                       }
                   };
               }
