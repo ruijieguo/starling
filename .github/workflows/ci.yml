@@ -92,9 +92,9 @@ jobs:
           CC: clang-17
           CXX: clang++-17
           CMAKE_ARGS: "-DSQLite3_INCLUDE_DIR=/usr/local/include -DSQLite3_LIBRARY=/usr/local/lib/libsqlite3.so"
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,dashboard]"   # dashboard extra = fastapi/uvicorn/httpx (dashboard tests import them)
       - name: pytest
-        run: pytest
+        run: python -m pytest   # `python -m` puts the repo root on sys.path so tests that import `scripts` resolve
 
   static-scan:
     runs-on: ubuntu-24.04
