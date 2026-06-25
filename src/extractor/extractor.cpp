@@ -237,7 +237,9 @@ ExtractionRunResult Extractor::run(
         // occurrence — so the cost always lands on a persisted row.
         bool attempt_cost_used = false;
         auto take_cost = [&]() -> AttemptCost {
-            if (attempt_cost_used) return {};
+            if (attempt_cost_used) {
+                return {};
+            }
             attempt_cost_used = true;
             return {resp.prompt_tokens, resp.completion_tokens,
                     resp.total_tokens, resp.latency_ms};
