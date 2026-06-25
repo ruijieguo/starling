@@ -221,3 +221,16 @@ def detect_faux_pas(
     """Faux-pas preconditions: a present cognizer holding an OUTDATED view of a theme's state (absent when it changed) that co-present cognizers perceived. Returns a list of FauxPasCandidate."""
     as_of_iso = _iso_now_or_convert(as_of)
     return _core.detect_faux_pas(adapter, frontier, tenant_id, as_of_iso)
+
+
+def appraise_emotion(
+    adapter,
+    *,
+    x: str,
+    tenant_id: str = "default",
+    as_of: Optional[datetime] = None,
+):
+    """Appraisal-theory emotion for X: each desire vs the actual outcome ->
+    goal_congruence x agency -> a discrete emotion. Returns list[EmotionAppraisal]."""
+    as_of_iso = _iso_now_or_convert(as_of)
+    return _core.appraise_emotion(adapter, x, tenant_id, as_of_iso)

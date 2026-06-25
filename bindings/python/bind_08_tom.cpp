@@ -223,6 +223,26 @@ void bind_08_tom(pybind11::module_& m) {
         "X's full mental state grouped by attitude (beliefs/knowledge/desires/intentions/"
         "commitments/preferences).");
 
+    // ── appraisal-theory emotion ──
+    py::class_<starling::tom::mentalizing::EmotionAppraisal>(m, "EmotionAppraisal")
+        .def_readonly("cognizer",        &starling::tom::mentalizing::EmotionAppraisal::cognizer)
+        .def_readonly("emotion",         &starling::tom::mentalizing::EmotionAppraisal::emotion)
+        .def_readonly("goal_congruence", &starling::tom::mentalizing::EmotionAppraisal::goal_congruence)
+        .def_readonly("agency",          &starling::tom::mentalizing::EmotionAppraisal::agency)
+        .def_readonly("desire",          &starling::tom::mentalizing::EmotionAppraisal::desire)
+        .def_readonly("outcome_value",   &starling::tom::mentalizing::EmotionAppraisal::outcome_value);
+
+    m.def("appraise_emotion",
+        [](starling::persistence::SqliteAdapter& adapter, const std::string& x,
+           const std::string& tenant, const std::string& as_of) {
+            std::vector<starling::tom::mentalizing::EmotionAppraisal> out;
+            { py::gil_scoped_release release;
+              out = starling::tom::mentalizing::appraise_emotion(adapter, x, tenant, as_of); }
+            return out;
+        },
+        py::arg("adapter"), py::arg("x"), py::arg("tenant"), py::arg("as_of"),
+        "Appraisal-theory emotion from X's desire vs the actual outcome.");
+
     // ── SP-B: faux-pas detection ──
     py::class_<starling::tom::mentalizing::FauxPasCandidate>(m, "FauxPasCandidate")
         .def_readonly("ignorant",     &starling::tom::mentalizing::FauxPasCandidate::ignorant)
