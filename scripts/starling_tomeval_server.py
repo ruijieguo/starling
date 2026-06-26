@@ -384,8 +384,15 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
     try:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
-        dump = _memory_dump(db_path, mem._core.tenant)
         chain = _chain_injection_for(mem, user_content)
+        # STARLING_CHAIN_ONLY: competence-gate. Scaffold ONLY order>=2 nested-belief
+        # questions (where the chain fires and Starling's deterministic compute beats
+        # deepseek). Stay silent on order 0/1, where deepseek is already strong and the
+        # dump/belief-digest net-HURT (measured: order-1 -0.096). Generalizable principle
+        # (inject only in the model's failure regime), not eval-fitting.
+        if os.environ.get("STARLING_CHAIN_ONLY") == "1" and not chain:
+            return ""
+        dump = _memory_dump(db_path, mem._core.tenant)
         extra = (chain
                  or _belief_digest_for(mem, db_path, user_content)
                  or _mental_state_injection_for(mem, user_content)
