@@ -4,7 +4,7 @@ Verifies:
   1. is_common_knowledge symbol exists on starling._core (binding smoke).
   2. CommonKnowledgeResult has the expected POD fields.
   3. Public scene: A/B/C all co-witness a ball move to L → is_ck is True,
-     ck_value == "L".
+     ck_value == "cupboard".
 
 Story pattern mirrors test_faux_pas_roundtrip.py: one remember() using a stub
 LLM; no external API calls.
@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-
-import pytest
 
 import starling
 import starling._core as _core

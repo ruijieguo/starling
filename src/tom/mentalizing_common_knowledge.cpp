@@ -8,6 +8,7 @@
 #include "starling/schema/normalize_theme.hpp"
 #include "starling/store/perception_state_store.hpp"
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +21,7 @@ CommonKnowledgeResult is_common_knowledge(
     persistence::SqliteAdapter& adapter,
     cognizer::KnowledgeFrontier& frontier,
     const std::vector<std::string>& group,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     std::string_view theme,
     std::string_view tenant,
     std::string_view as_of) {
@@ -73,12 +75,9 @@ CommonKnowledgeResult is_common_knowledge(
     }
 
     auto co_witnessed_by_all = [&member_sets](const std::string& event_id) {
-        for (const auto& seen : member_sets) {
-            if (!seen.contains(event_id)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(member_sets, [&event_id](const auto& seen) {
+            return seen.contains(event_id);
+        });
     };
 
     // is_ck: the group's latest theme-event was co-witnessed by ALL members.

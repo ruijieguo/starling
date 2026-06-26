@@ -211,6 +211,7 @@ void bind_08_tom(pybind11::module_& m) {
     m.def("is_common_knowledge",
         [](starling::persistence::SqliteAdapter& adapter,
            starling::cognizer::KnowledgeFrontier& frontier,
+           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
            const std::vector<std::string>& group, const std::string& theme,
            const std::string& tenant, const std::string& as_of) {
             py::gil_scoped_release release;

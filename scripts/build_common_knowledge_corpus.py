@@ -179,19 +179,20 @@ def generate_item(seed: int, public: bool) -> dict[str, Any]:
             mover = rng.choice(present_group)
             _line(f"{mover} moved the {target_obj} to the {target_loc}.")
 
-            # Step 3: all re-enter a waiting room so private communication can happen.
-            all_agents_str = ", ".join(agents)
-            waiting = rng.choice([r for r in _ROOMS if r != room])
-            _line(f"{outsider} entered the {waiting}.")
-            _line(f"{', '.join([a for a in agents if a != outsider])} entered the {waiting}.")
-
-            # Step 4: one insider privately tells the outsider (but NOT the third group member).
+            # Step 3: teller and outsider step aside to a separate room for a
+            # private exchange; the non-teller stays behind (not present at the tell).
             teller = rng.choice(present_group)
+            non_teller = [a for a in present_group if a != teller][0]
+            side_room = rng.choice([r for r in _ROOMS if r != room])
+            _line(f"{teller} and {outsider} stepped into the {side_room}.")
+
+            # Step 4: teller privately tells the outsider (the non-teller is absent).
             _line(
                 f"{teller} privately told {outsider} that the {target_obj} is in the {target_loc}."
             )
+            _line(f"{non_teller} remained in the {room} and was not present.")
             # At this point: teller + outsider know target_loc,
-            # but the second present_group member (the non-teller) was NOT told.
+            # but the non-teller was NOT present and was NOT told.
             # → NOT common knowledge among the full group of three.
 
         answer = "no"
