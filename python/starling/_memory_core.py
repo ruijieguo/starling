@@ -232,14 +232,18 @@ class MemoryCore:
         return planner.run(q)
 
     def converse(self, message: str, *, holder=None, interlocutor=None,
-                 k: int = 6, now=None) -> dict:
+                 k: int = 6, now=None, on_token=None) -> dict:
         """Phase 2c chat-with-memory turn — thin forward to C++
         `memory_converse` (3-phase orchestration居 C++,与 remember/plan_query
         同层;网络段释放 GIL)。chat 适配器缺省回退到抽取适配器(self.llm)。
 
         返回 {reply, ok, error, context_pack, abstained, statement_ids,
         remember_ok, remember_error}。失败语义 A:generate 失败 → ok=False 无
-        回复;remember 失败 → 回复保留、remember_ok=False(可观测)。"""
+        回复;remember 失败 → 回复保留、remember_ok=False(可观测)。
+
+        on_token(可空):流式回调 fn(delta:str)。非空时回复在「生成段」逐 token
+        增量回传(C++ 在 GIL 释放下运行,binding 每个 delta 重新 acquire GIL 再
+        回调);空 = 非流式(等价旧行为)。回调只是把同样的文本先推一遍,不改返回值。"""
         if self.llm is None:
             raise LLMNotConfigured(
                 "converse requires an extraction llm adapter "
@@ -254,7 +258,7 @@ class MemoryCore:
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
             created_at_iso8601=created_iso, message=message, recall_k=k,
-            policy=_build_policy(self._extraction))
+            policy=_build_policy(self._extraction), on_token=on_token)
 
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +

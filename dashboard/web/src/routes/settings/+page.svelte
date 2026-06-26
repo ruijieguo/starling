@@ -13,9 +13,13 @@
 	type TestResult = { ok: boolean; detail: string; ms: number };
 
 	// Registry state: named providers + role bindings (Phase 2a). extraction +
-	// embedding are live; chat is reserved here until converse() (2c).
+	// embedding + chat (converse, 2c) are all bindable here.
 	let providers = $state<Record<string, Prov>>({});
-	let roles = $state<Record<string, string>>({});
+	// Init every role key so the role <Select bind:value> never binds `undefined`
+	// before /api/config resolves: Svelte 5 throws props_invalid_value on
+	// bind:value={undefined} when the child has a $bindable('') fallback, and that
+	// throw propagated up through the layout and blanked the whole page.
+	let roles = $state<Record<string, string>>({ extraction: '', embedding: '', chat: '' });
 	let keyInputs = $state<Record<string, string>>({}); // per-provider new key (blank = keep)
 	let embBaseline = $state(''); // embedding provider+dim snapshot → re-embed confirm
 	let saving = $state(false);
@@ -39,15 +43,30 @@
 		return JSON.stringify({ n: name, b: p?.base_url, d: p?.dim, k: keyInputs[name] || '' });
 	}
 
+	// Apply a Config from the API: keep all role keys defined (so the role <Select
+	// bind:value> never binds `undefined`) and seed a blank key-input per provider
+	// (SecretInput also has a '' fallback, so keyInputs[name] must not be undefined).
+	function applyConfig(c: Config) {
+		providers = c.providers ?? {};
+		roles = { extraction: '', embedding: '', chat: '', ...(c.roles ?? {}) };
+		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
+	}
+
 	$effect(() => {
 		api
 			.get<Config>('/api/config')
 			.then((c) => {
-				providers = c.providers ?? {};
-				roles = c.roles ?? {};
+				applyConfig(c);
 				embBaseline = embKey();
 			})
 			.catch((e) => toast.error(String((e as ApiError).message)));
+	});
+
+	// Keep the embedding-bound provider's dim defined — the dim <Input> has a ''
+	// fallback, so an undefined dim (a freshly-added provider) throws props_invalid_value.
+	$effect(() => {
+		const emb = roles['embedding'];
+		if (emb && providers[emb] && providers[emb].dim == null) providers[emb].dim = 1024;
 	});
 
 	let embChanged = $derived(embBaseline !== embKey());
@@ -62,14 +81,14 @@
 			model: preset?.models[0] ?? '',
 			base_url: preset?.base_url ?? ''
 		};
+		keyInputs[name] = ''; // seed the SecretInput slot so its bind:value isn't undefined
 		draftName = '';
 	}
 
 	async function deleteProvider(name: string) {
 		try {
 			const c = await api.del<Config>('/api/config/provider/' + encodeURIComponent(name));
-			providers = c.providers ?? {};
-			roles = c.roles ?? {};
+			applyConfig(c);
 			llmConfigured.set(roleConfigured(c, 'extraction'));
 			embedderConfigured.set(roleConfigured(c, 'embedding'));
 			toast.success(`已删除 ${name}`);
@@ -129,9 +148,7 @@
 			};
 			// changing the embedding provider re-embeds every memory → widen timeout
 			const c = await api.post<Config>('/api/config', payload, { timeoutMs: 120_000 });
-			providers = c.providers ?? {};
-			roles = c.roles ?? {};
-			keyInputs = {};
+			applyConfig(c);
 			embBaseline = embKey();
 			llmConfigured.set(roleConfigured(c, 'extraction'));
 			embedderConfigured.set(roleConfigured(c, 'embedding'));
@@ -149,15 +166,18 @@
 	}
 </script>
 
-<PageHeader title="模型 / Models" subtitle="多 provider 注册表 + 按任务角色绑定(抽取/嵌入;聊天角色 2c 启用)。" />
+<PageHeader title="模型 / Models" subtitle="多 provider 注册表 + 按任务角色绑定(抽取 / 嵌入 / 对话)。" />
 <div class="max-w-2xl space-y-5">
 	<Card title="角色绑定" description="把每个任务绑定到一个已配 provider。">
-		<div class="grid gap-3 sm:grid-cols-2">
+		<div class="grid gap-3 sm:grid-cols-3">
 			<Field label="extraction(抽取)" for="role-ex" hint="remember 抽取记忆用">
 				<Select id="role-ex" bind:value={roles['extraction']} options={nameOpts()} />
 			</Field>
 			<Field label="embedding(嵌入/召回)" for="role-em" hint="改绑会重嵌已有记忆">
 				<Select id="role-em" bind:value={roles['embedding']} options={nameOpts()} />
+			</Field>
+			<Field label="chat(对话)" for="role-chat" hint="converse 对话生成用">
+				<Select id="role-chat" bind:value={roles['chat']} options={nameOpts()} />
 			</Field>
 		</div>
 	</Card>
@@ -172,6 +192,7 @@
 							{name}
 							{#if roles['extraction'] === name}<Badge tone="brand">extraction</Badge>{/if}
 							{#if isEmb}<Badge tone="brand">embedding</Badge>{/if}
+							{#if roles['chat'] === name}<Badge tone="brand">chat</Badge>{/if}
 						</span>
 						<Button variant="ghost" onclick={() => deleteProvider(name)}>删除</Button>
 					</div>

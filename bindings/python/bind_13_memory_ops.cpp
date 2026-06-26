@@ -70,7 +70,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& interlocutor, const std::string& adapter_name,
              const std::string& source_prefix, const std::string& created_at_iso8601,
              const std::string& message, int recall_k,
-             starling::extractor::ValidationPolicy policy) {
+             const starling::extractor::ValidationPolicy& policy,
+             const py::object& on_token) {
               starling::memoryops::ConverseParams p;
               p.tenant_id          = tenant_id;
               p.holder_id          = holder_id;
@@ -80,11 +81,46 @@ void bind_13_memory_ops(pybind11::module_& m) {
               p.created_at_iso8601 = created_at_iso8601;
               p.message            = message;
               p.recall_k           = recall_k;
+              // 流式回调:非空 Python on_token → C++ TokenSink。converse 在 GIL
+              // 释放下运行(下方 release 块),sink 每个 delta 重新 acquire GIL 再
+              // 回调 Python(标准 pybind「从已释放 GIL 回调 Python」模式)。
+              // on_token=None → 空 sink,converse 走非流式路径(等价旧行为)。
+              // sink 在 release 块外声明,其析构(decref on_token)在 GIL 重持后发生。
+              starling::extractor::TokenSink sink;
+              if (!on_token.is_none()) {
+                  // Capture on_token by reference: converse() calls the sink
+                  // synchronously on THIS thread (inside the gil_scoped_release
+                  // block below), so the param outlives every sink invocation,
+                  // and a reference capture keeps the closure trivially
+                  // destructible (no py::object copy/move/dtor to reason about).
+                  sink = [&on_token](std::string_view delta) noexcept {
+                      // Relay one delta to the Python callback. Pure C-API + raw
+                      // PyGILState ensure/release — all noexcept — so the sink
+                      // PROVABLY cannot throw: nothing can escape into the C++
+                      // converse across the released GIL (a thrown pybind call or
+                      // a non-noexcept gil RAII ctor would). The C-API sets PyErr
+                      // instead of throwing; a failed relay just drops the delta
+                      // (the reply is still generated + persisted). Runs on the
+                      // C++ worker thread, so PyGILState_Ensure (not a held GIL)
+                      // is the correct acquire.
+                      const PyGILState_STATE gstate = PyGILState_Ensure();
+                      PyObject* arg = PyUnicode_FromStringAndSize(
+                          delta.data(), static_cast<Py_ssize_t>(delta.size()));
+                      if (arg != nullptr) {
+                          Py_XDECREF(PyObject_CallOneArg(on_token.ptr(), arg));
+                          Py_DECREF(arg);
+                      }
+                      if (PyErr_Occurred() != nullptr) {
+                          PyErr_Clear();
+                      }
+                      PyGILState_Release(gstate);
+                  };
+              }
               starling::memoryops::ConverseOutcome r;
               {
                   py::gil_scoped_release release;
                   r = starling::memoryops::converse(adapter, chat_llm, extraction_llm,
-                                                    semantic, extraction_prompt, p, policy);
+                                                    semantic, extraction_prompt, p, policy, sink);
               }
               return py::dict("reply"_a = r.reply, "ok"_a = r.ok, "error"_a = r.error,
                               "context_pack"_a = r.context_pack, "abstained"_a = r.abstained,
@@ -101,7 +137,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
           py::arg("adapter_name"), py::arg("source_prefix"),
           py::arg("created_at_iso8601"), py::arg("message"), py::arg("recall_k") = 6,
-          py::arg("policy") = starling::extractor::ValidationPolicy{});
+          py::arg("policy") = starling::extractor::ValidationPolicy{},
+          py::arg("on_token") = py::none());
 
     m.def("memory_tick_all",
           [](starling::persistence::SqliteAdapter& adapter,

@@ -130,6 +130,38 @@
 			</Card>
 		{/if}
 
+		<!-- 历史成本(0027):租户级 token 汇总 + 近 N 次 run 逐次成本。成本在适配器核心采集,此处只读。 -->
+		{#if q.data.extraction_cost.attempts > 0}
+			<Card
+				title="历史成本 / Cost"
+				description="extraction_attempt 的 token 用量 + 往返时延汇总({q.data.extraction_cost.attempts} attempt)。成本在适配器(核心)采集,此处只读;fake/未采集 usage 的端点记 0。"
+			>
+				<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+					<StatCard label="total tokens" value={q.data.extraction_cost.total_tokens}
+						hint="累计 token" />
+					<StatCard label="prompt tokens" value={q.data.extraction_cost.prompt_tokens} />
+					<StatCard label="completion tokens" value={q.data.extraction_cost.completion_tokens} />
+					<StatCard label="total latency" value={q.data.extraction_cost.latency_ms}
+						hint="ms · 累计往返耗时" />
+				</div>
+				{#if q.data.extraction_cost_runs.length}
+					<ul class="mt-3 divide-y divide-border">
+						{#each q.data.extraction_cost_runs as r}
+							<li class="flex items-center justify-between gap-3 py-2 text-sm">
+								<span class="flex min-w-0 items-center gap-2">
+									<Badge tone="brand">{r.run_id.slice(0, 8)}…</Badge>
+									<span class="truncate text-xs text-muted">{r.started_at ?? '—'}</span>
+								</span>
+								<span class="shrink-0 text-xs tabular-nums text-muted">
+									{r.total_tokens} tok · {r.latency_ms} ms · {r.attempts} attempt
+								</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</Card>
+		{/if}
+
 		<!-- 超期再固化窗口 -->
 		{#if q.data.overdue_windows.length}
 			<Card title="超期再固化窗口 ({q.data.overdue_windows_total})" description="status='open' 且 close_deadline 已过——可能卡在仲裁。">

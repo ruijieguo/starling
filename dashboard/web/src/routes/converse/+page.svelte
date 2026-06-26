@@ -1,39 +1,72 @@
 <script lang="ts">
-	import { api, ApiError, type ConverseResponse } from '$lib/api';
+	import { api, type ConverseResponse } from '$lib/api';
+	import { streamConverse } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot } from '$lib/components/ui';
+	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot, Select } from '$lib/components/ui';
 
-	type Turn = { role: 'user' | 'assistant'; text: string; trace?: ConverseResponse };
+	type Turn = {
+		role: 'user' | 'assistant';
+		text: string;
+		trace?: ConverseResponse;
+		streaming?: boolean;
+	};
 	let turns = $state<Turn[]>([]);
 	let input = $state('');
 	let busy = $state(false);
 
-	async function send() {
+	// Per-turn model selection (#35): pick a registry provider for the chat reply,
+	// or '' to use the bound chat role. Names come from the same provider registry
+	// the Settings page manages.
+	let providers = $state<string[]>([]);
+	let chatProvider = $state('');
+	$effect(() => {
+		api
+			.get<{ providers?: Record<string, unknown> }>('/api/config')
+			.then((c) => (providers = Object.keys(c.providers ?? {})))
+			.catch(() => {});
+	});
+	const providerOpts = () => [
+		{ value: '', label: '模型:默认(chat 角色)' },
+		...providers.map((p) => ({ value: p, label: '模型:' + p }))
+	];
+
+	// 流式一轮(#37):WS /ws/converse。先推一个空的 assistant turn 作流式靶,
+	// onToken 逐 delta 追加到 .text(Svelte 5 深层响应),onDone 落最终 reply +
+	// 轨迹,onError 出错。一轮 = recall + 生成 + 沉淀,沉淀在流完之后(服务端保证
+	// 即便中途断开也跑完落库)。
+	function send() {
 		const msg = input.trim();
 		if (!msg) return;
 		turns = [...turns, { role: 'user', text: msg }];
 		input = '';
 		busy = true;
-		try {
-			// 一轮 = recall + 生成 + 沉淀,真模型可达数十秒,放宽超时。
-			const r = await api.post<ConverseResponse>(
-				'/api/converse',
-				{ message: msg },
-				{ timeoutMs: 120_000 }
-			);
-			turns = [
-				...turns,
-				{ role: 'assistant', text: r.ok ? r.reply : `（无回复:${r.error || 'generate 失败'}）`, trace: r }
-			];
-		} catch (e) {
-			const err = e as ApiError;
-			if (err.status === 409) toast.error('未配置 LLM:去「模型」页绑定 extraction / chat 角色');
-			else toast.error(String(err.message));
-			turns = [...turns, { role: 'assistant', text: `（出错:${err.message}）` }];
-		} finally {
-			busy = false;
-		}
+		const idx = turns.length; // assistant turn 的下标(下面紧接 push)
+		turns = [...turns, { role: 'assistant', text: '', streaming: true }];
+		streamConverse(
+			{ message: msg, ...(chatProvider ? { provider: chatProvider } : {}) },
+			{
+				onToken: (delta) => {
+					turns[idx].text += delta;
+				},
+				onDone: (outcome) => {
+					turns[idx].text = outcome.ok
+						? outcome.reply
+						: `（无回复:${outcome.error || 'generate 失败'}）`;
+					turns[idx].trace = outcome;
+					turns[idx].streaming = false;
+					busy = false;
+				},
+				onError: (code) => {
+					if (code === 'llm_not_configured')
+						toast.error('未配置 LLM:去「模型」页绑定 extraction / chat 角色');
+					else toast.error('对话出错:' + code);
+					if (!turns[idx].text) turns[idx].text = `（出错:${code}）`;
+					turns[idx].streaming = false;
+					busy = false;
+				}
+			}
+		);
 	}
 </script>
 
@@ -55,7 +88,9 @@
 							? 'bg-brand-tint text-fg'
 							: 'border border-border bg-surface text-fg'}"
 					>
-						<span class="whitespace-pre-wrap">{t.text}</span>
+						<span class="whitespace-pre-wrap">{t.text}</span>{#if t.streaming}<span
+								class="ml-0.5 inline-block animate-pulse text-subtle">▌</span
+							>{/if}
 					</div>
 					{#if t.trace}
 						{@const tr = t.trace}
@@ -99,10 +134,15 @@
 		{/each}
 	</ul>
 
-	<div class="sticky bottom-4 flex items-end gap-2 rounded-control border border-border bg-card p-2">
-		<div class="flex-1">
-			<Textarea bind:value={input} rows={2} placeholder="说点什么…" />
+	<div class="sticky bottom-4 space-y-2 rounded-control border border-border bg-card p-2">
+		{#if providers.length}
+			<Select bind:value={chatProvider} options={providerOpts()} class="max-w-56" />
+		{/if}
+		<div class="flex items-end gap-2">
+			<div class="flex-1">
+				<Textarea bind:value={input} rows={2} placeholder="说点什么…" />
+			</div>
+			<Button loading={busy} disabled={!input.trim()} onclick={send}>发送</Button>
 		</div>
-		<Button loading={busy} disabled={!input.trim()} onclick={send}>发送</Button>
 	</div>
 </div>

@@ -19,6 +19,20 @@ enum class PipelineStatus   { Started, Finished, Failed };
 // for audit. See docs/design/subsystems_design/05_bus.md § extraction_attempt.
 enum class ExtractionStatus { Success, PartialSuccess, Failed, Noop };
 
+// Per-attempt LLM cost, persisted on the extraction_attempt row (migration
+// 0027). Mirrors the usage fields LLMResponse captures in the adapter (the
+// core boundary): token counts + the network round-trip latency. Defaults to
+// all-zero so callers that don't measure cost (or the FakeLLMAdapter) record an
+// honest 0 rather than a sentinel. See extractor.cpp's take_cost() for why the
+// cost is attributed to exactly ONE row per extract() call (no double-counting
+// across the per-statement-span success rows of a single attempt).
+struct AttemptCost {
+    int prompt_tokens     = 0;
+    int completion_tokens = 0;
+    int total_tokens      = 0;
+    int latency_ms        = 0;
+};
+
 // Sole sanctioned write path into pipeline_run / extraction_attempt for M0.4's
 // LLM extractor. Sealing the API here, before the extractor exists, prevents
 // M0.4 from inventing ad-hoc inserts that bypass the (span_key, attempt_number)
@@ -53,7 +67,8 @@ public:
                                               int attempt_number,
                                               ExtractionStatus status,
                                               std::string_view raw_output = {},
-                                              std::string_view error = {});
+                                              std::string_view error = {},
+                                              const AttemptCost& cost = {});
 
 private:
     starling::persistence::Connection& conn_;

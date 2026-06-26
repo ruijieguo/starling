@@ -365,10 +365,12 @@ def _extraction_for(conn, tenant: str, stmt_id: str) -> dict | None:
         return None
     empty = {"span_key": span_key, "status": None, "attempt_number": None,
              "raw_output": None, "error": None, "created_at": None,
-             "run_id": None, "failed_attempts": []}
+             "run_id": None, "prompt_tokens": None, "completion_tokens": None,
+             "total_tokens": None, "latency_ms": None, "failed_attempts": []}
     rows, _ = _rows_or_empty(
         conn,
-        "SELECT pipeline_run_id, status, attempt_number, raw_output, error, created_at "
+        "SELECT pipeline_run_id, status, attempt_number, raw_output, error, created_at, "
+        "prompt_tokens, completion_tokens, total_tokens, latency_ms "
         "FROM extraction_attempt WHERE extraction_span_key=? "
         "ORDER BY CASE status WHEN 'success' THEN 0 WHEN 'partial_success' THEN 1 "
         "WHEN 'failed' THEN 2 ELSE 3 END, created_at ASC LIMIT 1",
@@ -383,7 +385,8 @@ def _extraction_for(conn, tenant: str, stmt_id: str) -> dict | None:
         # 同一 run 的失败/部分尝试携带原始 LLM 输出(成功不留底)——取证关键。
         failed, _ = _rows_or_empty(
             conn,
-            "SELECT attempt_number, status, raw_output, error, created_at "
+            "SELECT attempt_number, status, raw_output, error, created_at, "
+            "prompt_tokens, completion_tokens, total_tokens, latency_ms "
             "FROM extraction_attempt WHERE pipeline_run_id=? "
             "AND status IN ('failed','partial_success') "
             "ORDER BY attempt_number ASC LIMIT 10",
@@ -392,7 +395,11 @@ def _extraction_for(conn, tenant: str, stmt_id: str) -> dict | None:
     return {"span_key": span_key, "status": a["status"],
             "attempt_number": a["attempt_number"], "raw_output": a["raw_output"],
             "error": a["error"], "created_at": a["created_at"],
-            "run_id": run_id, "failed_attempts": failed}
+            "run_id": run_id,
+            "prompt_tokens": a["prompt_tokens"],
+            "completion_tokens": a["completion_tokens"],
+            "total_tokens": a["total_tokens"], "latency_ms": a["latency_ms"],
+            "failed_attempts": failed}
 
 
 def _engrams_for(conn, tenant: str, evidence) -> list[dict]:
@@ -656,6 +663,38 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             (tenant,),
         )
 
+        # 历史成本(0027):租户级 token 用量 + 时延汇总,以及近 N 次 run 的逐次成本。
+        # 成本只在适配器(核心)采集,Python 只读聚合;缺列(DB 未迁移到 0027)→
+        # _rows_or_empty 吞 OperationalError,降级为全 0(诚实:无成本数据)。
+        cost_total_rows, _ = _rows_or_empty(
+            conn,
+            "SELECT COUNT(*) AS attempts, "
+            "COALESCE(SUM(a.prompt_tokens),0) AS prompt_tokens, "
+            "COALESCE(SUM(a.completion_tokens),0) AS completion_tokens, "
+            "COALESCE(SUM(a.total_tokens),0) AS total_tokens, "
+            "COALESCE(SUM(a.latency_ms),0) AS latency_ms "
+            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "WHERE p.tenant_id=?",
+            (tenant,),
+        )
+        extraction_cost = cost_total_rows[0] if cost_total_rows else {
+            "attempts": 0, "prompt_tokens": 0, "completion_tokens": 0,
+            "total_tokens": 0, "latency_ms": 0}
+        extraction_cost_runs, _ = _rows_or_empty(
+            conn,
+            "SELECT a.pipeline_run_id AS run_id, COUNT(*) AS attempts, "
+            "COALESCE(SUM(a.prompt_tokens),0) AS prompt_tokens, "
+            "COALESCE(SUM(a.completion_tokens),0) AS completion_tokens, "
+            "COALESCE(SUM(a.total_tokens),0) AS total_tokens, "
+            "COALESCE(SUM(a.latency_ms),0) AS latency_ms, "
+            "MIN(a.created_at) AS started_at "
+            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "WHERE p.tenant_id=? "
+            "GROUP BY a.pipeline_run_id "
+            "ORDER BY started_at DESC LIMIT ?",
+            (tenant, list_limit),
+        )
+
         overdue_windows, _ = _rows_or_empty(
             conn,
             "SELECT stmt_id, opened_at, close_deadline, status FROM reconsolidation_windows "
@@ -679,6 +718,8 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             "volatile_stuck_total": volatile_stuck_total,
             "extraction_failures": extraction_failures,
             "extraction_failures_total": extraction_failures_total,
+            "extraction_cost": extraction_cost,
+            "extraction_cost_runs": extraction_cost_runs,
             "overdue_windows": overdue_windows,
             "overdue_windows_total": overdue_windows_total,
         }
