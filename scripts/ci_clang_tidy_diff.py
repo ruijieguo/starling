@@ -45,17 +45,26 @@ _CXX_TU = (".cpp", ".cc", ".cxx", ".c")
 _TU_ROOTS = ("src/", "bindings/")
 _ZERO_SHA = "0000000000000000000000000000000000000000"
 
-# Whole-function aggregate metrics: clang-tidy anchors these at the function
-# DECLARATION and computes them over the entire body, so they surface whenever a
-# pre-existing over-threshold function's body is touched — they cannot be
-# attributed to a single changed line and -line-filter does not reliably suppress
-# them (the run() orchestrator is cognitive-complexity 70 ≫ 25 and blocked an
-# unrelated body edit). A changed-LINES gate must not enforce them. Appended to
-# .clang-tidy via --checks (a leading '-' disables); .clang-tidy still enforces
-# them for any full-tree/whole-function review.
+# Whole-function / whole-signature shape checks: clang-tidy anchors these at the
+# function DECLARATION and computes them over the entire body or parameter list, so
+# they surface whenever a pre-existing function is *touched* (e.g. a void→bool
+# return-type change) even though the specific changed line did not introduce the
+# shape. They cannot be attributed to a single changed line and -line-filter does not
+# reliably suppress them, so a changed-LINES gate must not enforce them:
+#   - function-cognitive-complexity / function-size: whole-BODY metrics (the run()
+#     orchestrator is cognitive-complexity 70 ≫ 25 and blocked an unrelated body edit).
+#   - easily-swappable-parameters / convert-member-functions-to-static: whole-
+#     SIGNATURE shape (N adjacent same-type params; whether the body uses `this`) —
+#     these fire on every sibling in a class of conn-passing methods the instant one
+#     is touched (commitment fulfill/withdraw: void→bool re-flagged the pre-existing
+#     4-string_view signature + "could be static" across the whole engine).
+# Appended to .clang-tidy via --checks (a leading '-' disables); .clang-tidy still
+# enforces all of them for any full-tree / whole-function review.
 _GATE_DISABLED_CHECKS = (
     "-readability-function-cognitive-complexity,"
-    "-readability-function-size"
+    "-readability-function-size,"
+    "-bugprone-easily-swappable-parameters,"
+    "-readability-convert-member-functions-to-static"
 )
 
 

@@ -100,3 +100,33 @@ TEST(CommitmentEngine, RenegotiateRejectsTerminalSource) {
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM statement_edges WHERE edge_kind='supersedes'"), 0);
     EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM commitments WHERE stmt_id='c1'"), 0);
 }
+
+// #39 片6 manual transitions: fulfill is ACTIVE-guarded + idempotent. A second
+// fulfill is a no-op (returns false, no duplicate commitment.fulfilled) — so a stale
+// dashboard / re-delivered event can't re-fire it.
+TEST(CommitmentEngine, FulfillOnlyActsOnActiveAndIsIdempotent) {
+    auto a = SqliteAdapter::open(":memory:"); auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c1");
+    CommitmentEngine eng(*a);
+    eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
+    EXPECT_TRUE(eng.fulfill(c, "c1", "default", "2026-05-30T11:00:00Z"));   // ACTIVE → FULFILLED
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "FULFILLED");
+    EXPECT_FALSE(eng.fulfill(c, "c1", "default", "2026-05-30T12:00:00Z"));  // already FULFILLED → no-op
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "FULFILLED");
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.fulfilled' AND primary_id='c1'"), 1);
+}
+
+// The core safety the dashboard relies on: a settled commitment can't be force-flipped.
+// withdraw an ACTIVE one (→WITHDRAWN), then a stale fulfill must be a no-op (stays
+// WITHDRAWN, emits no commitment.fulfilled) — never overwritten to FULFILLED.
+TEST(CommitmentEngine, ManualTransitionNeverOverwritesTerminal) {
+    auto a = SqliteAdapter::open(":memory:"); auto& c = a->connection();
+    seed_commits_stmt(c.raw(), "c1");
+    CommitmentEngine eng(*a);
+    eng.create_from_statement(c, "c1", "default", "2026-05-30T18:00:00Z", "2026-05-30T10:00:00Z");
+    EXPECT_TRUE(eng.withdraw(c, "c1", "default", "2026-05-30T11:00:00Z"));  // ACTIVE → WITHDRAWN
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "WITHDRAWN");
+    EXPECT_FALSE(eng.fulfill(c, "c1", "default", "2026-05-30T12:00:00Z"));  // stale fulfill → no-op
+    EXPECT_EQ(scol(c.raw(), "SELECT state FROM commitments WHERE stmt_id='c1'"), "WITHDRAWN");
+    EXPECT_EQ(icol(c.raw(), "SELECT COUNT(*) FROM bus_events WHERE event_type='commitment.fulfilled'"), 0);
+}

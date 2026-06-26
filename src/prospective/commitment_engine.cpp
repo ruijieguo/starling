@@ -148,6 +148,32 @@ void update_state(persistence::Connection& conn, std::string_view stmt_id,
         throw make_sqlite_error(conn.raw(), "commitment: update state step");
 }
 
+// Guarded state UPDATE: transitions ONLY an ACTIVE commitment to new_state, atomically
+// (WHERE ... AND state='ACTIVE'). Returns true iff a row changed — so a settled/missing
+// commitment is a no-op the caller can surface (no event emitted, no terminal-state
+// overwrite by a stale dashboard or a re-delivered commitment.* event). Drives the
+// manual fulfill/withdraw transitions.
+bool update_state_if_active(persistence::Connection& conn, std::string_view stmt_id,
+                            std::string_view tenant_id, std::string_view new_state,
+                            std::string_view now_iso) {
+    const char* sql =
+        "UPDATE commitments SET state=?, updated_at=? "
+        "WHERE tenant_id=? AND stmt_id=? AND state='ACTIVE'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(conn.raw(), "commitment: guarded update prepare");
+    }
+    StmtHandle handle(raw);
+    bind_sv(handle.get(), 1, new_state);
+    bind_sv(handle.get(), 2, now_iso);
+    bind_sv(handle.get(), 3, tenant_id);
+    bind_sv(handle.get(), 4, stmt_id);
+    if (sqlite3_step(handle.get()) != SQLITE_DONE) {
+        throw make_sqlite_error(conn.raw(), "commitment: guarded update step");
+    }
+    return sqlite3_changes(conn.raw()) > 0;
+}
+
 // supersedes chain length ENDING at stmt_id: count stmt_id + each predecessor it
 // superseded. A renegotiation inserts edge src=new, dst=old ("new supersedes
 // old"); following src=cur→dst walks backward through the chain.
@@ -197,24 +223,38 @@ void CommitmentEngine::create_from_statement(persistence::Connection& conn,
 
 // ── fulfill ──────────────────────────────────────────────────────────────────
 
-void CommitmentEngine::fulfill(persistence::Connection& conn,
+// Source-state guard (matches on_deadline_expired / approve_review): only an ACTIVE
+// commitment can be manually fulfilled. The guarded UPDATE is atomic, so a settled
+// (FULFILLED/WITHDRAWN/FIRED/BROKEN/RENEGOTIATED) or missing commitment is a no-op:
+// returns false, emits nothing — a stale dashboard or a re-delivered commitment.fulfilled
+// event can neither overwrite a terminal state nor re-emit the released event.
+bool CommitmentEngine::fulfill(persistence::Connection& conn,
                                std::string_view stmt_id,
                                std::string_view tenant_id,
                                std::string_view now_iso) {
-    update_state(conn, stmt_id, tenant_id, "FULFILLED", now_iso);
+    if (!update_state_if_active(conn, stmt_id, tenant_id, "FULFILLED", now_iso)) {
+        return false;
+    }
     emit_event(conn, "commitment.fulfilled", stmt_id, stmt_id, tenant_id, "{}");
     emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant_id, "{}");
+    return true;
 }
 
 // ── withdraw ─────────────────────────────────────────────────────────────────
 
-void CommitmentEngine::withdraw(persistence::Connection& conn,
+// Same ACTIVE-only guard as fulfill (see above). withdraw releases the commitment,
+// which un-protects the statements it guarded — so silently overwriting a terminal
+// state here would have real blast radius; the guard prevents it.
+bool CommitmentEngine::withdraw(persistence::Connection& conn,
                                 std::string_view stmt_id,
                                 std::string_view tenant_id,
                                 std::string_view now_iso) {
-    update_state(conn, stmt_id, tenant_id, "WITHDRAWN", now_iso);
+    if (!update_state_if_active(conn, stmt_id, tenant_id, "WITHDRAWN", now_iso)) {
+        return false;
+    }
     emit_event(conn, "commitment.withdrawn", stmt_id, stmt_id, tenant_id, "{}");
     emit_event(conn, "commitment.released", stmt_id, stmt_id, tenant_id, "{}");
+    return true;
 }
 
 // ── on_deadline_expired ──────────────────────────────────────────────────────

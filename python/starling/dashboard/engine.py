@@ -257,6 +257,14 @@ class DashboardEngine:
         with self._lock:
             return self._core.approve_review(stmt_id, now=now)
 
+    def fulfill_commitment(self, stmt_id: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.fulfill_commitment(stmt_id, now=now)
+
+    def withdraw_commitment(self, stmt_id: str, *, now=None) -> dict:
+        with self._lock:
+            return self._core.withdraw_commitment(stmt_id, now=now)
+
     def run_replay(self, mode: str, *, now=None) -> dict:
         with self._lock:
             return self._core.run_replay(mode, now=now)

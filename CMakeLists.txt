@@ -140,6 +140,7 @@ target_sources(starling_core PRIVATE
     src/replay/forgetting_curve.cpp
     src/replay/swr_sampler.cpp
     src/replay/consolidation_ops.cpp
+    src/replay/gist_clustering.cpp
     src/replay/replay_scheduler.cpp
     src/reconsolidation/plastic_window.cpp
     src/reconsolidation/arbitration.cpp
