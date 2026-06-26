@@ -185,7 +185,9 @@ def conflicts(db_path: str, tenant: str) -> dict:
             conn,
             "SELECT e.src_id, e.dst_id, e.edge_kind, e.weight, e.metadata_json, "
             "s.subject_id AS src_subject, s.predicate AS src_predicate, s.object_value AS src_object, "
-            "d.subject_id AS dst_subject, d.predicate AS dst_predicate, d.object_value AS dst_object "
+            "s.consolidation_state AS src_state, "
+            "d.subject_id AS dst_subject, d.predicate AS dst_predicate, d.object_value AS dst_object, "
+            "d.consolidation_state AS dst_state "
             "FROM statement_edges e "
             "LEFT JOIN statements s ON s.id = e.src_id AND s.tenant_id = e.tenant_id "
             "LEFT JOIN statements d ON d.id = e.dst_id AND d.tenant_id = e.tenant_id "
