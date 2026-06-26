@@ -24,9 +24,9 @@ public:
     // Manual transitions: ACTIVE-only (atomically guarded). Return true iff the
     // commitment was ACTIVE and transitioned; false (no-op, no event emitted) for a
     // settled (FULFILLED/WITHDRAWN/FIRED/BROKEN/RENEGOTIATED) or missing commitment.
-    bool fulfill(persistence::Connection&, std::string_view stmt_id,
+    bool fulfill(persistence::Connection& conn, std::string_view stmt_id,
                  std::string_view tenant_id, std::string_view now_iso);
-    bool withdraw(persistence::Connection&, std::string_view stmt_id,
+    bool withdraw(persistence::Connection& conn, std::string_view stmt_id,
                   std::string_view tenant_id, std::string_view now_iso);
     void on_deadline_expired(persistence::Connection&, std::string_view stmt_id,
                              std::string_view tenant_id, std::string_view now_iso);
