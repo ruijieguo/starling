@@ -6,6 +6,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/replay/gist_clustering.hpp"
 #include "starling/replay/swr_sampler.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
 
@@ -206,6 +207,12 @@ void write_ledger(sqlite3* db,
         throw make_sqlite_error(db, "write_ledger: step");
 }
 
+// #38-C v1 locked thresholds: a NORM gist needs >= 3 distinct holders sharing a
+// (predicate, canonical_object_hash), each member replayed >= 2 times. Tuning is
+// deferred to v2.
+constexpr GistThresholds kGistThresholds{/*min_distinct_holders=*/3,
+                                         /*min_replay_count=*/2};
+
 // Run compress on sampled rows + emit statement.derived per row + return stats
 ReplayStats do_compress_and_emit(
     persistence::Connection& conn,
@@ -227,6 +234,14 @@ ReplayStats do_compress_and_emit(
     for (const auto& [tenant_id, ids] : by_tenant) {
         auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
         stats.compressed += res.affected;
+        // #38-C Phase 1: after compress, detect NORM-gist candidate clusters
+        // seeded by this batch's (predicate, canonical_object_hash) keys. v1 is
+        // detection-only — no statement is written yet (Phase 2 turns each
+        // cluster into a gated, pipeline-written gist). Read-only, so it cannot
+        // corrupt the batch it just consolidated.
+        const auto clusters =
+            find_norm_gist_clusters(conn, tenant_id, ids, kGistThresholds);
+        stats.gist_candidates += static_cast<int>(clusters.size());
     }
 
     // Emit statement.derived for each compressed stmt
@@ -246,7 +261,8 @@ ReplayStats do_compress_and_emit(
 
     // Write ledger
     std::ostringstream ops_json;
-    ops_json << "{\"compress\":" << stats.compressed << "}";
+    ops_json << "{\"compress\":" << stats.compressed
+             << ",\"gist_candidates\":" << stats.gist_candidates << "}";
     write_ledger(conn.raw(), stats.replay_batch_id, mode,
                  stats.sampled, ops_json.str(), now_iso);
 
