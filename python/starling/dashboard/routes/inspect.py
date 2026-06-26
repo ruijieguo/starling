@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import partial
 
+from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from starling.dashboard import queries
@@ -106,5 +108,17 @@ def build_inspect_router(require_token) -> APIRouter:
         if tree is None:
             raise HTTPException(status_code=404, detail="not_found")
         return tree
+
+    @router.get("/cascade_preview/{statement_id}")
+    async def cascade_preview(request: Request, statement_id: str, max_depth: int = 6):
+        # 片 6 — 级联预览:遗忘前看会波及哪些派生后代(只读 inform-only)。max_depth 钳制。
+        # 唯一会全表扫(反向派生边无索引)的检视路由 → 丢线程,避免大租户下阻塞事件循环。
+        c = _cfg(request)
+        preview = await to_thread.run_sync(partial(
+            queries.cascade_preview, c.db_path, c.tenant, statement_id,
+            max_depth=max(1, min(max_depth, 12))))
+        if preview is None:
+            raise HTTPException(status_code=404, detail="not_found")
+        return preview
 
     return router
