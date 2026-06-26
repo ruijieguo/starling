@@ -80,13 +80,13 @@ void bind_12_prospective(pybind11::module_& m) {
         .def("fulfill",
              [](starling::prospective::CommitmentEngine& s,
                 std::string stmt_id, std::string tenant, std::string now) {
-                 s.fulfill(s.connection(), stmt_id, tenant, now);
+                 return s.fulfill(s.connection(), stmt_id, tenant, now);
              },
              py::arg("stmt_id"), py::arg("tenant_id"), py::arg("now_iso"))
         .def("withdraw",
              [](starling::prospective::CommitmentEngine& s,
                 std::string stmt_id, std::string tenant, std::string now) {
-                 s.withdraw(s.connection(), stmt_id, tenant, now);
+                 return s.withdraw(s.connection(), stmt_id, tenant, now);
              },
              py::arg("stmt_id"), py::arg("tenant_id"), py::arg("now_iso"))
         .def("on_deadline_expired",
