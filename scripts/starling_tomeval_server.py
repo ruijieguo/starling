@@ -415,6 +415,12 @@ def _belief_digest_for(mem, db_path: str, user_content: str) -> str:
 
 def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
+    # Measurement passthrough: pure deepseek baseline through the same robust C++
+    # adapter + identical prompt as the scaffolded path, with NO injection. Gives a
+    # clean paired control (baseline vs in-loop differ only by the scaffold) without
+    # the openai-client HTTP/2 tail-stall the direct baseline path is prone to.
+    if os.environ.get("STARLING_PASSTHROUGH") == "1":
+        return ""
     if not story:
         return ""
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
