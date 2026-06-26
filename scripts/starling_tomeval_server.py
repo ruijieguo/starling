@@ -140,6 +140,46 @@ _CHAIN_RX = re.compile(r"\bdoes\s+(.+?)\s+thinks?\s+the\s+([A-Za-z][\w ]*?)\s+is
 _THINK_SPLIT = re.compile(r"\s+thinks?\s+", re.I)
 
 
+_CK_RX = re.compile(
+    r"\bcommon knowledge among\s+(.+?)\s+that\s+the\s+([A-Za-z][\w ]*?)\s+is\b", re.I)
+
+
+def _parse_ck_question(question: str):
+    """Return (group, theme) for a 'common knowledge among G that the X is ...' question, else None."""
+    m = _CK_RX.search(question or "")
+    if not m:
+        return None
+    raw_group = re.split(r",|\band\b", m.group(1))
+    group = [g.strip() for g in raw_group if g.strip()]
+    if len(group) < 2:
+        return None
+    if any(len(member.split()) != 1 for member in group):  # single-token names only
+        return None
+    return group, m.group(2).strip()
+
+
+def _ck_injection_for(mem, user_content: str) -> str:
+    parsed = _parse_ck_question(user_content)
+    if not parsed:
+        return ""
+    group, theme = parsed
+    try:
+        frontier = _core.KnowledgeFrontier(mem._rt.adapter)
+        ck = _core.is_common_knowledge(
+            mem._rt.adapter, frontier, group, theme, mem._core.tenant, "9999-12-31T23:59:59Z")
+    except Exception:
+        print("[CK-EXC]\n" + traceback.format_exc(), file=sys.stderr, flush=True)
+        return ""
+    nested = ", ".join(group)
+    verdict = ("IS common knowledge" if ck.is_ck else "is NOT common knowledge")
+    return (
+        "Starling's deterministic ToM engine computed: among {" + nested + "}, the "
+        + theme + " location " + verdict
+        + (" (commonly known value: " + ck.ck_value + ")." if ck.is_ck else " (some member's "
+           "latest information was not co-witnessed by all).")
+        + " Use this as the primary answer.")
+
+
 def _parse_chain_question(question: str):
     """Return (chain, theme) for an order>=2 HiToM nested-belief question, else None.
     chain is outermost-first; the deepest (belief-holder) is last. Single-cognizer
@@ -385,15 +425,16 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
         mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
         mem.remember(story)
         chain = _chain_injection_for(mem, user_content)
+        ck = _ck_injection_for(mem, user_content)
         # STARLING_CHAIN_ONLY: competence-gate. Scaffold ONLY order>=2 nested-belief
         # questions (where the chain fires and Starling's deterministic compute beats
-        # deepseek). Stay silent on order 0/1, where deepseek is already strong and the
-        # dump/belief-digest net-HURT (measured: order-1 -0.096). Generalizable principle
-        # (inject only in the model's failure regime), not eval-fitting.
-        if os.environ.get("STARLING_CHAIN_ONLY") == "1" and not chain:
+        # deepseek) and CK questions. Stay silent on order 0/1, where deepseek is already
+        # strong and the dump/belief-digest net-HURT (measured: order-1 -0.096).
+        # Generalizable principle (inject only in the model's failure regime), not eval-fitting.
+        if os.environ.get("STARLING_CHAIN_ONLY") == "1" and not chain and not ck:
             return ""
         dump = _memory_dump(db_path, mem._core.tenant)
-        extra = (chain
+        extra = (chain or ck
                  or _belief_digest_for(mem, db_path, user_content)
                  or _mental_state_injection_for(mem, user_content)
                  or _faux_pas_injection_for(mem, user_content))
