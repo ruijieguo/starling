@@ -431,3 +431,126 @@ TEST(PerceptionReconstructor, ConnectionOnlyCtorDoesNotRecordFrontier) {
     EXPECT_EQ(does_X_know(*a, frontier, "Anne", fact, T, AS_OF), KnowsResult::Unknowable)
         << "connection-only ctor must not populate the presence_log";
 }
+
+// TEST A: multi-room — agent who LEFT a room does not witness events that happen there later.
+// Timeline:
+//   r0 Alice enter kitchen   (Alice+Bob both arrive)
+//   r1 Bob   enter kitchen
+//   r2 Alice find  apple, location="box"  (both in kitchen; both witness apple→box)
+//   r3 Alice leave kitchen
+//   r4 Alice enter garden
+//   r5 Bob   move  apple, location="basket"  (Bob in kitchen; Alice in garden → Alice must NOT witness)
+// Assert: Bob's last known apple = "basket"; Alice's last known apple = "box" (no "basket" row).
+TEST(PerceptionReconstructor, MultiRoomLeftAgentDoesNotWitnessLaterMove) {
+    auto a = open_migrated();
+    const char* T = "t-multiroom-a";
+    // Alice and Bob enter kitchen (enter events: theme = room name in object_value).
+    seed_event(*a, T, "r0", "Alice", "enter", "kitchen", "", R"(["Alice"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "r1", "Bob",   "enter", "kitchen", "", R"(["Bob"])",   2, "2026-01-01T00:00:02Z");
+    // Both in kitchen; Alice finds apple in box.
+    seed_event(*a, T, "r2", "Alice", "find", "apple", "box", R"(["Alice","Bob"])", 3, "2026-01-01T00:00:03Z");
+    // Alice leaves kitchen then enters garden.
+    seed_event(*a, T, "r3", "Alice", "leave", "kitchen", "", R"(["Alice"])", 4, "2026-01-01T00:00:04Z");
+    seed_event(*a, T, "r4", "Alice", "enter", "garden",  "", R"(["Alice"])", 5, "2026-01-01T00:00:05Z");
+    // Bob (still in kitchen) moves apple to basket — Alice is in garden, must NOT witness.
+    seed_event(*a, T, "r5", "Bob", "move", "apple", "basket", R"(["Bob"])", 6, "2026-01-01T00:00:06Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Bob was in the kitchen for the move → should see "basket".
+    auto bob_apple = ps.last_known(T, "Bob", "apple", "location", AS_OF);
+    ASSERT_TRUE(bob_apple.has_value()) << "Bob witnessed the move and must have a perception row";
+    EXPECT_EQ(bob_apple->state_value, "basket");
+
+    // Alice left the kitchen before the move → her last knowledge is still "box".
+    auto alice_apple = ps.last_known(T, "Alice", "apple", "location", AS_OF);
+    ASSERT_TRUE(alice_apple.has_value()) << "Alice witnessed the find (box) and must have a perception row";
+    EXPECT_EQ(alice_apple->state_value, "box")
+        << "Alice left kitchen before the move — she must NOT have learned basket";
+
+    // Strict: Alice must have NO perception row sourced from event r5 (the basket move).
+    auto alice_rows = ps.perceived_for_theme(T, "Alice", "apple", AS_OF);
+    for (const auto& row : alice_rows) {
+        EXPECT_NE(row.source_event_id, "r5")
+            << "Alice must not have a perception row from the kitchen move (she was in garden)";
+    }
+}
+
+// TEST B: session re-enter — only the agent who re-entered witnesses the next move.
+// Timeline:
+//   s0 Avery  enter basement
+//   s1 Nathan enter basement
+//   s2 Abigail enter basement
+//   s3 Avery  move corn location="green_bathtub"   (all three witness)
+//   s4 Avery   leave basement
+//   s5 Nathan  leave basement
+//   s6 Abigail leave basement
+//   s7 Avery   enter waiting_room
+//   s8 Nathan  enter waiting_room
+//   s9 Abigail enter waiting_room
+//   s10 Abigail enter basement   (only Abigail goes back; Nathan+Avery stay in waiting_room)
+//   s11 Abigail move corn location="green_bucket"  (only Abigail witnesses)
+// Assert: Abigail last known corn = "green_bucket"; Nathan = "green_bathtub"; Avery = "green_bathtub".
+TEST(PerceptionReconstructor, SessionReEnterOnlyReturnerWitnessesMove) {
+    auto a = open_migrated();
+    const char* T = "t-reenter-b";
+    // All three enter basement.
+    seed_event(*a, T, "s0", "Avery",   "enter", "basement", "", R"(["Avery"])",   1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "s1", "Nathan",  "enter", "basement", "", R"(["Nathan"])",  2, "2026-01-01T00:00:02Z");
+    seed_event(*a, T, "s2", "Abigail", "enter", "basement", "", R"(["Abigail"])", 3, "2026-01-01T00:00:03Z");
+    // All three witness: corn → green_bathtub.
+    seed_event(*a, T, "s3", "Avery", "move", "corn", "green_bathtub",
+               R"(["Avery","Nathan","Abigail"])", 4, "2026-01-01T00:00:04Z");
+    // All leave basement.
+    seed_event(*a, T, "s4", "Avery",   "leave", "basement", "", R"(["Avery"])",   5, "2026-01-01T00:00:05Z");
+    seed_event(*a, T, "s5", "Nathan",  "leave", "basement", "", R"(["Nathan"])",  6, "2026-01-01T00:00:06Z");
+    seed_event(*a, T, "s6", "Abigail", "leave", "basement", "", R"(["Abigail"])", 7, "2026-01-01T00:00:07Z");
+    // All enter waiting_room.
+    seed_event(*a, T, "s7", "Avery",   "enter", "waiting_room", "", R"(["Avery"])",   8, "2026-01-01T00:00:08Z");
+    seed_event(*a, T, "s8", "Nathan",  "enter", "waiting_room", "", R"(["Nathan"])",  9, "2026-01-01T00:00:09Z");
+    seed_event(*a, T, "s9", "Abigail", "enter", "waiting_room", "", R"(["Abigail"])", 10, "2026-01-01T00:00:10Z");
+    // Only Abigail goes back to basement.
+    seed_event(*a, T, "s10", "Abigail", "enter", "basement", "", R"(["Abigail"])", 11, "2026-01-01T00:00:11Z");
+    // Abigail moves corn to green_bucket — Nathan and Avery are in waiting_room; must NOT witness.
+    seed_event(*a, T, "s11", "Abigail", "move", "corn", "green_bucket",
+               R"(["Abigail"])", 12, "2026-01-01T00:00:12Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct(T);
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+
+    // Abigail re-entered basement and moved the corn → she knows "green_bucket".
+    auto abigail_corn = ps.last_known(T, "Abigail", "corn", "location", AS_OF);
+    ASSERT_TRUE(abigail_corn.has_value()) << "Abigail must have a corn perception row";
+    EXPECT_EQ(abigail_corn->state_value, "green_bucket");
+
+    // Nathan stayed in waiting_room → his last known corn is still "green_bathtub".
+    auto nathan_corn = ps.last_known(T, "Nathan", "corn", "location", AS_OF);
+    ASSERT_TRUE(nathan_corn.has_value()) << "Nathan witnessed the first move (green_bathtub)";
+    EXPECT_EQ(nathan_corn->state_value, "green_bathtub")
+        << "Nathan is in waiting_room, not basement — must NOT have learned green_bucket";
+
+    // Avery stayed in waiting_room → also still "green_bathtub".
+    auto avery_corn = ps.last_known(T, "Avery", "corn", "location", AS_OF);
+    ASSERT_TRUE(avery_corn.has_value()) << "Avery witnessed the first move (green_bathtub)";
+    EXPECT_EQ(avery_corn->state_value, "green_bathtub")
+        << "Avery is in waiting_room, not basement — must NOT have learned green_bucket";
+
+    // Strict: neither Nathan nor Avery has a perception row from s11 (the green_bucket move).
+    auto nathan_rows = ps.perceived_for_theme(T, "Nathan", "corn", AS_OF);
+    for (const auto& row : nathan_rows) {
+        EXPECT_NE(row.source_event_id, "s11")
+            << "Nathan must not have a perception row from the basement move (he was in waiting_room)";
+    }
+    auto avery_rows = ps.perceived_for_theme(T, "Avery", "corn", AS_OF);
+    for (const auto& row : avery_rows) {
+        EXPECT_NE(row.source_event_id, "s11")
+            << "Avery must not have a perception row from the basement move (she was in waiting_room)";
+    }
+}

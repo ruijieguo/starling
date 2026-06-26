@@ -16,6 +16,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -143,6 +144,18 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     if (adapter_) frontier = std::make_unique<KnowledgeFrontier>(*adapter_);
     persistence::TransactionGuard tx(conn_);  // own top-level tx (events already committed)
     std::set<std::string> present(cast.begin(), cast.end());
+    // Room-scoping (multi-room fix): track each agent's current room so that physical
+    // and content events are only witnessed by agents co-located with the event.
+    // An empty string means "unknown/legacy single-room" and matches any event room.
+    std::map<std::string, std::string> agent_room;
+    auto room_of = [&](const std::string& a) -> std::string {
+        auto it = agent_room.find(a);
+        return it != agent_room.end() ? it->second : std::string();
+    };
+    // Two empty strings (one party unknown) → treated as same scene (legacy compat).
+    auto same_scene = [&](const std::string& w_room, const std::string& ev_room) -> bool {
+        return w_room.empty() || ev_room.empty() || w_room == ev_room;
+    };
     // L1b: themes whose ACTUAL content has been revealed by an open/reveal. A label's
     // apparent reading (see/look) seeds the initial content-BELIEF, but once the
     // container is opened the truth is authoritative: a later see/look that merely
@@ -176,8 +189,16 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
         } else if (is_presence_change(ev.predicate)) {
             // Those present at the moment of an enter/leave witnessed it happening.
             perceived_set = witnesses;
-            if (is_leave(ev.predicate)) for (const auto& p : evp) present.erase(p);   // gone AFTER this
-            else                        for (const auto& p : evp) present.insert(p);  // here from now
+            if (is_leave(ev.predicate)) {
+                for (const auto& p : evp) present.erase(p);   // gone AFTER this
+                // Do NOT clear agent_room on leave — present.erase already drops them
+                // as a witness candidate; a later re-enter will update agent_room.
+            } else {
+                for (const auto& p : evp) {
+                    present.insert(p);            // here from now
+                    agent_room[p] = ev.theme;     // ev.theme = the room entered
+                }
+            }
         } else if (is_content(ev.predicate)) {  // content event (see/look apparent; open/reveal actual)
             // Present witnesses (present ∪ actor/participants) learn the container's
             // content. Ordered BEFORE the physical-location branch so a see/open writes
@@ -192,7 +213,10 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             const bool reveal = is_reveal(ev.predicate);
             const bool suppressed = !reveal && revealed_themes.count(ev.theme) != 0;
             if (!ev.location.empty() && !suppressed) {
+                // Room-scope: compute the event's room from the actor (first participant).
+                const std::string ev_room = room_of(evp.empty() ? std::string() : evp[0]);
                 for (const auto& w : witnesses) {
+                    if (!same_scene(room_of(w), ev_room)) continue;  // witness in a different room
                     store::PerceptionStateRow row;
                     row.tenant_id = std::string(tenant); row.cognizer_id = w;
                     row.theme_id = ev.theme; row.state_dim = "content"; row.state_value = ev.location;
@@ -208,7 +232,10 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             // cognizers still witnessed the act, so the engram is visible to them.
             perceived_set = witnesses;
         } else if (!ev.location.empty()) {  // physical location event
+            // Room-scope: compute the event's room from the actor (first participant).
+            const std::string ev_room = room_of(evp.empty() ? std::string() : evp[0]);
             for (const auto& w : witnesses) {
+                if (!same_scene(room_of(w), ev_room)) continue;  // witness in a different room
                 store::PerceptionStateRow row;
                 row.tenant_id = std::string(tenant); row.cognizer_id = w;
                 row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
