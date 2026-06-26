@@ -97,6 +97,7 @@ target_sources(starling_core PRIVATE
     src/extractor/fake_llm_adapter.cpp
     src/extractor/openai_adapter.cpp
     src/extractor/anthropic_adapter.cpp
+    src/extractor/sse_stream.cpp
     src/extractor/json_parser.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp

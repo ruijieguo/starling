@@ -1,5 +1,7 @@
 #pragma once
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace starling::net {
@@ -38,5 +40,20 @@ HttpResult http_post_json(const std::string& url,
                           const std::string& body,
                           int timeout_ms,
                           int max_retries);
+
+// Streaming POST: invokes on_chunk(bytes) for each response-body chunk as it
+// arrives (for SSE). SINGLE attempt, NO retry — once any byte is handed to
+// on_chunk, retrying would duplicate streamed output, so a transport failure is
+// surfaced as ok=false (the caller emits a clean no-reply rather than replaying).
+// on_chunk MUST NOT throw (it runs inside libcurl's write callback); callers pass
+// a non-throwing sink (e.g. sse::StreamAccumulator::feed). `body` is empty on
+// return — the caller assembles the response via on_chunk. ok=true only for
+// http_code < 400; an error-status body still streams to on_chunk but the caller
+// checks ok and discards it (an SSE parser finds no content frames in it anyway).
+HttpResult http_post_json_stream(const std::string& url,
+                                 const std::vector<std::string>& extra_headers,
+                                 const std::string& body,
+                                 int timeout_ms,
+                                 const std::function<void(std::string_view)>& on_chunk);
 
 }  // namespace starling::net

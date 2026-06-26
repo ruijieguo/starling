@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "starling/net/http_post_json.hpp"
+#include "starling/extractor/sse_stream.hpp"
 
 namespace starling::extractor {
 
@@ -60,6 +61,37 @@ LLMResponse AnthropicAdapter::extract(std::string_view prompt,
     } catch (const std::exception&) {
         return {.raw_xml = {}, .ok = false, .error = "malformed_response", .latency_ms = latency_ms};
     }
+}
+
+LLMResponse AnthropicAdapter::generate_stream(std::string_view prompt,
+                                              const TokenSink& on_token) {
+    nlohmann::json body = {
+        {"model",       cfg_.model},
+        {"max_tokens",  cfg_.max_tokens},
+        {"temperature", 0},
+        {"stream",      true},
+        {"messages",    nlohmann::json::array({
+            {{"role", "user"}, {"content", std::string(prompt)}}})}
+    };
+    sse::StreamAccumulator acc(sse::Provider::Anthropic, on_token);
+    const auto started = std::chrono::steady_clock::now();
+    const auto resp = net::http_post_json_stream(
+        cfg_.base_url + "/v1/messages",
+        {"x-api-key: " + cfg_.api_key,
+         "anthropic-version: " + cfg_.api_version},
+        body.dump(), cfg_.timeout_ms,
+        [&acc](std::string_view chunk) { acc.feed(chunk); });
+    const int latency_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    if (!resp.ok) {
+        return {.raw_xml = {}, .ok = false, .error = resp.error, .latency_ms = latency_ms};
+    }
+    return {.raw_xml = acc.text(), .ok = true, .error = {},
+            .prompt_tokens = acc.prompt_tokens(),
+            .completion_tokens = acc.completion_tokens(),
+            .total_tokens = acc.total_tokens(),
+            .latency_ms = latency_ms};
 }
 
 }  // namespace starling::extractor
