@@ -203,6 +203,25 @@ void bind_08_tom(pybind11::module_& m) {
         "Arbitrary multi-order: holder cN's last-perceived state among events all "
         "chain members perceived (chain=[c1..cN]). Returns a StateBelief.");
 
+    py::class_<starling::tom::mentalizing::CommonKnowledgeResult>(m, "CommonKnowledgeResult")
+        .def_readonly("is_ck",                 &starling::tom::mentalizing::CommonKnowledgeResult::is_ck)
+        .def_readonly("ck_value",              &starling::tom::mentalizing::CommonKnowledgeResult::ck_value)
+        .def_readonly("establishing_event_id", &starling::tom::mentalizing::CommonKnowledgeResult::establishing_event_id);
+
+    m.def("is_common_knowledge",
+        [](starling::persistence::SqliteAdapter& adapter,
+           starling::cognizer::KnowledgeFrontier& frontier,
+           const std::vector<std::string>& group, const std::string& theme,
+           const std::string& tenant, const std::string& as_of) {
+            py::gil_scoped_release release;
+            return starling::tom::mentalizing::is_common_knowledge(
+                adapter, frontier, group, theme, tenant, as_of);
+        },
+        py::arg("adapter"), py::arg("frontier"), py::arg("group"), py::arg("theme"),
+        py::arg("tenant"), py::arg("as_of"),
+        "Common knowledge among a group: is the theme's current state co-witnessed by "
+        "ALL of G (public)? Returns a CommonKnowledgeResult.");
+
     py::class_<starling::tom::mentalizing::MentalState>(m, "MentalState")
         .def_readonly("beliefs",     &starling::tom::mentalizing::MentalState::beliefs)
         .def_readonly("knowledge",   &starling::tom::mentalizing::MentalState::knowledge)
