@@ -145,3 +145,51 @@ TEST(WhatDoesXThinkChain, EmptyChainAndUnknownCognizer) {
     auto unknown = what_does_X_think_chain(*a, f, {"c1", "nobody"}, "ball", "tc5", AS);
     EXPECT_FALSE(unknown.has_belief) << "deepest cognizer never perceived the theme";
 }
+
+// TEST A: tell/inform => hearsay; observation primacy in the nested-belief chain.
+// HiToM pattern: H, J, K all enter a room and physically observe ball at L1
+// (a find/move event, all co-present), then all leave; then a tell event claims
+// ball is at L2 with H (the holder) as a recipient. Because H has a first-hand
+// observation (L1), the told row (hearsay, L2) must NOT override it.
+// what_does_X_think_chain([J, K, H], ball) must return L1, not L2.
+TEST(WhatDoesXThinkChain, TellDoesNotOverrideObservationInNestedBelief) {
+    auto a = open_migrated();
+    const char* T = "tc-tell-obs";
+    // All three (H, J, K) witness the ball being found at L1 (participants=[]).
+    seed_event(*a, T, "ta0", "H", "find", "ball", "L1", R"([])", 1, "2026-01-01T00:00:01Z");
+    // All leave together.
+    seed_event(*a, T, "ta1", "H", "leave", "room", "", R"(["H","J","K"])", 2, "2026-01-01T00:00:02Z");
+    // Deceptive tell: C tells H, J, K that ball is at L2 (hearsay — they were not present).
+    seed_event(*a, T, "ta2", "C", "tell", "ball", "L2", R"(["C","H","J","K"])", 3, "2026-01-01T00:00:03Z");
+    starling::cognizer::PerceptionReconstructor(a->connection()).reconstruct(T);
+    starling::cognizer::KnowledgeFrontier f(*a);
+    const char* AS = "2026-01-02T00:00:00Z";
+    // J thinks K thinks H thinks ball is at ...
+    // H observed L1; the tell is hearsay and must NOT override the observation.
+    auto r = what_does_X_think_chain(*a, f, {"J", "K", "H"}, "ball", T, AS);
+    EXPECT_TRUE(r.has_belief);
+    EXPECT_EQ(r.state_value, "L1")
+        << "H's observed L1 must win over the hearsay tell (L2)";
+}
+
+// TEST B: hearsay fills gap when holder never observed the theme.
+// H is named ONLY in a tell (location=L2), never in any physical/observation event.
+// Observers J and K are also in the same tell. Since H has no first-hand observation,
+// the chain must fall back to hearsay and return L2.
+TEST(WhatDoesXThinkChain, HearsayFillsGapWhenHolderNeverObserved) {
+    auto a = open_migrated();
+    const char* T = "tc-hearsay-gap";
+    // J and K physically observe the ball at L1.
+    seed_event(*a, T, "tb0", "J", "find", "ball", "L1", R"(["J","K"])", 1, "2026-01-01T00:00:01Z");
+    // A tell: C tells H, J, K that the ball is at L2. H was never physically present.
+    seed_event(*a, T, "tb1", "C", "tell", "ball", "L2", R"(["C","H","J","K"])", 2, "2026-01-01T00:00:02Z");
+    starling::cognizer::PerceptionReconstructor(a->connection()).reconstruct(T);
+    starling::cognizer::KnowledgeFrontier f(*a);
+    const char* AS = "2026-01-02T00:00:00Z";
+    // J thinks K thinks H thinks ball is at ...
+    // H has NO observation; hearsay fallback must yield L2.
+    auto r = what_does_X_think_chain(*a, f, {"J", "K", "H"}, "ball", T, AS);
+    EXPECT_TRUE(r.has_belief);
+    EXPECT_EQ(r.state_value, "L2")
+        << "H never observed; hearsay fallback must return L2";
+}

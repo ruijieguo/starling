@@ -9,9 +9,13 @@
 #include "starling/store/perception_state_store.hpp"
 
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <sqlite3.h>
+#include "starling/persistence/sqlite_handles.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
 
 namespace starling::tom::mentalizing {
 
@@ -42,24 +46,96 @@ StateBelief what_does_X_think_chain(
     if (chain_n.size() == 1) {
         row = ps.last_known(tenant, holder, theme_n, dim, as_of);   // first-order
     } else {
-        // Each observer's perceived-event-id set for the theme.
+        // Observation-primacy (nested-belief chain only):
+        // tell/inform events are HEARSAY — the reconstructor writes a perception_state
+        // row for each recipient, but these rows represent what the agent was TOLD, not
+        // what they first-hand OBSERVED. When an agent has at least one real observation,
+        // hearsay must NOT override it. Hearsay is used only as a fallback to fill gaps
+        // (an agent who was never physically present and was only ever told).
+        //
+        // Build the set of statement ids for all tell/inform OCCURRED events in the
+        // tenant. Any perception_state row whose source_event_id is in this set is hearsay.
+        std::set<std::string> reported_ids;
+        {
+            sqlite3* db = conn.raw();
+            const char* sql =
+                "SELECT id FROM statements "
+                "WHERE tenant_id=? AND modality='occurred' "
+                "AND predicate IN ('tell','inform')";
+            sqlite3_stmt* raw_stmt = nullptr;
+            if (sqlite3_prepare_v2(db, sql, -1, &raw_stmt, nullptr) != SQLITE_OK)
+                throw persistence::detail::make_sqlite_error(db, "what_does_X_think_chain: reported_ids prepare");
+            persistence::StmtHandle h(raw_stmt);
+            persistence::detail::bind_sv(h.get(), 1, tenant);
+            int rc;
+            while ((rc = sqlite3_step(h.get())) == SQLITE_ROW) {
+                const auto* t = sqlite3_column_text(h.get(), 0);
+                if (t) reported_ids.insert(reinterpret_cast<const char*>(t));
+            }
+            if (rc != SQLITE_DONE)
+                throw persistence::detail::make_sqlite_error(db, "what_does_X_think_chain: reported_ids step");
+        }
+
+        // Each observer's co-witness set: only the source_event_ids of events they
+        // OBSERVED (non-hearsay). Observers reason from what they SAW, not what they
+        // were told, so we exclude reported (tell/inform) rows here.
         std::vector<std::unordered_set<std::string>> obs_sets;
         obs_sets.reserve(chain_n.size() - 1);
         for (std::size_t i = 0; i + 1 < chain_n.size(); ++i) {
             auto rows = ps.perceived_for_theme(tenant, chain_n[i], theme_n, as_of);
             std::unordered_set<std::string> s;
-            for (const auto& r : rows) s.insert(r.source_event_id);
+            for (const auto& r : rows) {
+                if (!reported_ids.count(r.source_event_id))  // exclude hearsay
+                    s.insert(r.source_event_id);
+            }
             obs_sets.push_back(std::move(s));
         }
-        // Holder's highest-position row whose event every observer also perceived.
+
+        // Holder's highest-position OBSERVED (non-hearsay) row whose event every
+        // observer also observed. Observation primacy: skip rows sourced from a
+        // tell/inform event when the holder has any first-hand observation at all.
         auto h_rows = ps.perceived_for_theme(tenant, holder, theme_n, as_of);
+
+        // Determine whether the holder has ANY first-hand observation (non-hearsay).
+        // If ALL of the holder's rows are hearsay, fall back to considering all rows
+        // (hearsay fills gaps when the holder was never physically present).
+        bool holder_has_observation = false;
+        for (const auto& r : h_rows) {
+            if (!reported_ids.count(r.source_event_id)) { holder_has_observation = true; break; }
+        }
+
         for (auto it = h_rows.rbegin(); it != h_rows.rend(); ++it) {
             if (it->state_dim != dim) continue;
+            // Skip hearsay rows when the holder has at least one first-hand observation.
+            if (holder_has_observation && reported_ids.count(it->source_event_id)) continue;
             bool in_all = true;
             for (const auto& s : obs_sets) {
                 if (!s.count(it->source_event_id)) { in_all = false; break; }
             }
             if (in_all) { row = *it; break; }
+        }
+
+        // Hearsay fallback: if no observed row matched the co-witness intersection
+        // (e.g. the holder was only ever told), retry with all rows including hearsay
+        // so a purely-told holder still yields a belief (gap-filling, not overriding).
+        if (!row && !holder_has_observation) {
+            for (auto it = h_rows.rbegin(); it != h_rows.rend(); ++it) {
+                if (it->state_dim != dim) continue;
+                // In fallback mode the obs_sets already exclude hearsay; a tell event
+                // won't be in any observer's observed set, so we need to check the full
+                // (including hearsay) observer rows to find a shared event. Re-build
+                // observer sets with all rows for the fallback pass.
+                bool in_all = true;
+                for (std::size_t i = 0; i + 1 < chain_n.size(); ++i) {
+                    auto o_rows = ps.perceived_for_theme(tenant, chain_n[i], theme_n, as_of);
+                    bool found = false;
+                    for (const auto& or_ : o_rows) {
+                        if (or_.source_event_id == it->source_event_id) { found = true; break; }
+                    }
+                    if (!found) { in_all = false; break; }
+                }
+                if (in_all) { row = *it; break; }
+            }
         }
     }
     if (!row) return out;
