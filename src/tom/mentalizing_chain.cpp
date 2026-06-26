@@ -125,6 +125,7 @@ StateBelief what_does_X_think_chain(
         // (e.g. the holder was only ever told), retry with all rows including hearsay
         // so a purely-told holder still yields a belief (gap-filling, not overriding).
         if (!row && !holder_has_observation) {
+            // NOLINTNEXTLINE(modernize-loop-convert) -- reverse iteration is intentional (highest position first)
             for (auto it = h_rows.rbegin(); it != h_rows.rend(); ++it) {
                 if (it->state_dim != dim) { continue; }
                 // In fallback mode the obs_sets already exclude hearsay; a tell event

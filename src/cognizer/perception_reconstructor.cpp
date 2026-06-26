@@ -191,13 +191,13 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             // Those present at the moment of an enter/leave witnessed it happening.
             perceived_set = witnesses;
             if (is_leave(ev.predicate)) {
-                for (const auto& p : evp) { present.erase(p); }   // gone AFTER this
+                for (const auto& who : evp) { present.erase(who); }   // gone AFTER this
                 // Do NOT clear agent_room on leave — present.erase already drops them
                 // as a witness candidate; a later re-enter will update agent_room.
             } else {
-                for (const auto& p : evp) {
-                    present.insert(p);            // here from now
-                    agent_room[p] = ev.theme;     // ev.theme = the room entered
+                for (const auto& who : evp) {
+                    present.insert(who);          // here from now
+                    agent_room[who] = ev.theme;   // ev.theme = the room entered
                 }
             }
         } else if (is_content(ev.predicate)) {  // content event (see/look apparent; open/reveal actual)
