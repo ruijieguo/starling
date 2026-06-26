@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { api } from '$lib/api';
+	import { api, ApiError } from '$lib/api';
 	import { byDeadline, deriveFired } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
+	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Badge, Card, EmptyState, Skeleton, Input, Drawer } from '$lib/components/ui';
+	import { Badge, Card, EmptyState, Skeleton, Input, Drawer, Button, ConfirmDialog } from '$lib/components/ui';
 
 	type CommitmentRow = {
 		stmt_id: string;
@@ -55,6 +56,43 @@
 		detailOpen = true;
 	}
 	const fmtv = (v: unknown) => (v == null || v === '' ? '—' : String(v));
+
+	// #39 片6 手动流转(仅对 ACTIVE 有效):fulfill=标记完成;withdraw=撤回(释放保护,需确认)。
+	// 核心 ACTIVE 守卫,非 ACTIVE → 路由 409 → 提示并刷新(可能已被后台 tick 改状态)。
+	// 全经单写者命令漏斗(POST /api/commitment/*),成功后重取刷新看板。
+	let busy = $state(false);
+	let confirmOpen = $state(false);
+	let confirmCfg = $state<{ title: string; desc: string; run: () => Promise<void> } | null>(null);
+
+	async function transition(stmtId: string, kind: 'fulfill' | 'withdraw') {
+		busy = true;
+		try {
+			await api.post(`/api/commitment/${kind}`, { stmt_id: stmtId });
+			toast.success(kind === 'fulfill' ? '已标记完成' : '已撤回');
+			detailOpen = false;
+			await q.refetch();
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 409) {
+				// 409 同时覆盖「已非 ACTIVE(后台 tick 改了状态)」与「该承诺不存在」两种 no-op。
+				toast.error('无法流转:该承诺已非 ACTIVE 或不存在(可能已被后台 tick 改变);已刷新');
+				detailOpen = false;
+				await q.refetch();
+			} else {
+				toast.error(`流转失败:${e instanceof Error ? e.message : String(e)}`);
+			}
+		} finally {
+			busy = false;
+		}
+	}
+
+	function askWithdraw(stmtId: string) {
+		confirmCfg = {
+			title: '撤回此承诺?',
+			desc: '承诺 → WITHDRAWN 并释放保护:它保护的记忆此后按正常衰减、可能被遗忘。仅对 ACTIVE 有效,不可逆。',
+			run: () => transition(stmtId, 'withdraw')
+		};
+		confirmOpen = true;
+	}
 </script>
 
 <PageHeader title="承诺状态机" subtitle="Commitment:created → ACTIVE → 终态;⚠ DUE 与逾期醒目。" />
@@ -116,5 +154,25 @@
 				</div>
 			{/each}
 		</dl>
+		{#if detail.state === 'ACTIVE'}
+			<div class="mt-4 flex gap-2 border-t border-border pt-4">
+				<Button variant="soft" disabled={busy} onclick={() => transition(detail!.stmt_id, 'fulfill')}>
+					标记完成
+				</Button>
+				<Button variant="danger" disabled={busy} onclick={() => askWithdraw(detail!.stmt_id)}>
+					撤回
+				</Button>
+			</div>
+			<p class="mt-2 text-xs text-subtle">
+				手动流转仅对 ACTIVE 承诺有效;fire / break / auto-withdraw 由后台 tick 自动处理。
+			</p>
+		{/if}
 	{/if}
 </Drawer>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title={confirmCfg?.title ?? ''}
+	description={confirmCfg?.desc ?? ''}
+	onconfirm={() => confirmCfg?.run()}
+/>

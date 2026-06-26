@@ -101,6 +101,10 @@ class MemoryCore:
         self._vector_store_path = vector_store_path
         self.idx = None
         self.policy = _core.PolicyEngine(rt.adapter)
+        # Manual commitment transitions (片6): conn-free engine over the same single
+        # adapter; fulfill/withdraw are ACTIVE-guarded in C++. Held under the engine
+        # lock by the dashboard caller (single writer).
+        self.commitment_engine = _core.CommitmentEngine(rt.adapter)
         self.emb = None
         self.semantic = None
         self.completor = None
@@ -325,6 +329,22 @@ class MemoryCore:
         eid = _core.request_reconsolidation(self.rt.adapter, self.tenant, stmt_id,
                                             request_id, now_iso)
         return {"event_id": eid}
+
+    def fulfill_commitment(self, stmt_id: str, *, now=None) -> dict:
+        """手动流转:ACTIVE 承诺 → FULFILLED。核心 `CommitmentEngine::fulfill` 原子守卫
+        (只动 ACTIVE;已结算/缺失 → no-op,不改状态、不发事件)。acted=False 时路由回 409。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        acted = self.commitment_engine.fulfill(stmt_id=stmt_id, tenant_id=self.tenant,
+                                               now_iso=now_iso)
+        return {"acted": bool(acted), "state": "FULFILLED"}
+
+    def withdraw_commitment(self, stmt_id: str, *, now=None) -> dict:
+        """手动流转:ACTIVE 承诺 → WITHDRAWN(同 fulfill 的 ACTIVE 守卫)。withdraw 释放承诺
+        → 它保护的记忆此后可被衰减(有血缘后果)。acted=False(非 ACTIVE)时路由回 409。"""
+        now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        acted = self.commitment_engine.withdraw(stmt_id=stmt_id, tenant_id=self.tenant,
+                                                now_iso=now_iso)
+        return {"acted": bool(acted), "state": "WITHDRAWN"}
 
     def close(self) -> None:
         # The SqliteAdapter is closed when its runtime/handle is GC'd; nothing

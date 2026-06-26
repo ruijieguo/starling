@@ -67,6 +67,9 @@ class ReplayTriggerBody(BaseModel):
 class ReconsolidateBody(BaseModel):
     stmt_id: str            # 仅对 consolidated 行有效(下游守卫)
 
+class CommitmentBody(BaseModel):
+    stmt_id: str            # ACTIVE 承诺手动流转(fulfill/withdraw);非 ACTIVE → 409
+
 
 def _engine(request: Request):
     """Return the DashboardEngine, building it lazily from config.
@@ -186,6 +189,30 @@ def build_commands_router(require_token) -> APIRouter:
         r = await to_thread.run_sync(partial(
             eng.request_reconsolidation, body.stmt_id, request_id=uuid.uuid4().hex))
         await _broadcast(request, "tick", {"reconsolidate_requested": body.stmt_id})
+        return r
+
+    @router.post("/commitment/fulfill")
+    async def commitment_fulfill(body: CommitmentBody, request: Request):
+        # 手动 fulfill:ACTIVE→FULFILLED(核心 CommitmentEngine 原子守卫)。非 ACTIVE 不
+        # 改状态 → 409(不广播);成功广播 commitment_transition 供面板即时刷新。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(eng.fulfill_commitment, body.stmt_id))
+        if not r["acted"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not_active")
+        await _broadcast(request, "commitment_transition",
+                         {"stmt_id": body.stmt_id, "state": r["state"]})
+        return r
+
+    @router.post("/commitment/withdraw")
+    async def commitment_withdraw(body: CommitmentBody, request: Request):
+        # 手动 withdraw:ACTIVE→WITHDRAWN(释放承诺 → 它保护的记忆此后可衰减)。同样
+        # ACTIVE-only:非 ACTIVE → 409,不广播。
+        eng = _engine(request)
+        r = await to_thread.run_sync(partial(eng.withdraw_commitment, body.stmt_id))
+        if not r["acted"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not_active")
+        await _broadcast(request, "commitment_transition",
+                         {"stmt_id": body.stmt_id, "state": r["state"]})
         return r
 
     return router
