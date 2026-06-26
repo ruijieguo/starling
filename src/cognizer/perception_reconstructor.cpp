@@ -148,11 +148,12 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     // and content events are only witnessed by agents co-located with the event.
     // An empty string means "unknown/legacy single-room" and matches any event room.
     std::map<std::string, std::string> agent_room;
-    auto room_of = [&](const std::string& a) -> std::string {
-        auto it = agent_room.find(a);
-        return it != agent_room.end() ? it->second : std::string();
+    auto room_of = [&](const std::string& agent) -> std::string {
+        auto found = agent_room.find(agent);
+        return found != agent_room.end() ? found->second : std::string();
     };
     // Two empty strings (one party unknown) → treated as same scene (legacy compat).
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     auto same_scene = [&](const std::string& w_room, const std::string& ev_room) -> bool {
         return w_room.empty() || ev_room.empty() || w_room == ev_room;
     };
@@ -190,7 +191,7 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             // Those present at the moment of an enter/leave witnessed it happening.
             perceived_set = witnesses;
             if (is_leave(ev.predicate)) {
-                for (const auto& p : evp) present.erase(p);   // gone AFTER this
+                for (const auto& p : evp) { present.erase(p); }   // gone AFTER this
                 // Do NOT clear agent_room on leave — present.erase already drops them
                 // as a witness candidate; a later re-enter will update agent_room.
             } else {
@@ -216,7 +217,7 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                 // Room-scope: compute the event's room from the actor (first participant).
                 const std::string ev_room = room_of(evp.empty() ? std::string() : evp[0]);
                 for (const auto& w : witnesses) {
-                    if (!same_scene(room_of(w), ev_room)) continue;  // witness in a different room
+                    if (!same_scene(room_of(w), ev_room)) { continue; }  // witness in a different room
                     store::PerceptionStateRow row;
                     row.tenant_id = std::string(tenant); row.cognizer_id = w;
                     row.theme_id = ev.theme; row.state_dim = "content"; row.state_value = ev.location;
@@ -235,7 +236,7 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
             // Room-scope: compute the event's room from the actor (first participant).
             const std::string ev_room = room_of(evp.empty() ? std::string() : evp[0]);
             for (const auto& w : witnesses) {
-                if (!same_scene(room_of(w), ev_room)) continue;  // witness in a different room
+                if (!same_scene(room_of(w), ev_room)) { continue; }  // witness in a different room
                 store::PerceptionStateRow row;
                 row.tenant_id = std::string(tenant); row.cognizer_id = w;
                 row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;

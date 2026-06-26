@@ -57,23 +57,28 @@ StateBelief what_does_X_think_chain(
         // tenant. Any perception_state row whose source_event_id is in this set is hearsay.
         std::set<std::string> reported_ids;
         {
-            sqlite3* db = conn.raw();
+            sqlite3* raw_db = conn.raw();
             const char* sql =
                 "SELECT id FROM statements "
                 "WHERE tenant_id=? AND modality='occurred' "
                 "AND predicate IN ('tell','inform')";
             sqlite3_stmt* raw_stmt = nullptr;
-            if (sqlite3_prepare_v2(db, sql, -1, &raw_stmt, nullptr) != SQLITE_OK)
-                throw persistence::detail::make_sqlite_error(db, "what_does_X_think_chain: reported_ids prepare");
-            persistence::StmtHandle h(raw_stmt);
-            persistence::detail::bind_sv(h.get(), 1, tenant);
-            int rc;
-            while ((rc = sqlite3_step(h.get())) == SQLITE_ROW) {
-                const auto* t = sqlite3_column_text(h.get(), 0);
-                if (t) reported_ids.insert(reinterpret_cast<const char*>(t));
+            if (sqlite3_prepare_v2(raw_db, sql, -1, &raw_stmt, nullptr) != SQLITE_OK) {
+                throw persistence::detail::make_sqlite_error(raw_db, "what_does_X_think_chain: reported_ids prepare");
             }
-            if (rc != SQLITE_DONE)
-                throw persistence::detail::make_sqlite_error(db, "what_does_X_think_chain: reported_ids step");
+            persistence::StmtHandle stmt_handle(raw_stmt);
+            persistence::detail::bind_sv(stmt_handle.get(), 1, tenant);
+            int step_rc = 0;
+            while ((step_rc = sqlite3_step(stmt_handle.get())) == SQLITE_ROW) {
+                const auto* id_text = sqlite3_column_text(stmt_handle.get(), 0);
+                if (id_text != nullptr) {
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                    reported_ids.insert(reinterpret_cast<const char*>(id_text));
+                }
+            }
+            if (step_rc != SQLITE_DONE) {
+                throw persistence::detail::make_sqlite_error(raw_db, "what_does_X_think_chain: reported_ids step");
+            }
         }
 
         // Each observer's co-witness set: only the source_event_ids of events they
@@ -81,14 +86,15 @@ StateBelief what_does_X_think_chain(
         // were told, so we exclude reported (tell/inform) rows here.
         std::vector<std::unordered_set<std::string>> obs_sets;
         obs_sets.reserve(chain_n.size() - 1);
-        for (std::size_t i = 0; i + 1 < chain_n.size(); ++i) {
-            auto rows = ps.perceived_for_theme(tenant, chain_n[i], theme_n, as_of);
-            std::unordered_set<std::string> s;
-            for (const auto& r : rows) {
-                if (!reported_ids.count(r.source_event_id))  // exclude hearsay
-                    s.insert(r.source_event_id);
+        for (std::size_t idx = 0; idx + 1 < chain_n.size(); ++idx) {
+            auto rows = ps.perceived_for_theme(tenant, chain_n[idx], theme_n, as_of);
+            std::unordered_set<std::string> observed;
+            for (const auto& obs_row : rows) {
+                if (!reported_ids.contains(obs_row.source_event_id)) {  // exclude hearsay
+                    observed.insert(obs_row.source_event_id);
+                }
             }
-            obs_sets.push_back(std::move(s));
+            obs_sets.push_back(std::move(observed));
         }
 
         // Holder's highest-position OBSERVED (non-hearsay) row whose event every
@@ -100,17 +106,17 @@ StateBelief what_does_X_think_chain(
         // If ALL of the holder's rows are hearsay, fall back to considering all rows
         // (hearsay fills gaps when the holder was never physically present).
         bool holder_has_observation = false;
-        for (const auto& r : h_rows) {
-            if (!reported_ids.count(r.source_event_id)) { holder_has_observation = true; break; }
+        for (const auto& holder_row : h_rows) {
+            if (!reported_ids.contains(holder_row.source_event_id)) { holder_has_observation = true; break; }
         }
 
         for (auto it = h_rows.rbegin(); it != h_rows.rend(); ++it) {
-            if (it->state_dim != dim) continue;
+            if (it->state_dim != dim) { continue; }
             // Skip hearsay rows when the holder has at least one first-hand observation.
-            if (holder_has_observation && reported_ids.count(it->source_event_id)) continue;
+            if (holder_has_observation && reported_ids.contains(it->source_event_id)) { continue; }
             bool in_all = true;
-            for (const auto& s : obs_sets) {
-                if (!s.count(it->source_event_id)) { in_all = false; break; }
+            for (const auto& observed_set : obs_sets) {
+                if (!observed_set.contains(it->source_event_id)) { in_all = false; break; }
             }
             if (in_all) { row = *it; break; }
         }
@@ -120,17 +126,17 @@ StateBelief what_does_X_think_chain(
         // so a purely-told holder still yields a belief (gap-filling, not overriding).
         if (!row && !holder_has_observation) {
             for (auto it = h_rows.rbegin(); it != h_rows.rend(); ++it) {
-                if (it->state_dim != dim) continue;
+                if (it->state_dim != dim) { continue; }
                 // In fallback mode the obs_sets already exclude hearsay; a tell event
                 // won't be in any observer's observed set, so we need to check the full
                 // (including hearsay) observer rows to find a shared event. Re-build
                 // observer sets with all rows for the fallback pass.
                 bool in_all = true;
-                for (std::size_t i = 0; i + 1 < chain_n.size(); ++i) {
-                    auto o_rows = ps.perceived_for_theme(tenant, chain_n[i], theme_n, as_of);
+                for (std::size_t idx = 0; idx + 1 < chain_n.size(); ++idx) {
+                    auto o_rows = ps.perceived_for_theme(tenant, chain_n[idx], theme_n, as_of);
                     bool found = false;
-                    for (const auto& or_ : o_rows) {
-                        if (or_.source_event_id == it->source_event_id) { found = true; break; }
+                    for (const auto& obs_row : o_rows) {
+                        if (obs_row.source_event_id == it->source_event_id) { found = true; break; }
                     }
                     if (!found) { in_all = false; break; }
                 }
