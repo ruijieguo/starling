@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api';
+	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { toast } from '$lib/ui/toast';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -54,6 +54,7 @@
 	let busy = $state(false);
 	let confirmOpen = $state(false);
 	let confirmCfg = $state<{ title: string; desc: string; run: () => Promise<void> } | null>(null);
+	let confirmForId = $state(''); // guards the background cascade-preview against a stale dialog
 
 	async function act(label: string, fn: () => Promise<unknown>) {
 		busy = true;
@@ -71,13 +72,38 @@
 	const approve = (id: string) => act('批准', () => api.post('/api/review', { stmt_id: id }));
 	const reconsolidate = (id: string) =>
 		act('请求再固化', () => api.post('/api/reconsolidate', { stmt_id: id }));
+	// 片 6 级联预览(inform-only):立刻开确认框(不阻塞遗忘),再后台取「会波及哪些派生
+	// 后代」折进提示。预览只读、best-effort——慢/失败都不挡操作;若用户已切到别的语句
+	// (confirmForId 变了)或框已关,陈旧结果丢弃。遗忘仍只逻辑删除本条,不级联删后代。
 	function askForget(id: string, reject: boolean) {
+		const base = '逻辑删除(→ forgotten,移出检索与回放池)。不可逆。';
+		confirmForId = id;
 		confirmCfg = {
 			title: reject ? '拒绝并遗忘此语句?' : '遗忘此语句?',
-			desc: '逻辑删除(→ forgotten,移出检索与回放池)。不可逆。',
+			desc: base,
 			run: () => act(reject ? '拒绝' : '遗忘', () => api.post('/api/forget', { ids: [id] }))
 		};
 		confirmOpen = true;
+		api
+			.get<CascadePreview>(`/api/cascade_preview/${encodeURIComponent(id)}`)
+			.then((preview) => {
+				if (!confirmOpen || confirmForId !== id || preview.affected_count === 0) return;
+				const sample = preview.affected
+					.slice(0, 5)
+					.map((a) => `${a.subject_id} ${a.predicate} ${a.object_value}`)
+					.join('；');
+				const more = preview.affected_count > 5 ? ` 等 ${preview.affected_count} 条` : '';
+				confirmCfg = {
+					...confirmCfg!,
+					desc:
+						base +
+						` ⚠ 有 ${preview.affected_count}${preview.truncated ? '+' : ''} 条记忆派生自它（${sample}${more}）;` +
+						'遗忘不会级联删除它们,但它们会成为孤儿派生（derived_from 指向已遗忘的源）。'
+				};
+			})
+			.catch(() => {
+				/* 预览 best-effort:取不到就保持纯确认框 */
+			});
 	}
 </script>
 

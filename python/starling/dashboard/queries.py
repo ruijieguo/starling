@@ -497,6 +497,86 @@ def provenance(db_path: str, tenant: str, statement_id: str, *, max_depth: int =
         return root if root.get("found") else None
 
 
+def cascade_preview(db_path: str, tenant: str, statement_id: str,
+                    *, max_depth: int = 6, max_nodes: int = 200) -> dict | None:
+    """片 6 级联预览:遗忘某语句前,预览会级联波及哪些「派生自它」的语句(只读检视)。
+
+    与 provenance 反向——provenance 上溯祖先(我从何而来);这里下溯后代(谁派生自我):
+    BFS statements.derived_from_json(该 JSON 数组含本 id 的行即直接后代)逐层展开,
+    seen 去重(环不爆栈),max_depth 截断(truncated 标注还有更深)。tenant-scoped。
+    返回 None 当根语句缺失/跨租户(路由 → 404)。
+
+    inform-only:本接口只读,绝不改记忆。实际遗忘仍是 /api/forget 的单条逻辑删除——
+    后代不会被自动级联删除;预览只是让用户看清「遗忘它,这 N 条派生记忆将成为孤儿派生
+    (其 derived_from 指向一条已 forgotten 的源)」后再决定。级联删除是另一回事(核心写,
+    另议),不在此。"""
+    with open_ro(db_path) as conn:
+        root, _ = _rows_or_empty(
+            conn, "SELECT id FROM statements WHERE tenant_id=? AND id=?",
+            (tenant, statement_id))
+        if not root:
+            return None
+        # One scan of the tenant's edges; parse each row's derived_from_json in Python
+        # (TOLERANT, via _safe_json) so a single malformed row only skips itself rather
+        # than aborting the whole walk — a SQL json_each(EXISTS) approach raises on the
+        # first bad row, which _rows_or_empty would swallow into a false "0 affected"
+        # (a safety green-light that isn't true). Build the reverse parent→children
+        # graph once, then BFS in memory (also avoids a per-node full-table scan).
+        # The scan is tenant-wide and intentionally un-LIMITed (reverse edges need the
+        # full edge set to be correct); memory is O(tenant statements) — fine at the
+        # dashboard's single-store scale, and the returned payload is capped by max_nodes.
+        rows, _ = _rows_or_empty(
+            conn,
+            "SELECT id, subject_id, predicate, object_value, consolidation_state, "
+            "review_status, provenance, derived_from_json FROM statements "
+            "WHERE tenant_id=? ORDER BY created_at ASC",
+            (tenant,))
+        children: dict[str, list[str]] = {}
+        meta: dict[str, dict] = {}
+        for row in rows:
+            rid = str(row["id"])
+            meta[rid] = {
+                "id": rid, "subject_id": row["subject_id"], "predicate": row["predicate"],
+                "object_value": row["object_value"],
+                "consolidation_state": row["consolidation_state"],
+                "review_status": row["review_status"], "provenance": row["provenance"]}
+            parents, ok = _safe_json(row["derived_from_json"], [])
+            if ok and isinstance(parents, list):
+                for parent in parents:
+                    if parent:
+                        children.setdefault(str(parent), []).append(rid)
+
+        seen: set[str] = {str(statement_id)}
+        affected: list[dict] = []
+        frontier = [str(statement_id)]
+        depth = 0
+        capped = False
+        while frontier and depth < max_depth and not capped:
+            next_frontier: list[str] = []
+            for parent_id in frontier:
+                for child_id in children.get(parent_id, []):
+                    if child_id in seen:
+                        continue
+                    if len(affected) >= max_nodes:
+                        capped = True
+                        break
+                    seen.add(child_id)
+                    affected.append({**meta[child_id], "depth": depth + 1})
+                    next_frontier.append(child_id)
+                if capped:
+                    break
+            frontier = next_frontier
+            depth += 1
+        # truncated = hit the node cap, OR a frontier node at the depth cap still has an
+        # unseen child beyond max_depth (mirror provenance's has-deeper check — a subtree
+        # that fits exactly at the boundary reports False, not a misleading "+").
+        deeper = any(child_id not in seen
+                     for parent_id in frontier
+                     for child_id in children.get(parent_id, []))
+        return {"stmt_id": str(statement_id), "affected": affected,
+                "affected_count": len(affected), "truncated": capped or deeper}
+
+
 def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> dict:
     """透视镜取镜:按文本找语句(只读 LIKE over subject/predicate/object_value,
     tenant-scoped,有界 LIMIT)。副作用自由(open_ro)——故意不用语义召回,绕开

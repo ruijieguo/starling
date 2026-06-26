@@ -184,6 +184,25 @@ export type ProvenanceNode = {
 	truncated?: boolean; // 到深度上限,更深来源未展开
 };
 
+// 片 6 — 级联预览(GET /api/cascade_preview/{id}):遗忘前看会波及哪些「派生自它」的
+// 后代(只读 inform-only;遗忘不级联删除,只是让用户看清波及面再决定)。
+export type CascadeAffected = {
+	id: string;
+	subject_id: string;
+	predicate: string;
+	object_value: string;
+	consolidation_state: string;
+	review_status: string;
+	provenance: string;
+	depth: number; // 1=直接派生,2+=传递后代
+};
+export type CascadePreview = {
+	stmt_id: string;
+	affected: CascadeAffected[];
+	affected_count: number;
+	truncated: boolean; // 到深度上限,还有更深后代未展开
+};
+
 // 透视镜取镜:只读文本查找(GET /api/statement_search)。
 export type StatementSearchResponse = {
 	rows: {
