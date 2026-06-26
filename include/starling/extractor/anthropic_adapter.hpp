@@ -32,6 +32,13 @@ public:
     LLMResponse extract(std::string_view prompt,
                         std::string_view prompt_input_hash) override;
 
+    // Real token-by-token streaming: POST stream:true, parse the Anthropic SSE
+    // frames (content_block_delta / message_start / message_delta) via
+    // sse::StreamAccumulator, emit each through on_token, and return the
+    // assembled reply + usage (same LLMResponse extract() returns).
+    LLMResponse generate_stream(std::string_view prompt,
+                                const TokenSink& on_token) override;
+
 private:
     Config cfg_;
 };

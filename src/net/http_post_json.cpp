@@ -40,6 +40,17 @@ std::size_t write_cb(char* ptr, std::size_t size, std::size_t nmemb, void* userd
     return size * nmemb;
 }
 
+// Streaming write callback: forward each received chunk to the caller's sink
+// instead of buffering. userdata is the ChunkSink (set via CURLOPT_WRITEDATA).
+// The sink must not throw — it runs inside libcurl (a C frame); callers pass a
+// non-throwing sink, so no try/catch is needed here.
+std::size_t stream_write_cb(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
+    const std::size_t total = size * nmemb;
+    const auto* sink = static_cast<const std::function<void(std::string_view)>*>(userdata);
+    (*sink)(std::string_view(ptr, total));
+    return total;
+}
+
 bool is_retryable_status(long http_code) {
     return http_code == 429 || (http_code >= 500 && http_code < 600);
 }
@@ -146,6 +157,54 @@ HttpResult http_post_json(const std::string& url,
         return {.ok = true, .http_code = http_code, .body = std::move(resp_buf), .error = {}};
     }
     return {.ok = false, .http_code = 0, .body = {}, .error = "transient_after_retry"};
+}
+
+HttpResult http_post_json_stream(const std::string& url,
+                                 const std::vector<std::string>& extra_headers,
+                                 const std::string& body,
+                                 int timeout_ms,
+                                 const std::function<void(std::string_view)>& on_chunk) {
+    ensure_curl_global();
+    thread_local CurlHandle tls;
+    CURL* curl = tls.h;
+    if (curl == nullptr) {
+        return {.ok = false, .http_code = 0, .body = {}, .error = "curl_init_failed"};
+    }
+
+    // Single attempt: streamed bytes already reached on_chunk, so a retry would
+    // duplicate output (see header). The reused handle keeps keep-alive/TLS warm.
+    curl_easy_reset(curl);
+    curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    for (const auto& header : extra_headers) {
+        headers = curl_slist_append(headers, header.c_str());
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL,           url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
+    curl_easy_setopt(curl, CURLOPT_POST,          1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &on_chunk);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,    static_cast<long>(timeout_ms));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,      1L);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,  CURL_HTTP_VERSION_1_1);
+
+    const CURLcode curl_code = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+
+    if (curl_code != CURLE_OK) {
+        return {.ok = false, .http_code = 0, .body = {},
+                .error = std::string("transport_error:") + curl_easy_strerror(curl_code)};
+    }
+    if (http_code >= 400) {
+        return {.ok = false, .http_code = http_code, .body = {},
+                .error = "permanent_" + std::to_string(http_code)};
+    }
+    return {.ok = true, .http_code = http_code, .body = {}, .error = {}};
 }
 
 }  // namespace starling::net
