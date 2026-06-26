@@ -154,6 +154,7 @@ add_executable(starling_tests
     test_perception_reconstructor.cpp
     test_mentalizing_think.cpp
     test_mentalizing_chain.cpp
+    test_mentalizing_common_knowledge.cpp
     test_mental_state.cpp
     test_appraise_emotion.cpp
 )

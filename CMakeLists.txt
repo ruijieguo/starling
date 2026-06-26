@@ -130,6 +130,7 @@ target_sources(starling_core PRIVATE
     src/tom/mentalizing_know.cpp
     src/tom/mentalizing_think.cpp
     src/tom/mentalizing_chain.cpp
+    src/tom/mentalizing_common_knowledge.cpp
     src/tom/mentalizing_misalign.cpp
     src/tom/mentalizing_shared.cpp
     src/tom/mentalizing_more.cpp

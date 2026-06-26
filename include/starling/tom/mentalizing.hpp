@@ -246,6 +246,23 @@ StateBelief what_does_X_think_chain(
     std::string_view tenant,
     std::string_view as_of);
 
+// 7. Common knowledge among a group. X's current state is common knowledge among G
+//    iff the LATEST theme-event any member of G perceived was co-witnessed by ALL of
+//    G (a public establishment). A private tell / subset observation -> not CK. CK is
+//    computed WITHIN G (group mutual belief), not the global physical state.
+struct CommonKnowledgeResult {
+    bool is_ck = false;                  // current state is common knowledge among G
+    std::string ck_value;                // last all-co-witnessed value (== latest if is_ck)
+    std::string establishing_event_id;   // source_event_id of that last public event
+};
+CommonKnowledgeResult is_common_knowledge(
+    persistence::SqliteAdapter& adapter,
+    cognizer::KnowledgeFrontier& frontier,
+    const std::vector<std::string>& group,
+    std::string_view theme,
+    std::string_view tenant,
+    std::string_view as_of);
+
 // 10. X's full mental state, bucketed by attitude. Predicate-first ('prefers'->preferences,
 //     'knows'->knowledge), else by modality. occurred/norm_*/enforces/observes dropped
 //     (not propositional attitudes). Unknown X -> all empty.
