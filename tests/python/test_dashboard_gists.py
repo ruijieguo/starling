@@ -20,7 +20,7 @@ def _prep(db):
 
 def _seed(db, *, stmt_id, provenance="consolidation_abstract", state="consolidated",
           summary="People like coffee.", confidence=0.8, derived='["m1","m2","m3"]',
-          tenant="default", predicate="likes", obj="coffee"):
+          tenant="default", predicate="likes", obj="coffee", holder="__common_ground__"):
     conn = sqlite3.connect(db)
     try:
         conn.execute(
@@ -30,7 +30,7 @@ def _seed(db, *, stmt_id, provenance="consolidation_abstract", state="consolidat
             "affect_json,activation,last_accessed,provenance,consolidation_state,review_status,"
             "access_count,derived_from_json,consolidation_summary,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (stmt_id, tenant, "__common_ground__", "inferred", "entity", "__people__", predicate,
+            (stmt_id, tenant, holder, "inferred", "entity", "__people__", predicate,
              "str", obj, "a" * 64, "v1", "believes", "pos", confidence, "2026-06-27T00:00:00Z",
              0.5, "{}", 0.0, "2026-06-27T00:00:00Z", provenance, state, "approved", 1,
              derived, summary, "2026-06-27T00:00:00Z", "2026-06-27T00:00:00Z"))
@@ -64,3 +64,29 @@ def test_gists_tenant_scoped(tmp_path):
 def test_gists_empty(tmp_path):
     db = _prep(str(tmp_path / "g3.db"))
     assert queries.gists(db, "default") == {"by_state": {}, "gists": []}
+
+
+def test_gist_members_returns_derived_from(tmp_path):
+    db = _prep(str(tmp_path / "gm.db"))
+    for mid, holder in (("m1", "alice"), ("m2", "bob"), ("m3", "carol")):
+        _seed(db, stmt_id=mid, holder=holder, provenance="user_input", state="consolidated",
+              summary=None, derived="[]")
+    _seed(db, stmt_id="g1", derived='["m1","m2","m3"]')
+
+    out = queries.gist_members(db, "default", "g1")
+    assert out["gist_id"] == "g1"
+    assert {m["id"] for m in out["members"]} == {"m1", "m2", "m3"}
+    assert {m["holder_id"] for m in out["members"]} == {"alice", "bob", "carol"}
+
+
+def test_gist_members_missing_gist(tmp_path):
+    db = _prep(str(tmp_path / "gm2.db"))
+    assert queries.gist_members(db, "default", "nope") == {"gist_id": "nope", "members": []}
+
+
+def test_gist_members_tenant_scoped(tmp_path):
+    db = _prep(str(tmp_path / "gm3.db"))
+    _seed(db, stmt_id="m1", tenant="A", provenance="user_input", summary=None, derived="[]")
+    _seed(db, stmt_id="g1", tenant="A", derived='["m1"]')
+    # querying tenant B for tenant A's gist → not found → no members
+    assert queries.gist_members(db, "B", "g1")["members"] == []

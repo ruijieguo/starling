@@ -228,6 +228,32 @@ def gists(db_path: str, tenant: str) -> dict:
                 "gists": rows}
 
 
+def gist_members(db_path: str, tenant: str, gist_id: str) -> dict:
+    """#38-C v2 obs: the source-cluster members a gist generalizes — the specific
+    statements in its derived_from (lineage drill-down for /gists). Read-only,
+    tenant-scoped; the gist's own derived_from ids are the trusted, internal keys."""
+    with open_ro(db_path) as conn:
+        row = conn.execute(
+            "SELECT derived_from_json FROM statements "
+            "WHERE id=? AND tenant_id=? AND provenance='consolidation_abstract'",
+            (gist_id, tenant),
+        ).fetchone()
+        if row is None:
+            return {"gist_id": gist_id, "members": []}
+        ids, _ = _safe_json(row[0], [])
+        if not ids:
+            return {"gist_id": gist_id, "members": []}
+        placeholders = ",".join("?" for _ in ids)
+        members = _rows(
+            conn,
+            "SELECT id, holder_id, subject_id, predicate, object_value, "
+            "consolidation_state, review_status, confidence FROM statements "
+            f"WHERE tenant_id=? AND id IN ({placeholders}) ORDER BY holder_id",
+            (tenant, *ids),
+        )
+        return {"gist_id": gist_id, "members": members}
+
+
 def queues(db_path: str, tenant: str) -> dict:
     with open_ro(db_path) as conn:
         dispatch = _rows(
