@@ -208,11 +208,17 @@ void write_ledger(sqlite3* db,
         throw make_sqlite_error(db, "write_ledger: step");
 }
 
-// #38-C v1 locked thresholds: a NORM gist needs >= 3 distinct holders sharing a
-// (predicate, canonical_object_hash), each member replayed >= 2 times. Tuning is
-// deferred to v2.
+// #38-C thresholds: a NORM gist needs >= 3 distinct holders sharing a
+// (predicate, canonical_object_hash), each member with replay_count >= 1.
+// T=1 (not the eng-review's T=2): op_compress (mark_consolidated) bumps
+// replay_count only on the volatile→consolidated transition, so a statement
+// tops out at replay_count=1 (once consolidated it is no longer sampled). T=2
+// is therefore UNREACHABLE via the live loop — proven by the full-journey
+// integration test (tests/python/test_consolidation_journey.py), which formed
+// zero gists at T=2. T=1 = "consolidated at least once" = a settled belief,
+// which is the right bar for a norm member. (Threshold tuning is v2 scope.)
 constexpr GistThresholds kGistThresholds{/*min_distinct_holders=*/3,
-                                         /*min_replay_count=*/2};
+                                         /*min_replay_count=*/1};
 
 // Run compress on sampled rows + emit statement.derived per row + return stats
 ReplayStats do_compress_and_emit(
