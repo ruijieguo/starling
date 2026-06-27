@@ -88,6 +88,7 @@ def build_config_router(require_token) -> APIRouter:
         rebound = set(body.roles or {})
         def _affected(role: str) -> bool:
             return role in rebound or cfg.roles.get(role) in touched_providers
+        warnings: list[str] = []
         if eng is not None:
             def _apply() -> None:
                 if _affected("extraction"):
@@ -97,11 +98,18 @@ def build_config_router(require_token) -> APIRouter:
                 if _affected("chat") or (not cfg.roles.get("chat") and _affected("extraction")):
                     eng.set_chat(cfg.chat() or {})
                 if _affected("embedding"):
-                    eng.rebuild_embedder(cfg.embedding() or {})   # rebuild + re-embed
+                    # rebuild + re-embed; a rejected embedding provider returns a
+                    # warning (non-fatal — the save still succeeds) instead of 500.
+                    warn = eng.rebuild_embedder(cfg.embedding() or {})
+                    if warn:
+                        warnings.append(warn)
                 if _affected("consolidation"):                    # #38-C consolidation role
                     eng.set_consolidation(cfg.resolve_role("consolidation") or {})
             await to_thread.run_sync(_apply)
-        return _public(cfg)
+        result = _public(cfg)
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     @router.delete("/config/provider/{name}")
     async def delete_provider(name: str, request: Request):

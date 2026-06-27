@@ -104,4 +104,5 @@ def test_reembed_provider_error_is_non_fatal(ctx, monkeypatch):
     up through the config-save handler."""
     cfg, eng, client, _ = ctx
     monkeypatch.setattr(eng._core, "worker", _RaisingWorker())
-    eng._reembed()   # must return normally, not raise
+    warn = eng._reembed()   # must return normally, not raise
+    assert warn and "embedding" in warn.lower()   # surfaced as a warning, not swallowed silently
