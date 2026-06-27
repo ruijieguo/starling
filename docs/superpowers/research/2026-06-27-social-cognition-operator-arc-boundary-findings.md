@@ -97,6 +97,22 @@ because `deepseek` already computes these relations when the conventions are exp
 benchmark win (HiToM nested) is captured, measured against HiToM's external gold, and pushed; it is
 **narrow** (convention-enforcement on an under-specified benchmark) and should not be over-claimed.
 
+## 5b. Robustness across model tiers — `deepseek-v4-flash`
+
+A natural hope: a cheaper/faster model is weaker, so the tasks `deepseek-v4-pro` aces might *open
+up* for it, reviving the operators' value for cost-effective deployment (cheap model + Starling
+injection ≈ pro-level ToM at lower cost). Tested directly:
+
+- **Standard battery** (38 items across CK_v2, belief-counting, multi-room non-reducible order-5
+  nesting, hearsay clean+conflict, temporal/responsibility/info-value): `deepseek-v4-flash` =
+  **37/38 = 0.974** (the one miss a counting slip — the same minor enumeration error `pro` makes).
+- **Cranked hard probe** (8-agent chains, ~37 events, forced re-convergence), the SAME items on
+  both models: **flash 10/10, pro 10/10**.
+
+So `flash` matches `pro` even at cranked load — there is **no "flash breaks, pro holds" band** for an
+operator to fill. The conclusion is **robust across the deepseek-v4 family**, not `pro`-specific:
+switching to the cheaper model does not resurrect operator value.
+
 ## 6. Practical guidance for future probing
 
 - **Do not** hunt flat/aggregate/tracking ToM gaps for `deepseek`-class models — exhausted here.
