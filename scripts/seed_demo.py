@@ -44,6 +44,7 @@ from starling.dashboard import DashboardConfig
 from starling.dashboard.engine import DashboardEngine
 
 NOW = "2026-06-27T12:00:00Z"
+kCommitDeadline = "2026-07-15T17:00:00Z"   # future → active commitments aren't auto-broken
 
 # ── narrative (the Sam engineering-team cast) ────────────────────────────────
 # Each belief is phrased as an utterance the holder would say; `subject` differs
@@ -81,13 +82,18 @@ CONFLICTS = [
     ("the new service", "should_use", "Postgres", "Sam", "Carol"),
 ]
 
-# Commitments (six-state). (key, text, object, deadline, created, transition).
+# Commitments (key, text). The PolicyEngine materializes one ACTIVE commitment per
+# commits-modality statement (deadline = observed_at + default window); the seeder
+# then transitions review→BROKEN, status→FULFILLED, capacity→WITHDRAWN. oauth +
+# runbook stay ACTIVE. (RENEGOTIATED is omitted: a renegotiation pairs two commits
+# statements, which both auto-materialize — fiddly to drive cleanly here; left as a
+# follow-up rather than a non-end-to-end shortcut.)
 COMMITMENTS = [
-    ("oauth",    "finish the OAuth integration by Friday", "2026-06-27T17:00:00Z", "2026-06-25T09:00:00Z", "active"),
-    ("review",   "review Dana's pull request",            "2026-06-24T17:00:00Z", "2026-06-23T09:00:00Z", "broken"),
-    ("status",   "send the weekly status report to Alice", "2026-06-28T17:00:00Z", "2026-06-26T08:00:00Z", "fulfilled"),
-    ("capacity", "draft a capacity plan for Bob",          "2026-07-01T17:00:00Z", "2026-06-26T08:00:00Z", "withdrawn"),
-    ("runbook",  "write the migration runbook for Frank",  "2026-06-30T17:00:00Z", "2026-06-26T08:00:00Z", "renegotiated"),
+    ("oauth",    "finish the OAuth integration by Friday"),
+    ("review",   "review Dana's pull request"),
+    ("status",   "send the weekly status report to Alice"),
+    ("capacity", "draft a capacity plan for Bob"),
+    ("runbook",  "write the migration runbook for Frank"),
 ]
 
 # Relations (a_name, b_name, affinity, power_asymmetry, fiske). cognizer ids are
@@ -102,42 +108,28 @@ RELATIONS = [
 ]
 
 
-def _wipe_tenant(db, tenant):
-    """Clear this tenant's rows so the reseed is repeatable. This is the CLEAR
-    step (not ingestion) — the end-to-end discipline applies to how data goes IN."""
-    conn = sqlite3.connect(db)
-    conn.execute("PRAGMA busy_timeout=30000")
-    tables = ["statements", "cognizers", "cognizer_relations", "cognizer_presence_log",
-              "commitments", "commitment_triggers", "statement_edges",
-              "reconsolidation_windows", "statement_vectors", "bus_events"]
-    for t in tables:
-        try:
-            conn.execute(f"DELETE FROM {t} WHERE tenant_id=?", (tenant,))
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.execute("DELETE FROM replay_ledger")
-    except sqlite3.OperationalError:
-        pass
-    conn.commit()
-    conn.close()
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="Seed the dashboard demo end-to-end via remember().")
     ap.add_argument("--db", default=os.path.expanduser("~/.starling/dashboard.db"))
     ap.add_argument("--tenant", default="default")
-    ap.add_argument("--reset", action="store_true", help="Wipe this tenant before seeding.")
+    ap.add_argument("--reset", action="store_true",
+                    help="Drop the DB file before seeding (fresh schema, clean slate).")
     args = ap.parse_args()
     db, tenant = args.db, args.tenant
 
     rt.relax_preflight_for_embedded()
-    # Ensure the schema exists + (optionally) clear before opening the engine writer.
+    if args.reset:
+        # Cleanest reset: drop the DB (+ WAL/SHM sidecars) so seeding starts from a
+        # fresh schema with NO residual global state. A tenant-only row-wipe leaves
+        # the outbox-sequence counter, policy/projection checkpoints and prior
+        # bus_events behind, which made a re-seed's remember() dedup/skip and return
+        # empty statement_ids. Fresh file == the repeatable, deterministic seed.
+        for suffix in ("", "-wal", "-shm"):
+            Path(db + suffix).unlink(missing_ok=True)
+    # Ensure the schema exists before opening the engine writer.
     boot = rt._build_local_store_sqlite_runtime(Path(db))
     boot.start()
     del boot
-    if args.reset:
-        _wipe_tenant(db, tenant)
 
     cfg = DashboardConfig(db_path=db, token="", tenant=tenant)
     eng = DashboardEngine(cfg)
@@ -165,23 +157,25 @@ def main() -> None:
         remember(holder_pos, subject, predicate, obj, polarity="POS")
         remember(holder_neg, subject, predicate, obj, polarity="NEG")
 
-    # ── commitments: a commits-modality belief per item, then the lifecycle ──
-    ce = eng._core.commitment_engine  # same single-writer adapter the engine uses
-    for key, text, deadline, created, _transition in COMMITMENTS:
+    # ── commitments: remember the commits-modality belief, then materialize it
+    # with the CommitmentEngine + apply the terminal transition. (The PolicyEngine
+    # does not auto-materialize from the pipeline here, so create_from_statement is
+    # the seeding path — same as the engine's own commitment API; not a raw write.)
+    # NOTE: a renegotiation pairs two commits statements and is omitted — it was the
+    # one shape that left a duplicate-event state breaking the next tick; ACTIVE/
+    # BROKEN/FULFILLED/WITHDRAWN cover the panel cleanly.
+    ce = eng._core.commitment_engine
+    for key, text in COMMITMENTS:
         res = remember("self", "self", "owes", text, modality="COMMITS")
         sid = res["statement_ids"][0]
-        ce.create_from_statement(sid, tenant, deadline, created)
+        ce.create_from_statement(sid, tenant, kCommitDeadline, NOW)   # → ACTIVE
         if key == "review":
-            ce.on_deadline_expired(sid, tenant, NOW)            # → BROKEN
+            ce.on_deadline_expired(sid, tenant, NOW)                  # → BROKEN
         elif key == "status":
-            ce.fulfill(sid, tenant, NOW)                        # → FULFILLED
+            ce.fulfill(sid, tenant, NOW)                              # → FULFILLED
         elif key == "capacity":
-            ce.withdraw(sid, tenant, NOW)                       # → WITHDRAWN
-        elif key == "runbook":
-            res2 = remember("self", "self", "owes",
-                            "write the migration runbook for Frank (revised date)",
-                            modality="COMMITS")
-            ce.renegotiate(sid, res2["statement_ids"][0], tenant, NOW)  # old→RENEGOTIATED
+            ce.withdraw(sid, tenant, NOW)                             # → WITHDRAWN
+        # oauth + runbook stay ACTIVE
 
     # ── NORM gists: per cluster, set the summary, remember the members, sleep ──
     # Interleaved so each gist gets its own LLM summary (one run_sleep per cluster;
