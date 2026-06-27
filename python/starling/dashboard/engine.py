@@ -173,7 +173,15 @@ class DashboardEngine:
                 self._reembed()
 
     def _reembed(self) -> None:
-        """Clear this tenant's stored vectors (dim/space changed) and re-embed."""
+        """Clear this tenant's stored vectors (dim/space changed) and re-embed.
+
+        The re-embed makes live embedding-provider calls. A rejected/unreachable
+        provider (e.g. a chat model bound to the embedding role → permanent_400)
+        must NOT fail the config save with a 500: the new embedder is already
+        swapped in, and the cleared rows stay in the embedding backlog for the
+        background tick (with its own retry/failure tracking) to re-process once
+        a valid embedding role is configured. So a failure here is logged and
+        swallowed, mirroring the background tick's own non-fatal handling."""
         conn = sqlite3.connect(self._db_path)
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
@@ -182,7 +190,10 @@ class DashboardEngine:
             conn.commit()
         finally:
             conn.close()
-        self._core.worker.tick_one_batch(_now_iso())
+        try:
+            self._core.worker.tick_one_batch(_now_iso())
+        except Exception:
+            logger.exception("config re-embed failed; deferred to the background tick")
 
     @property
     def llm_configured(self) -> bool:
