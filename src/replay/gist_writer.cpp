@@ -32,11 +32,12 @@ constexpr std::string_view kNormSubjectId   = "__people__";
 // stays inert (volatile + not-approved), never promoted.
 constexpr double kProvisionalConfidence = 0.5;
 
-// #38-C Phase 4 gating: a gist needs at least this LLM-judged confidence to be
-// consolidated (made live). Below it → gated (not written). Deliberately above
-// the validator's 0.30 write-floor — consolidation is a stronger bar than write.
-// v1 value; threshold tuning deferred to v2.
-constexpr double kConsolidationConfidenceFloor = 0.6;
+// #38-C Phase 4 gating: a gist needs at least the confidence floor (LLM-judged) to
+// be consolidated; below it → gated. The floor is now a parameter
+// (write_gist_proposals' confidence_floor, default GistThresholds::min_confidence =
+// 0.6), overridable from the dashboard "consolidation" config (v2 threshold tuning).
+// It is deliberately above the validator's 0.30 write-floor — consolidation is a
+// stronger bar than write.
 
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
@@ -82,12 +83,12 @@ enum class GateDecision : std::uint8_t { Pass, Failed, Gated };
 // `judgment` is filled (confidence + summary) for the write/promote. Failed = LLM
 // error / unparseable; Gated = below floor or not entailed (a deliberate reject).
 GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& cluster,
-                            GistJudgment& judgment) {
+                            GistJudgment& judgment, double confidence_floor) {
     const extractor::LLMResponse judge_resp = gist_llm.generate(build_norm_gist_prompt(cluster));
     if (!judge_resp.ok) { return GateDecision::Failed; }
     judgment = parse_gist_judgment(judge_resp.raw_xml);
     if (!judgment.ok) { return GateDecision::Failed; }
-    if (judgment.confidence < kConsolidationConfidenceFloor) { return GateDecision::Gated; }
+    if (judgment.confidence < confidence_floor) { return GateDecision::Gated; }
     const extractor::LLMResponse verify_resp =
         gist_llm.generate(build_entailment_prompt(cluster, judgment.summary));
     if (!verify_resp.ok) { return GateDecision::Failed; }
@@ -102,7 +103,8 @@ GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& 
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
                                       std::string_view now_iso,
-                                      extractor::LLMAdapter* gist_llm)
+                                      extractor::LLMAdapter* gist_llm,
+                                      double confidence_floor)
 {
     GistWriteOutcome outcome;
     // Precondition (fail LOUD): must run in autocommit. Bus::write opens a
@@ -128,7 +130,8 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
         if (gist_llm != nullptr) {
             // Judge + gate (confidence floor + independent entailment verify) —
             // all BEFORE any write, so a rejected candidate leaves no row.
-            const GateDecision decision = gate_candidate(*gist_llm, proposal.cluster, judgment);
+            const GateDecision decision =
+                gate_candidate(*gist_llm, proposal.cluster, judgment, confidence_floor);
             if (decision == GateDecision::Failed) { ++outcome.failed; continue; }
             if (decision == GateDecision::Gated)  { ++outcome.gated;  continue; }
         }

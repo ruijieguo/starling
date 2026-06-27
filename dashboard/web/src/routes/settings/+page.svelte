@@ -20,6 +20,12 @@
 	// bind:value={undefined} when the child has a $bindable('') fallback, and that
 	// throw propagated up through the layout and blanked the whole page.
 	let roles = $state<Record<string, string>>({ extraction: '', embedding: '', chat: '' });
+	// #38-C v2 threshold surface: null = use the C++ default; a number = override.
+	let gistThresholds = $state<Record<string, number | null>>({
+		min_holders: null,
+		min_replay_count: null,
+		min_confidence: null
+	});
 	let keyInputs = $state<Record<string, string>>({}); // per-provider new key (blank = keep)
 	let embBaseline = $state(''); // embedding provider+dim snapshot → re-embed confirm
 	let saving = $state(false);
@@ -49,6 +55,12 @@
 	function applyConfig(c: Config) {
 		providers = c.providers ?? {};
 		roles = { extraction: '', embedding: '', chat: '', ...(c.roles ?? {}) };
+		const gt = c.gist_thresholds ?? {};
+		gistThresholds = {
+			min_holders: gt.min_holders ?? null,
+			min_replay_count: gt.min_replay_count ?? null,
+			min_confidence: gt.min_confidence ?? null
+		};
 		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
 	}
 
@@ -144,7 +156,17 @@
 						}
 					])
 				),
-				roles
+				roles,
+				// #38-C v2: send only the overridden knobs; omitted → C++ default.
+				gist_thresholds: {
+					...(gistThresholds.min_holders != null ? { min_holders: gistThresholds.min_holders } : {}),
+					...(gistThresholds.min_replay_count != null
+						? { min_replay_count: gistThresholds.min_replay_count }
+						: {}),
+					...(gistThresholds.min_confidence != null
+						? { min_confidence: gistThresholds.min_confidence }
+						: {})
+				}
 			};
 			// changing the embedding provider re-embeds every memory → widen timeout
 			const c = await api.post<Config>('/api/config', payload, { timeoutMs: 120_000 });
@@ -181,6 +203,31 @@
 			</Field>
 			<Field label="chat(对话)" for="role-chat" hint="converse 对话生成用">
 				<Select id="role-chat" bind:value={roles['chat']} options={nameOpts()} />
+			</Field>
+		</div>
+	</Card>
+
+	<Card
+		title="固化阈值(NORM gist)"
+		description="多 holder 共识固化成范式的聚簇/门控参数。留空 = 用默认(K=3 / T=1 / 0.6)。"
+	>
+		<div class="grid gap-3 sm:grid-cols-3">
+			<Field label="最少 holder 数 K" for="gt-k" hint="一条范式需跨越的不同 holder 数,默认 3">
+				<Input id="gt-k" type="number" min="1" placeholder="3" bind:value={gistThresholds.min_holders} />
+			</Field>
+			<Field label="最少 replay_count T" for="gt-t" hint="成员的 replay_count 下限,默认 1">
+				<Input id="gt-t" type="number" min="0" placeholder="1" bind:value={gistThresholds.min_replay_count} />
+			</Field>
+			<Field label="confidence 下限" for="gt-c" hint="LLM 判定晋升门槛 0–1,默认 0.6">
+				<Input
+					id="gt-c"
+					type="number"
+					min="0"
+					max="1"
+					step="0.05"
+					placeholder="0.6"
+					bind:value={gistThresholds.min_confidence}
+				/>
 			</Field>
 		</div>
 	</Card>

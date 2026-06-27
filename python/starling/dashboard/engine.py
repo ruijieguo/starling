@@ -130,6 +130,7 @@ class DashboardEngine:
         self.set_llm(config.resolve_role("extraction") or {})
         self.set_chat(config.chat() or {})   # chat role (2c); falls back to extraction
         self.set_consolidation(config.resolve_role("consolidation") or {})  # #38-C role consumer
+        self.set_gist_thresholds(config.gist_thresholds or {})              # #38-C v2 threshold surface
         self.rebuild_embedder(config.embedding() or {}, reembed=False)
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
@@ -163,6 +164,18 @@ class DashboardEngine:
         with self._lock:
             self._core.consolidation_llm = (_build_chat_adapter(cons_cfg)
                                             if cons_cfg.get("api_key") else None)
+
+    def set_gist_thresholds(self, thresholds: dict) -> None:
+        """#38-C v2 threshold surface: override the NORM-gist K / T / confidence
+        floor used by offline replay (run_idle/run_sleep). Empty/missing keys →
+        the C++ defaults. O(1) value swap; the clustering + gating logic lives in
+        the C++ core — this only injects the knobs."""
+        with self._lock:
+            self._core.gist_thresholds = {
+                k: thresholds[k]
+                for k in ("min_holders", "min_replay_count", "min_confidence")
+                if thresholds.get(k) is not None
+            } if thresholds else {}
 
     def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> str | None:
         """Swap the embedder; if reembed, re-process the backlog. Returns a

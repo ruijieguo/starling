@@ -29,14 +29,19 @@ struct GistProposal {
     GistCluster cluster;
 };
 
-// Clustering thresholds. A named struct (not two adjacent int params) so the
-// K and T cannot be transposed at a call site.
+// Gist tuning knobs. A named struct (not adjacent scalars) so the values cannot
+// be transposed at a call site. K/T gate CLUSTERING (find_norm_gist_clusters);
+// min_confidence gates the LLM JUDGMENT downstream (gist_writer gate_candidate) —
+// clustering ignores it. Defaults are the v1 production values; the dashboard
+// "consolidation" config can override them (threshold config surface, v2).
 struct GistThresholds {
     int min_distinct_holders = 3;   // K — distinct holders a norm must span
     int min_replay_count = 1;       // T — per-member replay_count floor (>=1 = the
                                     // belief was consolidated at least once = settled;
                                     // see kGistThresholds in replay_scheduler.cpp for
                                     // why T=1, not the eng-review's unreachable T=2)
+    double min_confidence = 0.6;    // confidence floor for promoting a judged gist
+                                    // (Phase-4 gate); below → gated, not written
 };
 
 // Deterministic NORM-gist clustering. `seed_stmt_ids` is the replay batch: it

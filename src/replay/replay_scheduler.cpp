@@ -271,7 +271,8 @@ ReplayStats do_compress_and_emit(
     std::string_view mode,
     std::string_view now_iso,
     std::vector<GistProposal>* out_proposals = nullptr,
-    const std::vector<StmtRow>& extra_seed_rows = {})
+    const std::vector<StmtRow>& extra_seed_rows = {},
+    const GistThresholds& thresholds = kGistThresholds)
 {
     // Nothing to compress AND nothing to seed the NORM scan → no-op.
     if (rows.empty() && extra_seed_rows.empty()) {
@@ -310,7 +311,7 @@ ReplayStats do_compress_and_emit(
     // inline — so the write never runs in the online/subscriber transaction.
     for (const auto& [tenant_id, seed_ids] : seed_by_tenant) {
         const auto clusters =
-            find_norm_gist_clusters(conn, tenant_id, seed_ids, kGistThresholds);
+            find_norm_gist_clusters(conn, tenant_id, seed_ids, thresholds);
         stats.gist_candidates += static_cast<int>(clusters.size());
         if (out_proposals != nullptr) {
             for (const auto& cluster : clusters) {
@@ -611,7 +612,8 @@ ReplayStats ReplayScheduler::tick_online(persistence::Connection& conn,
 
 ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
                                        std::string_view now_iso,
-                                       extractor::LLMAdapter* gist_llm) {
+                                       extractor::LLMAdapter* gist_llm,
+                                       const GistThresholds& gist_cfg) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 30, now_iso);
 
@@ -638,8 +640,9 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
     // volatile batch is empty in the real flow (remember consolidates synchronously).
     const auto consolidated_seeds = sample_consolidated(db, 30);
     auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals,
-                                      consolidated_seeds);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
+                                      consolidated_seeds, gist_cfg);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm,
+                                                   gist_cfg.min_confidence);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     stats.gist_gated += gist_outcome.gated;
@@ -648,7 +651,8 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
 
 ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
                                         std::string_view now_iso,
-                                        extractor::LLMAdapter* gist_llm) {
+                                        extractor::LLMAdapter* gist_llm,
+                                        const GistThresholds& gist_cfg) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 200, now_iso);
 
@@ -673,8 +677,9 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
     // sweeps a larger consolidated sample (200) to match its volatile batch size.
     const auto consolidated_seeds = sample_consolidated(db, 200);
     auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals,
-                                      consolidated_seeds);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
+                                      consolidated_seeds, gist_cfg);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm,
+                                                   gist_cfg.min_confidence);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     stats.gist_gated += gist_outcome.gated;
