@@ -14,6 +14,9 @@ export type Prov = {
 export type Config = {
 	providers: Record<string, Prov>;
 	roles: Record<string, string>;
+	// #38-C v2 threshold surface: NORM-gist knobs (min_holders / min_replay_count /
+	// min_confidence). Absent keys → C++ defaults (3 / 1 / 0.6).
+	gist_thresholds?: Record<string, number>;
 	// Non-fatal heads-up from a save (e.g. the embedding provider rejected the
 	// config; the save still succeeded but embeddings won't generate). GET omits it.
 	warnings?: string[];

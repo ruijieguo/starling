@@ -26,6 +26,9 @@ class ConfigBody(BaseModel):
     # Partial registry update: upsert these providers and/or (re)bind these roles.
     providers: dict[str, ProviderFields] | None = None
     roles: dict[str, str] | None = None
+    # #38-C v2 threshold surface: {min_holders, min_replay_count, min_confidence}.
+    # None → unchanged; {} → reset to C++ defaults.
+    gist_thresholds: dict | None = None
 
 
 class TestBody(ProviderFields):
@@ -45,7 +48,8 @@ def _mask(d: dict) -> dict:
 def _public(cfg) -> dict:
     return {"agent": cfg.agent, "tenant": cfg.tenant, "host": cfg.host, "port": cfg.port,
             "providers": {name: _mask(p) for name, p in cfg.providers.items()},
-            "roles": dict(cfg.roles)}
+            "roles": dict(cfg.roles),
+            "gist_thresholds": dict(cfg.gist_thresholds)}
 
 
 def _merge_provider(dst: dict, body: ProviderFields) -> None:
@@ -81,6 +85,13 @@ def build_config_router(require_token) -> APIRouter:
             if name and name not in cfg.providers:
                 raise HTTPException(status_code=400, detail=f"unknown provider: {name}")
             cfg.roles[role] = name
+        # #38-C v2 threshold surface: persist the gist knobs ({} resets to defaults).
+        if body.gist_thresholds is not None:
+            cfg.gist_thresholds = {
+                k: body.gist_thresholds[k]
+                for k in ("min_holders", "min_replay_count", "min_confidence")
+                if body.gist_thresholds.get(k) is not None
+            }
         cfg.save()                                   # persist starling.json (0600)
         # Hot-swap only the live roles whose resolved provider changed: a role
         # was (re)bound, or its currently-bound provider was edited.
@@ -105,6 +116,8 @@ def build_config_router(require_token) -> APIRouter:
                         warnings.append(warn)
                 if _affected("consolidation"):                    # #38-C consolidation role
                     eng.set_consolidation(cfg.resolve_role("consolidation") or {})
+                if body.gist_thresholds is not None:              # #38-C v2 threshold surface
+                    eng.set_gist_thresholds(cfg.gist_thresholds)
             await to_thread.run_sync(_apply)
         result = _public(cfg)
         if warnings:

@@ -245,6 +245,26 @@ TEST(GistWriter, RunSleepSeedsFromConsolidated) {
     EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 1);
 }
 
+// #38-C v2 threshold surface: run_sleep honors an overridden GistThresholds end to
+// end. K=4 on the same 3-holder cluster is below threshold → no candidate, no gist —
+// proving the configurable K/T/floor threads through run_sleep → do_compress_and_emit
+// → find_norm_gist_clusters.
+TEST(GistWriter, RunSleepHonorsOverriddenThresholds) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed(conn.raw(), {.id = "m1", .holder = "alice", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m2", .holder = "bob", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m3", .holder = "carol", .state = "consolidated"});
+
+    ReplayScheduler sched(*adapter);
+    const auto stats = sched.run_sleep(conn, "2026-06-27T12:00:00Z", nullptr,
+                                       GistThresholds{/*min_distinct_holders=*/4,
+                                                      /*min_replay_count=*/1,
+                                                      /*min_confidence=*/0.6});
+    EXPECT_EQ(stats.gist_candidates, 0);  // 3 holders < K=4 → no cluster
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
 // The oscillation guard must never force-consolidate an ungated gist (a gist
 // only enters 'consolidated' via Phase-4 gating). A non-gist with the same
 // replay_count IS consolidated — proving the guard still works.

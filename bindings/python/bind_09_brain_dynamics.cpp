@@ -62,16 +62,28 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
              py::arg("now_iso"))
         .def("run_idle",
              [](starling::replay::ReplayScheduler& sched, const std::string& now,
-                starling::extractor::LLMAdapter* llm) {
-                 return sched.run_idle(sched.connection(), now, llm);
+                starling::extractor::LLMAdapter* llm,
+                int min_holders, int min_replay_count, double min_confidence) {
+                 const starling::replay::GistThresholds cfg{min_holders, min_replay_count,
+                                                            min_confidence};
+                 return sched.run_idle(sched.connection(), now, llm, cfg);
              },
-             py::arg("now_iso"), py::arg("llm") = nullptr)
+             py::arg("now_iso"), py::arg("llm") = nullptr,
+             py::arg("min_holders") = starling::replay::GistThresholds{}.min_distinct_holders,
+             py::arg("min_replay_count") = starling::replay::GistThresholds{}.min_replay_count,
+             py::arg("min_confidence") = starling::replay::GistThresholds{}.min_confidence)
         .def("run_sleep",
              [](starling::replay::ReplayScheduler& sched, const std::string& now,
-                starling::extractor::LLMAdapter* llm) {
-                 return sched.run_sleep(sched.connection(), now, llm);
+                starling::extractor::LLMAdapter* llm,
+                int min_holders, int min_replay_count, double min_confidence) {
+                 const starling::replay::GistThresholds cfg{min_holders, min_replay_count,
+                                                            min_confidence};
+                 return sched.run_sleep(sched.connection(), now, llm, cfg);
              },
-             py::arg("now_iso"), py::arg("llm") = nullptr);
+             py::arg("now_iso"), py::arg("llm") = nullptr,
+             py::arg("min_holders") = starling::replay::GistThresholds{}.min_distinct_holders,
+             py::arg("min_replay_count") = starling::replay::GistThresholds{}.min_replay_count,
+             py::arg("min_confidence") = starling::replay::GistThresholds{}.min_confidence);
 
     // ── M0.8: ReconsolidationEngine ───────────────────────────────────────
 

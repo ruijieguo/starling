@@ -96,6 +96,17 @@ class _RaisingWorker:
         raise RuntimeError("permanent_400")   # provider rejected the embedding config
 
 
+def test_gist_thresholds_persist_and_hot_swap(ctx):
+    """#38-C v2 threshold surface: POST gist_thresholds → persisted, returned, and
+    hot-swapped onto the engine's core (which threads them into run_idle/run_sleep)."""
+    cfg, eng, client, cfgfile = ctx
+    r = client.post("/api/config", json={"gist_thresholds": {"min_holders": 4, "min_confidence": 0.75}})
+    assert r.status_code == 200
+    assert r.json()["gist_thresholds"] == {"min_holders": 4, "min_confidence": 0.75}
+    assert json.loads(cfgfile.read_text())["gist_thresholds"] == {"min_holders": 4, "min_confidence": 0.75}
+    assert eng._core.gist_thresholds == {"min_holders": 4, "min_confidence": 0.75}  # hot-swapped
+
+
 def test_reembed_provider_error_is_non_fatal(ctx, monkeypatch):
     """REGRESSION: saving a provider/model whose embedding call is rejected
     (e.g. a chat model bound to the embedding role → permanent_400) must NOT 500.
