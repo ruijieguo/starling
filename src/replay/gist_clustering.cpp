@@ -157,6 +157,7 @@ std::optional<GistCluster> expand_semantic_cluster(
     cluster.canonical_object_hash = seed_member.object_hash;
     cluster.member_ids.push_back(seed_id);
     std::set<std::string> holders{seed_member.holder_id};
+    std::set<std::string> objects{seed_member.object_value};  // varied member phrasings
     std::string rep_id = seed_id;
     for (const auto& hit : scored) {
         if (hit.score < thresholds.similarity_threshold || hit.stmt_id == seed_id ||
@@ -170,6 +171,7 @@ std::optional<GistCluster> expand_semantic_cluster(
         }
         cluster.member_ids.push_back(hit.stmt_id);
         holders.insert(member->holder_id);
+        objects.insert(member->object_value);
         if (hit.stmt_id < rep_id) {  // keep the smallest id as the stable representative
             rep_id = hit.stmt_id;
             cluster.predicate = member->predicate;
@@ -183,6 +185,7 @@ std::optional<GistCluster> expand_semantic_cluster(
     }
     std::ranges::sort(cluster.member_ids);
     cluster.holder_ids.assign(holders.begin(), holders.end());
+    cluster.member_objects.assign(objects.begin(), objects.end());  // varied → member-aware gate
     return cluster;
 }
 

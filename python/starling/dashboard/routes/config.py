@@ -89,7 +89,8 @@ def build_config_router(require_token) -> APIRouter:
         if body.gist_thresholds is not None:
             cfg.gist_thresholds = {
                 k: body.gist_thresholds[k]
-                for k in ("min_holders", "min_replay_count", "min_confidence")
+                for k in ("min_holders", "min_replay_count", "min_confidence",
+                          "similarity_threshold")
                 if body.gist_thresholds.get(k) is not None
             }
         cfg.save()                                   # persist starling.json (0600)

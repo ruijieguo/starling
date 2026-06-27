@@ -32,7 +32,11 @@ struct EntailmentVerdict {
     bool ok = false;        // false ⇒ LLM errored or reply unparseable
     bool entailed = false;  // is the summary entailed by the cluster's evidence?
 };
+// `object` is the single member phrasing checked this call. For #38-C v2 semantic
+// clusters the gate calls this PER member (each varied object verified against the
+// summary); exact clusters call it once with the shared object_value.
 [[nodiscard]] std::string build_entailment_prompt(const GistCluster& cluster,
+                                                  std::string_view object,
                                                   std::string_view summary);
 [[nodiscard]] EntailmentVerdict parse_entailment_verdict(std::string_view llm_reply);
 

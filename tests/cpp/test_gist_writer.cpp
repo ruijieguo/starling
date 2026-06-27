@@ -536,6 +536,47 @@ TEST(GistWriter, EntailmentVerifyIndependentlyPasses) {
               "consolidated");
 }
 
+// #38-C v2 false-merge safety: a SEMANTIC cluster's summary is verified against EACH
+// varied member (per-member entailment). If it fails to entail even one — a
+// false-merged outlier — the whole candidate is GATED, not written. Single-rep
+// entailment would have checked only the representative and missed the outlier.
+TEST(GistWriter, PerMemberEntailmentGatesSemanticFalseMerge) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated",
+              .object_value = "code review"});
+    seed(db, {.id = "m2", .holder = "bob", .hashfill = 'b', .state = "consolidated",
+              .object_value = "reviewing code"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated",
+              .object_value = "pull-request review"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    const auto clusters =
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {});
+    ASSERT_EQ(clusters.size(), 1U);
+    ASSERT_EQ(clusters[0].member_objects.size(), 3U);  // varied → per-member gate engages
+
+    // Judge passes the floor; per-member entailment: true, true, FALSE → the outlier
+    // gates the candidate (4 LLM calls = 1 judge + 3 members, proving it is per-member).
+    SequencedLLM llm({
+        starling::extractor::LLMResponse{.raw_xml = R"({"confidence":0.9,"summary":"value review"})",
+                                         .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": false})", .ok = true},
+    });
+    const auto outcome = write_gist_proposals(
+        *adapter, {{.tenant_id = "default", .cluster = clusters[0]}}, "2026-06-28T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.gated, 1);    // the outlier member gated it
+    EXPECT_EQ(outcome.written, 0);  // false-merge blocked — nothing written
+}
+
 // Floor boundary: confidence exactly at the floor passes (strict <), proceeding
 // to entailment (here entailed → promoted).
 TEST(GistWriter, ConfidenceAtFloorPasses) {

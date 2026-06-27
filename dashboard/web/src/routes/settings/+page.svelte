@@ -24,7 +24,8 @@
 	let gistThresholds = $state<Record<string, number | null>>({
 		min_holders: null,
 		min_replay_count: null,
-		min_confidence: null
+		min_confidence: null,
+		similarity_threshold: null
 	});
 	let keyInputs = $state<Record<string, string>>({}); // per-provider new key (blank = keep)
 	let embBaseline = $state(''); // embedding provider+dim snapshot → re-embed confirm
@@ -59,7 +60,8 @@
 		gistThresholds = {
 			min_holders: gt.min_holders ?? null,
 			min_replay_count: gt.min_replay_count ?? null,
-			min_confidence: gt.min_confidence ?? null
+			min_confidence: gt.min_confidence ?? null,
+			similarity_threshold: gt.similarity_threshold ?? null
 		};
 		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
 	}
@@ -165,6 +167,9 @@
 						: {}),
 					...(gistThresholds.min_confidence != null
 						? { min_confidence: gistThresholds.min_confidence }
+						: {}),
+					...(gistThresholds.similarity_threshold != null
+						? { similarity_threshold: gistThresholds.similarity_threshold }
 						: {})
 				}
 			};
@@ -209,9 +214,9 @@
 
 	<Card
 		title="固化阈值(NORM gist)"
-		description="多 holder 共识固化成范式的聚簇/门控参数。留空 = 用默认(K=3 / T=1 / 0.6)。"
+		description="多 holder 共识固化成范式的聚簇/门控参数。留空 = 用默认。语义相似阈值留空/0 = 关闭语义聚簇(仅精确匹配),设 0.85 启用。"
 	>
-		<div class="grid gap-3 sm:grid-cols-3">
+		<div class="grid gap-3 sm:grid-cols-2">
 			<Field label="最少 holder 数 K" for="gt-k" hint="一条范式需跨越的不同 holder 数,默认 3">
 				<Input id="gt-k" type="number" min="1" placeholder="3" bind:value={gistThresholds.min_holders} />
 			</Field>
@@ -227,6 +232,17 @@
 					step="0.05"
 					placeholder="0.6"
 					bind:value={gistThresholds.min_confidence}
+				/>
+			</Field>
+			<Field label="语义相似阈值 cosine" for="gt-s" hint="0/留空=关闭语义聚簇;启用建议 0.85,越高越严">
+				<Input
+					id="gt-s"
+					type="number"
+					min="0"
+					max="1"
+					step="0.05"
+					placeholder="0(关闭)"
+					bind:value={gistThresholds.similarity_threshold}
 				/>
 			</Field>
 		</div>
