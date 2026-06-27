@@ -223,6 +223,28 @@ TEST(GistWriter, RunSleepWritesGistEndToEnd) {
     EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 1);
 }
 
+// #38-C fix: run_sleep must seed the NORM scan from SETTLED (consolidated) beliefs,
+// not only the transient volatile batch. The real remember() flow consolidates
+// synchronously (post-write online pump), so a cluster of CONSOLIDATED members with
+// ZERO volatile rows is exactly the production case. Pre-fix this formed 0 gists
+// (sample_volatile empty → no seeds); post-fix sample_consolidated supplies them.
+// stats.sampled==0 proves the seed came from the consolidated source, not volatile.
+TEST(GistWriter, RunSleepSeedsFromConsolidated) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed(conn.raw(), {.id = "m1", .holder = "alice", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m2", .holder = "bob", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m3", .holder = "carol", .state = "consolidated"});
+
+    ReplayScheduler sched(*adapter);
+    const auto stats = sched.run_sleep(conn, "2026-06-27T12:00:00Z");
+    EXPECT_EQ(stats.sampled, 0);          // nothing volatile to compress
+    EXPECT_GE(stats.gist_candidates, 1);  // the consolidated cluster is still found
+    EXPECT_GE(stats.abstracted, 1);       // and written (no-LLM deterministic path)
+    sqlite3* db = conn.raw();
+    EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 1);
+}
+
 // The oscillation guard must never force-consolidate an ungated gist (a gist
 // only enters 'consolidated' via Phase-4 gating). A non-gist with the same
 // replay_count IS consolidated — proving the guard still works.
