@@ -217,7 +217,9 @@ int upsert_projection_rows(persistence::Connection& conn,
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) == SQLITE_OK) {
             StmtHandle h(raw);
             bind_sv(h.get(), 1, r.tenant_id);
-            if (r.modality == "COMMITS") {
+            // canonical-lowercase 'commits' (accept upper too, as elsewhere); the
+            // bare =="COMMITS" left due_at NULL for every commitment in the panel.
+            if (r.modality == "commits" || r.modality == "COMMITS") {
                 bind_sv(h.get(), 2, r.observed_at);
             } else {
                 sqlite3_bind_null(h.get(), 2);

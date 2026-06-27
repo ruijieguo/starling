@@ -44,7 +44,6 @@ from starling.dashboard import DashboardConfig
 from starling.dashboard.engine import DashboardEngine
 
 NOW = "2026-06-27T12:00:00Z"
-kCommitDeadline = "2026-07-15T17:00:00Z"   # future → active commitments aren't auto-broken
 
 # ── narrative (the Sam engineering-team cast) ────────────────────────────────
 # Each belief is phrased as an utterance the holder would say; `subject` differs
@@ -157,25 +156,24 @@ def main() -> None:
         remember(holder_pos, subject, predicate, obj, polarity="POS")
         remember(holder_neg, subject, predicate, obj, polarity="NEG")
 
-    # ── commitments: remember the commits-modality belief, then materialize it
-    # with the CommitmentEngine + apply the terminal transition. (The PolicyEngine
-    # does not auto-materialize from the pipeline here, so create_from_statement is
-    # the seeding path — same as the engine's own commitment API; not a raw write.)
-    # NOTE: a renegotiation pairs two commits statements and is omitted — it was the
-    # one shape that left a duplicate-event state breaking the next tick; ACTIVE/
-    # BROKEN/FULFILLED/WITHDRAWN cover the panel cleanly.
+    # ── commitments: fully end-to-end. remember() the commits-modality beliefs,
+    # then DRAIN the outbox so the PolicyEngine materializes one ACTIVE commitment
+    # per statement.written[commits] (the auto-materialization fixed in this branch
+    # — no explicit create_from_statement). Then apply terminal transitions.
+    # NOTE: renegotiation pairs two commits statements and is omitted; ACTIVE/BROKEN/
+    # FULFILLED/WITHDRAWN cover the panel cleanly.
     ce = eng._core.commitment_engine
+    sids = {}
     for key, text in COMMITMENTS:
         res = remember("self", "self", "owes", text, modality="COMMITS")
-        sid = res["statement_ids"][0]
-        ce.create_from_statement(sid, tenant, kCommitDeadline, NOW)   # → ACTIVE
-        if key == "review":
-            ce.on_deadline_expired(sid, tenant, NOW)                  # → BROKEN
-        elif key == "status":
-            ce.fulfill(sid, tenant, NOW)                              # → FULFILLED
-        elif key == "capacity":
-            ce.withdraw(sid, tenant, NOW)                             # → WITHDRAWN
-        # oauth + runbook stay ACTIVE
+        sids[key] = res["statement_ids"][0]
+    for _ in range(40):
+        if eng.tick(NOW)["dispatched"] == 0:
+            break
+    ce.on_deadline_expired(sids["review"], tenant, NOW)   # ACTIVE → BROKEN
+    ce.fulfill(sids["status"], tenant, NOW)               # ACTIVE → FULFILLED
+    ce.withdraw(sids["capacity"], tenant, NOW)            # ACTIVE → WITHDRAWN
+    # oauth + runbook stay ACTIVE
 
     # ── NORM gists: per cluster, set the summary, remember the members, sleep ──
     # Interleaved so each gist gets its own LLM summary (one run_sleep per cluster;

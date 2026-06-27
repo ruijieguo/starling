@@ -11,6 +11,36 @@ _STUB_JSON = (
     '"modality":"BELIEVES","polarity":"POS","nesting_depth":0}]'
 )
 
+_COMMITS_JSON = (
+    '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
+    '"subject":"self","predicate":"owes","object":"send the report",'
+    '"modality":"COMMITS","polarity":"POS","nesting_depth":0}]'
+)
+
+
+def test_commits_statement_auto_materializes_commitment(tmp_path):
+    """REGRESSION: a remembered commits-modality statement (the pipeline stores the
+    canonical lowercase 'commits') must auto-materialize an ACTIVE commitment when
+    the PolicyEngine runs on tick. The engine compared modality == "COMMITS" (upper)
+    while statements store 'commits' (lower), so auto-materialization silently never
+    fired — and the existing C++ tests seeded uppercase 'COMMITS', masking it."""
+    import sqlite3
+    db = str(tmp_path / "commit.db")
+    cfg = DashboardConfig(db_path=db, token="")
+    eng = DashboardEngine(cfg)
+    fake = _core.FakeLLMAdapter(); fake.set_default_response(_COMMITS_JSON, True, "")
+    eng.llm = fake
+    client = TestClient(create_app(cfg, engine=eng))
+
+    assert client.post("/api/remember", json={"text": "I owe sending the report"}).status_code == 200
+    for _ in range(10):
+        if client.post("/api/tick", json={}).json()["dispatched"] == 0:
+            break
+    conn = sqlite3.connect(db)
+    active = conn.execute("SELECT COUNT(*) FROM commitments WHERE state='ACTIVE'").fetchone()[0]
+    conn.close()
+    assert active >= 1, "commits statement did not auto-materialize a commitment"
+
 
 def _engine_with_llm(db):
     cfg = DashboardConfig(db_path=db, token="")
