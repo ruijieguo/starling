@@ -125,7 +125,8 @@ std::string col_text(sqlite3_stmt* stmt, int idx) {
     if (ptr == nullptr) {
         return {};
     }
-    return std::string(ptr, std::next(ptr, sqlite3_column_bytes(stmt, idx)));
+    std::string value(ptr, std::next(ptr, sqlite3_column_bytes(stmt, idx)));
+    return value;
 }
 
 // #38-C fix: seed the OFFLINE NORM scan from SETTLED (consolidated) beliefs. The
@@ -137,24 +138,24 @@ std::string col_text(sqlite3_stmt* stmt, int idx) {
 // consolidation_abstract so a gist never seeds another gist. The rows are cluster
 // SEEDS only — already consolidated, never re-compressed. Most-recently-updated
 // first so a bounded N favors fresh beliefs.
-std::vector<StmtRow> sample_consolidated(sqlite3* db, int limit) {
+std::vector<StmtRow> sample_consolidated(sqlite3* db_handle, int limit) {
     const char* sql =
         "SELECT id, tenant_id FROM statements "
         "WHERE consolidation_state='consolidated' "
         "  AND provenance != 'consolidation_abstract' "
         "ORDER BY updated_at DESC LIMIT ?";
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_handle, sql, -1, &raw, nullptr) != SQLITE_OK) {
         return {};
     }
-    StmtHandle h(raw);
-    sqlite3_bind_int(h.get(), 1, limit);
+    StmtHandle handle(raw);
+    sqlite3_bind_int(handle.get(), 1, limit);
     std::vector<StmtRow> rows;
-    while (sqlite3_step(h.get()) == SQLITE_ROW) {
-        StmtRow r;
-        r.id = col_text(h.get(), 0);
-        r.tenant_id = col_text(h.get(), 1);
-        rows.push_back(std::move(r));
+    while (sqlite3_step(handle.get()) == SQLITE_ROW) {
+        StmtRow row;
+        row.id = col_text(handle.get(), 0);
+        row.tenant_id = col_text(handle.get(), 1);
+        rows.push_back(std::move(row));
     }
     return rows;
 }
@@ -273,7 +274,9 @@ ReplayStats do_compress_and_emit(
     const std::vector<StmtRow>& extra_seed_rows = {})
 {
     // Nothing to compress AND nothing to seed the NORM scan → no-op.
-    if (rows.empty() && extra_seed_rows.empty()) return {};
+    if (rows.empty() && extra_seed_rows.empty()) {
+        return {};
+    }
 
     ReplayStats stats;
     stats.replay_batch_id = random_hex_32();
@@ -290,8 +293,8 @@ ReplayStats do_compress_and_emit(
     // so a key carried by BOTH sources is probed once and cannot double-write.
     // extra_seed_rows are SEEDS ONLY — already consolidated, never re-compressed.
     std::map<std::string, std::vector<std::string>> seed_by_tenant = by_tenant;
-    for (const auto& r : extra_seed_rows) {
-        seed_by_tenant[r.tenant_id].push_back(r.id);
+    for (const auto& row : extra_seed_rows) {
+        seed_by_tenant[row.tenant_id].push_back(row.id);
     }
 
     // Compress the volatile batch first, so each just-compressed row counts as a
