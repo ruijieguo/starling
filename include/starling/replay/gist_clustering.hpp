@@ -22,6 +22,12 @@ struct GistCluster {
     std::string object_value;                // representative canonical object string
     std::vector<std::string> member_ids;     // qualifying member statement ids, sorted
     std::vector<std::string> holder_ids;     // distinct holders, sorted; size() >= K
+    std::vector<std::string> member_objects; // #38-C v2: distinct member object strings,
+                                             // sorted. NON-EMPTY only for SEMANTIC clusters
+                                             // (members carry VARIED objects); empty for an
+                                             // exact cluster (members share object_value).
+                                             // Drives the member-aware judge + per-member
+                                             // entailment that guard against false-merge.
 };
 
 // A detected cluster tagged with its tenant, ready for the Phase-2 write path.

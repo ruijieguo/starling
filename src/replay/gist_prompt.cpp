@@ -65,7 +65,13 @@ std::string join_with_commas(const std::vector<std::string>& items) {
 std::string build_norm_gist_prompt(const GistCluster& cluster) {
     std::string prompt(kNormGistPromptTemplate);
     replace_first(prompt, "{predicate}", cluster.predicate);
-    replace_first(prompt, "{object}", cluster.object_value);
+    // #38-C v2: a SEMANTIC cluster's members phrase the object DIFFERENTLY — show the
+    // judge every phrasing (joined) so its summary + confidence reflect the spread, not
+    // just the representative. An exact cluster (member_objects empty) shows the one object.
+    const std::string object_view = cluster.member_objects.size() > 1
+                                        ? join_with_commas(cluster.member_objects)
+                                        : cluster.object_value;
+    replace_first(prompt, "{object}", object_view);
     replace_first(prompt, "{holder_count}", std::to_string(cluster.holder_ids.size()));
     replace_first(prompt, "{holders}", join_with_commas(cluster.holder_ids));
     return prompt;
@@ -100,11 +106,16 @@ GistJudgment parse_gist_judgment(std::string_view llm_reply) {
     return judgment;
 }
 
-std::string build_entailment_prompt(const GistCluster& cluster, std::string_view summary) {
+std::string build_entailment_prompt(const GistCluster& cluster, std::string_view object,
+                                    std::string_view summary) {
     std::string prompt(kEntailmentPromptTemplate);
     replace_first(prompt, "{holder_count}", std::to_string(cluster.holder_ids.size()));
     replace_first(prompt, "{predicate}", cluster.predicate);
-    replace_first(prompt, "{object}", cluster.object_value);
+    // `object` is the ONE member being checked this call: the gate verifies the summary
+    // against EACH varied member (per-member entailment), so a false-merged outlier that
+    // the summary does not entail gates the whole candidate. Exact clusters pass the
+    // shared object_value (one call, unchanged).
+    replace_first(prompt, "{object}", object);
     replace_first(prompt, "{summary}", summary);
     return prompt;
 }

@@ -73,7 +73,8 @@ TEST(GistPrompt, RejectsOutOfRangeConfidence) {
 // --- Phase 4: entailment verification prompt + verdict parse ---
 
 TEST(GistPrompt, BuildEntailmentFillsContext) {
-    const std::string prompt = build_entailment_prompt(sample_cluster(), "People like coffee.");
+    const std::string prompt =
+        build_entailment_prompt(sample_cluster(), "coffee", "People like coffee.");
     EXPECT_NE(prompt.find("likes"), std::string::npos);
     EXPECT_NE(prompt.find("coffee"), std::string::npos);
     EXPECT_NE(prompt.find("People like coffee."), std::string::npos);
