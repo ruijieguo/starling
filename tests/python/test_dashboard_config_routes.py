@@ -89,3 +89,19 @@ def test_delete_provider_unbinds_role(ctx, monkeypatch):
 def test_get_config_never_returns_token(ctx):
     cfg, eng, client, _ = ctx
     assert "token" not in client.get("/api/config").json()
+
+
+class _RaisingWorker:
+    def tick_one_batch(self, now):
+        raise RuntimeError("permanent_400")   # provider rejected the embedding config
+
+
+def test_reembed_provider_error_is_non_fatal(ctx, monkeypatch):
+    """REGRESSION: saving a provider/model whose embedding call is rejected
+    (e.g. a chat model bound to the embedding role → permanent_400) must NOT 500.
+    The new embedder is swapped in and the cleared rows defer to the background
+    tick; _reembed logs + swallows the provider error rather than propagating it
+    up through the config-save handler."""
+    cfg, eng, client, _ = ctx
+    monkeypatch.setattr(eng._core, "worker", _RaisingWorker())
+    eng._reembed()   # must return normally, not raise
