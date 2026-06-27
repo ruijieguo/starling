@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <ctime>
 #include <format>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <random>
@@ -116,6 +117,48 @@ struct StmtRow {
 };
 
 // Sample VOLATILE statements with provenance in ('user_input','tom_inferred'), limit N
+// Cast-free TEXT read. cppcoreguidelines-pro-type-reinterpret-cast fires on the
+// gate's changed lines; the [first,last) iterator-range ctor + std::next avoids
+// both the reinterpret_cast and explicit pointer arithmetic. NULL column → "".
+std::string col_text(sqlite3_stmt* stmt, int idx) {
+    const unsigned char* ptr = sqlite3_column_text(stmt, idx);
+    if (ptr == nullptr) {
+        return {};
+    }
+    return std::string(ptr, std::next(ptr, sqlite3_column_bytes(stmt, idx)));
+}
+
+// #38-C fix: seed the OFFLINE NORM scan from SETTLED (consolidated) beliefs. The
+// volatile batch (sample_volatile) is empty in the real flow because remember()
+// consolidates synchronously via the post-write online pump, so the clustering —
+// which gist_clustering.cpp:85 says builds norms "only from SETTLED beliefs" —
+// never had seeds. This lean id+tenant sampler supplies them. No SWR weighting
+// (we only need candidate (predicate, canonical_object_hash) keys); excludes
+// consolidation_abstract so a gist never seeds another gist. The rows are cluster
+// SEEDS only — already consolidated, never re-compressed. Most-recently-updated
+// first so a bounded N favors fresh beliefs.
+std::vector<StmtRow> sample_consolidated(sqlite3* db, int limit) {
+    const char* sql =
+        "SELECT id, tenant_id FROM statements "
+        "WHERE consolidation_state='consolidated' "
+        "  AND provenance != 'consolidation_abstract' "
+        "ORDER BY updated_at DESC LIMIT ?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        return {};
+    }
+    StmtHandle h(raw);
+    sqlite3_bind_int(h.get(), 1, limit);
+    std::vector<StmtRow> rows;
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        StmtRow r;
+        r.id = col_text(h.get(), 0);
+        r.tenant_id = col_text(h.get(), 1);
+        rows.push_back(std::move(r));
+    }
+    return rows;
+}
+
 std::vector<StmtRow> sample_volatile(sqlite3* db, int limit, std::string_view now_iso) {
     const char* sql =
         "SELECT id, holder_id, tenant_id, salience, last_replayed, "
@@ -226,9 +269,11 @@ ReplayStats do_compress_and_emit(
     const std::vector<StmtRow>& rows,
     std::string_view mode,
     std::string_view now_iso,
-    std::vector<GistProposal>* out_proposals = nullptr)
+    std::vector<GistProposal>* out_proposals = nullptr,
+    const std::vector<StmtRow>& extra_seed_rows = {})
 {
-    if (rows.empty()) return {};
+    // Nothing to compress AND nothing to seed the NORM scan → no-op.
+    if (rows.empty() && extra_seed_rows.empty()) return {};
 
     ReplayStats stats;
     stats.replay_batch_id = random_hex_32();
@@ -238,24 +283,33 @@ ReplayStats do_compress_and_emit(
     for (const auto& r : rows) {
         by_tenant[r.tenant_id].push_back(r.id);
     }
+    // #38-C fix: cluster seeds = the compressed volatile batch UNION the offline
+    // consolidated seeds (extra_seed_rows — the OFFLINE idle/sleep paths pass them,
+    // online passes none). ONE find_norm_gist_clusters call per tenant over the
+    // union: collect_seed_keys dedups the (predicate, canonical_object_hash) keys,
+    // so a key carried by BOTH sources is probed once and cannot double-write.
+    // extra_seed_rows are SEEDS ONLY — already consolidated, never re-compressed.
+    std::map<std::string, std::vector<std::string>> seed_by_tenant = by_tenant;
+    for (const auto& r : extra_seed_rows) {
+        seed_by_tenant[r.tenant_id].push_back(r.id);
+    }
 
+    // Compress the volatile batch first, so each just-compressed row counts as a
+    // 'consolidated' member when the NORM scan runs below.
     for (const auto& [tenant_id, ids] : by_tenant) {
-        auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
+        const auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
         stats.compressed += res.affected;
-        // #38-C: after compress, detect NORM-gist candidate clusters seeded by
-        // this batch's (predicate, canonical_object_hash) keys. Detection is
-        // read-only and runs in every mode. When out_proposals is provided (only
-        // the OFFLINE idle/sleep paths pass it), the clusters are collected for
-        // the Phase-2 write step, which happens AFTER this function returns — not
-        // inline — so the write never runs in the online/subscriber transaction.
+    }
+
+    // Detect NORM-gist candidate clusters per tenant from the union seed set.
+    // Read-only. When out_proposals is provided (OFFLINE only) the clusters are
+    // collected for the Phase-2 write that runs AFTER this function returns — not
+    // inline — so the write never runs in the online/subscriber transaction.
+    for (const auto& [tenant_id, seed_ids] : seed_by_tenant) {
         const auto clusters =
-            find_norm_gist_clusters(conn, tenant_id, ids, kGistThresholds);
+            find_norm_gist_clusters(conn, tenant_id, seed_ids, kGistThresholds);
         stats.gist_candidates += static_cast<int>(clusters.size());
         if (out_proposals != nullptr) {
-            // Proposals are unique by (tenant, predicate, canonical_object_hash) by
-            // construction: clustering dedups keys per tenant (collect_seed_keys'
-            // set) and by_tenant groups are disjoint — so no two proposals in a
-            // batch share a key, and no intra-batch double-write can occur.
             for (const auto& cluster : clusters) {
                 out_proposals->push_back({std::string(tenant_id), cluster});
             }
@@ -577,7 +631,11 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
     // through Bus::write AFTER compression (autocommit context; safe to open a
     // transaction). abstracted = gists actually written this batch.
     std::vector<GistProposal> proposals;
-    auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals);
+    // #38-C fix: also seed the NORM scan from settled (consolidated) beliefs — the
+    // volatile batch is empty in the real flow (remember consolidates synchronously).
+    const auto consolidated_seeds = sample_consolidated(db, 30);
+    auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals,
+                                      consolidated_seeds);
     const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
@@ -608,7 +666,11 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
 
     // #38-C Phase 2/3: offline mode — see run_idle. Sleep sweeps a larger batch.
     std::vector<GistProposal> proposals;
-    auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals);
+    // #38-C fix: seed the NORM scan from settled (consolidated) beliefs too — sleep
+    // sweeps a larger consolidated sample (200) to match its volatile batch size.
+    const auto consolidated_seeds = sample_consolidated(db, 200);
+    auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals,
+                                      consolidated_seeds);
     const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
