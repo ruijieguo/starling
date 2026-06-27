@@ -129,6 +129,25 @@ void insert_self_protection(persistence::Connection& conn,
         throw make_sqlite_error(conn.raw(), "commitment: insert protection step");
 }
 
+// True if a commitment row already exists for (tenant, stmt). Lets
+// create_from_statement stay idempotent: the row upsert + INSERT OR IGNORE
+// protection are already safe to repeat, but commitment.active_holding is a
+// fail-loud append on a time-independent idempotency_key, so re-materializing an
+// existing commitment (a re-delivered statement.written or a tick re-scan) must
+// NOT re-emit it — that collides and 500s the tick.
+bool commitment_exists(persistence::Connection& conn, std::string_view tenant_id,
+                       std::string_view stmt_id) {
+    const char* sql = "SELECT 1 FROM commitments WHERE tenant_id=? AND stmt_id=? LIMIT 1";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(conn.raw(), "commitment: exists prepare");
+    }
+    StmtHandle handle(raw);
+    bind_sv(handle.get(), 1, tenant_id);
+    bind_sv(handle.get(), 2, stmt_id);
+    return sqlite3_step(handle.get()) == SQLITE_ROW;
+}
+
 // Simple state-only UPDATE with updated_at, scoped to (tenant_id, stmt_id).
 void update_state(persistence::Connection& conn, std::string_view stmt_id,
                   std::string_view tenant_id, std::string_view state,
@@ -215,10 +234,13 @@ void CommitmentEngine::create_from_statement(persistence::Connection& conn,
                                              std::string_view tenant_id,
                                              std::string_view deadline,
                                              std::string_view now_iso) {
+    const bool already = commitment_exists(conn, tenant_id, stmt_id);
     upsert_active_commitment(conn, stmt_id, tenant_id, deadline, /*broken_count=*/0,
                              now_iso);
     insert_self_protection(conn, tenant_id, stmt_id);
-    emit_event(conn, "commitment.active_holding", stmt_id, stmt_id, tenant_id, "{}");
+    if (!already) {
+        emit_event(conn, "commitment.active_holding", stmt_id, stmt_id, tenant_id, "{}");
+    }
 }
 
 // ── fulfill ──────────────────────────────────────────────────────────────────

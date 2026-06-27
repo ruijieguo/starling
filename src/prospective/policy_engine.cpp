@@ -383,7 +383,13 @@ void PolicyEngine::run_post_write(persistence::Connection& conn,
 
         if (ev.event_type == "statement.written") {
             StmtMeta m = read_stmt_meta(conn, ev.primary_id, ev.tenant_id);
-            if (m.found && m.modality == "COMMITS") {
+            // Modality is stored canonical-lowercase ('commits' per
+            // statement_enums to_string); accept the upper form too, matching the
+            // defensive checks in plastic_window.cpp / forgetting_curve.cpp. The
+            // bare =="COMMITS" here silently never matched, so a remembered commits
+            // statement never materialized into a commitment (auto-materialization
+            // was dead — commitments only ever came from an explicit API call).
+            if (m.found && (m.modality == "commits" || m.modality == "COMMITS")) {
                 // spec §10: explicit event_time_end wins; else observed_at + 默认窗口
                 // (NOT raw observed_at — that's in the past, so the commitment would
                 // break on the very next tick).
