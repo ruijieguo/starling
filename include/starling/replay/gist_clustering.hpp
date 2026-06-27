@@ -20,6 +20,11 @@ struct GistCluster {
     std::string canonical_object_hash;
     std::string object_kind;                 // representative (members share the hash)
     std::string object_value;                // representative canonical object string
+    std::string subject_kind;                // #38-C v2 entity-gist: the SPECIFIC entity this
+    std::string subject_id;                  // consensus is about (a cognizer). BOTH EMPTY for
+                                             // a people-norm cluster → the gist gets the generic
+                                             // __people__ subject; SET → the gist keeps this
+                                             // entity (and the entity goes into the span key).
     std::vector<std::string> member_ids;     // qualifying member statement ids, sorted
     std::vector<std::string> holder_ids;     // distinct holders, sorted; size() >= K
     std::vector<std::string> member_objects; // #38-C v2: distinct member object strings,
@@ -57,6 +62,11 @@ struct GistThresholds {
                                         // >0 (recommended 0.85) to enable cross-predicate
                                         // paraphrase clustering. Higher = stricter (fewer
                                         // false merges).
+    bool entity_gist_enabled = false;   // #38-C v2 entity-gist: when true, a second OFFLINE
+                                        // pass clusters by (subject, predicate, object) over
+                                        // cognizer subjects → a consensus gist ABOUT a specific
+                                        // entity ("(common_ground) believes (Bob, owns, auth)").
+                                        // false = OFF (default; no behavior change).
 };
 
 // Deterministic NORM-gist clustering. `seed_stmt_ids` is the replay batch: it
@@ -69,11 +79,16 @@ struct GistThresholds {
 // has a 'consolidation_abstract' gist (same predicate + hash, tenant) is skipped
 // so re-replay never re-abstracts (idempotency). The result is sorted by
 // (predicate, canonical_object_hash) for deterministic downstream gist text.
+// by_subject=false (default) → people-norm: cluster by (predicate, hash), subject
+// dropped, gist subject = generic __people__. by_subject=true → #38-C v2 entity-gist:
+// cluster by (subject, predicate, hash) over COGNIZER subjects, the cluster carries the
+// specific subject (→ a consensus gist ABOUT that entity, subject in the span key).
 [[nodiscard]] std::vector<GistCluster> find_norm_gist_clusters(
     persistence::Connection& conn,
     std::string_view tenant_id,
     const std::vector<std::string>& seed_stmt_ids,
-    const GistThresholds& thresholds);
+    const GistThresholds& thresholds,
+    bool by_subject = false);
 
 // #38-C v2 semantic clustering (k-NN seed expansion). Sibling to the exact pass: for
 // each seed not already in `claimed` (the exact-match members), query the vector index
