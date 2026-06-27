@@ -50,8 +50,9 @@ def test_ingest_policy_four():
 def test_review_status_five():
     assert len(ReviewStatus) == 5
 
-def test_provenance_four():
-    assert len(StatementProvenance) == 4
+def test_provenance_five():
+    assert len(StatementProvenance) == 5
+    assert StatementProvenance.CONSOLIDATION_ABSTRACT.value == "consolidation_abstract"
 
 def test_evidence_status_three():
     assert {e.value for e in EvidenceStatus} == {"active", "redacted", "erased"}

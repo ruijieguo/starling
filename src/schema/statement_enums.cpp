@@ -71,6 +71,7 @@ std::string_view to_string(StatementProvenance p) {
         case StatementProvenance::REPLAY_DERIVED:          return "replay_derived";
         case StatementProvenance::TOM_INFERRED:            return "tom_inferred";
         case StatementProvenance::RECONSOLIDATION_DERIVED: return "reconsolidation_derived";
+        case StatementProvenance::CONSOLIDATION_ABSTRACT:  return "consolidation_abstract";
     }
     throw std::invalid_argument("unknown StatementProvenance");
 }
@@ -130,6 +131,7 @@ StatementProvenance provenance_from_string(std::string_view s) {
     if (s == "replay_derived")          return StatementProvenance::REPLAY_DERIVED;
     if (s == "tom_inferred")            return StatementProvenance::TOM_INFERRED;
     if (s == "reconsolidation_derived") return StatementProvenance::RECONSOLIDATION_DERIVED;
+    if (s == "consolidation_abstract")  { return StatementProvenance::CONSOLIDATION_ABSTRACT; }
     throw std::invalid_argument(std::string("unknown StatementProvenance: ") + std::string(s));
 }
 

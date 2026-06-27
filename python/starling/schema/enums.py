@@ -77,6 +77,7 @@ class StatementProvenance(StrEnum):
     REPLAY_DERIVED = "replay_derived"
     TOM_INFERRED = "tom_inferred"
     RECONSOLIDATION_DERIVED = "reconsolidation_derived"
+    CONSOLIDATION_ABSTRACT = "consolidation_abstract"  # #38-C NORM gist
 
 class ReviewStatus(StrEnum):
     APPROVED = "approved"

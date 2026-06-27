@@ -76,6 +76,7 @@ TEST(StatementEnums, ProvenanceToString) {
     EXPECT_EQ(to_string(StatementProvenance::REPLAY_DERIVED),          "replay_derived");
     EXPECT_EQ(to_string(StatementProvenance::TOM_INFERRED),            "tom_inferred");
     EXPECT_EQ(to_string(StatementProvenance::RECONSOLIDATION_DERIVED), "reconsolidation_derived");
+    EXPECT_EQ(to_string(StatementProvenance::CONSOLIDATION_ABSTRACT),  "consolidation_abstract");
 }
 
 }  // namespace starling::schema

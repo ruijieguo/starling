@@ -7,6 +7,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/replay/gist_clustering.hpp"
+#include "starling/replay/gist_writer.hpp"
 #include "starling/replay/swr_sampler.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
 
@@ -218,7 +219,8 @@ ReplayStats do_compress_and_emit(
     persistence::Connection& conn,
     const std::vector<StmtRow>& rows,
     std::string_view mode,
-    std::string_view now_iso)
+    std::string_view now_iso,
+    std::vector<GistProposal>* out_proposals = nullptr)
 {
     if (rows.empty()) return {};
 
@@ -234,14 +236,24 @@ ReplayStats do_compress_and_emit(
     for (const auto& [tenant_id, ids] : by_tenant) {
         auto res = op_compress(conn, ids, tenant_id, stats.replay_batch_id);
         stats.compressed += res.affected;
-        // #38-C Phase 1: after compress, detect NORM-gist candidate clusters
-        // seeded by this batch's (predicate, canonical_object_hash) keys. v1 is
-        // detection-only — no statement is written yet (Phase 2 turns each
-        // cluster into a gated, pipeline-written gist). Read-only, so it cannot
-        // corrupt the batch it just consolidated.
+        // #38-C: after compress, detect NORM-gist candidate clusters seeded by
+        // this batch's (predicate, canonical_object_hash) keys. Detection is
+        // read-only and runs in every mode. When out_proposals is provided (only
+        // the OFFLINE idle/sleep paths pass it), the clusters are collected for
+        // the Phase-2 write step, which happens AFTER this function returns — not
+        // inline — so the write never runs in the online/subscriber transaction.
         const auto clusters =
             find_norm_gist_clusters(conn, tenant_id, ids, kGistThresholds);
         stats.gist_candidates += static_cast<int>(clusters.size());
+        if (out_proposals != nullptr) {
+            // Proposals are unique by (tenant, predicate, canonical_object_hash) by
+            // construction: clustering dedups keys per tenant (collect_seed_keys'
+            // set) and by_tenant groups are disjoint — so no two proposals in a
+            // batch share a key, and no intra-batch double-write can occur.
+            for (const auto& cluster : clusters) {
+                out_proposals->push_back({std::string(tenant_id), cluster});
+            }
+        }
     }
 
     // Emit statement.derived for each compressed stmt
@@ -280,10 +292,16 @@ int ReplayScheduler::enforce_oscillation_guard(persistence::Connection& conn) {
     sqlite3* db = conn.raw();
 
     // Collect affected ids BEFORE updating so we can emit per-id
+    // #38-C: never force-consolidate an ungated NORM gist. A gist must only
+    // enter 'consolidated' via Phase-4 gating (verification pass); the
+    // oscillation guard is for ordinary churning beliefs. (Gists are not replay-
+    // sampled so replay_count stays 0 today, but fence explicitly — this is the
+    // load-bearing "an ungated gist never auto-consolidates" invariant.)
     const char* sel_sql =
         "SELECT id, holder_id, tenant_id, replay_count FROM statements "
         "WHERE replay_count >= 5 "
-        "  AND consolidation_state IN ('volatile','replaying_consolidating')";
+        "  AND consolidation_state IN ('volatile','replaying_consolidating') "
+        "  AND provenance != 'consolidation_abstract'";
     sqlite3_stmt* sel_raw = nullptr;
     if (sqlite3_prepare_v2(db, sel_sql, -1, &sel_raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "enforce_oscillation_guard: prepare SELECT");
@@ -344,10 +362,15 @@ int ReplayScheduler::sweep_volatile_ttl(persistence::Connection& conn,
                     cutoff_tm.tm_year + 1900, cutoff_tm.tm_mon + 1, cutoff_tm.tm_mday,
                     cutoff_tm.tm_hour, cutoff_tm.tm_min, cutoff_tm.tm_sec);
 
-    // Collect affected volatile stmts older than cutoff
+    // Collect affected volatile stmts older than cutoff.
+    // #38-C: exclude ungated NORM gists — a gist sits volatile+pending_review
+    // until Phase-4 gating; the 7-day volatile TTL must not silently archive
+    // (destroy) it before review. A gist's own lifecycle (gate / decay-after-
+    // gating / forget) is governed by Phase 4, not this ingestion-side TTL.
     const char* sel_sql =
         "SELECT id, holder_id, tenant_id FROM statements "
-        "WHERE consolidation_state='volatile' AND created_at < ?";
+        "WHERE consolidation_state='volatile' AND created_at < ? "
+        "  AND provenance != 'consolidation_abstract'";
     sqlite3_stmt* sel_raw = nullptr;
     if (sqlite3_prepare_v2(db, sel_sql, -1, &sel_raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "sweep_volatile_ttl: prepare SELECT");
@@ -543,7 +566,15 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
             throw make_sqlite_error(db, "run_idle: UPDATE step");
     }
 
-    return do_compress_and_emit(conn, rows, "idle", now_iso);
+    // #38-C Phase 2: offline mode — collect gist candidates, then write them
+    // through Bus::write AFTER compression (autocommit context; safe to open a
+    // transaction). abstracted = gists actually written this batch.
+    std::vector<GistProposal> proposals;
+    auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso);
+    stats.abstracted += gist_outcome.written;
+    stats.gist_failed += gist_outcome.failed;
+    return stats;
 }
 
 ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
@@ -566,7 +597,13 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
             throw make_sqlite_error(db, "run_sleep: UPDATE step");
     }
 
-    return do_compress_and_emit(conn, rows, "sleep", now_iso);
+    // #38-C Phase 2: offline mode — see run_idle. Sleep sweeps a larger batch.
+    std::vector<GistProposal> proposals;
+    auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso);
+    stats.abstracted += gist_outcome.written;
+    stats.gist_failed += gist_outcome.failed;
+    return stats;
 }
 
 }  // namespace starling::replay

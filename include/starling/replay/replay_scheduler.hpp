@@ -10,7 +10,8 @@ namespace starling::replay {
 struct ReplayStats {
     int sampled=0, compressed=0, abstracted=0, reinforced=0, decayed=0, reconciled=0;
     int forced_consolidated=0, ttl_archived=0;
-    int gist_candidates=0;  // #38-C P1: NORM-gist clusters detected this batch (no write yet)
+    int gist_candidates=0;  // #38-C P1: NORM-gist clusters detected this batch
+    int gist_failed=0;      // #38-C P2: gist proposals rejected by the write pipeline (offline)
     std::string replay_batch_id;
 };
 

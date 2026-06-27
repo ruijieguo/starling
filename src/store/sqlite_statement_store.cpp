@@ -108,11 +108,15 @@ int SqliteStatementStore::force_consolidate_pending_review() {
     // exact 自 src/replay/replay_scheduler.cpp:289(enforce_oscillation_guard)。
     // 跨租户 bulk(无 tenant 过滤)——保真现行为。
     sqlite3* db = conn_.raw();
+    // #38-C: must stay in lockstep with enforce_oscillation_guard's SELECT —
+    // exclude consolidation_abstract gists so an ungated gist is never
+    // force-consolidated outside Phase-4 gating.
     const char* sql =
         "UPDATE statements "
         "SET consolidation_state='consolidated', review_status='pending_review' "
         "WHERE replay_count >= 5 "
-        "  AND consolidation_state IN ('volatile','replaying_consolidating')";
+        "  AND consolidation_state IN ('volatile','replaying_consolidating') "
+        "  AND provenance != 'consolidation_abstract'";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "StatementStore::force_consolidate prepare");
