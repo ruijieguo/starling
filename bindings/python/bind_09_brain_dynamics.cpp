@@ -60,15 +60,15 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
              },
              py::arg("now_iso"))
         .def("run_idle",
-             [](starling::replay::ReplayScheduler& s, std::string now,
+             [](starling::replay::ReplayScheduler& sched, const std::string& now,
                 starling::extractor::LLMAdapter* llm) {
-                 return s.run_idle(s.connection(), now, llm);
+                 return sched.run_idle(sched.connection(), now, llm);
              },
              py::arg("now_iso"), py::arg("llm") = nullptr)
         .def("run_sleep",
-             [](starling::replay::ReplayScheduler& s, std::string now,
+             [](starling::replay::ReplayScheduler& sched, const std::string& now,
                 starling::extractor::LLMAdapter* llm) {
-                 return s.run_sleep(s.connection(), now, llm);
+                 return sched.run_sleep(sched.connection(), now, llm);
              },
              py::arg("now_iso"), py::arg("llm") = nullptr);
 
