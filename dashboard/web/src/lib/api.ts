@@ -221,6 +221,19 @@ export type Gist = {
 };
 export type GistData = { by_state: Record<string, number>; gists: Gist[] };
 
+// 谱系钻取:一条 gist 的来源簇成员(它泛化自的具体语句)。
+export type GistMember = {
+	id: string;
+	holder_id: string;
+	subject_id: string;
+	predicate: string;
+	object_value: string;
+	consolidation_state: string;
+	review_status: string;
+	confidence: number;
+};
+export type GistMembers = { gist_id: string; members: GistMember[] };
+
 // 透视镜取镜:只读文本查找(GET /api/statement_search)。
 export type StatementSearchResponse = {
 	rows: {

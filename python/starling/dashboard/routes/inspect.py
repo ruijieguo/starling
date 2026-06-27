@@ -73,6 +73,11 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.gists(c.db_path, c.tenant)
 
+    @router.get("/gist_members/{gist_id}")
+    async def gist_members(request: Request, gist_id: str):   # #38-C v2 — gist lineage
+        c = _cfg(request)
+        return queries.gist_members(c.db_path, c.tenant, gist_id)
+
     @router.get("/queues")
     async def queues(request: Request):
         c = _cfg(request)

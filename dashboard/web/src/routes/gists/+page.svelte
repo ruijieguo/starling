@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { api, type Gist, type GistData } from '$lib/api';
+	import { api, type Gist, type GistData, type GistMember } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Badge, Card, EmptyState, Skeleton } from '$lib/components/ui';
+	import { Badge, Card, EmptyState, Skeleton, Drawer } from '$lib/components/ui';
 
-	// #38-C v2 可观测:固化 NORM gist 的只读检视(GET /api/gists)。
+	// #38-C v2 可观测:固化 NORM gist 的只读检视(GET /api/gists)+ 谱系钻取。
 	const q = createQuery(() => api.get<GistData>('/api/gists'));
 	$effect(() => {
 		q.refetch();
@@ -18,13 +19,39 @@
 	const stateTone = (s: string): 'success' | 'info' | 'neutral' =>
 		s === 'consolidated' ? 'success' : s === 'volatile' ? 'info' : 'neutral';
 	const pct = (conf: number) => `${Math.round(conf * 100)}%`;
-	const triple = (g: Gist) =>
-		`${g.subject_id} ${g.predicate} ${g.object_value}`.replace(/\s+/g, ' ').trim();
+	const triple = (subj: string, pred: string, obj: string) =>
+		`${subj} ${pred} ${obj}`.replace(/\s+/g, ' ').trim();
+
+	// 谱系钻取:点开一条 gist → 拉取并展示它泛化自的来源簇成员(derived_from)。
+	let detailOpen = $state(false);
+	let detail = $state<Gist | null>(null);
+	let members = $state<GistMember[]>([]);
+	let membersLoading = $state(false);
+	let detailForId = $state(''); // 防陈旧:并发点开时只让最新一次的 members 落地
+
+	async function openDetail(gist: Gist) {
+		detail = gist;
+		detailOpen = true;
+		members = [];
+		membersLoading = true;
+		detailForId = gist.id;
+		try {
+			const res = await api.get<{ members: GistMember[] }>(
+				`/api/gist_members/${encodeURIComponent(gist.id)}`
+			);
+			if (detailForId === gist.id) members = res.members;
+		} catch (e) {
+			if (detailForId === gist.id)
+				toast.error(`取来源失败:${e instanceof Error ? e.message : String(e)}`);
+		} finally {
+			if (detailForId === gist.id) membersLoading = false;
+		}
+	}
 </script>
 
 <PageHeader
 	title="固化 gist"
-	subtitle="NORM gist:多 holder 共识经 LLM 判定 + 门控固化的范式(provenance=consolidation_abstract,只读)。"
+	subtitle="NORM gist:多 holder 共识经 LLM 判定 + 门控固化的范式(点开看来源谱系,只读)。"
 />
 
 {#if q.error}
@@ -49,11 +76,14 @@
 		<Card>
 			<ul class="divide-y divide-border">
 				{#each gists as g}
-					<li class="py-3">
-						<div class="flex items-start justify-between gap-3">
+					<li>
+						<button
+							type="button"
+							onclick={() => openDetail(g)}
+							class="flex w-full items-start justify-between gap-3 py-3 text-left transition hover:opacity-80"
+						>
 							<div class="min-w-0 flex-1">
-								<!-- LLM 一句话渲染;无 LLM(确定性)gist 回退到结构化三元组。 -->
-								<div class="text-sm text-fg">{g.consolidation_summary || triple(g)}</div>
+								<div class="text-sm text-fg">{g.consolidation_summary || triple(g.subject_id, g.predicate, g.object_value)}</div>
 								<div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle">
 									<span class="font-mono">{g.predicate}</span>
 									<span aria-hidden="true">·</span>
@@ -66,10 +96,61 @@
 								<Badge tone={stateTone(g.consolidation_state)}>{g.consolidation_state}</Badge>
 								<span class="text-xs tabular-nums text-muted">conf {pct(g.confidence)}</span>
 							</div>
-						</div>
+						</button>
 					</li>
 				{/each}
 			</ul>
 		</Card>
 	{/if}
 {/if}
+
+<Drawer bind:open={detailOpen} title="gist 谱系">
+	{#if detail}
+		<div class="space-y-3 text-sm">
+			<div>
+				<div class="text-xs uppercase tracking-wide text-subtle">范式</div>
+				<div class="mt-1 text-fg">
+					{detail.consolidation_summary || triple(detail.subject_id, detail.predicate, detail.object_value)}
+				</div>
+				<div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-subtle">
+					<Badge tone={stateTone(detail.consolidation_state)}>{detail.consolidation_state}</Badge>
+					<span>{detail.review_status}</span>
+					<span>·</span>
+					<span class="tabular-nums">conf {pct(detail.confidence)}</span>
+					<span>·</span>
+					<span>depth {detail.derived_depth}</span>
+				</div>
+			</div>
+
+			<div class="rounded-control border border-border bg-surface p-3">
+				<div class="text-xs uppercase tracking-wide text-subtle">
+					来源簇成员（derived_from，{detail.derived_from.length}）
+				</div>
+				{#if membersLoading}
+					<div class="mt-2 space-y-2">{#each Array(3) as _}<Skeleton class="h-8 w-full" />{/each}</div>
+				{:else if members.length === 0}
+					<div class="mt-2 text-xs text-subtle">
+						无可显示的来源（成员可能已被遗忘/清理;谱系 id 仍记录于 derived_from)。
+					</div>
+				{:else}
+					<ul class="mt-1 divide-y divide-border">
+						{#each members as m}
+							<li class="flex items-center justify-between gap-2 py-2">
+								<div class="min-w-0 flex-1">
+									<div class="truncate text-fg">
+										<span class="text-subtle">{m.holder_id}:</span>
+										{triple(m.subject_id, m.predicate, m.object_value)}
+									</div>
+								</div>
+								<Badge tone={stateTone(m.consolidation_state)}>{m.consolidation_state}</Badge>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+			<p class="text-xs text-subtle">
+				这条范式由上述 {detail.derived_from.length} 条独立持有者信念聚簇、经 LLM 蕴含验证固化而来。
+			</p>
+		</div>
+	{/if}
+</Drawer>
