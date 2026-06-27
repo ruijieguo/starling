@@ -2,7 +2,10 @@
 
 #include "starling/bus/bus.hpp"
 #include "starling/extractor/extracted_statement.hpp"
+#include "starling/extractor/llm_adapter.hpp"
+#include "starling/replay/gist_prompt.hpp"
 #include "starling/schema/statement_enums.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 
 #include <sqlite3.h>
 #include <exception>
@@ -10,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace starling::replay {
 namespace {
@@ -30,7 +34,8 @@ constexpr double kProvisionalConfidence = 0.5;
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
     const GistCluster& cluster,
-    std::string_view now_iso)
+    std::string_view now_iso,
+    double confidence)
 {
     extractor::ExtractedStatement stmt;
     stmt.holder_id             = std::string(kNormHolderId);
@@ -44,7 +49,7 @@ extractor::ExtractedStatement build_gist_statement(
     stmt.canonical_object_hash = cluster.canonical_object_hash;
     stmt.modality              = schema::Modality::BELIEVES;
     stmt.polarity              = schema::Polarity::POS;
-    stmt.confidence            = kProvisionalConfidence;
+    stmt.confidence            = confidence;  // LLM-judged (Phase 3) or provisional (no adapter)
     stmt.observed_at           = std::string(now_iso);
     // A norm is timeless in v1: no valid_from / valid_to / event_time_start.
     // source_hash is a required validator field; make it deterministic per key.
@@ -67,7 +72,8 @@ extractor::ExtractedStatement build_gist_statement(
 
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
-                                      std::string_view now_iso)
+                                      std::string_view now_iso,
+                                      extractor::LLMAdapter* gist_llm)
 {
     GistWriteOutcome outcome;
     // Precondition (fail LOUD): must run in autocommit. Bus::write opens a
@@ -82,8 +88,29 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
     }
     bus::Bus gist_bus(adapter);
     for (const auto& proposal : proposals) {
+        // Phase 3: when a consolidation LLM is wired, judge the candidate norm
+        // BEFORE writing — confidence + a one-sentence summary. An LLM error or
+        // unparseable reply skips this proposal (counted failed, retried next
+        // cycle) rather than writing an un-judged gist. No adapter ⇒ deterministic
+        // Phase-2 path (provisional confidence, no summary).
+        GistJudgment judgment;
+        if (gist_llm != nullptr) {
+            const extractor::LLMResponse resp =
+                gist_llm->generate(build_norm_gist_prompt(proposal.cluster));
+            if (!resp.ok) {
+                ++outcome.failed;
+                continue;
+            }
+            judgment = parse_gist_judgment(resp.raw_xml);
+            if (!judgment.ok) {
+                ++outcome.failed;
+                continue;
+            }
+        }
+        const double confidence =
+            (gist_llm != nullptr) ? judgment.confidence : kProvisionalConfidence;
         const auto stmt =
-            build_gist_statement(proposal.tenant_id, proposal.cluster, now_iso);
+            build_gist_statement(proposal.tenant_id, proposal.cluster, now_iso, confidence);
         // Deterministic span key per cluster so a re-emitted statement.written
         // event dedups on its idempotency_key.
         const std::string span_key =
@@ -95,8 +122,18 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
             // is honest: the chunk-duplicate probe is an exact (holder, predicate,
             // hash, approved) match and gists are never approved pre-gating, so it
             // is a benign no-op; gist dedup is the Phase-1 idempotency guard.
-            gist_bus.write(stmt, /*evidence_engram_id=*/"", span_key, std::nullopt);
+            const auto write_outcome =
+                gist_bus.write(stmt, /*evidence_engram_id=*/"", span_key, std::nullopt);
             ++outcome.written;
+            // Persist the LLM's human-readable rendering on the gist row.
+            if (gist_llm != nullptr && !judgment.summary.empty()) {
+                const std::string stmt_id =
+                    std::visit([](const auto& res) { return res.stmt_id; }, write_outcome);
+                // statements writes are owned by StatementStore (best-effort here:
+                // never throws, so it can't double-count an already-written gist).
+                store::SqliteStatementStore(adapter.connection())
+                    .set_consolidation_summary(stmt_id, proposal.tenant_id, judgment.summary);
+            }
         } catch (const std::exception&) {
             // A single gist failing (validation / conflict / arbitration) must not
             // abort the offline batch — count it (surfaced to the caller, not

@@ -129,6 +129,7 @@ class DashboardEngine:
         # stub, matching the pre-registry "no key configured" behaviour.
         self.set_llm(config.resolve_role("extraction") or {})
         self.set_chat(config.chat() or {})   # chat role (2c); falls back to extraction
+        self.set_consolidation(config.resolve_role("consolidation") or {})  # #38-C role consumer
         self.rebuild_embedder(config.embedding() or {}, reembed=False)
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
@@ -153,6 +154,15 @@ class DashboardEngine:
         with self._lock:
             self._core.chat_llm = (_build_chat_adapter(chat_cfg)
                                    if chat_cfg.get("api_key") else None)
+
+    def set_consolidation(self, cons_cfg: dict) -> None:
+        """#38-C: build the consolidation-role adapter that judges NORM gists in
+        offline replay. Unbound (no api_key) → None → deterministic gist (no LLM
+        judge). O(1) reference swap; the NORM-gist prompt + orchestration live in
+        the C++ core, this only injects the adapter."""
+        with self._lock:
+            self._core.consolidation_llm = (_build_chat_adapter(cons_cfg)
+                                            if cons_cfg.get("api_key") else None)
 
     def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> None:
         with self._lock:

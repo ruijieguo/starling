@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+namespace starling::extractor { class LLMAdapter; }  // injected consolidation LLM (offline only)
+
 namespace starling::replay {
 
 struct ReplayStats {
@@ -21,9 +23,13 @@ public:
 
     // Online: SubscriberPump 调用. online_trigger_counter+1; 达 N=3 跑采样窗口(批1-3).
     ReplayStats tick_online(persistence::Connection& conn, std::string_view now_iso);
-    // 显式 API (无后台线程).
-    ReplayStats run_idle(persistence::Connection& conn, std::string_view now_iso);   // 批10-30
-    ReplayStats run_sleep(persistence::Connection& conn, std::string_view now_iso);  // sweep
+    // 显式 API (无后台线程). #38-C P3: offline gist writes; pass a consolidation
+    // LLM to judge each gist (confidence + summary), or null for the deterministic
+    // Phase-2 path. These run in autocommit, so Bus::write's BEGIN is safe.
+    ReplayStats run_idle(persistence::Connection& conn, std::string_view now_iso,
+                         extractor::LLMAdapter* gist_llm = nullptr);   // 批10-30
+    ReplayStats run_sleep(persistence::Connection& conn, std::string_view now_iso,
+                          extractor::LLMAdapter* gist_llm = nullptr);  // sweep
 
     // 振荡防护: replay_count≥5 → 强制 CONSOLIDATED+PENDING_REVIEW + emit consolidation_forced.
     int enforce_oscillation_guard(persistence::Connection& conn);

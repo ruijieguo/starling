@@ -91,6 +91,7 @@ class MemoryCore:
         self.tenant = tenant_id
         self.llm = llm           # extraction adapter (remember); also chat fallback
         self.chat_llm = None     # chat adapter (converse); None → falls back to self.llm
+        self.consolidation_llm = None  # #38-C: consolidation role; None → deterministic gist (no LLM judge)
         self.adapter_name = adapter_name
         self.source_prefix = source_prefix
         self._extraction = extraction or ExtractionConfig()
@@ -315,12 +316,18 @@ class MemoryCore:
         sleep 今天无调用方=真新能力;idle 已被 tick_all 驱动→手动=按需刷新。"""
         now_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         sched = _core.ReplayScheduler(self.rt.adapter)
-        rs = sched.run_sleep(now_iso) if mode == "sleep" else sched.run_idle(now_iso)
+        # #38-C P3: a consolidation LLM (if configured) judges each gist (confidence +
+        # summary) during the offline pass; None → deterministic gist. The C++ core
+        # owns the NORM-gist prompt + orchestration — Python only injects the adapter.
+        rs = (sched.run_sleep(now_iso, self.consolidation_llm) if mode == "sleep"
+              else sched.run_idle(now_iso, self.consolidation_llm))
         return {"mode": mode, "sampled": rs.sampled, "compressed": rs.compressed,
                 "abstracted": rs.abstracted, "reinforced": rs.reinforced,
                 "decayed": rs.decayed, "reconciled": rs.reconciled,
                 "forced_consolidated": rs.forced_consolidated,
-                "ttl_archived": rs.ttl_archived, "replay_batch_id": rs.replay_batch_id}
+                "ttl_archived": rs.ttl_archived,
+                "gist_candidates": rs.gist_candidates, "gist_failed": rs.gist_failed,
+                "replay_batch_id": rs.replay_batch_id}
 
     def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
         """请求再固化:发 reconsolidate.requested 事件,引擎异步开可塑窗。复用现有绑定。

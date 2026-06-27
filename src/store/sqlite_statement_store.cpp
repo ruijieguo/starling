@@ -104,6 +104,28 @@ int SqliteStatementStore::restore_consolidated(std::string_view id,
     return sqlite3_changes(db);
 }
 
+void SqliteStatementStore::set_consolidation_summary(std::string_view stmt_id,
+                                                     std::string_view tenant,
+                                                     std::string_view summary) {
+    // BEST-EFFORT (see header): never throw — the gist is already committed, so a
+    // summary-UPDATE failure must not flip it to "failed" (Phase-1 idempotency
+    // would then suppress a re-write, losing the summary forever). On failure the
+    // column simply stays NULL (observable). consolidation_summary is not an
+    // immutable-field-trigger column.
+    sqlite3* db_handle = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET consolidation_summary=? WHERE id=? AND tenant_id=?";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db_handle, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        return;
+    }
+    StmtHandle handle(raw);
+    bind_sv(handle.get(), 1, summary);
+    bind_sv(handle.get(), 2, stmt_id);
+    bind_sv(handle.get(), 3, tenant);
+    sqlite3_step(handle.get());  // result intentionally ignored — best-effort
+}
+
 int SqliteStatementStore::force_consolidate_pending_review() {
     // exact 自 src/replay/replay_scheduler.cpp:289(enforce_oscillation_guard)。
     // 跨租户 bulk(无 tenant 过滤)——保真现行为。

@@ -34,6 +34,13 @@ public:
     // reject 不走这里 —— reject = forget(→forgotten 终态,见 forget())。
     int approve_review(std::string_view id, std::string_view tenant,
                        std::string_view updated_at);
+    // #38-C: set the consolidation LLM's natural-language summary on a gist row.
+    // BEST-EFFORT / never throws — the gist is already written+committed when this
+    // runs and the summary is a non-invariant prose field (not an immutable-trigger
+    // column); on failure the column stays NULL (observable). SqliteStatementStore-
+    // only (like approve_review); not on the abstract interface.
+    void set_consolidation_summary(std::string_view stmt_id, std::string_view tenant,
+                                   std::string_view summary);
     void set_confidence_consolidated(std::string_view, std::string_view,
                                      double) override;
     void inherit_salience(std::string_view, std::string_view, double,

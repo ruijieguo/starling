@@ -10,6 +10,7 @@
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/replay/forgetting_curve.hpp"
+#include "starling/extractor/llm_adapter.hpp"
 #include "starling/reconsolidation/reconsolidation_engine.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -59,15 +60,17 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
              },
              py::arg("now_iso"))
         .def("run_idle",
-             [](starling::replay::ReplayScheduler& s, std::string now) {
-                 return s.run_idle(s.connection(), now);
+             [](starling::replay::ReplayScheduler& sched, const std::string& now,
+                starling::extractor::LLMAdapter* llm) {
+                 return sched.run_idle(sched.connection(), now, llm);
              },
-             py::arg("now_iso"))
+             py::arg("now_iso"), py::arg("llm") = nullptr)
         .def("run_sleep",
-             [](starling::replay::ReplayScheduler& s, std::string now) {
-                 return s.run_sleep(s.connection(), now);
+             [](starling::replay::ReplayScheduler& sched, const std::string& now,
+                starling::extractor::LLMAdapter* llm) {
+                 return sched.run_sleep(sched.connection(), now, llm);
              },
-             py::arg("now_iso"));
+             py::arg("now_iso"), py::arg("llm") = nullptr);
 
     // ── M0.8: ReconsolidationEngine ───────────────────────────────────────
 
