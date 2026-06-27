@@ -44,6 +44,7 @@ export const NAV_GROUPS: NavGroup[] = [
 		title: '睡眠与固化 · 回放',
 		items: [
 			{ href: '/replay', label: '回放', icon: 'rotate-ccw' },
+			{ href: '/gists', label: '固化 gist', icon: 'sparkles' },
 			{ href: '/lifecycle', label: '生命周期', icon: 'git-branch' },
 			{ href: '/forecast', label: '衰减预报', icon: 'trending-down' },
 			{ href: '/conflicts', label: '冲突', icon: 'zap' }

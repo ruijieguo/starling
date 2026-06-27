@@ -68,6 +68,11 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.conflicts(c.db_path, c.tenant)
 
+    @router.get("/gists")
+    async def gists(request: Request):   # #38-C v2 — consolidation NORM gists (read-only)
+        c = _cfg(request)
+        return queries.gists(c.db_path, c.tenant)
+
     @router.get("/queues")
     async def queues(request: Request):
         c = _cfg(request)
