@@ -203,6 +203,24 @@ export type CascadePreview = {
 	truncated: boolean; // 到深度上限,还有更深后代未展开
 };
 
+// #38-C v2 可观测:固化 NORM gist(provenance=consolidation_abstract)只读检视。
+export type Gist = {
+	id: string;
+	holder_id: string;
+	subject_id: string;
+	predicate: string;
+	object_value: string;
+	confidence: number;
+	consolidation_summary: string | null; // LLM 一句话渲染;NULL=无 LLM(确定性)或未设
+	consolidation_state: string; // consolidated=已验证晋升;volatile=未门控/惰性;archived/forgotten
+	review_status: string;
+	derived_from: string[]; // 来源簇成员 id(谱系)
+	derived_depth: number;
+	created_at: string;
+	updated_at: string;
+};
+export type GistData = { by_state: Record<string, number>; gists: Gist[] };
+
 // 透视镜取镜:只读文本查找(GET /api/statement_search)。
 export type StatementSearchResponse = {
 	rows: {

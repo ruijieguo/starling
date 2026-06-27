@@ -198,6 +198,36 @@ def conflicts(db_path: str, tenant: str) -> dict:
         return {"by_kind": {r["edge_kind"]: r["n"] for r in by_kind}, "conflicts": edges}
 
 
+def gists(db_path: str, tenant: str) -> dict:
+    """#38-C v2 observability: consolidation NORM gists (provenance=
+    consolidation_abstract) — the LLM-judged, gated, consolidated norms — with
+    their summary/confidence, derived_from lineage, and lifecycle state. Read-only
+    检视; tenant-scoped. by_state counts every state (volatile = ungated/inert,
+    consolidated = verified+promoted, archived = conflict/decayed, forgotten)."""
+    with open_ro(db_path) as conn:
+        by_state = _rows(
+            conn,
+            "SELECT consolidation_state, COUNT(*) AS n FROM statements "
+            "WHERE tenant_id=? AND provenance='consolidation_abstract' "
+            "GROUP BY consolidation_state",
+            (tenant,),
+        )
+        rows = _rows(
+            conn,
+            "SELECT id, holder_id, subject_id, predicate, object_value, confidence, "
+            "consolidation_summary, consolidation_state, review_status, "
+            "derived_from_json, derived_depth, created_at, updated_at "
+            "FROM statements WHERE tenant_id=? AND provenance='consolidation_abstract' "
+            "ORDER BY created_at DESC LIMIT 500",
+            (tenant,),
+        )
+        for row in rows:
+            # _safe_json → (value, ok); take the value (malformed/NULL → []).
+            row["derived_from"] = _safe_json(row.pop("derived_from_json"), [])[0]
+        return {"by_state": {r["consolidation_state"]: r["n"] for r in by_state},
+                "gists": rows}
+
+
 def queues(db_path: str, tenant: str) -> dict:
     with open_ro(db_path) as conn:
         dispatch = _rows(
