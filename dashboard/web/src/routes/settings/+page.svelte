@@ -153,6 +153,9 @@
 			llmConfigured.set(roleConfigured(c, 'extraction'));
 			embedderConfigured.set(roleConfigured(c, 'embedding'));
 			toast.success('已保存');
+			// Non-fatal warnings (e.g. the embedding provider rejected the config):
+			// the save succeeded, but surface them so embeddings aren't silently broken.
+			for (const w of c.warnings ?? []) toast.error(w);
 		} catch (e) {
 			toast.error(String((e as ApiError).message));
 		} finally {

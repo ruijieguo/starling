@@ -164,15 +164,21 @@ class DashboardEngine:
             self._core.consolidation_llm = (_build_chat_adapter(cons_cfg)
                                             if cons_cfg.get("api_key") else None)
 
-    def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> None:
+    def rebuild_embedder(self, emb_cfg: dict, *, reembed: bool = True) -> str | None:
+        """Swap the embedder; if reembed, re-process the backlog. Returns a
+        human-readable warning when the immediate re-embed was rejected (the
+        embedder is still swapped + rows deferred to the background tick), else
+        None — so the config-save handler can tell the user instead of silently
+        succeeding with broken embeddings."""
         with self._lock:
             emb = (_build_embed_adapter(emb_cfg) if emb_cfg.get("api_key")
                    else _core.StubEmbeddingAdapter(8))
             self._core.set_embedder(emb)
             if reembed:
-                self._reembed()
+                return self._reembed()
+        return None
 
-    def _reembed(self) -> None:
+    def _reembed(self) -> str | None:
         """Clear this tenant's stored vectors (dim/space changed) and re-embed.
 
         The re-embed makes live embedding-provider calls. A rejected/unreachable
@@ -181,7 +187,9 @@ class DashboardEngine:
         swapped in, and the cleared rows stay in the embedding backlog for the
         background tick (with its own retry/failure tracking) to re-process once
         a valid embedding role is configured. So a failure here is logged and
-        swallowed, mirroring the background tick's own non-fatal handling."""
+        swallowed, mirroring the background tick's own non-fatal handling — and
+        returned as a warning string so the save can surface it (silent success
+        with broken embeddings is worse than a clear heads-up)."""
         conn = sqlite3.connect(self._db_path)
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
@@ -192,8 +200,12 @@ class DashboardEngine:
             conn.close()
         try:
             self._core.worker.tick_one_batch(_now_iso())
-        except Exception:
+        except Exception as exc:
             logger.exception("config re-embed failed; deferred to the background tick")
+            return (f"embedding provider rejected the config ({exc}); embeddings "
+                    "will not generate until a valid embedding model is bound to "
+                    "the embedding role (embedding models differ from chat models)")
+        return None
 
     @property
     def llm_configured(self) -> bool:

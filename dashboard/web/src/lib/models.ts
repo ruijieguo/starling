@@ -14,6 +14,9 @@ export type Prov = {
 export type Config = {
 	providers: Record<string, Prov>;
 	roles: Record<string, string>;
+	// Non-fatal heads-up from a save (e.g. the embedding provider rejected the
+	// config; the save still succeeded but embeddings won't generate). GET omits it.
+	warnings?: string[];
 };
 
 // A role is "configured" when it's bound to a provider whose key is set.
