@@ -1,8 +1,11 @@
 #pragma once
 #include "starling/persistence/connection.hpp"
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace starling::vector { class VectorIndex; }  // injected k-NN seam (semantic pass)
 
 namespace starling::replay {
 
@@ -42,6 +45,12 @@ struct GistThresholds {
                                     // why T=1, not the eng-review's unreachable T=2)
     double min_confidence = 0.6;    // confidence floor for promoting a judged gist
                                     // (Phase-4 gate); below → gated, not written
+    double similarity_threshold = 0.0;  // #38-C v2 semantic clustering: cosine floor for
+                                        // k-NN NORM grouping. 0 = OFF (exact-match only —
+                                        // the default; no behavior change on upgrade). Set
+                                        // >0 (recommended 0.85) to enable cross-predicate
+                                        // paraphrase clustering. Higher = stricter (fewer
+                                        // false merges).
 };
 
 // Deterministic NORM-gist clustering. `seed_stmt_ids` is the replay batch: it
@@ -59,5 +68,23 @@ struct GistThresholds {
     std::string_view tenant_id,
     const std::vector<std::string>& seed_stmt_ids,
     const GistThresholds& thresholds);
+
+// #38-C v2 semantic clustering (k-NN seed expansion). Sibling to the exact pass: for
+// each seed not already in `claimed` (the exact-match members), query the vector index
+// for its cosine neighbors; neighbors at/above thresholds.similarity_threshold that are
+// settled & norm-eligible (the SAME state filter as exact, replay_count >= T) join the
+// candidate. It becomes a cluster iff seed+neighbors span >= K distinct holders. The
+// representative (predicate/object/hash) is the lexicographically smallest member id;
+// members carry VARIED (predicate,object) by design, so downstream gating must use
+// per-member entailment to guard against false-merge. Returns empty (disabled) when
+// similarity_threshold <= 0. Idempotent: skips a representative key already abstracted,
+// AND a candidate whose representative is a near neighbor of an existing gist.
+[[nodiscard]] std::vector<GistCluster> find_semantic_gist_clusters(
+    persistence::Connection& conn,
+    vector::VectorIndex& index,
+    std::string_view tenant_id,
+    const std::vector<std::string>& seed_stmt_ids,
+    const GistThresholds& thresholds,
+    const std::set<std::string>& claimed);
 
 }  // namespace starling::replay

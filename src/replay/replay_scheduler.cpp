@@ -10,6 +10,7 @@
 #include "starling/replay/gist_writer.hpp"
 #include "starling/replay/swr_sampler.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
+#include "starling/vector/vector_index.hpp"   // SqliteBlobVectorIndex for the semantic pass
 
 #include <algorithm>
 #include <chrono>
@@ -21,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -264,6 +266,37 @@ void write_ledger(sqlite3* db,
 constexpr GistThresholds kGistThresholds{/*min_distinct_holders=*/3,
                                          /*min_replay_count=*/1};
 
+// Per-tenant NORM detection over the union seed set: (1) exact (predicate, hash) pass,
+// then (2) #38-C v2 embedding semantic pass (k-NN seed expansion) when do_semantic.
+// The semantic pass skips members the exact pass already claimed (so a belief is
+// counted by at most one). Appends proposals to out_proposals (non-null = OFFLINE);
+// returns the total candidate count for stats.
+int collect_tenant_gist_candidates(
+    persistence::Connection& conn, vector::VectorIndex& index, std::string_view tenant_id,
+    const std::vector<std::string>& seed_ids, const GistThresholds& thresholds,
+    bool do_semantic, std::vector<GistProposal>* out_proposals)
+{
+    int candidates = 0;
+    const auto clusters = find_norm_gist_clusters(conn, tenant_id, seed_ids, thresholds);
+    candidates += static_cast<int>(clusters.size());
+    std::set<std::string> claimed;
+    for (const auto& cluster : clusters) {
+        claimed.insert(cluster.member_ids.begin(), cluster.member_ids.end());
+        if (out_proposals != nullptr) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    if (do_semantic) {
+        const auto semantic = find_semantic_gist_clusters(
+            conn, index, tenant_id, seed_ids, thresholds, claimed);
+        candidates += static_cast<int>(semantic.size());
+        for (const auto& cluster : semantic) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    return candidates;
+}
+
 // Run compress on sampled rows + emit statement.derived per row + return stats
 ReplayStats do_compress_and_emit(
     persistence::Connection& conn,
@@ -308,16 +341,15 @@ ReplayStats do_compress_and_emit(
     // Detect NORM-gist candidate clusters per tenant from the union seed set.
     // Read-only. When out_proposals is provided (OFFLINE only) the clusters are
     // collected for the Phase-2 write that runs AFTER this function returns — not
-    // inline — so the write never runs in the online/subscriber transaction.
+    // inline — so the write never runs in the online/subscriber transaction. The
+    // #38-C v2 semantic pass (k-NN over statement_vectors) runs only OFFLINE and only
+    // when a similarity_threshold is configured (opt-in); zvec backend is a v2 follow.
+    vector::SqliteBlobVectorIndex semantic_index;
+    const bool do_semantic =
+        (out_proposals != nullptr) && (thresholds.similarity_threshold > 0.0);
     for (const auto& [tenant_id, seed_ids] : seed_by_tenant) {
-        const auto clusters =
-            find_norm_gist_clusters(conn, tenant_id, seed_ids, thresholds);
-        stats.gist_candidates += static_cast<int>(clusters.size());
-        if (out_proposals != nullptr) {
-            for (const auto& cluster : clusters) {
-                out_proposals->push_back({std::string(tenant_id), cluster});
-            }
-        }
+        stats.gist_candidates += collect_tenant_gist_candidates(
+            conn, semantic_index, tenant_id, seed_ids, thresholds, do_semantic, out_proposals);
     }
 
     // Emit statement.derived for each compressed stmt
