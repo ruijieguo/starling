@@ -8,6 +8,8 @@
 #include "starling/replay/gist_clustering.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/extractor/fake_llm_adapter.hpp"
+#include "starling/extractor/llm_adapter.hpp"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <sstream>
@@ -234,6 +236,81 @@ TEST(GistWriter, VolatileTtlSweepSkipsGist) {
     sqlite3* db = conn.raw();
     EXPECT_EQ(col_text(db, "SELECT consolidation_state FROM statements WHERE id='g1'"), "volatile");
     EXPECT_EQ(col_text(db, "SELECT consolidation_state FROM statements WHERE id='n1'"), "archived");
+}
+
+// Phase 3: with a consolidation LLM, the gist takes the LLM's confidence and
+// stores the LLM's one-sentence summary.
+TEST(GistWriter, LlmJudgedGistGetsConfidenceAndSummary) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+    ASSERT_EQ(clusters.size(), 1U);
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{
+        .raw_xml = R"({"confidence": 0.82, "summary": "People generally like coffee."})",
+        .ok = true});
+
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 1);
+    EXPECT_EQ(outcome.failed, 0);
+    sqlite3* db = conn.raw();
+    EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere +
+                          " AND ABS(confidence - 0.82) < 0.001"), 1);
+    EXPECT_EQ(col_text(db, std::string("SELECT consolidation_summary FROM statements ") + kGistWhere),
+              "People generally like coffee.");
+}
+
+// An LLM transport error skips the proposal (counted failed, no gist written) —
+// an un-judged gist is never written; it is retried next cycle.
+TEST(GistWriter, LlmErrorSkipsGist) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{.ok = false, .error = "boom"});
+
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 0);
+    EXPECT_EQ(outcome.failed, 1);
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// An unparseable LLM reply skips the proposal too (no un-judged gist).
+TEST(GistWriter, LlmUnparseableReplySkipsGist) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{.raw_xml = "no json here", .ok = true});
+
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 0);
+    EXPECT_EQ(outcome.failed, 1);
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// No adapter ⇒ deterministic Phase-2 path: provisional confidence, NULL summary.
+TEST(GistWriter, NullAdapterIsDeterministic) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z");  // no LLM
+    sqlite3* db = conn.raw();
+    EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere +
+                          " AND ABS(confidence - 0.5) < 0.001"), 1);
+    EXPECT_EQ(col_text(db, std::string("SELECT consolidation_summary FROM statements ") + kGistWhere),
+              "");  // NULL → empty
 }
 
 // Online replay never writes a gist (it runs inside the post-write transaction).

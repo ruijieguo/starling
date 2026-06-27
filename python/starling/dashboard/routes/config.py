@@ -2,7 +2,8 @@
 
 The registry is `providers` (named secret-bearing configs) + `roles` (which
 provider each job uses). extraction/embedding are live; chat is consumed by
-converse() (2c); consolidation is reserved. Hot-swap is per affected role:
+converse() (2c); consolidation (#38-C) judges NORM gists in offline replay.
+Hot-swap is per affected role:
 rebinding/editing the extraction provider re-swaps the LLM adapter (O(1));
 the embedding provider triggers a re-embed (expensive). GET never leaks keys.
 """
@@ -97,6 +98,8 @@ def build_config_router(require_token) -> APIRouter:
                     eng.set_chat(cfg.chat() or {})
                 if _affected("embedding"):
                     eng.rebuild_embedder(cfg.embedding() or {})   # rebuild + re-embed
+                if _affected("consolidation"):                    # #38-C consolidation role
+                    eng.set_consolidation(cfg.resolve_role("consolidation") or {})
             await to_thread.run_sync(_apply)
         return _public(cfg)
 
@@ -118,6 +121,8 @@ def build_config_router(require_token) -> APIRouter:
                     eng.set_chat(cfg.chat() or {})   # re-resolve (may fall back / go None)
                 if "embedding" in unbound:
                     eng.rebuild_embedder({})   # → stub (recall degraded)
+                if "consolidation" in unbound:
+                    eng.set_consolidation({})  # → None (offline replay falls back to deterministic)
             await to_thread.run_sync(_apply)
         return _public(cfg)
 

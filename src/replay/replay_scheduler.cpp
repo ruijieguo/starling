@@ -547,7 +547,8 @@ ReplayStats ReplayScheduler::tick_online(persistence::Connection& conn,
 }
 
 ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
-                                       std::string_view now_iso) {
+                                       std::string_view now_iso,
+                                       extractor::LLMAdapter* gist_llm) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 30, now_iso);
 
@@ -571,14 +572,15 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
     // transaction). abstracted = gists actually written this batch.
     std::vector<GistProposal> proposals;
     auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     return stats;
 }
 
 ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
-                                        std::string_view now_iso) {
+                                        std::string_view now_iso,
+                                        extractor::LLMAdapter* gist_llm) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 200, now_iso);
 
@@ -597,10 +599,10 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
             throw make_sqlite_error(db, "run_sleep: UPDATE step");
     }
 
-    // #38-C Phase 2: offline mode — see run_idle. Sleep sweeps a larger batch.
+    // #38-C Phase 2/3: offline mode — see run_idle. Sleep sweeps a larger batch.
     std::vector<GistProposal> proposals;
     auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     return stats;

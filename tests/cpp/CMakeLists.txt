@@ -101,6 +101,7 @@ add_executable(starling_tests
     test_consolidation_decay.cpp
     test_consolidation_reconcile.cpp
     test_gist_clustering.cpp
+    test_gist_prompt.cpp
     test_gist_writer.cpp
     test_replay_scheduler.cpp
     test_plastic_window.cpp

@@ -141,6 +141,7 @@ target_sources(starling_core PRIVATE
     src/replay/swr_sampler.cpp
     src/replay/consolidation_ops.cpp
     src/replay/gist_clustering.cpp
+    src/replay/gist_prompt.cpp
     src/replay/gist_writer.cpp
     src/replay/replay_scheduler.cpp
     src/reconsolidation/plastic_window.cpp

@@ -4,6 +4,8 @@
 #include <string_view>
 #include <vector>
 
+namespace starling::extractor { class LLMAdapter; }  // the injected LLM I/O seam
+
 namespace starling::replay {
 
 // Outcome of an offline gist-write batch. `failed` is surfaced (not silently
@@ -36,8 +38,18 @@ struct GistWriteOutcome {
 // run in autocommit). Bus::write opens a BEGIN; calling it from inside the
 // post-write subscriber path (where a transaction is already open) would nest
 // BEGIN and abort. Returns the count of gists written + failed.
+//
+// #38-C Phase 3: when `gist_llm` is non-null, each proposal is first judged by
+// the consolidation LLM (build_norm_gist_prompt → generate → parse_gist_judgment):
+// the gist's confidence becomes the LLM's confidence and its consolidation_summary
+// becomes the LLM's one-sentence rendering. An LLM error / unparseable reply skips
+// that proposal (counted as failed; retried next cycle) rather than writing an
+// un-judged gist. When `gist_llm` is null (e.g. the C++ embedded tick, or no
+// consolidation role configured), the deterministic Phase-2 path is used
+// (provisional confidence, no summary).
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
-                                      std::string_view now_iso);
+                                      std::string_view now_iso,
+                                      extractor::LLMAdapter* gist_llm = nullptr);
 
 }  // namespace starling::replay

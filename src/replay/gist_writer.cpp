@@ -2,6 +2,10 @@
 
 #include "starling/bus/bus.hpp"
 #include "starling/extractor/extracted_statement.hpp"
+#include "starling/extractor/llm_adapter.hpp"
+#include "starling/persistence/sqlite_handles.hpp"
+#include "starling/persistence/sqlite_helpers.hpp"
+#include "starling/replay/gist_prompt.hpp"
 #include "starling/schema/statement_enums.hpp"
 
 #include <sqlite3.h>
@@ -10,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace starling::replay {
 namespace {
@@ -27,10 +32,14 @@ constexpr std::string_view kNormSubjectId   = "__people__";
 // pending_review so it is not retrievable. Phase 4 computes the real value.
 constexpr double kProvisionalConfidence = 0.5;
 
+using persistence::detail::bind_sv;
+using persistence::StmtHandle;
+
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
     const GistCluster& cluster,
-    std::string_view now_iso)
+    std::string_view now_iso,
+    double confidence)
 {
     extractor::ExtractedStatement stmt;
     stmt.holder_id             = std::string(kNormHolderId);
@@ -44,7 +53,7 @@ extractor::ExtractedStatement build_gist_statement(
     stmt.canonical_object_hash = cluster.canonical_object_hash;
     stmt.modality              = schema::Modality::BELIEVES;
     stmt.polarity              = schema::Polarity::POS;
-    stmt.confidence            = kProvisionalConfidence;
+    stmt.confidence            = confidence;  // LLM-judged (Phase 3) or provisional (no adapter)
     stmt.observed_at           = std::string(now_iso);
     // A norm is timeless in v1: no valid_from / valid_to / event_time_start.
     // source_hash is a required validator field; make it deterministic per key.
@@ -63,11 +72,41 @@ extractor::ExtractedStatement build_gist_statement(
     return stmt;
 }
 
+// Set the LLM's natural-language norm summary on the just-written gist row. A
+// separate UPDATE (not threaded through the shared StatementWriter): the column
+// is gist-only, nullable, and not one of the immutable-field triggers. Runs in
+// the offline autocommit context, right after Bus::write committed the row.
+//
+// BEST-EFFORT / never throws: the gist is ALREADY written + committed by the
+// time this runs, so a summary-UPDATE failure must not propagate — the
+// per-proposal catch would otherwise double-count an already-written gist as
+// failed, and Phase-1 idempotency would then suppress any re-write, losing the
+// summary forever. On failure the column simply stays NULL (observable); the
+// structured gist + confidence are intact. A systematically broken UPDATE is
+// caught by the tests (which assert the summary is set), not by runtime.
+void update_consolidation_summary(persistence::Connection& conn,
+                                  std::string_view stmt_id,
+                                  std::string_view tenant_id,
+                                  std::string_view summary) {
+    sqlite3_stmt* raw = nullptr;
+    const char* sql =
+        "UPDATE statements SET consolidation_summary=? WHERE id=? AND tenant_id=?";
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+        return;  // best-effort
+    }
+    StmtHandle handle(raw);
+    bind_sv(handle.get(), 1, summary);
+    bind_sv(handle.get(), 2, stmt_id);
+    bind_sv(handle.get(), 3, tenant_id);
+    sqlite3_step(handle.get());  // result intentionally ignored — best-effort
+}
+
 }  // namespace
 
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
-                                      std::string_view now_iso)
+                                      std::string_view now_iso,
+                                      extractor::LLMAdapter* gist_llm)
 {
     GistWriteOutcome outcome;
     // Precondition (fail LOUD): must run in autocommit. Bus::write opens a
@@ -82,8 +121,29 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
     }
     bus::Bus gist_bus(adapter);
     for (const auto& proposal : proposals) {
+        // Phase 3: when a consolidation LLM is wired, judge the candidate norm
+        // BEFORE writing — confidence + a one-sentence summary. An LLM error or
+        // unparseable reply skips this proposal (counted failed, retried next
+        // cycle) rather than writing an un-judged gist. No adapter ⇒ deterministic
+        // Phase-2 path (provisional confidence, no summary).
+        GistJudgment judgment;
+        if (gist_llm != nullptr) {
+            const extractor::LLMResponse resp =
+                gist_llm->generate(build_norm_gist_prompt(proposal.cluster));
+            if (!resp.ok) {
+                ++outcome.failed;
+                continue;
+            }
+            judgment = parse_gist_judgment(resp.raw_xml);
+            if (!judgment.ok) {
+                ++outcome.failed;
+                continue;
+            }
+        }
+        const double confidence =
+            (gist_llm != nullptr) ? judgment.confidence : kProvisionalConfidence;
         const auto stmt =
-            build_gist_statement(proposal.tenant_id, proposal.cluster, now_iso);
+            build_gist_statement(proposal.tenant_id, proposal.cluster, now_iso, confidence);
         // Deterministic span key per cluster so a re-emitted statement.written
         // event dedups on its idempotency_key.
         const std::string span_key =
@@ -95,8 +155,16 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
             // is honest: the chunk-duplicate probe is an exact (holder, predicate,
             // hash, approved) match and gists are never approved pre-gating, so it
             // is a benign no-op; gist dedup is the Phase-1 idempotency guard.
-            gist_bus.write(stmt, /*evidence_engram_id=*/"", span_key, std::nullopt);
+            const auto write_outcome =
+                gist_bus.write(stmt, /*evidence_engram_id=*/"", span_key, std::nullopt);
             ++outcome.written;
+            // Persist the LLM's human-readable rendering on the gist row.
+            if (gist_llm != nullptr && !judgment.summary.empty()) {
+                const std::string stmt_id =
+                    std::visit([](const auto& res) { return res.stmt_id; }, write_outcome);
+                update_consolidation_summary(adapter.connection(), stmt_id,
+                                             proposal.tenant_id, judgment.summary);
+            }
         } catch (const std::exception&) {
             // A single gist failing (validation / conflict / arbitration) must not
             // abort the offline batch — count it (surfaced to the caller, not
