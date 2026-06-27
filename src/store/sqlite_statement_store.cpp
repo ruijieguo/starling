@@ -126,6 +126,33 @@ void SqliteStatementStore::set_consolidation_summary(std::string_view stmt_id,
     sqlite3_step(handle.get());  // result intentionally ignored — best-effort
 }
 
+int SqliteStatementStore::promote_gist_to_consolidated(std::string_view stmt_id,
+                                                       std::string_view tenant,
+                                                       std::string_view now_iso) {
+    // STATE-GUARDED flip (see header): only a still-volatile consolidation_abstract
+    // gist is promoted, so a gist that pipeline arbitration already archived on a
+    // conflict is left untouched (conflict ⇒ no auto-consolidate). Load-bearing
+    // (unlike set_consolidation_summary) — throws on SQL error.
+    sqlite3* db_handle = conn_.raw();
+    const char* sql =
+        "UPDATE statements SET consolidation_state='consolidated', "
+        "review_status='approved', updated_at=? "
+        "WHERE id=? AND tenant_id=? AND provenance='consolidation_abstract' "
+        "  AND consolidation_state='volatile'";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db_handle, sql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(db_handle, "promote_gist_to_consolidated: prepare");
+    }
+    StmtHandle handle(raw);
+    bind_sv(handle.get(), 1, now_iso);
+    bind_sv(handle.get(), 2, stmt_id);
+    bind_sv(handle.get(), 3, tenant);
+    if (sqlite3_step(handle.get()) != SQLITE_DONE) {
+        throw make_sqlite_error(db_handle, "promote_gist_to_consolidated: step");
+    }
+    return sqlite3_changes(db_handle);
+}
+
 int SqliteStatementStore::force_consolidate_pending_review() {
     // exact 自 src/replay/replay_scheduler.cpp:289(enforce_oscillation_guard)。
     // 跨租户 bulk(无 tenant 过滤)——保真现行为。

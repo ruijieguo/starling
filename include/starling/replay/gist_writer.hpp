@@ -14,8 +14,10 @@ namespace starling::replay {
 // arbitration and will be retried next consolidation cycle (Phase-1 idempotency
 // only suppresses keys that actually produced a gist).
 struct GistWriteOutcome {
-    int written = 0;
-    int failed = 0;
+    int written = 0;   // gists written (LLM path: verified + promoted to consolidated)
+    int failed = 0;    // LLM / write / promote errors (couldn't complete)
+    int gated = 0;     // #38-C P4: rejected by gating — below confidence floor,
+                       // not entailed, or conflict-archived by pipeline arbitration
 };
 
 // #38-C Phase 2: write each detected NORM-gist cluster as a derived Statement
@@ -39,14 +41,18 @@ struct GistWriteOutcome {
 // post-write subscriber path (where a transaction is already open) would nest
 // BEGIN and abort. Returns the count of gists written + failed.
 //
-// #38-C Phase 3: when `gist_llm` is non-null, each proposal is first judged by
-// the consolidation LLM (build_norm_gist_prompt → generate → parse_gist_judgment):
-// the gist's confidence becomes the LLM's confidence and its consolidation_summary
-// becomes the LLM's one-sentence rendering. An LLM error / unparseable reply skips
-// that proposal (counted as failed; retried next cycle) rather than writing an
-// un-judged gist. When `gist_llm` is null (e.g. the C++ embedded tick, or no
-// consolidation role configured), the deterministic Phase-2 path is used
-// (provisional confidence, no summary).
+// #38-C Phase 3+4: when `gist_llm` is non-null, each candidate is JUDGED then
+// GATED before any write — (P3) build_norm_gist_prompt → confidence + summary;
+// (P4) confidence floor + an INDEPENDENT entailment-verification LLM pass. Only a
+// candidate that clears both gates is written (via Bus::write — validation /
+// conflict-probe / arbitration) and then PROMOTED volatile→consolidated+approved
+// (state-guarded: a conflict-archived gist is not promoted). A rejected candidate
+// leaves NO row, so it is re-detectable next cycle (no confabulation rows, no
+// permanent suppression). consolidation_summary holds the LLM's rendering.
+// Outcome: written = verified+promoted; gated = floor/entailment/conflict reject;
+// failed = LLM/write/promote error. When `gist_llm` is null (the C++ embedded
+// tick, or no consolidation role configured), the deterministic path writes an
+// INERT gist (volatile + not-approved, never promoted) and never gates.
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
                                       std::string_view now_iso,

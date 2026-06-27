@@ -41,6 +41,14 @@ public:
     // only (like approve_review); not on the abstract interface.
     void set_consolidation_summary(std::string_view stmt_id, std::string_view tenant,
                                    std::string_view summary);
+    // #38-C Phase 4 (gating): promote a verified gist volatile→consolidated +
+    // →approved (the only path that makes a gist live/retrievable). STATE-GUARDED:
+    // acts only on a still-inert consolidation_abstract gist (consolidation_state=
+    // 'volatile'), so if pipeline arbitration already archived the gist on a
+    // conflict, this is a no-op (conflict ⇒ no auto-consolidate). Returns rows
+    // changed (>0 = promoted). SqliteStatementStore-only.
+    int promote_gist_to_consolidated(std::string_view stmt_id, std::string_view tenant,
+                                     std::string_view now_iso);
     void set_confidence_consolidated(std::string_view, std::string_view,
                                      double) override;
     void inherit_salience(std::string_view, std::string_view, double,

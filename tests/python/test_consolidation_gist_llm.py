@@ -43,8 +43,8 @@ def _read_gist(db):
     conn = sqlite3.connect(db)
     try:
         return conn.execute(
-            "SELECT confidence, consolidation_summary FROM statements "
-            "WHERE provenance='consolidation_abstract'").fetchone()
+            "SELECT confidence, consolidation_summary, consolidation_state, review_status "
+            "FROM statements WHERE provenance='consolidation_abstract'").fetchone()
     finally:
         conn.close()
 
@@ -56,7 +56,9 @@ def test_run_sleep_with_consolidation_llm(tmp_path):
     runtime.start()
     sched = _core.ReplayScheduler(runtime.adapter)
     llm = _core.FakeLLMAdapter()
-    llm.set_default_response('{"confidence": 0.77, "summary": "People know coffee."}', True, "")
+    # Combined response: judge reads {confidence, summary}; verify reads {entailed}.
+    llm.set_default_response(
+        '{"confidence": 0.77, "summary": "People know coffee.", "entailed": true}', True, "")
 
     stats = sched.run_sleep("2026-06-27T12:00:00Z", llm)
     assert stats.abstracted >= 1
@@ -67,6 +69,8 @@ def test_run_sleep_with_consolidation_llm(tmp_path):
     assert row is not None
     assert abs(row[0] - 0.77) < 1e-6          # LLM-judged confidence
     assert row[1] == "People know coffee."    # LLM summary persisted
+    assert row[2] == "consolidated"           # Phase 4: verified + promoted to live
+    assert row[3] == "approved"
 
 
 def test_run_sleep_without_llm_is_deterministic(tmp_path):
@@ -85,3 +89,5 @@ def test_run_sleep_without_llm_is_deterministic(tmp_path):
     assert row is not None
     assert abs(row[0] - 0.5) < 1e-6   # provisional confidence
     assert row[1] is None             # no LLM summary
+    assert row[2] == "volatile"       # no LLM ⇒ inert, never promoted
+    assert row[3] != "approved"

@@ -24,4 +24,16 @@ struct GistJudgment {
 [[nodiscard]] std::string build_norm_gist_prompt(const GistCluster& cluster);
 [[nodiscard]] GistJudgment parse_gist_judgment(std::string_view llm_reply);
 
+// #38-C Phase 4 (gating): the INDEPENDENT entailment verification — a second LLM
+// pass that checks the generated summary is faithfully entailed by the cluster
+// (no unwarranted additions / over-generalization), catching a confabulated
+// summary the generation pass produced. Also CORE single-source C++ (not Python).
+struct EntailmentVerdict {
+    bool ok = false;        // false ⇒ LLM errored or reply unparseable
+    bool entailed = false;  // is the summary entailed by the cluster's evidence?
+};
+[[nodiscard]] std::string build_entailment_prompt(const GistCluster& cluster,
+                                                  std::string_view summary);
+[[nodiscard]] EntailmentVerdict parse_entailment_verdict(std::string_view llm_reply);
+
 }  // namespace starling::replay

@@ -575,6 +575,7 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
     const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
+    stats.gist_gated += gist_outcome.gated;
     return stats;
 }
 
@@ -605,6 +606,7 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
     const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
+    stats.gist_gated += gist_outcome.gated;
     return stats;
 }
 

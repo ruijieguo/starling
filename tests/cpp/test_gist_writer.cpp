@@ -10,6 +10,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/llm_adapter.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <sstream>
@@ -88,6 +89,24 @@ int col_int(sqlite3* db, const std::string& sql) {
     sqlite3_finalize(stmt);
     return out;
 }
+
+// Returns canned LLM responses in call order (1st = judge, 2nd = entailment
+// verify), so a test can give the two gate calls DIFFERENT replies — proving the
+// entailment verdict comes from the INDEPENDENT second call, not the judge's reply.
+class SequencedLLM : public starling::extractor::LLMAdapter {
+public:
+    explicit SequencedLLM(std::vector<starling::extractor::LLMResponse> replies)
+        : replies_(std::move(replies)) {}
+    starling::extractor::LLMResponse extract(std::string_view, std::string_view) override {
+        if (next_ < replies_.size()) {
+            return replies_[next_++];
+        }
+        return starling::extractor::LLMResponse{.ok = false, .error = "seq_exhausted"};
+    }
+private:
+    std::vector<starling::extractor::LLMResponse> replies_;
+    std::size_t next_ = 0;
+};
 
 const char* kGistWhere = "WHERE provenance='consolidation_abstract'";
 
@@ -247,20 +266,28 @@ TEST(GistWriter, LlmJudgedGistGetsConfidenceAndSummary) {
     const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
     ASSERT_EQ(clusters.size(), 1U);
 
+    // Combined response: the judge reads {confidence, summary}; the entailment
+    // verify reads {entailed} — from the same JSON (each extracts its fields).
     starling::extractor::FakeLLMAdapter llm;
     llm.set_default_response(starling::extractor::LLMResponse{
-        .raw_xml = R"({"confidence": 0.82, "summary": "People generally like coffee."})",
+        .raw_xml = R"({"confidence": 0.82, "summary": "People generally like coffee.", "entailed": true})",
         .ok = true});
 
     const auto outcome =
         write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
     EXPECT_EQ(outcome.written, 1);
     EXPECT_EQ(outcome.failed, 0);
+    EXPECT_EQ(outcome.gated, 0);
     sqlite3* db = conn.raw();
     EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere +
                           " AND ABS(confidence - 0.82) < 0.001"), 1);
     EXPECT_EQ(col_text(db, std::string("SELECT consolidation_summary FROM statements ") + kGistWhere),
               "People generally like coffee.");
+    // Phase 4: verified + above floor → PROMOTED to live (consolidated + approved).
+    EXPECT_EQ(col_text(db, std::string("SELECT consolidation_state FROM statements ") + kGistWhere),
+              "consolidated");
+    EXPECT_EQ(col_text(db, std::string("SELECT review_status FROM statements ") + kGistWhere),
+              "approved");
 }
 
 // An LLM transport error skips the proposal (counted failed, no gist written) —
@@ -311,6 +338,122 @@ TEST(GistWriter, NullAdapterIsDeterministic) {
                           " AND ABS(confidence - 0.5) < 0.001"), 1);
     EXPECT_EQ(col_text(db, std::string("SELECT consolidation_summary FROM statements ") + kGistWhere),
               "");  // NULL → empty
+}
+
+// Phase 4 gate (c): below the confidence floor → gated, not written (re-detectable).
+TEST(GistWriter, BelowFloorConfidenceGated) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{
+        .raw_xml = R"({"confidence": 0.4, "summary": "x", "entailed": true})", .ok = true});
+
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 0);
+    EXPECT_EQ(outcome.gated, 1);
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// Phase 4 gate (b) — the eng-review golden: a non-entailed (confabulated /
+// over-reaching) summary is REJECTED, even at high confidence. Not written.
+TEST(GistWriter, NotEntailedSummaryGated) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{
+        .raw_xml = R"({"confidence": 0.9, "summary": "over-reaching claim", "entailed": false})",
+        .ok = true});
+
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 0);
+    EXPECT_EQ(outcome.gated, 1);
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// INDEPENDENCE of the entailment verify (the primary safety mechanism): even
+// with a strong judge reply that has NO "entailed" field, the SEPARATE second
+// call's not-entailed verdict gates the gist. If the verdict were (wrongly) read
+// from the judge reply, it would have no "entailed" field → Failed (not Gated);
+// asserting gated==1 / failed==0 proves the 2nd call independently controls it.
+TEST(GistWriter, EntailmentVerifyIndependentlyGates) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    SequencedLLM llm({
+        starling::extractor::LLMResponse{.raw_xml = R"({"confidence": 0.95, "summary": "strong"})",
+                                         .ok = true},                                 // judge: passes floor
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": false})", .ok = true},  // verify: rejects
+    });
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 0);
+    EXPECT_EQ(outcome.gated, 1);
+    EXPECT_EQ(outcome.failed, 0);  // proves the verdict came from the 2nd reply, not the 1st
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// Converse: strong judge + an entailed verdict from the 2nd call → promoted live.
+TEST(GistWriter, EntailmentVerifyIndependentlyPasses) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    SequencedLLM llm({
+        starling::extractor::LLMResponse{.raw_xml = R"({"confidence": 0.95, "summary": "ok"})",
+                                         .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+    });
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 1);
+    EXPECT_EQ(col_text(conn.raw(), std::string("SELECT consolidation_state FROM statements ") + kGistWhere),
+              "consolidated");
+}
+
+// Floor boundary: confidence exactly at the floor passes (strict <), proceeding
+// to entailment (here entailed → promoted).
+TEST(GistWriter, ConfidenceAtFloorPasses) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_three_holder_cluster(conn.raw());
+    const auto clusters = find_norm_gist_clusters(conn, "default", {"m1"}, GistThresholds{});
+
+    starling::extractor::FakeLLMAdapter llm;
+    llm.set_default_response(starling::extractor::LLMResponse{
+        .raw_xml = R"({"confidence": 0.6, "summary": "x", "entailed": true})", .ok = true});
+    const auto outcome =
+        write_gist_proposals(*adapter, {{"default", clusters[0]}}, "2026-06-27T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 1);  // 0.6 is NOT below the 0.6 floor
+}
+
+// promote is STATE-GUARDED: a still-volatile gist is flipped to consolidated+
+// approved; a non-volatile (e.g. arbitration-archived) gist is a no-op.
+TEST(GistWriter, PromoteOnlyActsOnVolatileGist) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed(conn.raw(), {.id = "g1", .holder = "__common_ground__", .state = "volatile",
+                      .review = "pending_review", .provenance = "consolidation_abstract"});
+    seed(conn.raw(), {.id = "g2", .holder = "__common_ground__", .state = "archived",
+                      .review = "pending_review", .provenance = "consolidation_abstract"});
+
+    starling::store::SqliteStatementStore store(conn);
+    EXPECT_EQ(store.promote_gist_to_consolidated("g1", "default", "2026-06-27T12:00:00Z"), 1);
+    EXPECT_EQ(store.promote_gist_to_consolidated("g2", "default", "2026-06-27T12:00:00Z"), 0);
+    sqlite3* db = conn.raw();
+    EXPECT_EQ(col_text(db, "SELECT consolidation_state FROM statements WHERE id='g1'"), "consolidated");
+    EXPECT_EQ(col_text(db, "SELECT review_status FROM statements WHERE id='g1'"), "approved");
+    EXPECT_EQ(col_text(db, "SELECT consolidation_state FROM statements WHERE id='g2'"), "archived");
 }
 
 // Online replay never writes a gist (it runs inside the post-write transaction).
