@@ -21,6 +21,14 @@ struct GistCluster {
     std::vector<std::string> holder_ids;     // distinct holders, sorted; size() >= K
 };
 
+// A detected cluster tagged with its tenant, ready for the Phase-2 write path.
+// (GistCluster itself is per-tenant by construction; this pairs it with the
+// tenant so the offline writer can route each gist to the right tenant.)
+struct GistProposal {
+    std::string tenant_id;
+    GistCluster cluster;
+};
+
 // Clustering thresholds. A named struct (not two adjacent int params) so the
 // K and T cannot be transposed at a call site. Defaults are the v1 locked
 // values; tune later (deferred to v2).

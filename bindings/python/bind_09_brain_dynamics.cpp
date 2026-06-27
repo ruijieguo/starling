@@ -32,6 +32,7 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
         .def_readonly("forced_consolidated",   &starling::replay::ReplayStats::forced_consolidated)
         .def_readonly("ttl_archived",          &starling::replay::ReplayStats::ttl_archived)
         .def_readonly("gist_candidates",       &starling::replay::ReplayStats::gist_candidates)
+        .def_readonly("gist_failed",           &starling::replay::ReplayStats::gist_failed)
         .def_readonly("replay_batch_id",       &starling::replay::ReplayStats::replay_batch_id);
 
     py::class_<starling::replay::ReplayScheduler>(m, "ReplayScheduler")

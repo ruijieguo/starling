@@ -61,6 +61,7 @@ enum class StatementProvenance {
     REPLAY_DERIVED,
     TOM_INFERRED,
     RECONSOLIDATION_DERIVED,
+    CONSOLIDATION_ABSTRACT,   // #38-C: a NORM gist written by replay consolidation
 };
 
 std::string_view to_string(Perspective);
