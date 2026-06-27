@@ -327,7 +327,7 @@ class MemoryCore:
                 "forced_consolidated": rs.forced_consolidated,
                 "ttl_archived": rs.ttl_archived,
                 "gist_candidates": rs.gist_candidates, "gist_failed": rs.gist_failed,
-                "replay_batch_id": rs.replay_batch_id}
+                "gist_gated": rs.gist_gated, "replay_batch_id": rs.replay_batch_id}
 
     def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
         """请求再固化:发 reconsolidate.requested 事件,引擎异步开可塑窗。复用现有绑定。

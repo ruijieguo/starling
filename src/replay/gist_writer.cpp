@@ -8,6 +8,7 @@
 #include "starling/store/sqlite_statement_store.hpp"
 
 #include <sqlite3.h>
+#include <cstdint>
 #include <exception>
 #include <optional>
 #include <stdexcept>
@@ -26,10 +27,16 @@ constexpr std::string_view kNormHolderId    = "__common_ground__";
 constexpr std::string_view kNormSubjectKind = "entity";
 constexpr std::string_view kNormSubjectId   = "__people__";
 
-// Provisional confidence for an ungated gist: above the validator's
-// confidence_drop_floor (0.30) so the write is accepted, but the gist is
-// pending_review so it is not retrievable. Phase 4 computes the real value.
+// Provisional confidence for the no-LLM (deterministic) path: above the
+// validator's confidence_drop_floor (0.30) so the write is accepted; the gist
+// stays inert (volatile + not-approved), never promoted.
 constexpr double kProvisionalConfidence = 0.5;
+
+// #38-C Phase 4 gating: a gist needs at least this LLM-judged confidence to be
+// consolidated (made live). Below it → gated (not written). Deliberately above
+// the validator's 0.30 write-floor — consolidation is a stronger bar than write.
+// v1 value; threshold tuning deferred to v2.
+constexpr double kConsolidationConfidenceFloor = 0.6;
 
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
@@ -68,6 +75,28 @@ extractor::ExtractedStatement build_gist_statement(
     return stmt;
 }
 
+enum class GateDecision : std::uint8_t { Pass, Failed, Gated };
+
+// Phase-3 judge + Phase-4 pre-write gates (confidence floor + independent
+// entailment verification). Two LLM calls on the consolidation adapter. On Pass,
+// `judgment` is filled (confidence + summary) for the write/promote. Failed = LLM
+// error / unparseable; Gated = below floor or not entailed (a deliberate reject).
+GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& cluster,
+                            GistJudgment& judgment) {
+    const extractor::LLMResponse judge_resp = gist_llm.generate(build_norm_gist_prompt(cluster));
+    if (!judge_resp.ok) { return GateDecision::Failed; }
+    judgment = parse_gist_judgment(judge_resp.raw_xml);
+    if (!judgment.ok) { return GateDecision::Failed; }
+    if (judgment.confidence < kConsolidationConfidenceFloor) { return GateDecision::Gated; }
+    const extractor::LLMResponse verify_resp =
+        gist_llm.generate(build_entailment_prompt(cluster, judgment.summary));
+    if (!verify_resp.ok) { return GateDecision::Failed; }
+    const EntailmentVerdict verdict = parse_entailment_verdict(verify_resp.raw_xml);
+    if (!verdict.ok) { return GateDecision::Failed; }
+    if (!verdict.entailed) { return GateDecision::Gated; }
+    return GateDecision::Pass;
+}
+
 }  // namespace
 
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
@@ -88,24 +117,20 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
     }
     bus::Bus gist_bus(adapter);
     for (const auto& proposal : proposals) {
-        // Phase 3: when a consolidation LLM is wired, judge the candidate norm
-        // BEFORE writing — confidence + a one-sentence summary. An LLM error or
-        // unparseable reply skips this proposal (counted failed, retried next
-        // cycle) rather than writing an un-judged gist. No adapter ⇒ deterministic
-        // Phase-2 path (provisional confidence, no summary).
+        // #38-C: with a consolidation LLM, JUDGE then GATE before any write, so a
+        // candidate rejected by the PRE-WRITE gates (confidence floor / entailment)
+        // leaves NO row — re-detectable next cycle, no confabulation rows. (The
+        // separate conflict-archive path below DOES leave a suppressed row; that
+        // is deliberate — a norm that conflicts with existing knowledge is not
+        // retried.) No adapter ⇒ deterministic inert gist (Phase-2/3), never gated
+        // or promoted.
         GistJudgment judgment;
         if (gist_llm != nullptr) {
-            const extractor::LLMResponse resp =
-                gist_llm->generate(build_norm_gist_prompt(proposal.cluster));
-            if (!resp.ok) {
-                ++outcome.failed;
-                continue;
-            }
-            judgment = parse_gist_judgment(resp.raw_xml);
-            if (!judgment.ok) {
-                ++outcome.failed;
-                continue;
-            }
+            // Judge + gate (confidence floor + independent entailment verify) —
+            // all BEFORE any write, so a rejected candidate leaves no row.
+            const GateDecision decision = gate_candidate(*gist_llm, proposal.cluster, judgment);
+            if (decision == GateDecision::Failed) { ++outcome.failed; continue; }
+            if (decision == GateDecision::Gated)  { ++outcome.gated;  continue; }
         }
         const double confidence =
             (gist_llm != nullptr) ? judgment.confidence : kProvisionalConfidence;
@@ -116,31 +141,43 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
         const std::string span_key =
             "consolidation:" + proposal.tenant_id + ":" +
             proposal.cluster.predicate + ":" + proposal.cluster.canonical_object_hash;
+        // Write through the pipeline (validation + conflict-probe + arbitration).
+        // A gist has NO source engram — lineage is derived_from (stamped by the
+        // writer); empty evidence_engram_id is honest (chunk-dup is a benign
+        // no-op pre-gating). The writer forces consolidation_state='volatile';
+        // the gist becomes live only via the explicit promote below.
+        std::string stmt_id;
         try {
-            // A gist has NO source engram — its lineage is derived_from (the
-            // cluster members), stamped by the writer. The empty evidence_engram_id
-            // is honest: the chunk-duplicate probe is an exact (holder, predicate,
-            // hash, approved) match and gists are never approved pre-gating, so it
-            // is a benign no-op; gist dedup is the Phase-1 idempotency guard.
             const auto write_outcome =
                 gist_bus.write(stmt, /*evidence_engram_id=*/"", span_key, std::nullopt);
-            ++outcome.written;
-            // Persist the LLM's human-readable rendering on the gist row.
-            if (gist_llm != nullptr && !judgment.summary.empty()) {
-                const std::string stmt_id =
-                    std::visit([](const auto& res) { return res.stmt_id; }, write_outcome);
-                // statements writes are owned by StatementStore (best-effort here:
-                // never throws, so it can't double-count an already-written gist).
-                store::SqliteStatementStore(adapter.connection())
-                    .set_consolidation_summary(stmt_id, proposal.tenant_id, judgment.summary);
+            stmt_id = std::visit([](const auto& res) { return res.stmt_id; }, write_outcome);
+        } catch (const std::exception&) {
+            ++outcome.failed;  // validation / write error — un-written key retried next cycle
+            continue;
+        }
+        if (gist_llm == nullptr) {
+            ++outcome.written;  // no-LLM: inert gist (volatile + not-approved), never promoted
+            continue;
+        }
+        // Gate (d) + promote: flip volatile+pending → consolidated+approved, but
+        // ONLY if still volatile — if pipeline arbitration archived the gist on a
+        // conflict, promote is a no-op (conflict ⇒ no auto-consolidate).
+        try {
+            store::SqliteStatementStore store(adapter.connection());
+            if (store.promote_gist_to_consolidated(stmt_id, proposal.tenant_id, now_iso) > 0) {
+                ++outcome.written;
+                if (!judgment.summary.empty()) {
+                    store.set_consolidation_summary(stmt_id, proposal.tenant_id, judgment.summary);
+                }
+            } else {
+                // promote no-op ⇒ pipeline arbitration archived the gist on a
+                // conflict. The archived consolidation_abstract row remains and
+                // suppresses re-detection — a norm that conflicts with existing
+                // knowledge is deliberately NOT retried (eng-review gate (d)).
+                ++outcome.gated;
             }
         } catch (const std::exception&) {
-            // A single gist failing (validation / conflict / arbitration) must not
-            // abort the offline batch — count it (surfaced to the caller, not
-            // silently swallowed) and move on. Phase-1 idempotency only suppresses
-            // keys that actually produced a gist, so an un-written key is retried
-            // next consolidation cycle.
-            ++outcome.failed;
+            ++outcome.failed;  // promote SQL error (rare); gist left inert
         }
     }
     return outcome;

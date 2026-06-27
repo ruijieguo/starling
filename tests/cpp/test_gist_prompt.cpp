@@ -69,3 +69,31 @@ TEST(GistPrompt, RejectsOutOfRangeConfidence) {
     EXPECT_TRUE(parse_gist_judgment(R"({"confidence": 0.0})").ok);   // boundary ok
     EXPECT_TRUE(parse_gist_judgment(R"({"confidence": 1.0})").ok);   // boundary ok
 }
+
+// --- Phase 4: entailment verification prompt + verdict parse ---
+
+TEST(GistPrompt, BuildEntailmentFillsContext) {
+    const std::string prompt = build_entailment_prompt(sample_cluster(), "People like coffee.");
+    EXPECT_NE(prompt.find("likes"), std::string::npos);
+    EXPECT_NE(prompt.find("coffee"), std::string::npos);
+    EXPECT_NE(prompt.find("People like coffee."), std::string::npos);
+    EXPECT_EQ(prompt.find("{summary}"), std::string::npos);       // no leftover placeholder
+    EXPECT_EQ(prompt.find("{holder_count}"), std::string::npos);  // both occurrences filled
+}
+
+TEST(GistPrompt, ParsesEntailmentVerdict) {
+    const auto yes = parse_entailment_verdict(R"({"entailed": true})");
+    EXPECT_TRUE(yes.ok);
+    EXPECT_TRUE(yes.entailed);
+    const auto no = parse_entailment_verdict(R"(```json
+{"entailed": false}
+```)");
+    EXPECT_TRUE(no.ok);
+    EXPECT_FALSE(no.entailed);
+}
+
+TEST(GistPrompt, RejectsMalformedVerdict) {
+    EXPECT_FALSE(parse_entailment_verdict(R"({"entailed": "yes"})").ok);  // not a bool
+    EXPECT_FALSE(parse_entailment_verdict(R"({"foo": 1})").ok);           // missing field
+    EXPECT_FALSE(parse_entailment_verdict("garbage").ok);
+}
