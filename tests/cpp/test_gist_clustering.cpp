@@ -90,19 +90,19 @@ TEST(GistClustering, BelowHolderThresholdNoCluster) {
     EXPECT_TRUE(find_norm_gist_clusters(conn, "default", {"s1"}, GistThresholds{}).empty());
 }
 
-// A member below the replay floor (T=2) is dropped; if that pushes distinct
-// holders under K, no cluster forms.
+// A member below the replay floor (T=1: replay_count 0 = never consolidated) is
+// dropped; if that pushes distinct holders under K, no cluster forms.
 TEST(GistClustering, MemberBelowReplayFloorExcluded) {
     auto adapter = SqliteAdapter::open(":memory:");
     auto& conn = adapter->connection();
-    seed(conn.raw(), {.id = "s1", .holder = "alice", .replay_count = 2});
-    seed(conn.raw(), {.id = "s2", .holder = "bob", .replay_count = 2});
-    seed(conn.raw(), {.id = "s3", .holder = "carol", .replay_count = 1});  // below T
+    seed(conn.raw(), {.id = "s1", .holder = "alice", .replay_count = 1});
+    seed(conn.raw(), {.id = "s2", .holder = "bob", .replay_count = 1});
+    seed(conn.raw(), {.id = "s3", .holder = "carol", .replay_count = 0});  // below T (unsettled)
 
     EXPECT_TRUE(find_norm_gist_clusters(conn, "default", {"s1"}, GistThresholds{}).empty());
 
     // A 4th qualifying holder restores the threshold; carol stays excluded.
-    seed(conn.raw(), {.id = "s4", .holder = "dave", .replay_count = 2});
+    seed(conn.raw(), {.id = "s4", .holder = "dave", .replay_count = 1});
     const auto clusters = find_norm_gist_clusters(conn, "default", {"s1"}, GistThresholds{});
     ASSERT_EQ(clusters.size(), 1u);
     EXPECT_EQ(clusters[0].member_ids, (std::vector<std::string>{"s1", "s2", "s4"}));

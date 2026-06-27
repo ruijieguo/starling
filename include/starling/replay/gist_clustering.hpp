@@ -30,11 +30,13 @@ struct GistProposal {
 };
 
 // Clustering thresholds. A named struct (not two adjacent int params) so the
-// K and T cannot be transposed at a call site. Defaults are the v1 locked
-// values; tune later (deferred to v2).
+// K and T cannot be transposed at a call site.
 struct GistThresholds {
     int min_distinct_holders = 3;   // K — distinct holders a norm must span
-    int min_replay_count = 2;       // T — per-member replay_count floor
+    int min_replay_count = 1;       // T — per-member replay_count floor (>=1 = the
+                                    // belief was consolidated at least once = settled;
+                                    // see kGistThresholds in replay_scheduler.cpp for
+                                    // why T=1, not the eng-review's unreachable T=2)
 };
 
 // Deterministic NORM-gist clustering. `seed_stmt_ids` is the replay batch: it
