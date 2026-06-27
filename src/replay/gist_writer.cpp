@@ -3,10 +3,9 @@
 #include "starling/bus/bus.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/extractor/llm_adapter.hpp"
-#include "starling/persistence/sqlite_handles.hpp"
-#include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/replay/gist_prompt.hpp"
 #include "starling/schema/statement_enums.hpp"
+#include "starling/store/sqlite_statement_store.hpp"
 
 #include <sqlite3.h>
 #include <exception>
@@ -31,9 +30,6 @@ constexpr std::string_view kNormSubjectId   = "__people__";
 // confidence_drop_floor (0.30) so the write is accepted, but the gist is
 // pending_review so it is not retrievable. Phase 4 computes the real value.
 constexpr double kProvisionalConfidence = 0.5;
-
-using persistence::detail::bind_sv;
-using persistence::StmtHandle;
 
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
@@ -70,35 +66,6 @@ extractor::ExtractedStatement build_gist_statement(
     stmt.review_status         = schema::ReviewStatus::PENDING_REVIEW;
     stmt.derived_from          = cluster.member_ids;
     return stmt;
-}
-
-// Set the LLM's natural-language norm summary on the just-written gist row. A
-// separate UPDATE (not threaded through the shared StatementWriter): the column
-// is gist-only, nullable, and not one of the immutable-field triggers. Runs in
-// the offline autocommit context, right after Bus::write committed the row.
-//
-// BEST-EFFORT / never throws: the gist is ALREADY written + committed by the
-// time this runs, so a summary-UPDATE failure must not propagate — the
-// per-proposal catch would otherwise double-count an already-written gist as
-// failed, and Phase-1 idempotency would then suppress any re-write, losing the
-// summary forever. On failure the column simply stays NULL (observable); the
-// structured gist + confidence are intact. A systematically broken UPDATE is
-// caught by the tests (which assert the summary is set), not by runtime.
-void update_consolidation_summary(persistence::Connection& conn,
-                                  std::string_view stmt_id,
-                                  std::string_view tenant_id,
-                                  std::string_view summary) {
-    sqlite3_stmt* raw = nullptr;
-    const char* sql =
-        "UPDATE statements SET consolidation_summary=? WHERE id=? AND tenant_id=?";
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
-        return;  // best-effort
-    }
-    StmtHandle handle(raw);
-    bind_sv(handle.get(), 1, summary);
-    bind_sv(handle.get(), 2, stmt_id);
-    bind_sv(handle.get(), 3, tenant_id);
-    sqlite3_step(handle.get());  // result intentionally ignored — best-effort
 }
 
 }  // namespace
@@ -162,8 +129,10 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
             if (gist_llm != nullptr && !judgment.summary.empty()) {
                 const std::string stmt_id =
                     std::visit([](const auto& res) { return res.stmt_id; }, write_outcome);
-                update_consolidation_summary(adapter.connection(), stmt_id,
-                                             proposal.tenant_id, judgment.summary);
+                // statements writes are owned by StatementStore (best-effort here:
+                // never throws, so it can't double-count an already-written gist).
+                store::SqliteStatementStore(adapter.connection())
+                    .set_consolidation_summary(stmt_id, proposal.tenant_id, judgment.summary);
             }
         } catch (const std::exception&) {
             // A single gist failing (validation / conflict / arbitration) must not
