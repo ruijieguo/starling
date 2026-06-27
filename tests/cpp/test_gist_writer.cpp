@@ -7,6 +7,7 @@
 #include "starling/replay/gist_writer.hpp"
 #include "starling/replay/gist_clustering.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/vector/vector_index.hpp"   // SqliteBlobVectorIndex (seed controlled vectors)
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/llm_adapter.hpp"
@@ -263,6 +264,78 @@ TEST(GistWriter, RunSleepHonorsOverriddenThresholds) {
                                                       /*min_confidence=*/0.6});
     EXPECT_EQ(stats.gist_candidates, 0);  // 3 holders < K=4 → no cluster
     EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// #38-C v2 semantic clustering: 3 holders assert the same norm in DIFFERENT words
+// (distinct objects → distinct hashes → the exact pass forms NOTHING) but with near
+// embeddings → the k-NN semantic pass groups them into one cluster. A 4th holder with
+// an orthogonal embedding stays out (below the cosine floor). This is the case exact
+// matching structurally cannot catch.
+TEST(GistClustering, SemanticGroupsNearVectorsExcludesFar) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    seed(db, {.id = "m4", .holder = "dave",  .hashfill = 'd', .state = "consolidated"});
+
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F, 0.0F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F, 0.0F});
+    index.insert(conn, "m4", "default", {0.0F, 1.0F, 0.0F});  // orthogonal → excluded
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    const auto clusters =
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3", "m4"}, cfg, {});
+    ASSERT_EQ(clusters.size(), 1U);
+    EXPECT_EQ(clusters[0].holder_ids.size(), 3U);  // alice/bob/carol; dave (orthogonal) excluded
+    EXPECT_EQ(clusters[0].member_ids.size(), 3U);
+}
+
+// Opt-in: similarity_threshold = 0 (the default) disables the semantic pass entirely,
+// so upgrading changes nothing until an operator configures a positive floor.
+TEST(GistClustering, SemanticDisabledWhenThresholdZero) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {1.0F, 0.0F});
+    index.insert(conn, "m3", "default", {1.0F, 0.0F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.0};
+    EXPECT_TRUE(
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {}).empty());
+}
+
+// Idempotency: a candidate whose representative key (predicate + canonical_object_hash)
+// is already abstracted into a gist is skipped — re-replay never re-emits the norm.
+TEST(GistClustering, SemanticClusterSkippedWhenRepKeyAlreadyAbstracted) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    // Pre-existing gist on the representative key (m1 = smallest id → hashfill 'a').
+    seed(db, {.id = "g1", .holder = "common_ground", .hashfill = 'a', .state = "consolidated",
+              .provenance = "consolidation_abstract"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    EXPECT_TRUE(
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {}).empty());
 }
 
 // The oscillation guard must never force-consolidate an ungated gist (a gist
