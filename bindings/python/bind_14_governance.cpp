@@ -15,6 +15,7 @@
 
 namespace starling::bindings {
 
+// NOLINTNEXTLINE(readability-identifier-length) — `m` matches all 13 sibling bind_NN units (module handle)
 void bind_14_governance(pybind11::module_& m) {
     using namespace pybind11::literals;
     namespace gov = starling::governance;
