@@ -1,8 +1,15 @@
-"""Runtime supervisor — M0.0 minimum: load Adapter, run preflight, manage RuntimeHealth.
+"""Runtime supervisor — thin Python forwarder over the C++ governance core.
 
-Bus / EngramStore are stubs in M0.0; M0.3 replaces with real adapters. The behavior
-contract enforced here (PRECONDITION_FAILED on UNREADY, no worker start, exit code
-78) is what TC-NEW-PREFLIGHT [CRITICAL] locks down for the rest of P1.
+The readiness DECISION (capability + index preflight -> READY/UNREADY, fail-closed
+EX_CONFIG exit, READY write-gate) is owned by `_core.RuntimeSupervisor` (C++,
+`starling::governance`). This module only constructs the supervisor, forwards the
+`runtime.health_changed` notification (the C++ supervisor has no event log in
+Phase 1 — that is Phase 2 host-glue), and exposes the facade shape (`Runtime`,
+the bus stubs). No required-capability list, preflight algorithm, or raw index
+read remains in Python after P3.c1 Phase 1.
+
+The behavior contract enforced here (PRECONDITION_FAILED on UNREADY, no worker
+start, exit code 78) is what TC-NEW-PREFLIGHT [CRITICAL] locks down for P1.
 """
 from __future__ import annotations
 
@@ -12,44 +19,29 @@ from typing import Any, Callable, Optional
 
 from starling import _core
 
-EX_CONFIG = 78  # POSIX sysexits.h
-
-# Required capabilities for local-store profile in M0.0. M0.1 will pull these
-# from the parsed profile config.
-LOCAL_STORE_REQUIRED = (
-    "transactional_outbox",
-    "consumer_checkpoint",
-    "engram_per_record_key",
-    "c_plus_plus_core",
-    "cross_partition_transaction",
-    "tenant_isolation_storage_enforced",
-    "testing_helper_marker",
-)
+EX_CONFIG = _core.kExConfig  # single source of truth: C++ governance::kExConfig (78)
 
 
-# The embedded single-process facade (Memory / DashboardEngine) runs a reduced
-# capability set: `testing_helper_marker` is a test-only capability with no
-# meaning in a prod embedded deployment, and `engram_per_record_key` is deferred
-# to M0.4+KMS. Configuring that subset is a PRODUCTION concern, so it lives here
-# rather than in the test-helper namespace — CI defense-line #1
-# (scripts/ci_static_scan.py) bans test-namespace imports from prod entrypoints.
-_EMBEDDED_DEFERRED_CAPS = frozenset({"engram_per_record_key", "testing_helper_marker"})
+def required_capabilities(embedded: bool = False) -> tuple[str, ...]:
+    """Thin forwarder to the C++ pure capability policy (no global mutation)."""
+    return tuple(_core.required_capabilities(embedded))
+
+
+# [inert forwarder] Retained as a read-only re-export so legacy callers/tests
+# that reference it keep importing. NOTHING reads this for preflight anymore —
+# the readiness decision is owned by the C++ RuntimeSupervisor. Legacy-name
+# sweep is follow-up F1.
+LOCAL_STORE_REQUIRED = required_capabilities(embedded=False)
 
 
 def relax_preflight_for_embedded() -> tuple[str, ...]:
-    """Trim the embedded-facade deferred capabilities from LOCAL_STORE_REQUIRED
-    so the local-store runtime reaches READY in the single-process facade.
-
-    Mutates the module global (the live tuple the preflight reads) and returns
-    the original so callers can restore it in tearDown. Drop the
-    `engram_per_record_key` entry once M0.4+KMS lands real per-record keys.
+    """[inert forwarder] Returns the embedded-profile required tuple. NO LONGER
+    mutates any global — embedded readiness is now decided in C++ (the supervisor
+    is built with embedded=True by _build_local_store_sqlite_runtime). Retained
+    so the ~55 call sites that call this + assign LOCAL_STORE_REQUIRED back in
+    teardown keep working unchanged. Legacy-name sweep is follow-up F1.
     """
-    global LOCAL_STORE_REQUIRED
-    original = LOCAL_STORE_REQUIRED
-    LOCAL_STORE_REQUIRED = tuple(
-        c for c in original if c not in _EMBEDDED_DEFERRED_CAPS
-    )
-    return original
+    return required_capabilities(embedded=True)
 
 
 class RuntimeUnreadyError(RuntimeError):
@@ -66,17 +58,17 @@ class RuntimeUnreadyError(RuntimeError):
 
 @dataclass
 class _StubBus:
-    health_getter: Callable[[], _core.RuntimeHealth]
+    check_write: Callable[[], Any]  # () -> _core.WriteGateDecision
     written_count: int = 0
 
     def append_evidence(self, _engram) -> str:
-        if self.health_getter() != _core.RuntimeHealth.READY:
+        if self.check_write() != _core.WriteGateDecision.kAccept:
             return "PRECONDITION_FAILED"
         self.written_count += 1
         return "OK"
 
     def write(self, _stmt) -> str:
-        if self.health_getter() != _core.RuntimeHealth.READY:
+        if self.check_write() != _core.WriteGateDecision.kAccept:
             return "PRECONDITION_FAILED"
         self.written_count += 1
         return "OK"
@@ -93,25 +85,25 @@ class _SqliteBackedBus:
     Mirrors `_StubBus`'s shape so existing callers keep working when an adapter
     is supplied. The actual append-into-bus_events flow lands behind
     OutboxWriter in M0.3 (engram) + M0.4 (statement); M0.2 only needs the
-    health gate and the adapter handle exposed to producers.
+    write gate and the adapter handle exposed to producers.
     """
 
-    def __init__(self, adapter, *, health_getter: Callable[[], _core.RuntimeHealth]):
+    def __init__(self, adapter, *, check_write: Callable[[], Any]):
         self._adapter = adapter
-        self._health_getter = health_getter
+        self._check_write = check_write
         self.written_count = 0
 
     def adapter(self):
         return self._adapter
 
     def append_evidence(self, _engram) -> str:
-        if self._health_getter() != _core.RuntimeHealth.READY:
+        if self._check_write() != _core.WriteGateDecision.kAccept:
             return "PRECONDITION_FAILED"
         self.written_count += 1
         return "OK"
 
     def write(self, _stmt) -> str:
-        if self._health_getter() != _core.RuntimeHealth.READY:
+        if self._check_write() != _core.WriteGateDecision.kAccept:
             return "PRECONDITION_FAILED"
         self.written_count += 1
         return "OK"
@@ -121,119 +113,73 @@ class _SqliteBackedBus:
 class Runtime:
     capability: _core.ProfileCapability
     on_health_change: Optional[Callable[[dict], None]] = None
-    idx_statement_id_tenant_present: Callable[[], bool] = field(
-        default=lambda: True
-    )
-    # M0.2: optional SqliteAdapter handle. When present, __post_init__ wires
-    # _SqliteBackedBus instead of _StubBus. Default None preserves M0.0
-    # call-site shape so TC-NEW-PREFLIGHT keeps passing unchanged.
+    idx_statement_id_tenant_present: Callable[[], bool] = field(default=lambda: True)
     adapter: Optional[Any] = None
+    embedded: bool = False
 
     foreground_workers_started: bool = False
     background_workers_started: bool = False
     exit_code: Optional[int] = None
     bus: Any = field(init=False)
     engram_store: _StubEngramStore = field(default_factory=_StubEngramStore)
-
-    _state: _core.RuntimeHealth = field(default=_core.RuntimeHealth.UNREADY)
+    _sup: Any = field(init=False, default=None)
 
     def __post_init__(self):
         if self.adapter is None:
-            # M0.0 stub path stays byte-stable.
-            self.bus = _StubBus(health_getter=lambda: self._state)
+            # Test-seam path: the index probe is the injected Python callable.
+            self._sup = _core.RuntimeSupervisor(
+                self.capability, self.embedded, self.idx_statement_id_tenant_present)
+            self.bus = _StubBus(check_write=self._sup.check_write)
         else:
-            self.bus = _SqliteBackedBus(
-                self.adapter, health_getter=lambda: self._state
-            )
+            # Production path: the index probe is C++ (adapter.has_index), bound
+            # via the SqliteAdapter& ctor — no governance decision through Python.
+            self._sup = _core.RuntimeSupervisor(
+                self.capability, self.embedded, self.adapter)
+            self.bus = _SqliteBackedBus(self.adapter, check_write=self._sup.check_write)
 
     def health(self) -> _core.RuntimeHealth:
-        return self._state
+        return self._sup.health()
 
     def start(self) -> None:
-        missing: list[str] = []
-        # Capability-level preflight.
-        result = _core.preflight(self.capability, list(LOCAL_STORE_REQUIRED))
-        if result.status == _core.PreflightStatus.UNREADY:
-            missing.extend(result.missing)
-        # Index-level preflight (branch a).
-        if not self.idx_statement_id_tenant_present():
-            missing.append("idx_statement_id_tenant")
-
-        if missing:
-            self._set_unready(missing)
+        outcome = self._sup.start()
+        if outcome == _core.StartOutcome.kUnready:
+            self.foreground_workers_started = False
+            self.background_workers_started = False
+            self.exit_code = EX_CONFIG
+            missing = list(self._sup.run_preflight().missing_capabilities)
+            self._emit_health("UNREADY", missing)
             raise RuntimeUnreadyError(missing)
-
-        self._set_ready()
-
-    def _set_unready(self, missing: list[str]) -> None:
-        self._state = _core.RuntimeHealth.UNREADY
-        # exit_code is fail-closed-only; never cleared on a later transition
-        # back to READY (process-exit signal, not transient state).
-        self.exit_code = EX_CONFIG
-        self.foreground_workers_started = False
-        self.background_workers_started = False
-        if self.on_health_change:
-            self.on_health_change({
-                "event": "runtime.health_changed",
-                "state": "UNREADY",
-                "missing_capabilities": missing,
-            })
-
-    def _set_ready(self) -> None:
-        # Only safe to call after start()'s preflight has passed. Future
-        # degraded→ready transitions must re-run preflight before calling this.
-        self._state = _core.RuntimeHealth.READY
         self.foreground_workers_started = True
         self.background_workers_started = True
+        self._emit_health("READY", [])
+
+    def _emit_health(self, state: str, missing: list[str]) -> None:
         if self.on_health_change:
             self.on_health_change({
                 "event": "runtime.health_changed",
-                "state": "READY",
-                "missing_capabilities": [],
+                "state": state,
+                "missing_capabilities": missing,
             })
 
 
 def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
     """Construct a Runtime backed by a real SqliteAdapter at db_path.
 
-    The adapter's declare_capability() reports `engram_per_record_key=False`
-    and `testing_helper_marker=False` in M0.3 (real per-record AES-256-GCM
-    + KMS lands in M0.4 — M0.3 ships a `null_kms` identity-cipher placeholder
-    with `key_ref=NULL`; marker is dev-only). Acceptance tests that need to
-    reach READY must call `relax_preflight_for_m0_3()` from the testing
-    subpackage before invoking this.
-
-    M0.3: after construction, swap `rt.bus` to a real BusFacade so producers
-    get the four-outcome `append_evidence(EngramInput)` contract instead of
-    the M0.2 `_SqliteBackedBus` stub-shape ("OK"/"PRECONDITION_FAILED").
-    Runtime(capability=cap) constructed directly (no adapter) keeps the
-    `_StubBus` path — TC-NEW-PREFLIGHT [CRITICAL] still asserts the
-    "PRECONDITION_FAILED" string contract via that path.
+    The embedded single-process facade runs the reduced capability set
+    (testing_helper_marker test-only; engram_per_record_key deferred to
+    M0.4+KMS), so the supervisor is built with embedded=True. The index probe is
+    the bound C++ SqliteAdapter::has_index (no raw Python sqlite3 read).
     """
     adapter = _core.SqliteAdapter.open(str(db_path))
     cap = adapter.declare_capability()
-
-    # idx_statement_id_tenant_present: real check against sqlite_master.
-    # Captures db_path (not the adapter handle) to avoid a second sqlite3
-    # connection contending for the WAL writer lock with the C++ side; the
-    # Python sqlite3 read is open-and-close, scoped to the call.
-    def _idx_present() -> bool:
-        import sqlite3
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type='index' AND name='idx_statement_id_tenant'"
-            ).fetchone()
-            return row is not None
-
     rt = Runtime(
         capability=cap,
         adapter=adapter,
-        idx_statement_id_tenant_present=_idx_present,
+        embedded=True,
+        idx_statement_id_tenant_present=lambda: adapter.has_index("idx_statement_id_tenant"),
     )
-    # M0.3 bus surface: replace the M0.2 `_SqliteBackedBus` stub-shape with
-    # the real C++ Bus through BusFacade. Lazy-import to avoid a circular
-    # dependency between starling.runtime and starling.bus.append_evidence.
+    # M0.3 bus surface: replace the stub bus with the real C++ Bus via BusFacade.
+    # Lazy-import to avoid a circular dependency.
     from starling.bus.append_evidence import BusFacade
     rt.bus = BusFacade(adapter)
     return rt

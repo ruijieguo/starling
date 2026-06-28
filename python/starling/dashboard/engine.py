@@ -105,9 +105,10 @@ def _build_embed_adapter(emb_cfg: dict):
 
 class DashboardEngine:
     def __init__(self, config) -> None:
-        # Embedded facade preflight: relax to the embedded capability subset
-        # (testing_helper_marker test-only; engram_per_record_key deferred M0.4+KMS).
-        _runtime.relax_preflight_for_embedded()
+        # Embedded facade runs the reduced capability set (testing_helper_marker
+        # test-only; engram_per_record_key deferred M0.4+KMS); the C++ supervisor
+        # is built with embedded=True (in _build_local_store_sqlite_runtime), so
+        # preflight reaches READY without any Python-side global relaxation.
         # Serializes all engine entry points: routes call them from worker
         # threads (anyio to_thread) and SQLite has a single writer connection.
         # RLock because working_set() re-enters recall().
