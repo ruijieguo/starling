@@ -10,6 +10,32 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starling.dashboard import queries
 
 
+def _engine_or_none(request: Request):
+    return request.app.state.engine
+
+
+def _metrics_to_dict(ms) -> dict:
+    return {
+        "outbox_lag_sequence": ms.outbox_lag_sequence,
+        "subscriber_failure_rate": ms.subscriber_failure_rate,
+        "extraction_queue_depth": ms.extraction_queue_depth,
+        "projection_lag_seconds": ms.projection_lag_seconds,
+        "runtime_event_loop_lag_ms": ms.runtime_event_loop_lag_ms,
+        "vector_delete_lag": ms.vector_delete_lag,
+        "erased_evidence_visible_count": ms.erased_evidence_visible_count,
+    }
+
+
+def _event_to_dict(e) -> dict:
+    return {
+        "previous_status": e.previous_status.name,
+        "current_status": e.current_status.name,
+        "trigger": e.trigger,
+        "missing_capabilities": list(e.missing_capabilities),
+        "metrics_snapshot": _metrics_to_dict(e.metrics_snapshot),
+    }
+
+
 def build_inspect_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -130,5 +156,16 @@ def build_inspect_router(require_token) -> APIRouter:
         if preview is None:
             raise HTTPException(status_code=404, detail="not_found")
         return preview
+
+    @router.get("/runtime_health")
+    async def runtime_health(request: Request):
+        eng = _engine_or_none(request)
+        if eng is None:
+            # health/events are in-memory; with no live engine there is nothing to read.
+            raise HTTPException(status_code=503, detail="engine not initialized")
+        return {
+            "status": eng.health().name,
+            "events": [_event_to_dict(e) for e in eng.events()],
+        }
 
     return router

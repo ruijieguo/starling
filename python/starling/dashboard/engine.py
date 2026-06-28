@@ -440,6 +440,14 @@ class DashboardEngine:
                                 "tokens": b.token_estimate} for b in cb.blocks],
                     "truncated": cb.truncated}
 
+    def health(self):
+        """Current RuntimeHealth (read-only; forwards to the live supervisor)."""
+        return self._rt.health()
+
+    def events(self) -> list:
+        """Snapshot of the supervisor transition log (read-only passthrough)."""
+        return self._rt.events()
+
     def begin_drain(self, trigger: str = "admin_drain") -> None:
         """OV-5 / D-P2-6: enter DRAINING on host shutdown. Forwards to the live
         C++ supervisor through the Runtime handle. Acquires NOTHING extra — the

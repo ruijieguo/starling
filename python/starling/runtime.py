@@ -140,6 +140,14 @@ class Runtime:
     def health(self) -> _core.RuntimeHealth:
         return self._sup.health()
 
+    def events(self) -> list:
+        """Snapshot of the supervisor's transition event log (forwards to C++)."""
+        return self._sup.events()
+
+    def last_event(self):
+        """Latest transition event, or None (forwards to C++)."""
+        return self._sup.last_event()
+
     def begin_drain(self, trigger: str = "admin_drain") -> None:
         """Enter DRAINING (host shutdown). Forwards to the C++ supervisor; the
         supervisor self-locks, so no Python-side lock is taken here."""
