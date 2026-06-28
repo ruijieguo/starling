@@ -100,7 +100,8 @@ def test_gist_thresholds_persist_and_hot_swap(ctx):
     """#38-C v2 threshold surface: POST gist_thresholds → persisted, returned, and
     hot-swapped onto the engine's core (which threads them into run_idle/run_sleep)."""
     cfg, eng, client, cfgfile = ctx
-    knobs = {"min_holders": 4, "min_confidence": 0.75, "similarity_threshold": 0.85}
+    knobs = {"min_holders": 4, "min_confidence": 0.75, "similarity_threshold": 0.85,
+             "entity_gist_enabled": 1}
     r = client.post("/api/config", json={"gist_thresholds": knobs})
     assert r.status_code == 200
     assert r.json()["gist_thresholds"] == knobs

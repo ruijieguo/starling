@@ -167,14 +167,15 @@ class DashboardEngine:
 
     def set_gist_thresholds(self, thresholds: dict) -> None:
         """#38-C v2 threshold surface: override the NORM-gist K / T / confidence floor /
-        semantic similarity_threshold (0 = semantic clustering off) used by offline replay
-        (run_idle/run_sleep). Empty/missing keys → the C++ defaults. O(1) value swap; the
-        clustering + gating logic lives in the C++ core — this only injects the knobs."""
+        semantic similarity_threshold (0 = off) / entity_gist_enabled (1 = on) used by
+        offline replay (run_idle/run_sleep). Empty/missing keys → the C++ defaults. O(1)
+        value swap; the clustering + gating logic lives in the C++ core — this only
+        injects the knobs."""
         with self._lock:
             self._core.gist_thresholds = {
                 k: thresholds[k]
                 for k in ("min_holders", "min_replay_count", "min_confidence",
-                          "similarity_threshold")
+                          "similarity_threshold", "entity_gist_enabled")
                 if thresholds.get(k) is not None
             } if thresholds else {}
 

@@ -25,7 +25,8 @@
 		min_holders: null,
 		min_replay_count: null,
 		min_confidence: null,
-		similarity_threshold: null
+		similarity_threshold: null,
+		entity_gist_enabled: null
 	});
 	let keyInputs = $state<Record<string, string>>({}); // per-provider new key (blank = keep)
 	let embBaseline = $state(''); // embedding provider+dim snapshot → re-embed confirm
@@ -61,7 +62,8 @@
 			min_holders: gt.min_holders ?? null,
 			min_replay_count: gt.min_replay_count ?? null,
 			min_confidence: gt.min_confidence ?? null,
-			similarity_threshold: gt.similarity_threshold ?? null
+			similarity_threshold: gt.similarity_threshold ?? null,
+			entity_gist_enabled: gt.entity_gist_enabled ?? null
 		};
 		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
 	}
@@ -170,6 +172,9 @@
 						: {}),
 					...(gistThresholds.similarity_threshold != null
 						? { similarity_threshold: gistThresholds.similarity_threshold }
+						: {}),
+					...(gistThresholds.entity_gist_enabled != null
+						? { entity_gist_enabled: gistThresholds.entity_gist_enabled }
 						: {})
 				}
 			};
@@ -243,6 +248,17 @@
 					step="0.05"
 					placeholder="0(关闭)"
 					bind:value={gistThresholds.similarity_threshold}
+				/>
+			</Field>
+			<Field label="entity-gist 共识" for="gt-e" hint="对具体实体的共识 gist;1=开启,0/留空=关闭">
+				<Input
+					id="gt-e"
+					type="number"
+					min="0"
+					max="1"
+					step="1"
+					placeholder="0(关闭)"
+					bind:value={gistThresholds.entity_gist_enabled}
 				/>
 			</Field>
 		</div>
