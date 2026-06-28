@@ -41,10 +41,10 @@ bool SqliteAdapter::check_final_query(const std::string& sql) const {
 // Legacy compatibility probe: returns whether a named SQLite index EXISTS.
 // It proves existence only — NOT tenant-isolation semantics (the (id, tenant_id)
 // composite-key invariant). Kept because TC-NEW-PREFLIGHT pins idx_statement_id_tenant.
-bool SqliteAdapter::has_index(std::string_view name) const {
-    // const_cast is safe: sqlite3_prepare_v2 and step do not mutate schema state.
-    sqlite3* const db = const_cast<Connection&>(conn_).raw();
-    Stmt stmt(db, "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1");
+bool SqliteAdapter::has_index(std::string_view name) {
+    // Non-const to match the persistence/bus store convention (e.g. ConsumerCheckpoint
+    // read methods): Connection::raw() is the only handle accessor and is non-const.
+    Stmt stmt(conn_.raw(), "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1");
     stmt.bind(name);
     return stmt.step_row();
 }

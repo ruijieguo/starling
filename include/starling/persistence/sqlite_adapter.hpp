@@ -22,7 +22,7 @@ public:
 
     starling::ProfileCapability declare_capability() const override;
     bool check_final_query(const std::string& sql) const override;
-    bool has_index(std::string_view name) const;
+    [[nodiscard]] bool has_index(std::string_view name);
 
     Connection& connection() noexcept { return conn_; }
     const std::filesystem::path& db_path() const noexcept { return db_path_; }
