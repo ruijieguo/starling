@@ -131,10 +131,11 @@ class Memory:
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
              llm=None, extraction=None) -> "Memory":
-        # The embedded single-process facade can't satisfy the full local-store
-        # preflight (testing_helper_marker is test-only; engram_per_record_key is
-        # deferred to M0.4+KMS); relax to the embedded subset so it reaches READY.
-        _runtime.relax_preflight_for_embedded()
+        # The embedded single-process facade runs the reduced capability set
+        # (testing_helper_marker is test-only; engram_per_record_key is deferred
+        # to M0.4+KMS). _build_local_store_sqlite_runtime builds the C++
+        # RuntimeSupervisor with embedded=True, which waives those deferred caps
+        # so preflight reaches READY — no Python-side global relaxation needed.
         rt = _runtime._build_local_store_sqlite_runtime(Path(db_path))
         rt.start()
         return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm, extraction=extraction)
