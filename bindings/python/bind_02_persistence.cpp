@@ -5,6 +5,8 @@
 
 #include "bind_common.hpp"
 
+#include <string_view>
+
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/persistence/connection.hpp"
@@ -57,6 +59,13 @@ void bind_02_persistence(pybind11::module_& m) {
         }, py::arg("db_path"))
         .def("declare_capability",
              &starling::persistence::SqliteAdapter::declare_capability)
+        .def("has_index",
+             [](starling::persistence::SqliteAdapter& adapter, std::string_view name) {
+                 return adapter.has_index(name);
+             },
+             py::arg("name"),
+             "Returns whether a named SQLite index exists (legacy-compat probe: "
+             "proves existence only, NOT tenant-isolation semantics).")
         .def("check_final_query",
              &starling::persistence::SqliteAdapter::check_final_query,
              py::arg("sql"))
