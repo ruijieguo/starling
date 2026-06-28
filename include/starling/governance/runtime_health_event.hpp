@@ -54,9 +54,10 @@ struct HealthDecision {
   switch (from) {
     case Health::UNREADY:
       return target == Health::READY;
+    // READY and DEGRADED share the same legal targets {READY, DEGRADED,
+    // DRAINING}; merged via fall-through (bugprone-branch-clone rejects two
+    // consecutive identical case bodies — semantics unchanged).
     case Health::READY:
-      return target == Health::READY || target == Health::DEGRADED ||
-             target == Health::DRAINING;
     case Health::DEGRADED:
       return target == Health::READY || target == Health::DEGRADED ||
              target == Health::DRAINING;
