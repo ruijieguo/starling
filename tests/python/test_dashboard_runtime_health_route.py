@@ -53,10 +53,11 @@ def test_runtime_health_reflects_drain(client):
 
 
 def test_runtime_health_503_when_no_engine(tmp_path):
-    # No engine + no lazy build path here is acceptable; assert the route does
-    # not 500. (If _engine_or_none lazily builds, status is READY instead.)
+    # engine=None + _engine_or_none is non-lazy (returns app.state.engine as-is)
+    # + tick_interval_s=0 (lifespan never builds an engine) → the route MUST 503.
+    # Health/events are in-memory; no live engine = nothing to read.
     cfg = DashboardConfig(db_path=str(tmp_path / "rh2.db"), token="",
                           tick_interval_s=0)
     c = TestClient(create_app(cfg))       # engine=None
     r = c.get("/api/runtime_health")
-    assert r.status_code in (200, 503)
+    assert r.status_code == 503
