@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "starling/net/http_post_json.hpp"
+#include "starling/extractor/reasoning_trace.hpp"
 #include "starling/extractor/sse_stream.hpp"
 
 namespace starling::extractor {
@@ -48,7 +49,11 @@ LLMResponse OpenAIAdapter::extract(std::string_view prompt,
     }
     try {
         auto j = nlohmann::json::parse(r.body);
-        const std::string content = j["choices"][0]["message"]["content"].get<std::string>();
+        // Reasoning models prepend a <think>...</think> trace; strip it so the
+        // downstream extraction parsers (which scan for the first '['/'{') see only
+        // the JSON answer. Without this, thinking extraction yields zero statements.
+        const std::string content = strip_reasoning_trace(
+            j["choices"][0]["message"]["content"].get<std::string>());
         LLMResponse out{.raw_xml = content, .ok = true, .error = {}, .latency_ms = latency_ms};
         if (j.contains("usage")) {                    // OpenAI usage block (best-effort)
             const auto& u = j["usage"];
