@@ -8,9 +8,8 @@ std::vector<std::string> required_capabilities(bool embedded) {
   std::vector<std::string> result;
   result.reserve(kLocalStoreRequired.size());
   for (const auto cap : kLocalStoreRequired) {
-    const bool deferred = std::find(kEmbeddedDeferredCaps.begin(),
-                                    kEmbeddedDeferredCaps.end(), cap) !=
-                          kEmbeddedDeferredCaps.end();
+    const bool deferred =
+        std::ranges::find(kEmbeddedDeferredCaps, cap) != kEmbeddedDeferredCaps.end();
     if (embedded && deferred) {
       continue;
     }
