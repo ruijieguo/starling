@@ -27,6 +27,8 @@ struct Row {
     std::string id;
     const char* holder = "alice";
     const char* tenant = "default";
+    const char* subject_kind = "cognizer";   // entity-gist: the subject the belief is ABOUT
+    const char* subject_id = "subj";
     const char* predicate = "likes";
     char        hashfill = 'a';
     int         replay_count = 2;
@@ -45,8 +47,9 @@ void seed(sqlite3* db, const Row& row) {
              "confidence,observed_at,salience,affect_json,activation,last_accessed,"
              "provenance,replay_count,consolidation_state,review_status,access_count,"
              "created_at,updated_at) VALUES('"
-          << row.id << "','" << row.tenant << "','" << row.holder << "','first_person',"
-             "'cognizer','subj','" << row.predicate << "','" << row.object_kind << "','"
+          << row.id << "','" << row.tenant << "','" << row.holder << "','first_person','"
+          << row.subject_kind << "','" << row.subject_id << "','" << row.predicate
+          << "','" << row.object_kind << "','"
           << row.object_value << "','" << std::string(64, row.hashfill) << "','v1',"
              "'believes','pos',0.9,'2026-05-27T09:00:00Z',0.5,'{}',0.0,"
              "'2026-05-27T09:00:00Z','" << row.provenance << "'," << row.replay_count
@@ -336,6 +339,73 @@ TEST(GistClustering, SemanticClusterSkippedWhenRepKeyAlreadyAbstracted) {
                              .min_confidence = 0.6, .similarity_threshold = 0.8};
     EXPECT_TRUE(
         find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {}).empty());
+}
+
+// #38-C v2 entity-gist: ≥K holders agreeing about the SAME specific entity form a
+// consensus cluster ABOUT that entity (subject kept). Holders about a different entity
+// don't reach K → no cluster for them. Contrast: people-norm merges across subjects.
+TEST(GistClustering, EntityGroupsSameSubjectConsensus) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m4", .holder = "dave", .subject_id = "alice", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1};
+    const auto entity =
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3", "m4"}, cfg, /*by_subject=*/true);
+    ASSERT_EQ(entity.size(), 1U);
+    EXPECT_EQ(entity[0].subject_id, "bob");      // consensus is ABOUT Bob
+    EXPECT_EQ(entity[0].holder_ids.size(), 3U);  // alice/bob/carol; the Alice-subject row out
+    // Contrast: people-norm merges across subjects → one 4-holder generic cluster.
+    const auto norm = find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3", "m4"}, cfg);
+    ASSERT_EQ(norm.size(), 1U);
+    EXPECT_TRUE(norm[0].subject_id.empty());     // generic (people)
+    EXPECT_EQ(norm[0].holder_ids.size(), 4U);
+}
+
+// The written entity gist keeps the SPECIFIC subject (not the generic __people__).
+TEST(GistWriter, EntityGistKeepsSpecificSubject) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    const auto entity =
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3"}, GistThresholds{}, true);
+    ASSERT_EQ(entity.size(), 1U);
+    const auto outcome = write_gist_proposals(
+        *adapter, {{.tenant_id = "default", .cluster = entity[0]}}, "2026-06-28T12:00:00Z");
+    EXPECT_EQ(outcome.written, 1);
+    EXPECT_EQ(col_text(db, std::string("SELECT subject_id FROM statements ") + kGistWhere), "bob");
+}
+
+// Idempotency: an entity key already abstracted (same subject+predicate+hash) is skipped.
+TEST(GistClustering, EntityClusterSkippedWhenAlreadyAbstracted) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    // Pre-existing entity gist about bob (owns, auth) — same key.
+    seed(db, {.id = "g1", .holder = "common_ground", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .provenance = "consolidation_abstract", .object_value = "auth"});
+    EXPECT_TRUE(
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3"}, GistThresholds{}, true).empty());
 }
 
 // The oscillation guard must never force-consolidate an ungated gist (a gist

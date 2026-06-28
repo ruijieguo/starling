@@ -266,15 +266,16 @@ void write_ledger(sqlite3* db,
 constexpr GistThresholds kGistThresholds{/*min_distinct_holders=*/3,
                                          /*min_replay_count=*/1};
 
-// Per-tenant NORM detection over the union seed set: (1) exact (predicate, hash) pass,
-// then (2) #38-C v2 embedding semantic pass (k-NN seed expansion) when do_semantic.
-// The semantic pass skips members the exact pass already claimed (so a belief is
-// counted by at most one). Appends proposals to out_proposals (non-null = OFFLINE);
-// returns the total candidate count for stats.
+// Per-tenant NORM detection over the union seed set: (1) exact (predicate, hash) people-
+// norm pass; (2) #38-C v2 embedding semantic pass (k-NN) when do_semantic; (3) #38-C v2
+// entity pass — cluster by (subject, predicate, hash) over cognizer subjects — when
+// do_entity. People-norm + semantic share a claim set; entity is an INDEPENDENT
+// aggregation (a belief may feed both a people-norm AND an entity gist — distinct
+// statements). Appends proposals (non-null = OFFLINE); returns the candidate count.
 int collect_tenant_gist_candidates(
     persistence::Connection& conn, vector::VectorIndex& index, std::string_view tenant_id,
     const std::vector<std::string>& seed_ids, const GistThresholds& thresholds,
-    bool do_semantic, std::vector<GistProposal>* out_proposals)
+    bool do_semantic, bool do_entity, std::vector<GistProposal>* out_proposals)
 {
     int candidates = 0;
     const auto clusters = find_norm_gist_clusters(conn, tenant_id, seed_ids, thresholds);
@@ -291,6 +292,14 @@ int collect_tenant_gist_candidates(
             conn, index, tenant_id, seed_ids, thresholds, claimed);
         candidates += static_cast<int>(semantic.size());
         for (const auto& cluster : semantic) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    if (do_entity) {
+        const auto entity_clusters = find_norm_gist_clusters(
+            conn, tenant_id, seed_ids, thresholds, /*by_subject=*/true);
+        candidates += static_cast<int>(entity_clusters.size());
+        for (const auto& cluster : entity_clusters) {
             out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
         }
     }
@@ -347,9 +356,13 @@ ReplayStats do_compress_and_emit(
     vector::SqliteBlobVectorIndex semantic_index;
     const bool do_semantic =
         (out_proposals != nullptr) && (thresholds.similarity_threshold > 0.0);
+    // #38-C v2 entity-gist: a third OFFLINE pass (consensus about a specific entity),
+    // opt-in via entity_gist_enabled. OFF by default → no production path forms one.
+    const bool do_entity = (out_proposals != nullptr) && thresholds.entity_gist_enabled;
     for (const auto& [tenant_id, seed_ids] : seed_by_tenant) {
         stats.gist_candidates += collect_tenant_gist_candidates(
-            conn, semantic_index, tenant_id, seed_ids, thresholds, do_semantic, out_proposals);
+            conn, semantic_index, tenant_id, seed_ids, thresholds, do_semantic, do_entity,
+            out_proposals);
     }
 
     // Emit statement.derived for each compressed stmt
