@@ -321,11 +321,11 @@ class MemoryCore:
         # summary) during the offline pass; None → deterministic gist. The C++ core
         # owns the NORM-gist prompt + orchestration — Python only injects the adapter.
         # #38-C v2 threshold surface: gist_thresholds (dashboard config) overrides
-        # K / T / confidence floor / semantic similarity_threshold (0 = semantic off);
-        # empty → the C++ canonical defaults.
+        # K / T / confidence floor / semantic similarity_threshold (0 = semantic off) /
+        # entity_gist_enabled (1 = entity-gist on); empty → the C++ canonical defaults.
         gt = self.gist_thresholds or {}
         kw = {k: gt[k] for k in ("min_holders", "min_replay_count", "min_confidence",
-                                 "similarity_threshold")
+                                 "similarity_threshold", "entity_gist_enabled")
               if gt.get(k) is not None}
         rs = (sched.run_sleep(now_iso, self.consolidation_llm, **kw) if mode == "sleep"
               else sched.run_idle(now_iso, self.consolidation_llm, **kw))
