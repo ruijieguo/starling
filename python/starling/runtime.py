@@ -140,6 +140,11 @@ class Runtime:
     def health(self) -> _core.RuntimeHealth:
         return self._sup.health()
 
+    def begin_drain(self, trigger: str = "admin_drain") -> None:
+        """Enter DRAINING (host shutdown). Forwards to the C++ supervisor; the
+        supervisor self-locks, so no Python-side lock is taken here."""
+        self._sup.begin_drain(trigger)
+
     def start(self) -> None:
         outcome = self._sup.start()
         # D-P2-2: the C++ supervisor is the event source. start() recorded exactly
