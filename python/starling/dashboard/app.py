@@ -65,8 +65,15 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
                 eng.start_background_tick(config.tick_interval_s, _on_tick)
         yield
         eng = app.state.engine
-        if eng is not None and hasattr(eng, "stop_background_tick"):
-            eng.stop_background_tick()
+        if eng is not None:
+            # D-P2-6: enter DRAINING on host shutdown — post-yield, NOT a signal
+            # handler (a signal handler races uvicorn's own shutdown). Drain ENTRY
+            # first (flips the write gate to reject), THEN stop the background tick.
+            # Capability-probed: tests inject partial-interface engine doubles.
+            if hasattr(eng, "begin_drain"):
+                eng.begin_drain()
+            if hasattr(eng, "stop_background_tick"):
+                eng.stop_background_tick()
 
     app = FastAPI(title="Starling Dashboard", version="0.1.0", lifespan=lifespan)
     app.state.config = config

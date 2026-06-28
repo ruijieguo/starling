@@ -117,6 +117,8 @@ class DashboardEngine:
         self._db_path = config.db_path
         rt = _runtime._build_local_store_sqlite_runtime(Path(config.db_path))
         rt.start()
+        self._rt = rt   # the live Runtime (holds the C++ RuntimeSupervisor); the
+                        # host drain reaches the supervisor through begin_drain().
         self._core = MemoryCore(rt, agent=config.agent, tenant_id=config.tenant,
                                 adapter_name="dashboard", source_prefix="dash-",
                                 vector_backend=config.vector_backend,
@@ -437,6 +439,13 @@ class DashboardEngine:
                     "blocks": [{"label": b.label, "content": b.content,
                                 "tokens": b.token_estimate} for b in cb.blocks],
                     "truncated": cb.truncated}
+
+    def begin_drain(self, trigger: str = "admin_drain") -> None:
+        """OV-5 / D-P2-6: enter DRAINING on host shutdown. Forwards to the live
+        C++ supervisor through the Runtime handle. Acquires NOTHING extra — the
+        supervisor self-locks (D3); taking self._lock here would let a slow
+        in-flight converse/tick block shutdown drain."""
+        self._rt.begin_drain(trigger)
 
     def close(self) -> None:
         self.stop_background_tick()

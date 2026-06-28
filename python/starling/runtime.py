@@ -140,26 +140,41 @@ class Runtime:
     def health(self) -> _core.RuntimeHealth:
         return self._sup.health()
 
+    def begin_drain(self, trigger: str = "admin_drain") -> None:
+        """Enter DRAINING (host shutdown). Forwards to the C++ supervisor; the
+        supervisor self-locks, so no Python-side lock is taken here."""
+        self._sup.begin_drain(trigger)
+
     def start(self) -> None:
         outcome = self._sup.start()
+        # D-P2-2: the C++ supervisor is the event source. start() recorded exactly
+        # one transition (-> UNREADY or -> READY); the forwarder maps THAT event to
+        # the legacy runtime.health_changed dict — no Python-side state/missing
+        # computation. (OV-6: last_event(), not events()[-1].)
+        evt = self._sup.last_event()
         if outcome == _core.StartOutcome.kUnready:
             self.foreground_workers_started = False
             self.background_workers_started = False
             self.exit_code = EX_CONFIG
-            missing = list(self._sup.run_preflight().missing_capabilities)
-            self._emit_health("UNREADY", missing)
+            missing = list(evt.missing_capabilities) if evt is not None else []
+            self._emit_health(evt)
             raise RuntimeUnreadyError(missing)
         self.foreground_workers_started = True
         self.background_workers_started = True
-        self._emit_health("READY", [])
+        self._emit_health(evt)
 
-    def _emit_health(self, state: str, missing: list[str]) -> None:
-        if self.on_health_change:
-            self.on_health_change({
-                "event": "runtime.health_changed",
-                "state": state,
-                "missing_capabilities": missing,
-            })
+    def _emit_health(self, evt) -> None:
+        """Map a C++ RuntimeHealthEvent to the legacy runtime.health_changed dict
+        (D-P2-2). `state` is the C++ enum's own name (single source of truth — the
+        enum is bound .value("READY", ...) etc., so .name is exactly "READY"/"UNREADY").
+        """
+        if self.on_health_change is None or evt is None:
+            return
+        self.on_health_change({
+            "event": "runtime.health_changed",
+            "state": evt.current_status.name,
+            "missing_capabilities": list(evt.missing_capabilities),
+        })
 
 
 def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
