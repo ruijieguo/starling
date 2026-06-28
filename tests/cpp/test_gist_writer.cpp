@@ -7,6 +7,7 @@
 #include "starling/replay/gist_writer.hpp"
 #include "starling/replay/gist_clustering.hpp"
 #include "starling/replay/replay_scheduler.hpp"
+#include "starling/vector/vector_index.hpp"   // SqliteBlobVectorIndex (seed controlled vectors)
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/llm_adapter.hpp"
@@ -26,6 +27,8 @@ struct Row {
     std::string id;
     const char* holder = "alice";
     const char* tenant = "default";
+    const char* subject_kind = "cognizer";   // entity-gist: the subject the belief is ABOUT
+    const char* subject_id = "subj";
     const char* predicate = "likes";
     char        hashfill = 'a';
     int         replay_count = 2;
@@ -44,8 +47,9 @@ void seed(sqlite3* db, const Row& row) {
              "confidence,observed_at,salience,affect_json,activation,last_accessed,"
              "provenance,replay_count,consolidation_state,review_status,access_count,"
              "created_at,updated_at) VALUES('"
-          << row.id << "','" << row.tenant << "','" << row.holder << "','first_person',"
-             "'cognizer','subj','" << row.predicate << "','" << row.object_kind << "','"
+          << row.id << "','" << row.tenant << "','" << row.holder << "','first_person','"
+          << row.subject_kind << "','" << row.subject_id << "','" << row.predicate
+          << "','" << row.object_kind << "','"
           << row.object_value << "','" << std::string(64, row.hashfill) << "','v1',"
              "'believes','pos',0.9,'2026-05-27T09:00:00Z',0.5,'{}',0.0,"
              "'2026-05-27T09:00:00Z','" << row.provenance << "'," << row.replay_count
@@ -245,6 +249,165 @@ TEST(GistWriter, RunSleepSeedsFromConsolidated) {
     EXPECT_EQ(col_int(db, std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 1);
 }
 
+// #38-C v2 threshold surface: run_sleep honors an overridden GistThresholds end to
+// end. K=4 on the same 3-holder cluster is below threshold → no candidate, no gist —
+// proving the configurable K/T/floor threads through run_sleep → do_compress_and_emit
+// → find_norm_gist_clusters.
+TEST(GistWriter, RunSleepHonorsOverriddenThresholds) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed(conn.raw(), {.id = "m1", .holder = "alice", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m2", .holder = "bob", .state = "consolidated"});
+    seed(conn.raw(), {.id = "m3", .holder = "carol", .state = "consolidated"});
+
+    ReplayScheduler sched(*adapter);
+    const auto stats = sched.run_sleep(conn, "2026-06-27T12:00:00Z", nullptr,
+                                       GistThresholds{/*min_distinct_holders=*/4,
+                                                      /*min_replay_count=*/1,
+                                                      /*min_confidence=*/0.6});
+    EXPECT_EQ(stats.gist_candidates, 0);  // 3 holders < K=4 → no cluster
+    EXPECT_EQ(col_int(conn.raw(), std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 0);
+}
+
+// #38-C v2 semantic clustering: 3 holders assert the same norm in DIFFERENT words
+// (distinct objects → distinct hashes → the exact pass forms NOTHING) but with near
+// embeddings → the k-NN semantic pass groups them into one cluster. A 4th holder with
+// an orthogonal embedding stays out (below the cosine floor). This is the case exact
+// matching structurally cannot catch.
+TEST(GistClustering, SemanticGroupsNearVectorsExcludesFar) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    seed(db, {.id = "m4", .holder = "dave",  .hashfill = 'd', .state = "consolidated"});
+
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F, 0.0F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F, 0.0F});
+    index.insert(conn, "m4", "default", {0.0F, 1.0F, 0.0F});  // orthogonal → excluded
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    const auto clusters =
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3", "m4"}, cfg, {});
+    ASSERT_EQ(clusters.size(), 1U);
+    EXPECT_EQ(clusters[0].holder_ids.size(), 3U);  // alice/bob/carol; dave (orthogonal) excluded
+    EXPECT_EQ(clusters[0].member_ids.size(), 3U);
+}
+
+// Opt-in: similarity_threshold = 0 (the default) disables the semantic pass entirely,
+// so upgrading changes nothing until an operator configures a positive floor.
+TEST(GistClustering, SemanticDisabledWhenThresholdZero) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {1.0F, 0.0F});
+    index.insert(conn, "m3", "default", {1.0F, 0.0F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.0};
+    EXPECT_TRUE(
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {}).empty());
+}
+
+// Idempotency: a candidate whose representative key (predicate + canonical_object_hash)
+// is already abstracted into a gist is skipped — re-replay never re-emits the norm.
+TEST(GistClustering, SemanticClusterSkippedWhenRepKeyAlreadyAbstracted) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated"});
+    seed(db, {.id = "m2", .holder = "bob",   .hashfill = 'b', .state = "consolidated"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated"});
+    // Pre-existing gist on the representative key (m1 = smallest id → hashfill 'a').
+    seed(db, {.id = "g1", .holder = "common_ground", .hashfill = 'a', .state = "consolidated",
+              .provenance = "consolidation_abstract"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    EXPECT_TRUE(
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {}).empty());
+}
+
+// #38-C v2 entity-gist: ≥K holders agreeing about the SAME specific entity form a
+// consensus cluster ABOUT that entity (subject kept). Holders about a different entity
+// don't reach K → no cluster for them. Contrast: people-norm merges across subjects.
+TEST(GistClustering, EntityGroupsSameSubjectConsensus) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m4", .holder = "dave", .subject_id = "alice", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1};
+    const auto entity =
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3", "m4"}, cfg, /*by_subject=*/true);
+    ASSERT_EQ(entity.size(), 1U);
+    EXPECT_EQ(entity[0].subject_id, "bob");      // consensus is ABOUT Bob
+    EXPECT_EQ(entity[0].holder_ids.size(), 3U);  // alice/bob/carol; the Alice-subject row out
+    // Contrast: people-norm merges across subjects → one 4-holder generic cluster.
+    const auto norm = find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3", "m4"}, cfg);
+    ASSERT_EQ(norm.size(), 1U);
+    EXPECT_TRUE(norm[0].subject_id.empty());     // generic (people)
+    EXPECT_EQ(norm[0].holder_ids.size(), 4U);
+}
+
+// The written entity gist keeps the SPECIFIC subject (not the generic __people__).
+TEST(GistWriter, EntityGistKeepsSpecificSubject) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    const auto entity =
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3"}, GistThresholds{}, true);
+    ASSERT_EQ(entity.size(), 1U);
+    const auto outcome = write_gist_proposals(
+        *adapter, {{.tenant_id = "default", .cluster = entity[0]}}, "2026-06-28T12:00:00Z");
+    EXPECT_EQ(outcome.written, 1);
+    EXPECT_EQ(col_text(db, std::string("SELECT subject_id FROM statements ") + kGistWhere), "bob");
+}
+
+// Idempotency: an entity key already abstracted (same subject+predicate+hash) is skipped.
+TEST(GistClustering, EntityClusterSkippedWhenAlreadyAbstracted) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m2", .holder = "bob", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    seed(db, {.id = "m3", .holder = "carol", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .object_value = "auth"});
+    // Pre-existing entity gist about bob (owns, auth) — same key.
+    seed(db, {.id = "g1", .holder = "common_ground", .subject_id = "bob", .predicate = "owns",
+              .state = "consolidated", .provenance = "consolidation_abstract", .object_value = "auth"});
+    EXPECT_TRUE(
+        find_norm_gist_clusters(conn, "default", {"m1", "m2", "m3"}, GistThresholds{}, true).empty());
+}
+
 // The oscillation guard must never force-consolidate an ungated gist (a gist
 // only enters 'consolidated' via Phase-4 gating). A non-gist with the same
 // replay_count IS consolidated — proving the guard still works.
@@ -441,6 +604,47 @@ TEST(GistWriter, EntailmentVerifyIndependentlyPasses) {
     EXPECT_EQ(outcome.written, 1);
     EXPECT_EQ(col_text(conn.raw(), std::string("SELECT consolidation_state FROM statements ") + kGistWhere),
               "consolidated");
+}
+
+// #38-C v2 false-merge safety: a SEMANTIC cluster's summary is verified against EACH
+// varied member (per-member entailment). If it fails to entail even one — a
+// false-merged outlier — the whole candidate is GATED, not written. Single-rep
+// entailment would have checked only the representative and missed the outlier.
+TEST(GistWriter, PerMemberEntailmentGatesSemanticFalseMerge) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated",
+              .object_value = "code review"});
+    seed(db, {.id = "m2", .holder = "bob", .hashfill = 'b', .state = "consolidated",
+              .object_value = "reviewing code"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated",
+              .object_value = "pull-request review"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    const auto clusters =
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {});
+    ASSERT_EQ(clusters.size(), 1U);
+    ASSERT_EQ(clusters[0].member_objects.size(), 3U);  // varied → per-member gate engages
+
+    // Judge passes the floor; per-member entailment: true, true, FALSE → the outlier
+    // gates the candidate (4 LLM calls = 1 judge + 3 members, proving it is per-member).
+    SequencedLLM llm({
+        starling::extractor::LLMResponse{.raw_xml = R"({"confidence":0.9,"summary":"value review"})",
+                                         .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": false})", .ok = true},
+    });
+    const auto outcome = write_gist_proposals(
+        *adapter, {{.tenant_id = "default", .cluster = clusters[0]}}, "2026-06-28T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.gated, 1);    // the outlier member gated it
+    EXPECT_EQ(outcome.written, 0);  // false-merge blocked — nothing written
 }
 
 // Floor boundary: confidence exactly at the floor passes (strict <), proceeding

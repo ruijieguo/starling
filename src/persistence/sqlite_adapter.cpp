@@ -1,6 +1,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/final_query_assertion.hpp"
 #include "starling/persistence/migration_runner.hpp"
+#include "starling/persistence/stmt.hpp"
 
 namespace starling::persistence {
 
@@ -35,6 +36,17 @@ starling::ProfileCapability SqliteAdapter::declare_capability() const {
 
 bool SqliteAdapter::check_final_query(const std::string& sql) const {
     return starling::is_final_query_safe(sql);
+}
+
+// Legacy compatibility probe: returns whether a named SQLite index EXISTS.
+// It proves existence only — NOT tenant-isolation semantics (the (id, tenant_id)
+// composite-key invariant). Kept because TC-NEW-PREFLIGHT pins idx_statement_id_tenant.
+bool SqliteAdapter::has_index(std::string_view name) {
+    // Non-const to match the persistence/bus store convention (e.g. ConsumerCheckpoint
+    // read methods): Connection::raw() is the only handle accessor and is non-const.
+    Stmt stmt(conn_.raw(), "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1");
+    stmt.bind(name);
+    return stmt.step_row();
 }
 
 }  // namespace starling::persistence

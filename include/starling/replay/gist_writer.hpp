@@ -53,9 +53,13 @@ struct GistWriteOutcome {
 // failed = LLM/write/promote error. When `gist_llm` is null (the C++ embedded
 // tick, or no consolidation role configured), the deterministic path writes an
 // INERT gist (volatile + not-approved, never promoted) and never gates.
+// `confidence_floor` is the Phase-4 gate floor (a judged gist below it is gated,
+// not written); defaults to the canonical GistThresholds value, overridable from
+// the dashboard "consolidation" config (threshold config surface, v2).
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
                                       std::string_view now_iso,
-                                      extractor::LLMAdapter* gist_llm = nullptr);
+                                      extractor::LLMAdapter* gist_llm = nullptr,
+                                      double confidence_floor = GistThresholds{}.min_confidence);
 
 }  // namespace starling::replay

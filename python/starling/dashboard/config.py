@@ -37,7 +37,7 @@ ROLES = ("extraction", "embedding", "chat", "consolidation")
 _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
     "cors_origins", "providers", "roles", "tick_interval_s",
-    "vector_backend", "vector_store_path",
+    "vector_backend", "vector_store_path", "gist_thresholds",
 )
 
 
@@ -59,6 +59,10 @@ class DashboardConfig:
     # P3.b1 phase 5: 向量后端选型。sqlite(默认)=暴力 cosine + SQL scope。
     vector_backend: str = "sqlite"
     vector_store_path: str = ""
+    # #38-C v2 threshold surface: NORM-gist tuning knobs. Empty keys → C++ defaults
+    # (min_holders=3, min_replay_count=1, min_confidence=0.6). Threaded into
+    # run_idle/run_sleep via MemoryCore.gist_thresholds.
+    gist_thresholds: dict = field(default_factory=dict)
     config_path: str = ""  # not serialized; where load()/save() persist
 
     # ----- role → provider resolution -----

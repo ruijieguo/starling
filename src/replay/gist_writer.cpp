@@ -32,11 +32,23 @@ constexpr std::string_view kNormSubjectId   = "__people__";
 // stays inert (volatile + not-approved), never promoted.
 constexpr double kProvisionalConfidence = 0.5;
 
-// #38-C Phase 4 gating: a gist needs at least this LLM-judged confidence to be
-// consolidated (made live). Below it → gated (not written). Deliberately above
-// the validator's 0.30 write-floor — consolidation is a stronger bar than write.
-// v1 value; threshold tuning deferred to v2.
-constexpr double kConsolidationConfidenceFloor = 0.6;
+// #38-C Phase 4 gating: a gist needs at least the confidence floor (LLM-judged) to
+// be consolidated; below it → gated. The floor is now a parameter
+// (write_gist_proposals' confidence_floor, default GistThresholds::min_confidence =
+// 0.6), overridable from the dashboard "consolidation" config (v2 threshold tuning).
+// It is deliberately above the validator's 0.30 write-floor — consolidation is a
+// stronger bar than write.
+
+// Deterministic span/idempotency key for a gist's statement.written event. entity-gist
+// includes the SUBJECT (two entities sharing predicate+object don't collide); people-norm
+// omits it (byte-identical to the pre-entity key).
+std::string gist_span_key(std::string_view tenant_id, const GistCluster& cluster) {
+    std::string key = "consolidation:" + std::string(tenant_id) + ":";
+    if (!cluster.subject_id.empty()) {
+        key += cluster.subject_id + ":";
+    }
+    return key + cluster.predicate + ":" + cluster.canonical_object_hash;
+}
 
 extractor::ExtractedStatement build_gist_statement(
     std::string_view tenant_id,
@@ -48,8 +60,11 @@ extractor::ExtractedStatement build_gist_statement(
     stmt.holder_id             = std::string(kNormHolderId);
     stmt.holder_tenant_id      = std::string(tenant_id);
     stmt.holder_perspective    = schema::Perspective::INFERRED;
-    stmt.subject_kind          = std::string(kNormSubjectKind);
-    stmt.subject_id            = std::string(kNormSubjectId);
+    // #38-C v2 entity-gist: a cluster carrying a subject is a consensus ABOUT that
+    // specific entity → keep it; else the generic people-norm subject (__people__).
+    const bool is_entity = !cluster.subject_id.empty();
+    stmt.subject_kind          = is_entity ? cluster.subject_kind : std::string(kNormSubjectKind);
+    stmt.subject_id            = is_entity ? cluster.subject_id : std::string(kNormSubjectId);
     stmt.predicate             = cluster.predicate;
     stmt.object_kind           = cluster.object_kind;
     stmt.object_value          = cluster.object_value;
@@ -60,8 +75,13 @@ extractor::ExtractedStatement build_gist_statement(
     stmt.observed_at           = std::string(now_iso);
     // A norm is timeless in v1: no valid_from / valid_to / event_time_start.
     // source_hash is a required validator field; make it deterministic per key.
-    stmt.source_hash           = "consolidation:" + cluster.predicate + ":" +
-                                 cluster.canonical_object_hash;
+    // entity-gist includes the SUBJECT so a consensus about Bob ≠ one about Alice;
+    // people-norm keeps the original subject-less key (byte-identical, no churn).
+    stmt.source_hash           = is_entity
+                                     ? "consolidation:" + stmt.subject_id + ":" +
+                                           cluster.predicate + ":" + cluster.canonical_object_hash
+                                     : "consolidation:" + cluster.predicate + ":" +
+                                           cluster.canonical_object_hash;
     stmt.provenance            = schema::StatementProvenance::CONSOLIDATION_ABSTRACT;
     // Request review — never auto-approved. (validate_for_write may further
     // upgrade this to REVIEW_REQUESTED for a non-core predicate; both are
@@ -82,18 +102,27 @@ enum class GateDecision : std::uint8_t { Pass, Failed, Gated };
 // `judgment` is filled (confidence + summary) for the write/promote. Failed = LLM
 // error / unparseable; Gated = below floor or not entailed (a deliberate reject).
 GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& cluster,
-                            GistJudgment& judgment) {
+                            GistJudgment& judgment, double confidence_floor) {
     const extractor::LLMResponse judge_resp = gist_llm.generate(build_norm_gist_prompt(cluster));
     if (!judge_resp.ok) { return GateDecision::Failed; }
     judgment = parse_gist_judgment(judge_resp.raw_xml);
     if (!judgment.ok) { return GateDecision::Failed; }
-    if (judgment.confidence < kConsolidationConfidenceFloor) { return GateDecision::Gated; }
-    const extractor::LLMResponse verify_resp =
-        gist_llm.generate(build_entailment_prompt(cluster, judgment.summary));
-    if (!verify_resp.ok) { return GateDecision::Failed; }
-    const EntailmentVerdict verdict = parse_entailment_verdict(verify_resp.raw_xml);
-    if (!verdict.ok) { return GateDecision::Failed; }
-    if (!verdict.entailed) { return GateDecision::Gated; }
+    if (judgment.confidence < confidence_floor) { return GateDecision::Gated; }
+    // Per-member entailment (#38-C v2 false-merge safety): verify the summary against
+    // EACH member phrasing independently. A semantic cluster lists its VARIED objects,
+    // so a false-merged outlier the summary does not entail gates the whole candidate;
+    // an exact cluster (member_objects empty) checks its one shared object, as before.
+    const std::vector<std::string> objects =
+        cluster.member_objects.empty() ? std::vector<std::string>{cluster.object_value}
+                                       : cluster.member_objects;
+    for (const auto& object : objects) {
+        const extractor::LLMResponse verify_resp =
+            gist_llm.generate(build_entailment_prompt(cluster, object, judgment.summary));
+        if (!verify_resp.ok) { return GateDecision::Failed; }
+        const EntailmentVerdict verdict = parse_entailment_verdict(verify_resp.raw_xml);
+        if (!verdict.ok) { return GateDecision::Failed; }
+        if (!verdict.entailed) { return GateDecision::Gated; }
+    }
     return GateDecision::Pass;
 }
 
@@ -102,7 +131,8 @@ GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& 
 GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
                                       const std::vector<GistProposal>& proposals,
                                       std::string_view now_iso,
-                                      extractor::LLMAdapter* gist_llm)
+                                      extractor::LLMAdapter* gist_llm,
+                                      double confidence_floor)
 {
     GistWriteOutcome outcome;
     // Precondition (fail LOUD): must run in autocommit. Bus::write opens a
@@ -128,7 +158,8 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
         if (gist_llm != nullptr) {
             // Judge + gate (confidence floor + independent entailment verify) —
             // all BEFORE any write, so a rejected candidate leaves no row.
-            const GateDecision decision = gate_candidate(*gist_llm, proposal.cluster, judgment);
+            const GateDecision decision =
+                gate_candidate(*gist_llm, proposal.cluster, judgment, confidence_floor);
             if (decision == GateDecision::Failed) { ++outcome.failed; continue; }
             if (decision == GateDecision::Gated)  { ++outcome.gated;  continue; }
         }
@@ -136,11 +167,9 @@ GistWriteOutcome write_gist_proposals(persistence::SqliteAdapter& adapter,
             (gist_llm != nullptr) ? judgment.confidence : kProvisionalConfidence;
         const auto stmt =
             build_gist_statement(proposal.tenant_id, proposal.cluster, now_iso, confidence);
-        // Deterministic span key per cluster so a re-emitted statement.written
-        // event dedups on its idempotency_key.
-        const std::string span_key =
-            "consolidation:" + proposal.tenant_id + ":" +
-            proposal.cluster.predicate + ":" + proposal.cluster.canonical_object_hash;
+        // Deterministic span key per cluster so a re-emitted statement.written event
+        // dedups on its idempotency_key (entity-gist adds the subject — see helper).
+        const std::string span_key = gist_span_key(proposal.tenant_id, proposal.cluster);
         // Write through the pipeline (validation + conflict-probe + arbitration).
         // A gist has NO source engram — lineage is derived_from (stamped by the
         // writer); empty evidence_engram_id is honest (chunk-dup is a benign

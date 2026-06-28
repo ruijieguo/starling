@@ -10,6 +10,7 @@
 #include "starling/replay/gist_writer.hpp"
 #include "starling/replay/swr_sampler.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
+#include "starling/vector/vector_index.hpp"   // SqliteBlobVectorIndex for the semantic pass
 
 #include <algorithm>
 #include <chrono>
@@ -21,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -264,6 +266,46 @@ void write_ledger(sqlite3* db,
 constexpr GistThresholds kGistThresholds{/*min_distinct_holders=*/3,
                                          /*min_replay_count=*/1};
 
+// Per-tenant NORM detection over the union seed set: (1) exact (predicate, hash) people-
+// norm pass; (2) #38-C v2 embedding semantic pass (k-NN) when do_semantic; (3) #38-C v2
+// entity pass — cluster by (subject, predicate, hash) over cognizer subjects — when
+// do_entity. People-norm + semantic share a claim set; entity is an INDEPENDENT
+// aggregation (a belief may feed both a people-norm AND an entity gist — distinct
+// statements). Appends proposals (non-null = OFFLINE); returns the candidate count.
+int collect_tenant_gist_candidates(
+    persistence::Connection& conn, vector::VectorIndex& index, std::string_view tenant_id,
+    const std::vector<std::string>& seed_ids, const GistThresholds& thresholds,
+    bool do_semantic, bool do_entity, std::vector<GistProposal>* out_proposals)
+{
+    int candidates = 0;
+    const auto clusters = find_norm_gist_clusters(conn, tenant_id, seed_ids, thresholds);
+    candidates += static_cast<int>(clusters.size());
+    std::set<std::string> claimed;
+    for (const auto& cluster : clusters) {
+        claimed.insert(cluster.member_ids.begin(), cluster.member_ids.end());
+        if (out_proposals != nullptr) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    if (do_semantic) {
+        const auto semantic = find_semantic_gist_clusters(
+            conn, index, tenant_id, seed_ids, thresholds, claimed);
+        candidates += static_cast<int>(semantic.size());
+        for (const auto& cluster : semantic) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    if (do_entity) {
+        const auto entity_clusters = find_norm_gist_clusters(
+            conn, tenant_id, seed_ids, thresholds, /*by_subject=*/true);
+        candidates += static_cast<int>(entity_clusters.size());
+        for (const auto& cluster : entity_clusters) {
+            out_proposals->push_back({.tenant_id = std::string(tenant_id), .cluster = cluster});
+        }
+    }
+    return candidates;
+}
+
 // Run compress on sampled rows + emit statement.derived per row + return stats
 ReplayStats do_compress_and_emit(
     persistence::Connection& conn,
@@ -271,7 +313,8 @@ ReplayStats do_compress_and_emit(
     std::string_view mode,
     std::string_view now_iso,
     std::vector<GistProposal>* out_proposals = nullptr,
-    const std::vector<StmtRow>& extra_seed_rows = {})
+    const std::vector<StmtRow>& extra_seed_rows = {},
+    const GistThresholds& thresholds = kGistThresholds)
 {
     // Nothing to compress AND nothing to seed the NORM scan → no-op.
     if (rows.empty() && extra_seed_rows.empty()) {
@@ -307,16 +350,19 @@ ReplayStats do_compress_and_emit(
     // Detect NORM-gist candidate clusters per tenant from the union seed set.
     // Read-only. When out_proposals is provided (OFFLINE only) the clusters are
     // collected for the Phase-2 write that runs AFTER this function returns — not
-    // inline — so the write never runs in the online/subscriber transaction.
+    // inline — so the write never runs in the online/subscriber transaction. The
+    // #38-C v2 semantic pass (k-NN over statement_vectors) runs only OFFLINE and only
+    // when a similarity_threshold is configured (opt-in); zvec backend is a v2 follow.
+    vector::SqliteBlobVectorIndex semantic_index;
+    const bool do_semantic =
+        (out_proposals != nullptr) && (thresholds.similarity_threshold > 0.0);
+    // #38-C v2 entity-gist: a third OFFLINE pass (consensus about a specific entity),
+    // opt-in via entity_gist_enabled. OFF by default → no production path forms one.
+    const bool do_entity = (out_proposals != nullptr) && thresholds.entity_gist_enabled;
     for (const auto& [tenant_id, seed_ids] : seed_by_tenant) {
-        const auto clusters =
-            find_norm_gist_clusters(conn, tenant_id, seed_ids, kGistThresholds);
-        stats.gist_candidates += static_cast<int>(clusters.size());
-        if (out_proposals != nullptr) {
-            for (const auto& cluster : clusters) {
-                out_proposals->push_back({std::string(tenant_id), cluster});
-            }
-        }
+        stats.gist_candidates += collect_tenant_gist_candidates(
+            conn, semantic_index, tenant_id, seed_ids, thresholds, do_semantic, do_entity,
+            out_proposals);
     }
 
     // Emit statement.derived for each compressed stmt
@@ -611,7 +657,8 @@ ReplayStats ReplayScheduler::tick_online(persistence::Connection& conn,
 
 ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
                                        std::string_view now_iso,
-                                       extractor::LLMAdapter* gist_llm) {
+                                       extractor::LLMAdapter* gist_llm,
+                                       const GistThresholds& gist_cfg) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 30, now_iso);
 
@@ -638,8 +685,9 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
     // volatile batch is empty in the real flow (remember consolidates synchronously).
     const auto consolidated_seeds = sample_consolidated(db, 30);
     auto stats = do_compress_and_emit(conn, rows, "idle", now_iso, &proposals,
-                                      consolidated_seeds);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
+                                      consolidated_seeds, gist_cfg);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm,
+                                                   gist_cfg.min_confidence);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     stats.gist_gated += gist_outcome.gated;
@@ -648,7 +696,8 @@ ReplayStats ReplayScheduler::run_idle(persistence::Connection& conn,
 
 ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
                                         std::string_view now_iso,
-                                        extractor::LLMAdapter* gist_llm) {
+                                        extractor::LLMAdapter* gist_llm,
+                                        const GistThresholds& gist_cfg) {
     sqlite3* db = conn.raw();
     auto rows = sample_volatile(db, 200, now_iso);
 
@@ -673,8 +722,9 @@ ReplayStats ReplayScheduler::run_sleep(persistence::Connection& conn,
     // sweeps a larger consolidated sample (200) to match its volatile batch size.
     const auto consolidated_seeds = sample_consolidated(db, 200);
     auto stats = do_compress_and_emit(conn, rows, "sleep", now_iso, &proposals,
-                                      consolidated_seeds);
-    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm);
+                                      consolidated_seeds, gist_cfg);
+    const auto gist_outcome = write_gist_proposals(adapter_, proposals, now_iso, gist_llm,
+                                                   gist_cfg.min_confidence);
     stats.abstracted += gist_outcome.written;
     stats.gist_failed += gist_outcome.failed;
     stats.gist_gated += gist_outcome.gated;

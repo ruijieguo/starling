@@ -29,6 +29,18 @@ TEST(GistPrompt, BuildFillsClusterContext) {
     EXPECT_EQ(prompt.find("{predicate}"), std::string::npos);  // no leftover placeholder
 }
 
+// #38-C v2: a cluster carrying a subject routes to the ENTITY judge template — it names
+// the specific entity and frames a consensus, not a people-general norm.
+TEST(GistPrompt, EntityClusterRoutesToEntityJudge) {
+    GistCluster cluster = sample_cluster();
+    cluster.subject_kind = "cognizer";
+    cluster.subject_id = "bob";
+    const std::string prompt = build_norm_gist_prompt(cluster);
+    EXPECT_NE(prompt.find("bob"), std::string::npos);        // names the entity
+    EXPECT_NE(prompt.find("CONSENSUS"), std::string::npos);  // entity framing, not people-norm
+    EXPECT_EQ(prompt.find("{subject}"), std::string::npos);  // no leftover placeholder
+}
+
 TEST(GistPrompt, ParsesWellFormedJudgment) {
     const auto judgment =
         parse_gist_judgment(R"({"confidence": 0.82, "summary": "People generally like coffee."})");
@@ -73,7 +85,8 @@ TEST(GistPrompt, RejectsOutOfRangeConfidence) {
 // --- Phase 4: entailment verification prompt + verdict parse ---
 
 TEST(GistPrompt, BuildEntailmentFillsContext) {
-    const std::string prompt = build_entailment_prompt(sample_cluster(), "People like coffee.");
+    const std::string prompt =
+        build_entailment_prompt(sample_cluster(), "coffee", "People like coffee.");
     EXPECT_NE(prompt.find("likes"), std::string::npos);
     EXPECT_NE(prompt.find("coffee"), std::string::npos);
     EXPECT_NE(prompt.find("People like coffee."), std::string::npos);

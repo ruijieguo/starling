@@ -1,6 +1,7 @@
 #pragma once
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/replay/consolidation_ops.hpp"
+#include "starling/replay/gist_clustering.hpp"   // GistThresholds (K/T/min_confidence)
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,10 +28,14 @@ public:
     // 显式 API (无后台线程). #38-C P3: offline gist writes; pass a consolidation
     // LLM to judge each gist (confidence + summary), or null for the deterministic
     // Phase-2 path. These run in autocommit, so Bus::write's BEGIN is safe.
+    // gist_cfg overrides the K/T/confidence-floor knobs (dashboard "consolidation"
+    // config, v2 threshold surface); defaults to the canonical GistThresholds.
     ReplayStats run_idle(persistence::Connection& conn, std::string_view now_iso,
-                         extractor::LLMAdapter* gist_llm = nullptr);   // 批10-30
+                         extractor::LLMAdapter* gist_llm = nullptr,
+                         const GistThresholds& gist_cfg = GistThresholds{});   // 批10-30
     ReplayStats run_sleep(persistence::Connection& conn, std::string_view now_iso,
-                          extractor::LLMAdapter* gist_llm = nullptr);  // sweep
+                          extractor::LLMAdapter* gist_llm = nullptr,
+                          const GistThresholds& gist_cfg = GistThresholds{});  // sweep
 
     // 振荡防护: replay_count≥5 → 强制 CONSOLIDATED+PENDING_REVIEW + emit consolidation_forced.
     int enforce_oscillation_guard(persistence::Connection& conn);
