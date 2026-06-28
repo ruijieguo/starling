@@ -164,6 +164,7 @@ add_executable(starling_tests
     test_sqlite_adapter_index_preflight.cpp
     test_runtime_supervisor.cpp
     test_runtime_health_event.cpp
+    test_runtime_supervisor_transitions.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
