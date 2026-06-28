@@ -1,6 +1,7 @@
 #ifndef STARLING_GOVERNANCE_RUNTIME_SUPERVISOR_HPP
 #define STARLING_GOVERNANCE_RUNTIME_SUPERVISOR_HPP
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -16,8 +17,8 @@ namespace starling::governance {
 
 inline constexpr int kExConfig = 78;  // POSIX EX_CONFIG; was runtime.py:15
 
-enum class StartOutcome { kReady, kUnready };
-enum class WriteGateDecision { kAccept, kPreconditionFailed };
+enum class StartOutcome : std::uint8_t { kReady, kUnready };
+enum class WriteGateDecision : std::uint8_t { kAccept, kPreconditionFailed };
 
 // Supervisor-level view mirroring 05_governance.md:133-137's
 // PreflightResult{passed, missing_capabilities, warnings}. WRAPS the core
@@ -46,11 +47,11 @@ class RuntimeSupervisor {
   RuntimeSupervisor(ProfileCapability caps, bool embedded,
                     std::function<bool()> idx_present);
 
-  PreflightReport run_preflight() const;
+  [[nodiscard]] PreflightReport run_preflight() const;
   StartOutcome start();
-  RuntimeHealth health() const noexcept { return health_; }
-  int exit_code() const noexcept { return exit_code_; }
-  WriteGateDecision check_write() const noexcept;
+  [[nodiscard]] RuntimeHealth health() const noexcept { return health_; }
+  [[nodiscard]] int exit_code() const noexcept { return exit_code_; }
+  [[nodiscard]] WriteGateDecision check_write() const noexcept;
 
  private:
   ProfileCapability caps_;
