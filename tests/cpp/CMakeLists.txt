@@ -160,6 +160,7 @@ add_executable(starling_tests
     test_mentalizing_common_knowledge.cpp
     test_mental_state.cpp
     test_appraise_emotion.cpp
+    test_capability_policy.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

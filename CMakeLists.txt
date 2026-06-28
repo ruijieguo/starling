@@ -165,6 +165,7 @@ target_sources(starling_core PRIVATE
     src/prospective/trigger.cpp
     src/prospective/policy_engine.cpp
     src/retrieval/pattern_completor.cpp
+    src/governance/capability_policy.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 if(TARGET SQLite3::SQLite3)
