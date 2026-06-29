@@ -183,3 +183,60 @@ TEST(PipelineRunStore, GetMissingIdReturnsNullopt) {
     const auto res = store.get("does-not-exist-id");
     EXPECT_FALSE(res.has_value());
 }
+
+// ── 8. claim: QUEUED → RUNNING ────────────────────────────────────────────────
+
+TEST(PipelineRunStore, ClaimTransitionsQueuedToRunning) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    const PipelineRun claimed = store.claim(queued.id, "worker-A", "2026-06-29T12:00:00Z");
+
+    EXPECT_EQ(claimed.status, PipelineRunStatus::Running);
+    ASSERT_TRUE(claimed.worker_id.has_value());
+    EXPECT_EQ(*claimed.worker_id, "worker-A");
+    ASSERT_TRUE(claimed.lease_until.has_value());
+    EXPECT_EQ(*claimed.lease_until, "2026-06-29T12:00:00Z");
+}
+
+// ── 9. claim: RUNNING is still active via find_active_run ────────────────────
+
+TEST(PipelineRunStore, ClaimedRunIsStillActive) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    store.claim(queued.id, "worker-A", "2026-06-29T12:00:00Z");
+
+    const auto found = store.find_active_run(
+        PipelineKind::Replay, "tenant-1", "agg-abc", "hash-001");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->id,     queued.id);
+    EXPECT_EQ(found->status, PipelineRunStatus::Running);
+}
+
+// ── 10. claim: 2nd claim on RUNNING → throws ─────────────────────────────────
+
+TEST(PipelineRunStore, ClaimOnRunningThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    store.claim(queued.id, "worker-A", "2026-06-29T12:00:00Z");
+
+    EXPECT_THROW(
+        store.claim(queued.id, "worker-B", "2026-06-29T13:00:00Z"),
+        std::runtime_error);
+}
+
+// ── 11. claim: non-existent run_id → throws ──────────────────────────────────
+
+TEST(PipelineRunStore, ClaimNonExistentRunThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    EXPECT_THROW(
+        store.claim("no-such-run-id", "worker-A", "2026-06-29T12:00:00Z"),
+        std::runtime_error);
+}

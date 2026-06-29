@@ -279,6 +279,41 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
     return read_row_(new_id);
 }
 
+// CX-8: lease_until MUST be a canonical ISO-8601 UTC string (YYYY-MM-DDTHH:MM:SSZ).
+// reclaim (Task 3a.5) compares lease_until lexicographically; only the canonical
+// format makes that comparison valid. No runtime validation here — caller contract.
+PipelineRun PipelineRunStore::claim(
+        std::string_view run_id,
+        std::string_view worker_id,
+        std::string_view lease_until) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET status='RUNNING', worker_id=?, lease_until=?, updated_at=?"
+        " WHERE id=? AND status='QUEUED'";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::claim: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, worker_id);
+    bind_sv(hnd.get(), 2, lease_until);
+    bind_sv(hnd.get(), 3, now_ts);
+    bind_sv(hnd.get(), 4, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::claim: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::claim: run not QUEUED");
+    }
+    return read_row_(run_id);
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 PipelineRun PipelineRunStore::read_row_(std::string_view run_id) {
