@@ -247,7 +247,6 @@ enforces/observes dropped. Out-of-the-box "what's in X's mind" core capability; 
 (no existing primitive touched). Three ctests pin the bucketing contract + unknown-X-empty
 + as_of bound.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -329,7 +328,6 @@ feat(P3/SP-A): bind + wrap mental_state_of for Python
 Thin MentalState POD binding (6 attitude buckets) + mental_state_of .def (GIL released
 around the query) + Pythonic wrapper. No logic in the binding layer.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -405,7 +403,6 @@ Additive worked examples so the belief pass reliably captures non-belief attitud
 Stub-LLM round-trip pins that remember -> mental_state_of buckets them correctly.
 Belief examples untouched.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -492,7 +489,6 @@ For knowledge/desire/intention questions, inject each character's mental_state_o
 emotion / belief-only / non-literal (where it is noise) -> existing dump. Server only
 classifies + formats; no social-cognition logic (internalize principle).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -516,5 +512,5 @@ cd /Users/jaredguo-mini/develop/ToMEval && .venv/bin/python tasks/ToMBench/run.p
 - Cognizer queries are lookup-only; holder isolation reuses P3.a1.
 - TDD: failing test → red → minimal impl → green → commit, each task.
 - Build from repo root: `configure_build.py --build`; after C++/binding changes add `--python-editable` (+ `cmake --install` if the editable `_core.so` is stale); ctest via `.venv/bin/ctest`.
-- explicit-path `git add` (never `.`/`-A`); trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`.
+- explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`.
 - Do NOT push, merge to main, register the roadmap, or re-run the API-burning eval without explicit user consent. Additive → ctest 658 / pytest 649 must not regress.

@@ -11,7 +11,7 @@
 **工作目录:** repo 根 live main checkout `/Users/jaredguo-mini/develop/memory/starling`(Task 2 改 C++/binding 需重建 `_core.so`,scikit-build editable finder 指向 main 的 `python/`)。TS 插件 `integrations/openclaw/` 是 repo 内新目录(类似 dashboard/web 的 standalone npm)。
 
 **硬约束(每个 Task 适用):**
-- explicit-path `git add <file>`(绝不 `git add .`/`-A`);commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;无 `--no-verify`/`--amend`。
+- explicit-path `git add <file>`(绝不 `git add .`/`-A`);无 `--no-verify`/`--amend`。
 - 核心逻辑 C++(`src/`+`include/starling/store/`+`src/memory/`),Python/TS 仅转发,不重写语义。
 - 改 C++/binding 后必跑 `--python-editable` 重建。构建:`PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --build-dir build`(repo 根)。
 - API key / token 只在 env / `~/.starling/starling.json`(0600)/ 进程内存,绝不入日志 / 绑定 / git。
@@ -137,7 +137,6 @@ feat(P3.b2/dash): GET /api/statement/{id} 单条点读
 queries.statement_by_id(tenant-scoped read-only)+ inspect route,
 404 when absent/cross-tenant。供 OpenClaw 插件 get 能力用。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -373,7 +372,6 @@ memory_forget 绑定 + MemoryCore/engine 转发 + dashboard route。forgotten
 立即移出检索(recall SQL 仅 consolidated/archived);向量/投影清理 tick 跟进。
 供 OpenClaw 插件 remove 能力用。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -442,7 +440,6 @@ feat(P3.b2/plugin): OpenClaw memory 注册契约 + 最小插件骨架
 确定 plugins.slots.memory 注册 API(见 docker/README 契约),最小插件
 可被 OpenClaw 加载且一个能力打通。Task 4-6 据此展开七能力。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

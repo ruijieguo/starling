@@ -206,7 +206,7 @@ Confirm `SqliteMetaStore`/`StatementFilter`/`query_statements` usage from `src/t
 
 - [ ] **Step 4: Build + run** `.venv/bin/ctest --test-dir build -R DetectFauxPas --output-on-failure` → 2 PASS. If `record_explicit_told`/`PerceptionStateStore` signatures differ, fix the seeds to match (that alignment is the contract).
 - [ ] **Step 5: Regression** `.venv/bin/ctest --test-dir build -R "Mentalizing|Knowledge|Perception" --output-on-failure` → existing pass.
-- [ ] **Step 6: Commit** (explicit paths, trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`):
+- [ ] **Step 6: Commit** (explicit paths):
 ```bash
 git add include/starling/tom/mentalizing.hpp src/tom/mentalizing_fauxpas.cpp CMakeLists.txt tests/cpp/test_faux_pas.cpp tests/cpp/CMakeLists.txt
 git commit -m "feat(P3/SP-B): detect_faux_pas — ignorance-asymmetry core operator"   # full body with trailer
@@ -380,5 +380,5 @@ cd /Users/jaredguo-mini/develop/ToMEval && .venv/bin/python tasks/ToMBench/run.p
 - Core logic = C++ (`src/tom/mentalizing_fauxpas.cpp`); binding/wrapper/server = thin forwarding.
 - Do NOT modify `does_X_know`/`find_misalignment`/`what_does_X_*` bodies, `canonicalize_*`, `perceived_by_json`, or schema/migrations (reuse existing primitives/FactKey/StatementRow — no new table).
 - TDD red→green→commit; build from repo root; after C++/binding changes add `--python-editable` (+ `cmake --install` if stale); ctest via `.venv/bin/ctest`.
-- explicit-path `git add` (never `.`/`-A`); trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`.
+- explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`.
 - Do NOT push, merge, register roadmap, or re-run the API eval without explicit consent. Additive → ctest 661 / pytest 653 must not regress.

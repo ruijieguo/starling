@@ -15,7 +15,7 @@
 - Editable rebuild before pytest: add `--python-editable`
 - pytest (baseline **624**): `.venv/bin/python -m pytest <file> -v`
 
-**Hard constraints (every task):** core logic C++ (`normalize_theme` in `src/schema/`, the cognizer resolver in `src/cognizer/`); Python only binds/forwards + the eval script. **Do NOT modify `canonicalize_object`/`canonicalize_string`** (`src/schema/canonicalize.cpp`) — `normalize_theme` runs on the input *before* it; `tests/python/test_canonicalize_parity.py` must stay green. `normalize_theme` applies **only to entity/string theme object_values** (M8: not int/float/bool/datetime/cognizer/statement kinds). Cognizer resolution stores the verbatim **`canonical_name`** (NOT the UUID5 id) — single-surface name → canonical==surface (idempotent), so existing belief/ToM/B pins stay green (S5). Resolution is **best-effort** (never fail `remember`); the `CognizerHub` writes participate in the caller's open transaction (it manages none of its own). No new migration (reuses `cognizers`, migration 0008). Do not break belief / multi-order-ToM / six-state / conflict / A-episodic / B-perception pins. `perceived_by_json` immutable. TDD red→green→commit; explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`; rebuild editable after C++/binding changes.
+**Hard constraints (every task):** core logic C++ (`normalize_theme` in `src/schema/`, the cognizer resolver in `src/cognizer/`); Python only binds/forwards + the eval script. **Do NOT modify `canonicalize_object`/`canonicalize_string`** (`src/schema/canonicalize.cpp`) — `normalize_theme` runs on the input *before* it; `tests/python/test_canonicalize_parity.py` must stay green. `normalize_theme` applies **only to entity/string theme object_values** (M8: not int/float/bool/datetime/cognizer/statement kinds). Cognizer resolution stores the verbatim **`canonical_name`** (NOT the UUID5 id) — single-surface name → canonical==surface (idempotent), so existing belief/ToM/B pins stay green (S5). Resolution is **best-effort** (never fail `remember`); the `CognizerHub` writes participate in the caller's open transaction (it manages none of its own). No new migration (reuses `cognizers`, migration 0008). Do not break belief / multi-order-ToM / six-state / conflict / A-episodic / B-perception pins. `perceived_by_json` immutable. TDD red→green→commit; explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`; rebuild editable after C++/binding changes.
 
 ---
 
@@ -168,7 +168,6 @@ Lowercase + leading-article strip + conservative singularization (suffix rules
 + irregular map + non-plural stoplist). Runs before the unchanged
 canonicalize_object so grounding stops splitting on articles/plurals.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -223,7 +222,6 @@ object_value normalized before the unchanged canonicalize_object at both write
 sites (belief str-kind + episodic entity-kind) and inside what_does_X_think, so
 plural/article theme surfaces ground. canonicalize parity untouched.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

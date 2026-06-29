@@ -89,4 +89,4 @@ EpisodicExtractor failures (bad JSON, LLM error) degrade gracefully — the clai
 
 ## 8. Constraints
 
-Core logic C++ (`src/`, `include/starling/`; EpisodicEventStore in `src/store/`); Python = extractor prompt + binding/adapter forwarding only. New table via migration (commitments-pattern, single-owner store). Subscriber/handler code uses SAVEPOINT. Do not break existing belief/multi-order-ToM/six-state/conflict pins. TDD; explicit-path git add; commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; rebuild editable `_core` after C++/binding changes. Reuse the deferred `EpisodicEvent`/`event_time` design intent; do not start a parallel model.
+Core logic C++ (`src/`, `include/starling/`; EpisodicEventStore in `src/store/`); Python = extractor prompt + binding/adapter forwarding only. New table via migration (commitments-pattern, single-owner store). Subscriber/handler code uses SAVEPOINT. Do not break existing belief/multi-order-ToM/six-state/conflict pins. TDD; explicit-path git add; rebuild editable `_core` after C++/binding changes. Reuse the deferred `EpisodicEvent`/`event_time` design intent; do not start a parallel model.

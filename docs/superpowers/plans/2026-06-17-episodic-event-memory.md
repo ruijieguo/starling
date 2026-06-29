@@ -31,7 +31,7 @@
 
 **Build/test (repo root `/Users/jaredguo-mini/develop/memory/starling`):** build `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --build-dir build`; C++ test `.venv/bin/ctest --test-dir build -R <Name> --output-on-failure`; full `.venv/bin/ctest --test-dir build --output-on-failure` (baseline **610**); rebuild editable before pytest `… --python-editable`; pytest `.venv/bin/python -m pytest <file> -v` (baseline **615**).
 
-**Standing constraints (every task):** core logic C++ (Python = prompt + binding/adapter only); new table via migration (commitments-pattern, single-owner store); subscriber/handler code SAVEPOINT not BEGIN IMMEDIATE; EpisodicEventStore writes best-effort inside the write SAVEPOINT; explicit-path `git add`; trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`. Must not break the belief/multi-order-ToM/six-state/conflict pins.
+**Standing constraints (every task):** core logic C++ (Python = prompt + binding/adapter only); new table via migration (commitments-pattern, single-owner store); subscriber/handler code SAVEPOINT not BEGIN IMMEDIATE; EpisodicEventStore writes best-effort inside the write SAVEPOINT; explicit-path `git add`; no `--no-verify`/`--amend`. Must not break the belief/multi-order-ToM/six-state/conflict pins.
 
 ---
 
@@ -75,7 +75,6 @@ git add include/starling/schema/statement_enums.hpp src/schema/statement_enums.c
 git commit -F - <<'EOF'
 feat(schema): add OCCURRED modality (episodic events, sub-project A)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

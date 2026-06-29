@@ -15,7 +15,7 @@
 - Editable rebuild before pytest: add `--python-editable` to the configure_build line
 - pytest: `.venv/bin/python -m pytest <file> -v` (baseline **619**)
 
-**Hard constraints (apply to every task):** core logic C++ (Python only forwards/binds); new storage via migration (GLOB auto-register — no runner edit); reconstructor uses its own top-level `TransactionGuard` (post-pass; events already committed, so a failure can't roll them back) and `_memory_core` calls it best-effort (try/except); `perceived_by_json` immutable (never UPDATE; B uses append-only `perception_state`); **do not modify A's `episodic_events`/`EpisodicEventStore`**; reuse `KnowledgeFrontier`/`does_X_know`/`EpisodicEventStore`/the mentalizing-primitive pattern; every phase exit keeps ctest 623 / pytest 619 green (B is additive — new table + new reconstructor + new primitive + additive vocab; it must not touch A's OCCURRED-exclusion guards, the six-state machine, conflict arbitration, holder isolation, or belief/multi-order-ToM pins); TDD red→green→commit; explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`; rebuild editable `_core` after C++/binding changes.
+**Hard constraints (apply to every task):** core logic C++ (Python only forwards/binds); new storage via migration (GLOB auto-register — no runner edit); reconstructor uses its own top-level `TransactionGuard` (post-pass; events already committed, so a failure can't roll them back) and `_memory_core` calls it best-effort (try/except); `perceived_by_json` immutable (never UPDATE; B uses append-only `perception_state`); **do not modify A's `episodic_events`/`EpisodicEventStore`**; reuse `KnowledgeFrontier`/`does_X_know`/`EpisodicEventStore`/the mentalizing-primitive pattern; every phase exit keeps ctest 623 / pytest 619 green (B is additive — new table + new reconstructor + new primitive + additive vocab; it must not touch A's OCCURRED-exclusion guards, the six-state machine, conflict arbitration, holder isolation, or belief/multi-order-ToM pins); TDD red→green→commit; explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`; rebuild editable `_core` after C++/binding changes.
 
 ---
 
@@ -289,7 +289,6 @@ feat(store): perception_state table + PerceptionStateStore (sub-project B)
 Append-only per-cognizer last-known state; observed_at as_of key (A's
 event_time is nullable); idempotent on (tenant,cognizer,source_event_id).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -485,7 +484,6 @@ Scene-wide scan over all tenant OCCURRED events ordered (observed_at, seq);
 default-present cast with enter/leave override; physical witnesses learn the
 resulting location into perception_state.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -640,7 +638,6 @@ StateBelief{has_belief,state_dim,state_value,source_event_id,is_stale}; reads
 perception_state last_known vs EpisodicEventStore.latest_event_location for
 is_stale; has_belief=false when X never perceived the theme.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -712,7 +709,6 @@ feat(memory): wire PerceptionReconstructor into remember (B, best-effort)
 Deterministic stub-LLM e2e: Sally-Anne false belief end-to-end
 (what_does_X_think(Sally,ball)=basket/stale, (Anne,ball)=box).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

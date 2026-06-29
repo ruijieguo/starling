@@ -13,7 +13,7 @@
 - **Additive only**: must not regress the green baseline `ctest` 664 / `pytest` 658. `perceived_by_json` immutable; `canonicalize_*` bodies untouched (`normalize_theme` is the theme-side surface normalizer — extending its stoplist is in-scope).
 - Core logic = C++ (L1a/L1b); the eval server (L2) is a thin adapter.
 - TDD red→green→commit. Build from repo root: `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --build-dir build`; after C++ changes add `--python-editable` (+ `cmake --install build` if the editable import is stale); `ctest` via `.venv/bin/ctest --test-dir build`.
-- Explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`/push/merge.
+- Explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`/push/merge.
 - **Measurement tasks burn the deepseek API and need explicit user consent** — they are controller-run with the user present (marked CONSENT-GATED). Do NOT auto-run them inside subagent-driven execution.
 - L1b is higher risk (the perception machinery is shared by #3/SP-A/SP-B). Its task assesses blast radius FIRST; if a fix breaks the perception/grounding ctests, STOP and report — do not force it.
 
@@ -144,7 +144,6 @@ mental_state/faux_pas), definitively (no "reason step by step"); silent otherwis
 (= baseline) so non-fit questions can't be dragged. Skip belief-digest themes whose
 perception thrashes (A->B->A label/content conflation) so a wrong fact isn't injected.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -214,7 +213,6 @@ so multi-agent perception isn't fragmented into contradictory themes (the
 Knowledge-attention digest split "three toy"@tray vs "all three toy"@plate).
 Repeated leading-determiner strip; space-bounded so "allowance" is untouched.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -275,7 +273,6 @@ re-emitting the label as a later content perception (the cabbage->hat->cabbage
 thrash that made the belief-digest compute the wrong content). Location-dim
 unchanged; additive — full ctest stays green.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

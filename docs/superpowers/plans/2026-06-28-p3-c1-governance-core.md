@@ -18,7 +18,6 @@
 - **Commit gate:** full ctest + `pytest tests/python` green. Dashboard front-end (only if touched) also `npm run check` / `npx vitest run` / `npm run build` in `dashboard/web/`.
 - **git:** explicit-path `git add` only (no `git add .` / `-A`); no `--no-verify` / `--amend`.
 - **CI clang-tidy (changed-LINES) gate** (`scripts/ci_clang_tidy_diff.py`): WarningsAsErrors `*` but DISABLES `bugprone-easily-swappable-parameters`. Use designated initializers for multi-field aggregates, `contains()` over `count()!=0`, `std::ranges::any_of` over manual loops, identifiers ≥3 chars, braces around all statements, and keep new functions under cognitive-complexity 25 (extract helpers). See `[[ci-clang-tidy-changed-files-leaks-headers]]`.
-- **Commit message footer:** `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - **EX_CONFIG = 78** (POSIX `sysexits.h` `EX_CONFIG`) is the fail-closed exit code; defined once in C++ (today it lives in `runtime.py:15`).
 
 ---

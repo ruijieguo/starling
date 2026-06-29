@@ -117,7 +117,6 @@ statement_row.hpp 加 affect_json 字段;3 个 retriever SELECT 末尾追 affect
 (col 19)+ populator;pybind def_readonly 暴露。检索返回的记忆自带 affect,供
 working set 取 peak。CarriesAffectJson 通过,既有检索测试不回归。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -264,7 +263,6 @@ read 解析物化 content_json({"dimensions":{dim:{value,confidence,suspected_di
 → dim→value(跳 null/diverged);found=false 表未物化。rebuild 写路径不改。
 RebuildThenRead/MissingReturnsNotFound 通过。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1050,7 +1048,6 @@ git add docs/superpowers/plans/2026-06-01-p2-e-application-surface.md
 git commit -m "$(cat <<'EOF'
 docs(P2.e): land application surface implementation plan
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
