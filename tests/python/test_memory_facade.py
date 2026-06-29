@@ -1,7 +1,7 @@
 """P2.e Memory facade — open / remember(stub llm) / close。
 
 Drives the public application surface end-to-end offline:
-  Memory.open (preflight relax + local-store sqlite runtime)
+  Memory.open (local-store sqlite runtime)
   → remember(text): BusFacade.append_evidence(EngramInput) creates the engram,
     then _core.Extractor(conn, FakeLLMAdapter, prompt).run(...) extracts ≥1
     statement from a deterministic canned JSON array (no network).

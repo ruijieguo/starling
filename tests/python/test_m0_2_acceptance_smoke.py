@@ -13,7 +13,7 @@ the four invariants that lock down the M0.2 acceptance contract:
      consumer_checkpoint.last_delivered_sequence > 0.
   3. The schema_migrations table contains rows for versions 1 and 2 (initial
      schema + extraction_attempt_unique).
-  4. The runtime reaches READY (with the M0.2 preflight relax) and the
+  4. The runtime reaches READY and the
      SQLite db file exists on disk at the path returned by adapter.db_path.
 
 The crash-recovery / dead-letter / retry-amplification axes are exercised by
@@ -60,7 +60,7 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
     def test_m0_2_acceptance_smoke(self) -> None:
         # ── invariant 4 (precondition): runtime starts READY ─────────────────
         # Boot order matters: capabilities are read off the live adapter,
-        # then start() runs preflight (with relax) and flips state to READY.
+        # then start() runs preflight and flips state to READY.
         # If preflight fails we never reach the assertions below.
         self.runtime.start()
         self.assertEqual(self.runtime.health(), _core.RuntimeHealth.READY)

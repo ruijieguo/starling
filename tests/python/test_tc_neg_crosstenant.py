@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 
 @pytest.fixture
 def rt(tmp_path):
-    """File-backed Runtime with M0.3 preflight relaxed for tests."""
+    """File-backed Runtime for tests."""
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r

@@ -50,7 +50,7 @@ _STMT_VALID_FROM      = "2024-01-08T00:00:00Z"
 
 @pytest.fixture
 def rt(tmp_path):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests."""
+    """File-backed Runtime for tests."""
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r

@@ -38,7 +38,7 @@ from starling.testing import mark_consolidated
 
 @pytest.fixture
 def rt(tmp_path):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests.
+    """File-backed Runtime for tests.
 
     Mirrors the canonical fixture from test_tc_q3b_001.py: build a real
     SqliteAdapter-backed Runtime at a tmp path, start it.  File-backed (not
