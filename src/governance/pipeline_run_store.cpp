@@ -35,7 +35,7 @@ std::string random_id() {
 
 // Column indices for the 26-column SELECT list used in get/find_active_run/read_row_.
 // Order matches kCols below; any reordering breaks map_row_.
-enum ColIdx : int {
+enum ColIdx : std::uint8_t {
     kColId = 0,
     kColKind,
     kColAggregateId,
@@ -66,7 +66,7 @@ enum ColIdx : int {
 
 // 26-column SELECT list shared by get(), find_active_run(), and read_row_().
 // MUST stay in sync with ColIdx above.
-static constexpr const char* kCols =
+constexpr const char* kCols =
     "id,kind,aggregate_id,tenant_id,business_task_id,parent_run_id,"
     "profile_name,input_hash,idempotency_key,pipeline_name,pipeline_version,"
     "status,checkpoint_sequence,error_kind,retry_count,worker_id,lease_until,"
@@ -150,35 +150,35 @@ std::string select_active_sql() {
 // ── Public methods ────────────────────────────────────────────────────────────
 
 std::optional<PipelineRun> PipelineRunStore::get(std::string_view run_id) {
-    sqlite3* const db = conn_.raw();
+    sqlite3* const dbh = conn_.raw();
     const std::string sql = select_by_id_sql();
 
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "PipelineRunStore::get: prepare failed");
+    if (sqlite3_prepare_v2(dbh, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::get: prepare failed");
     }
     persistence::StmtHandle hnd(raw);
     bind_sv(hnd.get(), 1, run_id);
 
-    const int rc = sqlite3_step(hnd.get());
-    if (rc == SQLITE_ROW) {
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode == SQLITE_ROW) {
         return map_row_(hnd.get());
     }
-    if (rc == SQLITE_DONE) {
+    if (rcode == SQLITE_DONE) {
         return std::nullopt;
     }
-    throw make_sqlite_error(db, "PipelineRunStore::get: step failed");
+    throw make_sqlite_error(dbh, "PipelineRunStore::get: step failed");
 }
 
 std::optional<PipelineRun> PipelineRunStore::find_active_run(
         PipelineKind kind, std::string_view tenant_id,
         std::string_view aggregate_id, std::string_view input_hash) {
-    sqlite3* const db = conn_.raw();
+    sqlite3* const dbh = conn_.raw();
     const std::string sql = select_active_sql();
 
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "PipelineRunStore::find_active_run: prepare failed");
+    if (sqlite3_prepare_v2(dbh, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::find_active_run: prepare failed");
     }
     persistence::StmtHandle hnd(raw);
     bind_sv(hnd.get(), 1, kind_to_string(kind));
@@ -186,14 +186,14 @@ std::optional<PipelineRun> PipelineRunStore::find_active_run(
     bind_sv(hnd.get(), 3, aggregate_id);
     bind_sv(hnd.get(), 4, input_hash);
 
-    const int rc = sqlite3_step(hnd.get());
-    if (rc == SQLITE_ROW) {
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode == SQLITE_ROW) {
         return map_row_(hnd.get());
     }
-    if (rc == SQLITE_DONE) {
+    if (rcode == SQLITE_DONE) {
         return std::nullopt;
     }
-    throw make_sqlite_error(db, "PipelineRunStore::find_active_run: step failed");
+    throw make_sqlite_error(dbh, "PipelineRunStore::find_active_run: step failed");
 }
 
 PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
@@ -211,9 +211,9 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
         return *active;
     }
 
-    sqlite3* const db = conn_.raw();
+    sqlite3* const dbh = conn_.raw();
     const std::string new_id = random_id();
-    const std::string ts = iso8601_utc(std::chrono::system_clock::now());
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
 
     // Plain INSERT (CX-3 — NOT INSERT OR IGNORE; concurrent collision handled below).
     static constexpr const char* kInsertSql =
@@ -224,8 +224,8 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
         ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, kInsertSql, -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "PipelineRunStore::enqueue: prepare failed");
+    if (sqlite3_prepare_v2(dbh, kInsertSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::enqueue: prepare failed");
     }
     persistence::StmtHandle hnd(raw);
 
@@ -255,12 +255,12 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
     bind_sv(hnd.get(), 11, spec.pipeline_version);
     sqlite3_bind_text(hnd.get(), 12, "QUEUED", -1, SQLITE_STATIC);
     bind_sv(hnd.get(), 13, spec.step_contracts);
-    bind_sv(hnd.get(), 14, ts);
-    bind_sv(hnd.get(), 15, ts);
+    bind_sv(hnd.get(), 14, now_ts);
+    bind_sv(hnd.get(), 15, now_ts);
 
-    const int rc = sqlite3_step(hnd.get());
+    const int rcode = sqlite3_step(hnd.get());
 
-    if (rc == SQLITE_CONSTRAINT) {
+    if (rcode == SQLITE_CONSTRAINT) {
         // CX-3 backstop: a concurrent writer inserted a matching active run between
         // our fast-path check and this INSERT. Re-detect and return it.
         auto raced = find_active_run(
@@ -269,11 +269,11 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
             return *raced;
         }
         // A genuine constraint (CHECK, FK, etc.) — not a dedup race.
-        throw make_sqlite_error(db, "PipelineRunStore::enqueue: constraint violation");
+        throw make_sqlite_error(dbh, "PipelineRunStore::enqueue: constraint violation");
     }
 
-    if (rc != SQLITE_DONE) {
-        throw make_sqlite_error(db, "PipelineRunStore::enqueue: INSERT step failed");
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::enqueue: INSERT step failed");
     }
 
     return read_row_(new_id);
