@@ -45,7 +45,7 @@ public:
     // RUNNING -> DEAD_LETTERED + error_kind (does NOT touch retry_count). (Task 3a.6)
     void dead_letter(std::string_view run_id, std::string_view error_kind);
     // append {stage, ms} to stage_timings_ms (JSON1). (Task 3a.6)
-    void record_stage_timing(std::string_view run_id, std::string_view stage, long long ms);
+    void record_stage_timing(std::string_view run_id, std::string_view stage, long long duration_ms);
 
     // PARTIAL terminal rollup (NOT full invariant 7 — the 9-state enum has no NOOP,
     // so the all-NOOP rule is unrepresentable; deferred to c2). >=1 success & >=1 fail

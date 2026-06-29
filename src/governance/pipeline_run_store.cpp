@@ -479,7 +479,7 @@ PipelineRun PipelineRunStore::cancel(std::string_view run_id) {
 }
 
 void PipelineRunStore::record_stage_timing(
-        std::string_view run_id, std::string_view stage, long long ms) {
+        std::string_view run_id, std::string_view stage, long long duration_ms) {
     sqlite3* const dbh = conn_.raw();
     const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
 
@@ -497,7 +497,7 @@ void PipelineRunStore::record_stage_timing(
     }
     persistence::StmtHandle hnd(raw);
     bind_sv(hnd.get(), 1, stage);
-    sqlite3_bind_int64(hnd.get(), 2, ms);
+    sqlite3_bind_int64(hnd.get(), 2, duration_ms);
     bind_sv(hnd.get(), 3, now_ts);
     bind_sv(hnd.get(), 4, run_id);
 
