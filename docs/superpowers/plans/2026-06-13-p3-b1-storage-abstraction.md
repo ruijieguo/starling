@@ -16,7 +16,7 @@
 - C++ 测试:`./build/tests/cpp/starling_tests --gtest_filter='<Suite>.*'`;全量 `ctest --test-dir build`(基线 **567**)。
 - Python:`.venv/bin/python -m pytest tests/python -q`(基线 **595 passed / 13 skipped**)。
 - 核心语义居 C++(`src/`+`include/starling/store/`);Python 仅绑定转发(仓库 CLAUDE.md 边界规则,2026-06-11 裁定)。
-- git:explicit-path add(禁 `.`/`-A`);commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;禁 --no-verify/--amend;中文 body。
+- git:explicit-path add(禁 `.`/`-A`);禁 --no-verify/--amend;中文 body。
 - **TDD 强制**:每任务先写失败测试 → 跑红 → 最小实现 → 跑绿 → commit。
 - 不可破坏钉测:全部现有 ctest 567 + pytest 595;statement 六态机各转换语义、conflict 边去重、recalled 幂等键、C2/§16.3 冲突仲裁。
 - 每 phase 出口:phase 1–4 零行为变化 / 零 migration(0024 之后)/ 零 Python 改;phase 5 向量换装后召回质量不退。
@@ -323,7 +323,6 @@ git add include/starling/store/statement_store.hpp include/starling/store/sqlite
 git commit -F - <<'EOF'
 feat(P3.b1/phase2): StatementStore 接口 + mark_consolidated(volatile→consolidated 守卫)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

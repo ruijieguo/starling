@@ -130,7 +130,7 @@ MentalState mental_state_of(
 - 不改 `canonicalize_*`、`what_does_X_think`/`what_does_X_believe`/`does_X_know` 本体、`perceived_by_json`、schema/migration(复用现有 modality/predicate/StatementRow)。
 - cognizer 查询侧 lookup-only;holder 隔离复用 P3.a1。
 - TDD 先红后绿;构建 repo 根 `configure_build.py --build`,改 C++/绑定后 `--python-editable`(+ 必要 `cmake --install`);ctest 用 `.venv/bin/ctest`。
-- explicit-path `git add`;commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;无 `--no-verify`/`--amend`;不推/合 main/登记 roadmap(需显式 consent)。
+- explicit-path `git add`;无 `--no-verify`/`--amend`;不推/合 main/登记 roadmap(需显式 consent)。
 
 ## 11. 成功标准 / 测量 (Success Criteria)
 - **首要**:`mental_state_of` 作为开箱即用核心能力落地(ctest 钉死分组契约)+ 抽取可靠捕获 BDI+K。

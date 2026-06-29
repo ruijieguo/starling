@@ -18,7 +18,7 @@
 - Editable rebuild (after C++/binding change, before pytest sees it): add `--python-editable` to the configure_build invocation
 - pytest: `.venv/bin/python -m pytest <file> -v`
 
-**Hard constraints (every task):** core logic (the `ValidationPolicy` decision) is C++; Python is carrier + forwarding + bindings only. Default policy/config == today (parity + 644 ctest). Do NOT touch `canonicalize_*`, the reconstructor, the prompt *content*, or `validate_for_write`'s cross-tenant logic (only thread the policy). `extra_core_predicates` is additive. `perceived_by_json` immutable. API key never a param/never logged. TDD: failing test → red → minimal impl → green → commit. explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`. Do NOT push / merge / touch roadmap (accumulates with #2/#4).
+**Hard constraints (every task):** core logic (the `ValidationPolicy` decision) is C++; Python is carrier + forwarding + bindings only. Default policy/config == today (parity + 644 ctest). Do NOT touch `canonicalize_*`, the reconstructor, the prompt *content*, or `validate_for_write`'s cross-tenant logic (only thread the policy). `extra_core_predicates` is additive. `perceived_by_json` immutable. API key never a param/never logged. TDD: failing test → red → minimal impl → green → commit. explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`. Do NOT push / merge / touch roadmap (accumulates with #2/#4).
 
 ---
 
@@ -135,7 +135,6 @@ confidence_drop_floor/weak_inference_floor, all defaulting to today's constants/
 thresholds. Re-exported as starling.ExtractionConfig. Not yet consumed (Task 1.2
 wires the prompts; Task 3.1 the policy).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -268,7 +267,6 @@ carrier (default ExtractionConfig() == today). Spy tests assert the injected (an
 default) prompt strings reach the _core.memory_remember / EpisodicExtractor
 boundary. Pure Python; the prompt seam already existed in C++/bindings.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -330,7 +328,6 @@ override explicit fields). Closes the gap where reasoning models truncate at the
 4096 default and callers had to hand-build OpenAIAdapterConfig. API key still
 env-only.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -486,7 +483,6 @@ weak_inference_floor replacing the 0.3 / 0.5 literals). A default-constructed po
 reproduces today exactly (extra_core_predicates only bites non-OCCURRED belief rows;
 the OCCURRED exemption is unchanged). 6 ctests pin both the custom and default paths.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -531,7 +527,6 @@ Both Extractor ctors and memoryops::remember gain a defaulted ValidationPolicy
 forwarded to the validate call site. Defaulted everywhere → 650 ctest unchanged;
 Phase 3's e2e exercises a custom policy end-to-end.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -613,7 +608,6 @@ ValidationPolicy bound in bind_06 (before bind_13, so the py::arg default
 materializes); memory_remember gains a defaulted policy kwarg. Default-constructed
 policy keeps every existing caller at today's behaviour.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -702,7 +696,6 @@ remember() now passes policy=_build_policy(self._extraction) into memory_remembe
 default ExtractionConfig() yields a default ValidationPolicy (==today). Spy tests
 pin both the custom and default policy.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -749,7 +742,6 @@ Drives the real belief write path with a stub LLM emitting a custom-predicate
 statement: with ExtractionConfig(extra_core_predicates=("annotates",)) it lands
 approved; without it, REVIEW_REQUESTED. Closes the config→policy→validator loop.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

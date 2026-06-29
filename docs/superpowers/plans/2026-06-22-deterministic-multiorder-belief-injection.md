@@ -162,7 +162,6 @@ stative becomes a "find" event with participants=[] and a present actor; the rec
 present-cast witness logic (unchanged) assigns the initial location to everyone present.
 Stub-LLM round-trip pins it: the early leaver keeps the initial location, the mover updates.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -432,7 +431,6 @@ last_known. Additive — what_does_X_think is untouched; order-1/2 tests stay gr
 Six ctests cover order-1 parity, order-2 equivalence, order-3 early-leave (initial)
 and full-presence (moved), order-4, and empty/unknown -> has_belief=false.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -525,7 +523,6 @@ Thin pybind .def mirroring what_does_X_think (chain as list[str] via pybind11/st
 plus a Pythonic wrapper in starling.tom.primitives (as_of defaults to now). No logic
 in the binding layer.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -588,7 +585,6 @@ End-to-end lock over Tasks 1-3: a scripted 3-cognizer story (bare initial stativ
 early leaver + move) feeds remember, and what_does_X_think_chain(["Aiden","Avery",
 "Carter"], "cabbage") returns the initial blue_bathtub (Carter left before the move).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -629,7 +625,6 @@ AND HiToM, and others) — the tombench name was inaccurate once HiToM became th
 benchmark. Pure rename + docstring/run-command update; cfg files reference only the
 port, so nothing else changes.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -730,7 +725,6 @@ theme from "Where does A think B thinks … the THEME is?". Returns None for ord
 ("really think" / plain "think") and non-HiToM questions so the caller falls back to
 the existing dump. Exact pattern pinned by 5 unit tests.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -839,7 +833,6 @@ deepseek can override on explicit deception. has_belief=false / non-chain questi
 back to the existing dump. This lets deepseek READ order 3-4 instead of reasoning it
 (the 32768-token exhaustion that drove the 39%/68% fallback).
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -864,5 +857,5 @@ cd /Users/jaredguo-mini/develop/ToMEval && .venv/bin/python tasks/HiToM/run.py -
 - The chain query is additive → order-1/2 and all existing ToM / B-perception / A-episodic / six-state / conflict / grounding ctests stay green.
 - TDD: failing test → red → minimal implementation → green → commit, each task.
 - Build from repo root: `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --build-dir build`; after C++/binding changes add `--python-editable` (and `cmake --install` if the editable `_core.so` is stale); ctest via `.venv/bin/ctest`.
-- Explicit-path `git add` (never `.` / `-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify` / `--amend`.
+- Explicit-path `git add` (never `.` / `-A`); no `--no-verify` / `--amend`.
 - Do NOT push, merge to main, register the roadmap, or re-run the API-burning eval without explicit user consent.

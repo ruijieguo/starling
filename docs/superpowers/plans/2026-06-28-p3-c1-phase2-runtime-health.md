@@ -16,7 +16,7 @@
 - Canonical build: `python scripts/configure_build.py --build --test`; after C++/binding/migration change re-run with `--python-editable`. Dashboard front-end (touched here): `npm run check` / `npx vitest run` / `npm run build` in `dashboard/web/`.
 - Commit gate: full ctest + `pytest tests/python` green; front-end checks green.
 - CI clang-tidy (changed-LINES) gate, `WarningsAsErrors '*'`, checks incl. `modernize-*`/`performance-*`/`readability-*`/`cppcoreguidelines-*`/`bugprone-*`, header filter `include/starling/.*`: designated initializers, `contains()` over `count()!=0`, `std::ranges::*`, identifiers ≥3 chars, braces on all statements, `[[nodiscard]]` on const value-returning accessors, **sized enum bases (`: std::uint8_t`) on NEW enums**, cognitive-complexity < 25. (The standalone clang-tidy CLI is un-runnable locally — write clean by construction; CI is the gate.)
-- git: explicit-path `git add`; no `--no-verify`/`--amend`. Commit footer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- git: explicit-path `git add`; no `--no-verify`/`--amend`.
 - **`TC-NEW-PREFLIGHT` [CRITICAL] must stay green** — it asserts the `runtime.health_changed` event dict shape (`{event, state, missing_capabilities}`) on UNREADY/READY. Any change to event sourcing must preserve that exact Python-facing shape.
 
 ---
