@@ -16,8 +16,7 @@ defs).
 
 The CI static scan (scripts/ci_static_scan.py) bans starling.testing imports
 from prod entrypoints — this test lives under tests/python/ which is in the
-allowed-roots list, so the imports of `mark_consolidated` and
-`relax_preflight_for_m0_3` are intentional and safe.
+allowed-roots list, so the import of `mark_consolidated` is intentional and safe.
 """
 from __future__ import annotations
 
@@ -26,23 +25,20 @@ import sqlite3
 import pytest
 
 from starling import _core, runtime
-from starling.testing import mark_consolidated, relax_preflight_for_m0_3
+from starling.testing import mark_consolidated
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests.
+def rt(tmp_path):
+    """File-backed Runtime for tests.
 
     Mirrors the fixture pattern established in test_m0_4_acceptance and the
-    M0.5 mark_consolidated suite: relax preflight, build a real
-    SqliteAdapter-backed Runtime at a tmp path, start it, and restore the
-    preflight requirement at teardown.
+    M0.5 mark_consolidated suite: build a real SqliteAdapter-backed Runtime
+    at a tmp path and start it.
     """
-    orig = relax_preflight_for_m0_3()
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram(rt, engram_id: str, content_hash: str) -> None:

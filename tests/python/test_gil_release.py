@@ -61,7 +61,6 @@ def test_memory_remember_releases_gil(tmp_path):
 def test_extractor_run_releases_gil(tmp_path):
     # 直调路径:_core.Extractor.run(bind_06 守护,eval 脚本等使用)。
     from starling import runtime as rt
-    rt.relax_preflight_for_embedded()
     r = rt._build_local_store_sqlite_runtime(tmp_path / "gil2.db")
     r.start()
     # 先经正常路径建好 engram(零延迟),再用带延迟的 run 复抽(noop 路径同样

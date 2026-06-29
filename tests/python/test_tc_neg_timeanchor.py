@@ -42,7 +42,6 @@ from starling.evidence import (
     PrivacyClass,
     for_user_input,
 )
-from starling.testing import relax_preflight_for_m0_3
 
 # Observed-at timestamps used in both tests (historical — well over 365 days ago).
 _ENGRAM_OBSERVED_AT   = "2024-01-15T10:00:00Z"
@@ -50,13 +49,11 @@ _STMT_VALID_FROM      = "2024-01-08T00:00:00Z"
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests."""
-    orig = relax_preflight_for_m0_3()
+def rt(tmp_path):
+    """File-backed Runtime for tests."""
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram_via_bus(rt, created_at: datetime, source_item_id: str) -> str:

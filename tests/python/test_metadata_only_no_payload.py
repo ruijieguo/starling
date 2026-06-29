@@ -23,16 +23,13 @@ from starling.evidence import (
     PrivacyClass,
     EngramRetentionMode,
 )
-from starling.testing import relax_preflight_for_m0_3
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    orig = relax_preflight_for_m0_3()
+def rt(tmp_path):
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def test_tool_observation_metadata_only_no_payload_inline(rt):

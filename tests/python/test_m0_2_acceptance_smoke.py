@@ -13,7 +13,7 @@ the four invariants that lock down the M0.2 acceptance contract:
      consumer_checkpoint.last_delivered_sequence > 0.
   3. The schema_migrations table contains rows for versions 1 and 2 (initial
      schema + extraction_attempt_unique).
-  4. The runtime reaches READY (with the M0.2 preflight relax) and the
+  4. The runtime reaches READY and the
      SQLite db file exists on disk at the path returned by adapter.db_path.
 
 The crash-recovery / dead-letter / retry-amplification axes are exercised by
@@ -33,9 +33,6 @@ from starling.bus.outbox_dispatcher_py import (
     DispatchOptions,
     OutboxDispatcherPy,
 )
-from starling.testing import relax_preflight_for_m0_2  # NOLINT(starling-testing-isolation)
-
-
 CONSUMER_ID = "default"
 SMOKE_IDEMPOTENCY_KEY = "k-smoke-acceptance"
 
@@ -44,12 +41,6 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
     """End-to-end happy-path smoke for the M0.2 SQLite + outbox stack."""
 
     def setUp(self) -> None:
-        # M0.2 preflight relax: drop engram_per_record_key (M0.3 lands KMS) and
-        # testing_helper_marker (only the test target loads the marker). The
-        # original tuple is restored in tearDown so other tests in the same
-        # process see the production-shaped LOCAL_STORE_REQUIRED.
-        self._original_required = relax_preflight_for_m0_2()
-
         # TemporaryDirectory rather than tmp_path because we use unittest, and
         # we want explicit cleanup ordering: drop the runtime/adapter handle
         # first (closes the sqlite3* connection), then remove the directory.
@@ -60,12 +51,8 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         # Drop the runtime (and the adapter it owns) before the tmpdir is
-        # cleaned, so the SQLite handle releases the WAL files. Restore the
-        # production capability tuple — relax_preflight_for_m0_2 mutates the
-        # module-level global, so failure to restore would leak into other
-        # tests in this process.
+        # cleaned, so the SQLite handle releases the WAL files.
         self.runtime = None  # type: ignore[assignment]
-        runtime.LOCAL_STORE_REQUIRED = self._original_required
         self._tmpdir.cleanup()
 
     # ------------------------------------------------------------------ test
@@ -73,7 +60,7 @@ class M02AcceptanceSmokeTest(unittest.TestCase):
     def test_m0_2_acceptance_smoke(self) -> None:
         # ── invariant 4 (precondition): runtime starts READY ─────────────────
         # Boot order matters: capabilities are read off the live adapter,
-        # then start() runs preflight (with relax) and flips state to READY.
+        # then start() runs preflight and flips state to READY.
         # If preflight fails we never reach the assertions below.
         self.runtime.start()
         self.assertEqual(self.runtime.health(), _core.RuntimeHealth.READY)

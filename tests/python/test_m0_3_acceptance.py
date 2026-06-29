@@ -9,17 +9,14 @@ from datetime import datetime, timezone
 import pytest
 
 from starling import runtime as rt_mod
-from starling import testing as starling_testing  # NOLINT(starling-testing-isolation)
 from starling._core import PrivacyClass, EngramRetentionMode
 from starling.evidence import for_user_input, for_system_internal
 
 
 @pytest.fixture
 def runtime(tmp_path):
-    original = starling_testing.relax_preflight_for_m0_3()
     rt = rt_mod._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     yield rt
-    rt_mod.LOCAL_STORE_REQUIRED = original
 
 
 def _user_input(idx: int):
