@@ -240,3 +240,153 @@ TEST(PipelineRunStore, ClaimNonExistentRunThrows) {
         store.claim("no-such-run-id", "worker-A", "2026-06-29T12:00:00Z"),
         std::runtime_error);
 }
+
+// ── Helper: enqueue + claim → RUNNING run ────────────────────────────────────
+
+namespace {
+
+PipelineRun enqueue_and_claim(
+        PipelineRunStore& store,
+        std::string_view worker_id = "worker-A",
+        std::string_view lease_until = "2099-01-01T00:00:00Z") {
+    const PipelineRun queued = store.enqueue(make_spec());
+    return store.claim(queued.id, worker_id, lease_until);
+}
+
+}  // namespace
+
+// ── 12. confirm: RUNNING → Completed + watermark; no longer active ────────────
+
+TEST(PipelineRunStore, ConfirmCompletedSetsStatusAndWatermark) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    const std::string wm = R"({"last_sqlite_id":42})";
+    const PipelineRun done = store.confirm(running.id, wm, PipelineRunStatus::Completed);
+
+    EXPECT_EQ(done.status,   PipelineRunStatus::Completed);
+    EXPECT_EQ(done.watermark, wm);
+
+    // Terminal run is no longer active.
+    const auto found = store.find_active_run(
+        PipelineKind::Replay, "tenant-1", "agg-abc", "hash-001");
+    EXPECT_FALSE(found.has_value());
+}
+
+// ── 13. confirm: PartialSuccess and DegradedCompleted also succeed ────────────
+
+TEST(PipelineRunStore, ConfirmPartialSuccessSucceeds) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    const PipelineRun done = store.confirm(running.id, "{}", PipelineRunStatus::PartialSuccess);
+    EXPECT_EQ(done.status, PipelineRunStatus::PartialSuccess);
+}
+
+TEST(PipelineRunStore, ConfirmDegradedCompletedSucceeds) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    const PipelineRun done = store.confirm(running.id, "{}", PipelineRunStatus::DegradedCompleted);
+    EXPECT_EQ(done.status, PipelineRunStatus::DegradedCompleted);
+}
+
+// ── 14. confirm: illegal terminal → throws (before DB) ───────────────────────
+
+TEST(PipelineRunStore, ConfirmIllegalTerminalThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    EXPECT_THROW(
+        store.confirm(running.id, "{}", PipelineRunStatus::Queued),
+        std::invalid_argument);
+}
+
+// ── 15. confirm: non-RUNNING (QUEUED) run → throws ───────────────────────────
+
+TEST(PipelineRunStore, ConfirmOnQueuedThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    EXPECT_THROW(
+        store.confirm(queued.id, "{}", PipelineRunStatus::Completed),
+        std::runtime_error);
+}
+
+// ── 16. reclaim: expired lease → reclaimed, retry_count == 1 ─────────────────
+
+TEST(PipelineRunStore, ReclaimExpiredLeaseSucceeds) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    // claim with an already-expired lease (year 2000 is safely in the past).
+    const PipelineRun queued = store.enqueue(make_spec());
+    store.claim(queued.id, "worker-A", "2000-01-01T00:00:00Z");
+
+    const PipelineRun reclaimed = store.reclaim(queued.id, "worker-B", "2030-01-01T00:00:00Z");
+
+    EXPECT_EQ(reclaimed.status,      PipelineRunStatus::Running);
+    ASSERT_TRUE(reclaimed.worker_id.has_value());
+    EXPECT_EQ(*reclaimed.worker_id,  "worker-B");
+    EXPECT_EQ(reclaimed.retry_count, 1LL);
+}
+
+// ── 17. reclaim: valid lease → throws ────────────────────────────────────────
+
+TEST(PipelineRunStore, ReclaimValidLeaseThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    // claim with a lease far in the future (year 2099).
+    const PipelineRun queued = store.enqueue(make_spec());
+    store.claim(queued.id, "worker-A", "2099-01-01T00:00:00Z");
+
+    EXPECT_THROW(
+        store.reclaim(queued.id, "worker-B", "2099-06-01T00:00:00Z"),
+        std::runtime_error);
+}
+
+// ── 18. reclaim: non-RUNNING (QUEUED) run → throws ───────────────────────────
+
+TEST(PipelineRunStore, ReclaimOnQueuedThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    EXPECT_THROW(
+        store.reclaim(queued.id, "worker-B", "2030-01-01T00:00:00Z"),
+        std::runtime_error);
+}
+
+// ── 19. record_checkpoint: sets seq + watermark, status still Running ─────────
+
+TEST(PipelineRunStore, RecordCheckpointSetsSeqAndWatermark) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    const std::string wm = R"({"last_sqlite_id":7})";
+    const PipelineRun after = store.record_checkpoint(running.id, 7LL, wm);
+
+    ASSERT_TRUE(after.checkpoint_sequence.has_value());
+    EXPECT_EQ(*after.checkpoint_sequence, 7LL);
+    EXPECT_EQ(after.watermark, wm);
+    EXPECT_EQ(after.status,    PipelineRunStatus::Running);
+}
+
+// ── 20. record_checkpoint: non-RUNNING (QUEUED) run → throws ─────────────────
+
+TEST(PipelineRunStore, RecordCheckpointOnQueuedThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    EXPECT_THROW(
+        store.record_checkpoint(queued.id, 1LL, "{}"),
+        std::runtime_error);
+}

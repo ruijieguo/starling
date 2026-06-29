@@ -314,6 +314,113 @@ PipelineRun PipelineRunStore::claim(
     return read_row_(run_id);
 }
 
+PipelineRun PipelineRunStore::confirm(
+        std::string_view run_id,
+        std::string_view checkpoint_json,
+        PipelineRunStatus terminal) {
+    // Guard: terminal must be one of the three valid terminal states.
+    if (terminal != PipelineRunStatus::Completed &&
+        terminal != PipelineRunStatus::PartialSuccess &&
+        terminal != PipelineRunStatus::DegradedCompleted) {
+        throw std::invalid_argument(
+            "confirm: terminal must be Completed/PartialSuccess/DegradedCompleted");
+    }
+
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET status=?, watermark=?, updated_at=?"
+        " WHERE id=? AND status='RUNNING'";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::confirm: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, status_to_string(terminal));
+    bind_sv(hnd.get(), 2, checkpoint_json);
+    bind_sv(hnd.get(), 3, now_ts);
+    bind_sv(hnd.get(), 4, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::confirm: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::confirm: run not RUNNING");
+    }
+    return read_row_(run_id);
+}
+
+PipelineRun PipelineRunStore::reclaim(
+        std::string_view run_id,
+        std::string_view worker_id,
+        std::string_view lease_until) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    // CX-9: reclaim is the ONLY method that increments retry_count.
+    // CX-8: lease_until compared lexicographically (both canonical ISO-8601 UTC).
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET worker_id=?, lease_until=?, retry_count=retry_count+1, updated_at=?"
+        " WHERE id=? AND status='RUNNING' AND lease_until < ?";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::reclaim: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, worker_id);
+    bind_sv(hnd.get(), 2, lease_until);
+    bind_sv(hnd.get(), 3, now_ts);
+    bind_sv(hnd.get(), 4, run_id);
+    bind_sv(hnd.get(), 5, now_ts);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::reclaim: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::reclaim: lease not expired or run not RUNNING");
+    }
+    return read_row_(run_id);
+}
+
+PipelineRun PipelineRunStore::record_checkpoint(
+        std::string_view run_id,
+        long long checkpoint_sequence,
+        std::string_view watermark_json) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET checkpoint_sequence=?, watermark=?, updated_at=?"
+        " WHERE id=? AND status='RUNNING'";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_checkpoint: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    sqlite3_bind_int64(hnd.get(), 1, checkpoint_sequence);
+    bind_sv(hnd.get(), 2, watermark_json);
+    bind_sv(hnd.get(), 3, now_ts);
+    bind_sv(hnd.get(), 4, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_checkpoint: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_checkpoint: run not RUNNING");
+    }
+    return read_row_(run_id);
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 PipelineRun PipelineRunStore::read_row_(std::string_view run_id) {
