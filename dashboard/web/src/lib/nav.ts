@@ -59,7 +59,8 @@ export const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{ href: '/vitals', label: '生命体征', icon: 'activity' },
 			{ href: '/queues', label: '队列', icon: 'list' },
-			{ href: '/eval', label: '评测', icon: 'bar-chart' }
+			{ href: '/eval', label: '评测', icon: 'bar-chart' },
+			{ href: '/runtime-health', label: '运行时健康', icon: 'zap' }
 		]
 	},
 	{
