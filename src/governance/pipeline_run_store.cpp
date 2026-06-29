@@ -421,6 +421,124 @@ PipelineRun PipelineRunStore::record_checkpoint(
     return read_row_(run_id);
 }
 
+void PipelineRunStore::dead_letter(
+        std::string_view run_id, std::string_view error_kind) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    // CX-4: RUNNING-guarded; CX-9: does NOT touch retry_count.
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET status='DEAD_LETTERED', error_kind=?, updated_at=?"
+        " WHERE id=? AND status='RUNNING'";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::dead_letter: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, error_kind);
+    bind_sv(hnd.get(), 2, now_ts);
+    bind_sv(hnd.get(), 3, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::dead_letter: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::dead_letter: run not RUNNING");
+    }
+}
+
+PipelineRun PipelineRunStore::cancel(std::string_view run_id) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    // CX-5/6/7: cooperative cancel from QUEUED or RUNNING.
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET status='CANCELLED', updated_at=?"
+        " WHERE id=? AND status IN ('QUEUED','RUNNING')";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::cancel: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, now_ts);
+    bind_sv(hnd.get(), 2, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::cancel: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::cancel: run not QUEUED or RUNNING");
+    }
+    return read_row_(run_id);
+}
+
+void PipelineRunStore::record_stage_timing(
+        std::string_view run_id, std::string_view stage, long long ms) {
+    sqlite3* const dbh = conn_.raw();
+    const std::string now_ts = iso8601_utc(std::chrono::system_clock::now());
+
+    // D5 + JSON1: append {stage, ms} to the stage_timings_ms JSON array.
+    // '$[#]' appends to the end of the array (JSON1 array-append idiom).
+    static constexpr const char* kUpdateSql =
+        "UPDATE governance_pipeline_run"
+        " SET stage_timings_ms = json_insert(stage_timings_ms, '$[#]',"
+        " json_object('stage', ?, 'ms', ?)), updated_at=?"
+        " WHERE id=?";
+
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, kUpdateSql, -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_stage_timing: prepare failed");
+    }
+    persistence::StmtHandle hnd(raw);
+    bind_sv(hnd.get(), 1, stage);
+    sqlite3_bind_int64(hnd.get(), 2, ms);
+    bind_sv(hnd.get(), 3, now_ts);
+    bind_sv(hnd.get(), 4, run_id);
+
+    const int rcode = sqlite3_step(hnd.get());
+    if (rcode != SQLITE_DONE) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_stage_timing: step failed");
+    }
+    if (sqlite3_changes(dbh) == 0) {
+        throw make_sqlite_error(dbh, "PipelineRunStore::record_stage_timing: run not found");
+    }
+}
+
+// D3 / CX-14: PARTIAL terminal rollup. NOT full invariant 7 — the 9-state enum
+// has no NOOP, so the all-NOOP→NOOP rule is unrepresentable; deferred to c2.
+// success={Completed,DegradedCompleted}, failure={Failed,DeadLettered,Cancelled}.
+// >=1 success && >=1 failure → PartialSuccess; failures>0 → Failed; else → Completed
+// (covers all-success AND the vacuously-true empty span).
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) — API is static
+PipelineRunStatus PipelineRunStore::partial_terminal_rollup(
+        std::span<const PipelineRunStatus> item_statuses) {
+    int successes = 0;
+    int failures  = 0;
+    for (const PipelineRunStatus status : item_statuses) {
+        if (status == PipelineRunStatus::Completed ||
+            status == PipelineRunStatus::DegradedCompleted) {
+            ++successes;
+        } else if (status == PipelineRunStatus::Failed ||
+                   status == PipelineRunStatus::DeadLettered ||
+                   status == PipelineRunStatus::Cancelled) {
+            ++failures;
+        }
+    }
+    if (successes > 0 && failures > 0) {
+        return PipelineRunStatus::PartialSuccess;
+    }
+    if (failures > 0) {
+        return PipelineRunStatus::Failed;
+    }
+    return PipelineRunStatus::Completed;
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 PipelineRun PipelineRunStore::read_row_(std::string_view run_id) {

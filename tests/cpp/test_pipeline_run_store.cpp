@@ -1,13 +1,15 @@
-// Task 3a.3: PipelineRunStore — enqueue / find_active_run / get tests.
-// Tests the first three implemented methods: enqueue, find_active_run, get.
-// The remaining methods (claim/reclaim/confirm/etc.) are declared but unimplemented;
-// they are NOT called here.
+// Task 3a.3–3a.6: PipelineRunStore — full method coverage.
+// Covers enqueue/find_active_run/get (3a.3), claim/reclaim/confirm/record_checkpoint
+// (3a.4–3a.5), and dead_letter/cancel/record_stage_timing/partial_terminal_rollup (3a.6).
 #include <gtest/gtest.h>
 
 #include "starling/governance/pipeline_run_store.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/migration_runner.hpp"
 
+#include <array>
+#include <span>
+#include <sqlite3.h>
 #include <stdexcept>
 #include <string>
 
@@ -389,4 +391,240 @@ TEST(PipelineRunStore, RecordCheckpointOnQueuedThrows) {
     EXPECT_THROW(
         store.record_checkpoint(queued.id, 1LL, "{}"),
         std::runtime_error);
+}
+
+// ── Helper: run a scalar SQL expression over a text parameter, return int ─────
+
+namespace {
+
+// Evaluates a SQLite expression of the form "SELECT <expr>(?)" where the
+// single bind parameter is the given text. Returns the integer result.
+// Used to assert JSON structure without a JSON library in tests.
+int eval_json_int(sqlite3* dbh, const char* expr, const std::string& json_text) {
+    const std::string sql = std::string("SELECT ") + expr + "(?)";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("eval_json_int: prepare failed");
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    sqlite3_bind_text(raw, 1, json_text.c_str(), -1, SQLITE_TRANSIENT);
+    const int rcode = sqlite3_step(raw);
+    const int result = (rcode == SQLITE_ROW) ? sqlite3_column_int(raw, 0) : -1;
+    sqlite3_finalize(raw);
+    return result;
+}
+
+// Evaluates "SELECT json_extract(?, <path>)" and returns the text result.
+std::string eval_json_extract_str(sqlite3* dbh,
+                                   const std::string& json_text,
+                                   const char* path) {
+    const std::string sql = std::string("SELECT json_extract(?, ?)");
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("eval_json_extract_str: prepare failed");
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    sqlite3_bind_text(raw, 1, json_text.c_str(), -1, SQLITE_TRANSIENT);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    sqlite3_bind_text(raw, 2, path, -1, SQLITE_STATIC);
+    const int rcode = sqlite3_step(raw);
+    std::string result;
+    if (rcode == SQLITE_ROW && sqlite3_column_type(raw, 0) != SQLITE_NULL) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto* txt = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
+        if (txt != nullptr) {
+            result = txt;
+        }
+    }
+    sqlite3_finalize(raw);
+    return result;
+}
+
+// Evaluates "SELECT json_extract(?, <path>)" and returns the int64 result.
+long long eval_json_extract_int(sqlite3* dbh,
+                                 const std::string& json_text,
+                                 const char* path) {
+    const std::string sql = std::string("SELECT json_extract(?, ?)");
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("eval_json_extract_int: prepare failed");
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    sqlite3_bind_text(raw, 1, json_text.c_str(), -1, SQLITE_TRANSIENT);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    sqlite3_bind_text(raw, 2, path, -1, SQLITE_STATIC);
+    const int rcode = sqlite3_step(raw);
+    const long long result = (rcode == SQLITE_ROW) ? sqlite3_column_int64(raw, 0) : -1LL;
+    sqlite3_finalize(raw);
+    return result;
+}
+
+}  // namespace
+
+// ── 21. dead_letter: RUNNING → DEAD_LETTERED; error_kind set; retry_count unchanged
+
+TEST(PipelineRunStore, DeadLetterSetsStatusAndErrorKind) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    store.dead_letter(running.id, "max_retries_exceeded");
+
+    const auto after = store.get(running.id);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->status, PipelineRunStatus::DeadLettered);
+    ASSERT_TRUE(after->error_kind.has_value());
+    EXPECT_EQ(*after->error_kind, "max_retries_exceeded");
+    // CX-9: retry_count must not be touched by dead_letter.
+    EXPECT_EQ(after->retry_count, 0LL);
+
+    // No longer active.
+    const auto active = store.find_active_run(
+        PipelineKind::Replay, "tenant-1", "agg-abc", "hash-001");
+    EXPECT_FALSE(active.has_value());
+}
+
+// ── 22. dead_letter: QUEUED (not RUNNING) → throws ──────────────────────────
+
+TEST(PipelineRunStore, DeadLetterOnQueuedThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    EXPECT_THROW(
+        store.dead_letter(queued.id, "some_error"),
+        std::runtime_error);
+}
+
+// ── 23. dead_letter: missing run_id → throws ─────────────────────────────────
+
+TEST(PipelineRunStore, DeadLetterMissingRunThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    EXPECT_THROW(
+        store.dead_letter("no-such-run-id", "some_error"),
+        std::runtime_error);
+}
+
+// ── 24. cancel: QUEUED → CANCELLED; no longer active ────────────────────────
+
+TEST(PipelineRunStore, CancelFromQueuedSucceeds) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun queued = store.enqueue(make_spec());
+    const PipelineRun cancelled = store.cancel(queued.id);
+
+    EXPECT_EQ(cancelled.status, PipelineRunStatus::Cancelled);
+
+    const auto active = store.find_active_run(
+        PipelineKind::Replay, "tenant-1", "agg-abc", "hash-001");
+    EXPECT_FALSE(active.has_value());
+}
+
+// ── 25. cancel: RUNNING → CANCELLED ─────────────────────────────────────────
+
+TEST(PipelineRunStore, CancelFromRunningSucceeds) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    const PipelineRun cancelled = store.cancel(running.id);
+
+    EXPECT_EQ(cancelled.status, PipelineRunStatus::Cancelled);
+}
+
+// ── 26. cancel: already-terminal run → throws ───────────────────────────────
+
+TEST(PipelineRunStore, CancelOnTerminalThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    store.confirm(running.id, "{}", PipelineRunStatus::Completed);
+
+    EXPECT_THROW(store.cancel(running.id), std::runtime_error);
+}
+
+// ── 27. cancel: missing run_id → throws ─────────────────────────────────────
+
+TEST(PipelineRunStore, CancelMissingRunThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    EXPECT_THROW(store.cancel("no-such-run-id"), std::runtime_error);
+}
+
+// ── 28. record_stage_timing: two entries; parsed array length + ordered values
+
+TEST(PipelineRunStore, RecordStageTimingAppendsEntries) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    const PipelineRun running = enqueue_and_claim(store);
+    store.record_stage_timing(running.id, "embed",  12LL);
+    store.record_stage_timing(running.id, "replay", 30LL);
+
+    const auto after = store.get(running.id);
+    ASSERT_TRUE(after.has_value());
+    const std::string& timings = after->stage_timings_ms;
+
+    // Assert structure via SQLite JSON1 functions — not substring matching.
+    EXPECT_EQ(eval_json_int(conn.raw(), "json_array_length", timings), 2);
+    EXPECT_EQ(eval_json_extract_str(conn.raw(), timings, "$[0].stage"), "embed");
+    EXPECT_EQ(eval_json_extract_int(conn.raw(), timings, "$[0].ms"),    12LL);
+    EXPECT_EQ(eval_json_extract_str(conn.raw(), timings, "$[1].stage"), "replay");
+    EXPECT_EQ(eval_json_extract_int(conn.raw(), timings, "$[1].ms"),    30LL);
+}
+
+// ── 29. record_stage_timing: missing run_id → throws ────────────────────────
+
+TEST(PipelineRunStore, RecordStageTimingMissingRunThrows) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+
+    EXPECT_THROW(
+        store.record_stage_timing("no-such-run-id", "embed", 5LL),
+        std::runtime_error);
+}
+
+// ── 30. partial_terminal_rollup: four cases ──────────────────────────────────
+
+TEST(PipelineRunStore, PartialTerminalRollupMixed) {
+    using starling::governance::PipelineRunStatus;
+    const std::array<PipelineRunStatus, 2> items = {
+        PipelineRunStatus::Completed, PipelineRunStatus::Failed
+    };
+    EXPECT_EQ(
+        PipelineRunStore::partial_terminal_rollup(items),
+        PipelineRunStatus::PartialSuccess);
+}
+
+TEST(PipelineRunStore, PartialTerminalRollupAllSuccess) {
+    using starling::governance::PipelineRunStatus;
+    const std::array<PipelineRunStatus, 2> items = {
+        PipelineRunStatus::Completed, PipelineRunStatus::DegradedCompleted
+    };
+    EXPECT_EQ(
+        PipelineRunStore::partial_terminal_rollup(items),
+        PipelineRunStatus::Completed);
+}
+
+TEST(PipelineRunStore, PartialTerminalRollupAllFailure) {
+    using starling::governance::PipelineRunStatus;
+    const std::array<PipelineRunStatus, 2> items = {
+        PipelineRunStatus::Failed, PipelineRunStatus::DeadLettered
+    };
+    EXPECT_EQ(
+        PipelineRunStore::partial_terminal_rollup(items),
+        PipelineRunStatus::Failed);
+}
+
+TEST(PipelineRunStore, PartialTerminalRollupEmptyIsCompleted) {
+    using starling::governance::PipelineRunStatus;
+    const std::span<const PipelineRunStatus> empty{};
+    EXPECT_EQ(
+        PipelineRunStore::partial_terminal_rollup(empty),
+        PipelineRunStatus::Completed);
 }
