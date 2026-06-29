@@ -11,8 +11,6 @@ def _seed(db_path: str):
     """Build the schema via the runtime, then raw-seed a few rows, commit+close."""
     from pathlib import Path
     from starling import runtime as rt
-    from starling.testing import relax_preflight_for_m0_3
-    relax_preflight_for_m0_3()
     r = rt._build_local_store_sqlite_runtime(Path(db_path))
     r.start()
     # ensure WAL is flushed and the writer handle is released before raw seeding

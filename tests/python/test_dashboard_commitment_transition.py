@@ -18,8 +18,6 @@ def _prep_db(db, stmt_id, *, state="ACTIVE", tenant="default"):
     seed one commitment row directly — same handle-release discipline the cascade
     test uses, so the DashboardEngine opens a clean, already-seeded DB."""
     from starling import runtime as rt
-    from starling.testing import relax_preflight_for_m0_3
-    relax_preflight_for_m0_3()
     runtime = rt._build_local_store_sqlite_runtime(Path(db))
     runtime.start()
     del runtime  # release the writer handle before raw seeding + before the engine opens

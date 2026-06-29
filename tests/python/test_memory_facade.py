@@ -51,9 +51,7 @@ def test_openai_adapter_constructs_into_extractor(tmp_path):
     # here means the binding rejects the production adapter.
     import os
     from starling import runtime as _runtime
-    from starling.testing import relax_preflight_for_m0_3
     os.environ.setdefault("OPENAI_API_KEY", "test-key")
-    relax_preflight_for_m0_3()
     rt = _runtime._build_local_store_sqlite_runtime(tmp_path / "oa.db")
     rt.start()
     llm = starling.make_openai_llm()                 # OpenAIAdapter, constructs offline

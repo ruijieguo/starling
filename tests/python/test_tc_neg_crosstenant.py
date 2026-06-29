@@ -21,7 +21,6 @@ import sqlite3
 import pytest
 
 from starling import _core, runtime
-from starling.testing import relax_preflight_for_m0_3  # NOLINT(starling-testing-isolation)
 from starling.evidence import (
     EngramRetentionMode,
     PrivacyClass,
@@ -33,13 +32,11 @@ from datetime import datetime, timezone
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
+def rt(tmp_path):
     """File-backed Runtime with M0.3 preflight relaxed for tests."""
-    orig = relax_preflight_for_m0_3()
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram(adapter, *, tenant_id: str, source_item_id: str) -> str:

@@ -74,11 +74,6 @@ def _real_answer(record: dict) -> int:
     import urllib.request
 
     from starling import _core
-    from starling.testing import relax_preflight_for_m0_3
-
-    # relax_preflight is a no-op here (we drive _core directly, not a Runtime),
-    # but kept for parity with the in-repo pipeline tests / future Runtime wiring.
-    relax_preflight_for_m0_3()
 
     # NOTE: SqliteAdapter.open(":memory:") returns db_path ":memory:", but a raw
     # sqlite3.connect(":memory:") opens a *separate* empty DB (no migrated tables).

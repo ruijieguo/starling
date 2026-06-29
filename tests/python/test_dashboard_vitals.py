@@ -36,8 +36,6 @@ def _stmt(conn, sid, tenant, state, *, salience=0.5, created="2026-04-10T10:00:0
 def _seed(db_path: str):
     from pathlib import Path
     from starling import runtime as rt
-    from starling.testing import relax_preflight_for_m0_3
-    relax_preflight_for_m0_3()
     r = rt._build_local_store_sqlite_runtime(Path(db_path))
     r.start()
     del r  # release the writer handle before raw seeding

@@ -7,11 +7,9 @@ from pathlib import Path
 
 from starling import runtime as rt
 from starling.dashboard import queries
-from starling.testing import relax_preflight_for_m0_3
 
 
 def _prep(db):
-    relax_preflight_for_m0_3()
     runtime = rt._build_local_store_sqlite_runtime(Path(db))
     runtime.start()
     del runtime  # release the writer handle before raw seeding

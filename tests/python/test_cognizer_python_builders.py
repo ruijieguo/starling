@@ -11,15 +11,12 @@ from __future__ import annotations
 import pytest
 
 from starling import runtime
-from starling.testing import relax_preflight_for_m0_3  # NOLINT(starling-testing-isolation)
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests."""
-    original = relax_preflight_for_m0_3()
+def rt(tmp_path):
+    """File-backed Runtime for tests."""
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", original)
     return r
 
 

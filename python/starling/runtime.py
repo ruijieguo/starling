@@ -27,23 +27,6 @@ def required_capabilities(embedded: bool = False) -> tuple[str, ...]:
     return tuple(_core.required_capabilities(embedded))
 
 
-# [inert forwarder] Retained as a read-only re-export so legacy callers/tests
-# that reference it keep importing. NOTHING reads this for preflight anymore —
-# the readiness decision is owned by the C++ RuntimeSupervisor. Legacy-name
-# sweep is follow-up F1.
-LOCAL_STORE_REQUIRED = required_capabilities(embedded=False)
-
-
-def relax_preflight_for_embedded() -> tuple[str, ...]:
-    """[inert forwarder] Returns the embedded-profile required tuple. NO LONGER
-    mutates any global — embedded readiness is now decided in C++ (the supervisor
-    is built with embedded=True by _build_local_store_sqlite_runtime). Retained
-    so the ~55 call sites that call this + assign LOCAL_STORE_REQUIRED back in
-    teardown keep working unchanged. Legacy-name sweep is follow-up F1.
-    """
-    return required_capabilities(embedded=True)
-
-
 class RuntimeUnreadyError(RuntimeError):
     def __init__(self, missing_capabilities: list[str]):
         # Store the list as args[0] so copy / cross-process round-trips
@@ -212,6 +195,5 @@ __all__ = [
     "Runtime",
     "RuntimeUnreadyError",
     "EX_CONFIG",
-    "LOCAL_STORE_REQUIRED",
     "_build_local_store_sqlite_runtime",
 ]

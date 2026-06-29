@@ -10,7 +10,6 @@ import argparse, json, sqlite3, sys, tempfile
 from pathlib import Path
 
 from starling import _core, runtime
-from starling.testing import relax_preflight_for_m0_3
 
 DETECTION_THRESHOLD = 0.80
 TIMELINESS_THRESHOLD = 3   # turns (strict <)
@@ -51,7 +50,6 @@ def _state(db_path: str, stmt_id: str) -> str:
 
 def run_scenario(scn: dict) -> tuple[bool, int]:
     """Return (detected: observed final_state == expected, detect_turn)."""
-    relax_preflight_for_m0_3()
     with tempfile.TemporaryDirectory() as td:
         db = str(Path(td) / "s.db")
         rt = runtime._build_local_store_sqlite_runtime(Path(db)); rt.start()

@@ -41,40 +41,8 @@ def mark_evidence_erased(adapter, engram_id: str, tenant_id: str,
         adapter, engram_id, tenant_id, erased_at_iso8601)
 
 
-def relax_preflight_for_m0_2() -> tuple[str, ...]:
-    """Trim engram_per_record_key + testing_helper_marker from LOCAL_STORE_REQUIRED.
-
-    Required by M0.2 acceptance only. M0.3 ships a `null_kms` placeholder
-    (identity cipher, key_ref=NULL); real per-record AES-256-GCM + KMS
-    lands in M0.4, at which point `engram_per_record_key=true` and this
-    helper plus `relax_preflight_for_m0_3` can both be deleted. The actual
-    capability-trimming now lives in the prod module as
-    `runtime.relax_preflight_for_embedded()` (the embedded facade legitimately
-    runs the reduced set); this test helper just delegates to it for back-compat,
-    so CI defense-line #1 stays satisfied (no starling.testing in prod entrypoints).
-
-    Returns the original tuple so the caller can restore it in tearDown.
-    """
-    from starling import runtime as _r
-    return _r.relax_preflight_for_embedded()
-
-
-def relax_preflight_for_m0_3() -> tuple[str, ...]:
-    """M0.3 acceptance helper. Same surgery as relax_preflight_for_m0_2 (the
-    `engram_per_record_key` capability is still deferred to M0.4 + KMS). Kept
-    as a separate function so the M0.3 acceptance test names what it's
-    relaxing. Delete both helpers when M0.4 lands the real capability.
-
-    Returns the original LOCAL_STORE_REQUIRED tuple so the caller can restore
-    it in tearDown.
-    """
-    return relax_preflight_for_m0_2()
-
-
 __all__ = [
     "marker_loaded",
     "mark_consolidated",
     "mark_evidence_erased",
-    "relax_preflight_for_m0_2",
-    "relax_preflight_for_m0_3",
 ]

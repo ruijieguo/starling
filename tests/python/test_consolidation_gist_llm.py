@@ -8,14 +8,12 @@ from pathlib import Path
 
 from starling import _core
 from starling import runtime as rt
-from starling.testing import relax_preflight_for_m0_3
 
 
 def _seed_norm_cluster(db):
     """Build the schema via a throwaway runtime (released before the test opens
     its own), then seed 3 distinct holders asserting the same (predicate, object)
     — a NORM cluster — volatile / user_input / replay_count=2 so it qualifies."""
-    relax_preflight_for_m0_3()
     runtime = rt._build_local_store_sqlite_runtime(Path(db))
     runtime.start()
     del runtime  # release the writer handle before raw seeding

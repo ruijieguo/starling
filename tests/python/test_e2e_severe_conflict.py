@@ -59,27 +59,24 @@ import pytest
 
 from starling import _core, runtime
 from starling.retrieval import basic_retrieve
-from starling.testing import mark_consolidated, relax_preflight_for_m0_3
+from starling.testing import mark_consolidated
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests.
+def rt(tmp_path):
+    """File-backed Runtime for tests.
 
     Mirrors the fixture pattern from test_tc_new_conflict_severe.py and
-    test_basic_retrieve_smoke.py: relax preflight, build a real
-    SqliteAdapter-backed Runtime at a tmp path, start it, and restore
-    the preflight requirement at teardown.
+    test_basic_retrieve_smoke.py: build a real SqliteAdapter-backed Runtime
+    at a tmp path and start it.
 
     File-backed (not :memory:) so we can open a second stdlib sqlite3
     connection to verify bus_events count and statement_edges rows,
     ruling out any in-memory adapter cache.
     """
-    orig = relax_preflight_for_m0_3()
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram(rt, engram_id: str, content_hash: str) -> None:
