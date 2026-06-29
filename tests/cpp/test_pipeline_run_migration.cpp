@@ -125,14 +125,36 @@ TEST(PipelineRunMigration, ActiveIndexDefinitionContainsKeyColumns) {
     const std::string sql =
         master_sql(c.raw(), "idx_governance_pipeline_run_active");
     ASSERT_FALSE(sql.empty()) << "Index DDL not found in sqlite_master";
-    // Four key columns in order
-    EXPECT_NE(sql.find("kind"),        std::string::npos);
-    EXPECT_NE(sql.find("tenant_id"),   std::string::npos);
-    EXPECT_NE(sql.find("aggregate_id"),std::string::npos);
-    EXPECT_NE(sql.find("input_hash"),  std::string::npos);
-    // Partial-index WHERE clause
-    EXPECT_NE(sql.find("QUEUED"),  std::string::npos);
-    EXPECT_NE(sql.find("RUNNING"), std::string::npos);
+
+    // Primary check: the four columns must appear as an exact ordered substring.
+    // This catches any reordering that would break cross-tenant suppression.
+    const bool exact_order =
+        sql.find("(kind, tenant_id, aggregate_id, input_hash)") != std::string::npos;
+
+    if (!exact_order) {
+        // Fallback: verify positional ordering individually (handles minor
+        // whitespace normalization differences between SQLite versions).
+        const auto pk   = sql.find("kind");
+        const auto pt   = sql.find("tenant_id");
+        const auto pa   = sql.find("aggregate_id");
+        const auto ph   = sql.find("input_hash");
+        ASSERT_NE(pk, std::string::npos) << "column 'kind' missing from index DDL";
+        ASSERT_NE(pt, std::string::npos) << "column 'tenant_id' missing from index DDL";
+        ASSERT_NE(pa, std::string::npos) << "column 'aggregate_id' missing from index DDL";
+        ASSERT_NE(ph, std::string::npos) << "column 'input_hash' missing from index DDL";
+        EXPECT_LT(pk, pt) << "kind must precede tenant_id in index column list";
+        EXPECT_LT(pt, pa) << "tenant_id must precede aggregate_id in index column list";
+        EXPECT_LT(pa, ph) << "aggregate_id must precede input_hash in index column list";
+    } else {
+        SUCCEED() << "Exact ordered column substring found: "
+                     "(kind, tenant_id, aggregate_id, input_hash)";
+    }
+
+    // Partial-index WHERE clause must cover both active statuses.
+    EXPECT_NE(sql.find("QUEUED"),  std::string::npos)
+        << "WHERE clause must reference QUEUED";
+    EXPECT_NE(sql.find("RUNNING"), std::string::npos)
+        << "WHERE clause must reference RUNNING";
 }
 
 // ── 3. CHECK(kind) rejects bad value ─────────────────────────────────────────
@@ -174,6 +196,13 @@ TEST(PipelineRunMigration, Invariant1DuplicateActiveRejected) {
     // Different tenant_id, same kind/aggregate/hash, QUEUED → OK (tenant isolation).
     EXPECT_EQ(do_insert(c.raw(), "id-other-tenant", "extraction",
                         "agg-A", "tenant-2", "QUEUED"), SQLITE_DONE);
+
+    // RUNNING active row also blocks a duplicate QUEUED row (partial index covers
+    // both QUEUED and RUNNING — cross-status dedup invariant).
+    EXPECT_EQ(do_insert(c.raw(), "id-running-1", "extraction",
+                        "agg-B", "tenant-1", "RUNNING"), SQLITE_DONE);
+    EXPECT_EQ(do_insert(c.raw(), "id-running-dup", "extraction",
+                        "agg-B", "tenant-1", "QUEUED"), SQLITE_CONSTRAINT);
 }
 
 // ── 6. JSON1 probe ────────────────────────────────────────────────────────────
