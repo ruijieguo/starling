@@ -29,8 +29,6 @@ def _ins(conn, sid, *, tenant="default", salience=0.5, last_accessed="2026-04-10
 
 def _fresh_db(db_path: str):
     from starling import runtime as rt
-    from starling.testing import relax_preflight_for_m0_3
-    relax_preflight_for_m0_3()
     r = rt._build_local_store_sqlite_runtime(Path(db_path))
     r.start()
     del r

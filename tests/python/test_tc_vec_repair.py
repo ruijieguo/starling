@@ -11,16 +11,13 @@ from __future__ import annotations
 import sqlite3
 import pytest
 from starling import _core, runtime
-from starling.testing import relax_preflight_for_m0_3
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    orig = relax_preflight_for_m0_3()
+def rt(tmp_path):
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_statement(rt, stmt_id, obj):

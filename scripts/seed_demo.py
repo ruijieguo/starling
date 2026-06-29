@@ -116,7 +116,6 @@ def main() -> None:
     args = ap.parse_args()
     db, tenant = args.db, args.tenant
 
-    rt.relax_preflight_for_embedded()
     if args.reset:
         # Cleanest reset: drop the DB (+ WAL/SHM sidecars) so seeding starts from a
         # fresh schema with NO residual global state. A tenant-only row-wipe leaves

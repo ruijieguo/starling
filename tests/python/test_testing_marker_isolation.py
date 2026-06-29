@@ -31,6 +31,4 @@ def test_testing_package_all_locks_surface():
         "marker_loaded",
         "mark_consolidated",
         "mark_evidence_erased",
-        "relax_preflight_for_m0_2",
-        "relax_preflight_for_m0_3",
     ]

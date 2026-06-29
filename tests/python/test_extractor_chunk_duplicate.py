@@ -9,7 +9,6 @@ import json
 import pytest
 
 from starling import _core, runtime
-from starling.testing import relax_preflight_for_m0_3
 
 
 # Two elements with the SAME (predicate, object) → same C++-computed canonical
@@ -29,12 +28,10 @@ JSON_TWO_DUPS = json.dumps([
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    original = relax_preflight_for_m0_3()
+def rt(tmp_path):
     rt = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     rt.start()
     yield rt
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", original)
 
 
 def test_chunk_duplicate(rt):

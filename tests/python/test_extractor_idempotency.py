@@ -6,7 +6,6 @@ import sqlite3
 import json
 
 from starling import _core, runtime
-from starling.testing import relax_preflight_for_m0_3
 import pytest
 
 
@@ -21,12 +20,10 @@ JSON_OK = json.dumps([
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    original = relax_preflight_for_m0_3()
+def rt(tmp_path):
     rt = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     rt.start()
     yield rt
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", original)
 
 
 def _seed_engram(rt):

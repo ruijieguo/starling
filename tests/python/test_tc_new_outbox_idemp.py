@@ -39,9 +39,6 @@ from starling.bus.bus_event import (
     compute_idempotency_key,
     compute_window_bucket,
 )
-from starling.testing import relax_preflight_for_m0_2  # NOLINT(starling-testing-isolation)
-
-
 NUM_EVENTS = 100
 POISON_KEY = "k-poison"
 TENANT = "tenant-A"
@@ -66,12 +63,6 @@ class TcNewOutboxIdempTest(unittest.TestCase):
     """End-to-end crash-recovery acceptance for the outbox dispatcher."""
 
     def setUp(self) -> None:
-        # M0.2 preflight relax: drop engram_per_record_key (M0.3 lands KMS) and
-        # testing_helper_marker (only loaded by the test target). The original
-        # tuple is restored in tearDown so other tests in the same process see
-        # the production-shaped LOCAL_STORE_REQUIRED.
-        self._original_required = relax_preflight_for_m0_2()
-
         # tmp_path-equivalent for a unittest.TestCase; we manage cleanup
         # explicitly so subprocess workers can re-open the same file.
         self._tmpdir = tempfile.mkdtemp(prefix="tc_outbox_idemp_")
@@ -79,13 +70,6 @@ class TcNewOutboxIdempTest(unittest.TestCase):
         self.log_path = Path(self._tmpdir) / "deliveries.jsonl"
 
     def tearDown(self) -> None:
-        # Restore production capability tuple — relax_preflight_for_m0_2 mutates
-        # the module-level global, so failure to restore would leak into other
-        # tests in this process. If relax_preflight_for_m0_2's mutation target
-        # ever changes, this restore is wrong — keep them in lockstep.
-        from starling import runtime as _r
-        _r.LOCAL_STORE_REQUIRED = self._original_required
-
         # No ignore_errors: subprocess.run is synchronous so all workers are
         # reaped before tearDown; a real cleanup failure here is a leaked fd
         # or stray child worth surfacing as a test error.

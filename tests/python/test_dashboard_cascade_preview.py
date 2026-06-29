@@ -21,8 +21,6 @@ _COLS = (
 
 def _fresh_db(db_path: str):
     from starling import runtime as rt
-    from starling.testing import relax_preflight_for_m0_3
-    relax_preflight_for_m0_3()
     r = rt._build_local_store_sqlite_runtime(Path(db_path))
     r.start()
     del r  # release the writer handle before raw seeding

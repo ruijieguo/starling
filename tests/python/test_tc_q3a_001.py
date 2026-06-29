@@ -20,17 +20,15 @@ import sqlite3
 import pytest
 
 from starling import _core, runtime
-from starling.testing import mark_consolidated, relax_preflight_for_m0_3
+from starling.testing import mark_consolidated
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests."""
-    orig = relax_preflight_for_m0_3()
+def rt(tmp_path):
+    """File-backed Runtime for tests."""
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram(rt, engram_id: str, content_hash: str) -> None:

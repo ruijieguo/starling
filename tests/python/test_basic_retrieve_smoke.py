@@ -28,8 +28,7 @@ testing.mark_consolidated helper are the spec-blessed shortcut.
 
 The CI static scan (scripts/ci_static_scan.py) bans starling.testing
 imports from prod entrypoints; tests/python is in the allowed-roots list,
-so the imports of `mark_consolidated` and `relax_preflight_for_m0_3` are
-intentional and safe.
+so the import of `mark_consolidated` is intentional and safe.
 """
 from __future__ import annotations
 
@@ -42,28 +41,21 @@ from starling import _core, runtime
 from starling.retrieval import basic_retrieve
 from starling.testing import (  # NOLINT(starling-testing-isolation)
     mark_consolidated,
-    relax_preflight_for_m0_3,
 )
 
 
 @pytest.fixture
-def rt(tmp_path, monkeypatch):
-    """File-backed Runtime with the M0.3 preflight relaxed for tests.
-
-    Mirrors the fixture pattern from test_tc_new_conflict_severe.py: relax
-    preflight, build a real SqliteAdapter-backed Runtime at a tmp path,
-    start it, and restore the preflight requirement at teardown.
+def rt(tmp_path):
+    """File-backed Runtime for tests.
 
     File-backed (not :memory:) because §14.1 specifically tests the same
     persistence path the M0.5 SUPERSEDES atomic transaction exercises, and
     we read back from a second stdlib sqlite3 connection to count
     statement.recalled events — which only works against a real path.
     """
-    orig = relax_preflight_for_m0_3()
     r = runtime._build_local_store_sqlite_runtime(tmp_path / "starling.db")
     r.start()
     yield r
-    monkeypatch.setattr(runtime, "LOCAL_STORE_REQUIRED", orig)
 
 
 def _seed_engram(rt, engram_id: str, content_hash: str) -> None:
