@@ -38,6 +38,16 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		}
 	});
 
+	it('includes /runtime-health in 生命体征 · 脑干 group', () => {
+		expect(allHrefs).toContain('/runtime-health');
+		const brainStemGroup = NAV_GROUPS.find((g) => g.title === '生命体征 · 脑干');
+		expect(brainStemGroup).toBeDefined();
+		const item = brainStemGroup!.items.find((i) => i.href === '/runtime-health');
+		expect(item).toBeDefined();
+		expect(item!.label).toBe('运行时健康');
+		expect(item!.icon).toBeTruthy();
+	});
+
 	it('every item has a label and icon', () => {
 		for (const g of NAV_GROUPS) {
 			for (const i of g.items) {
