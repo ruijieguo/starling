@@ -55,7 +55,10 @@ public:
 
 private:
     [[nodiscard]] PipelineRun read_row_(std::string_view run_id);  // throws std::runtime_error if absent
-    persistence::Connection& conn_;
+    // Borrowed connection; the caller owns its lifetime and this store is a
+    // non-copyable borrowed-handle wrapper (mirrors bus::PipelineLedger /
+    // store::PerceptionStateStore).
+    persistence::Connection& conn_;  // NOLINT(cppcoreguidelines-avoid-const-or-ref-data-members)
 };
 
 }  // namespace starling::governance
