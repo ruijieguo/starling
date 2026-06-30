@@ -35,14 +35,16 @@ enum class TickLane : std::uint8_t { Soft, Critical };
 //   Not built now.
 [[nodiscard]] inline TickLane lane_of(TickStage stage) noexcept {
     switch (stage) {
-        case TickStage::Embed:                  return TickLane::Soft;
-        case TickStage::Policy:                 return TickLane::Critical;
-        case TickStage::CommonGround:           return TickLane::Soft;
-        case TickStage::ReplayOscillationGuard: return TickLane::Critical;
-        case TickStage::ReplayTtlSweep:         return TickLane::Critical;
-        case TickStage::ReplayIdle:             return TickLane::Soft;
-        case TickStage::Projection:             return TickLane::Soft;
-        case TickStage::Outbox:                 return TickLane::Critical;
+        case TickStage::Policy:
+        case TickStage::ReplayOscillationGuard:
+        case TickStage::ReplayTtlSweep:
+        case TickStage::Outbox:
+            return TickLane::Critical;
+        case TickStage::Embed:
+        case TickStage::CommonGround:
+        case TickStage::ReplayIdle:
+        case TickStage::Projection:
+            return TickLane::Soft;
     }
     // Unreachable; all enumerators covered above.
     return TickLane::Soft;
