@@ -12,10 +12,10 @@ ScopedWorkGate::ScopedWorkGate(GateConfig config) : config_(config) {}
 
 ScopedWorkGate::Slot* ScopedWorkGate::find_slot_(const GateKey& key,
                                                   std::string_view task_id) {
-    auto it = std::ranges::find_if(slots_, [&key, &task_id](const Slot& slot) {
+    auto found = std::ranges::find_if(slots_, [&key, &task_id](const Slot& slot) {
         return slot.gate_key == key && slot.task_id == task_id;
     });
-    return (it != slots_.end()) ? &*it : nullptr;
+    return (found != slots_.end()) ? &*found : nullptr;
 }
 
 int ScopedWorkGate::lane_in_use_(Lane lane) const {
