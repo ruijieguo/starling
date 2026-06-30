@@ -171,6 +171,7 @@ target_sources(starling_core PRIVATE
     src/governance/scoped_work_gate.cpp
     src/governance/restart_guard.cpp
     src/governance/health_sampler.cpp
+    src/governance/metrics_gatherer.cpp
 )
 target_compile_options(starling_core PRIVATE ${STARLING_WARNING_FLAGS})
 if(TARGET SQLite3::SQLite3)
