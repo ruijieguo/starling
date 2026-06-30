@@ -12,22 +12,16 @@ ScopedWorkGate::ScopedWorkGate(GateConfig config) : config_(config) {}
 
 ScopedWorkGate::Slot* ScopedWorkGate::find_slot_(const GateKey& key,
                                                   std::string_view task_id) {
-    for (Slot& slot : slots_) {
-        if (slot.gate_key == key && slot.task_id == task_id) {
-            return &slot;
-        }
-    }
-    return nullptr;
+    auto it = std::ranges::find_if(slots_, [&key, &task_id](const Slot& slot) {
+        return slot.gate_key == key && slot.task_id == task_id;
+    });
+    return (it != slots_.end()) ? &*it : nullptr;
 }
 
 int ScopedWorkGate::lane_in_use_(Lane lane) const {
-    int count = 0;
-    for (const Slot& slot : slots_) {
-        if (slot.gate_key.lane == lane) {
-            ++count;
-        }
-    }
-    return count;
+    return static_cast<int>(std::ranges::count_if(slots_, [lane](const Slot& slot) {
+        return slot.gate_key.lane == lane;
+    }));
 }
 
 // ── public interface ─────────────────────────────────────────────────────────
@@ -102,11 +96,9 @@ void ScopedWorkGate::release(const GateKey& key, std::string_view task_id) {
 
     if (exact_slot->depth == 0) {
         // Erase the slot and reclaim the lane quota.
-        slots_.erase(std::remove_if(slots_.begin(), slots_.end(),
-                                    [&key, &task_id](const Slot& slot) {
-                                        return slot.gate_key == key && slot.task_id == task_id;
-                                    }),
-                     slots_.end());
+        std::erase_if(slots_, [&key, &task_id](const Slot& slot) {
+            return slot.gate_key == key && slot.task_id == task_id;
+        });
     }
 }
 

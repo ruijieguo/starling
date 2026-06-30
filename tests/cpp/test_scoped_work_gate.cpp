@@ -53,9 +53,9 @@ TEST(ScopedWorkGate, ReentrantReleaseDecrementsDepth) {
     ScopedWorkGate gate{GateConfig{.critical_quota = 2, .soft_quota = 2}};
     const GateKey key = make_key("t1", "scope", "agg-A", Lane::Soft);
 
-    gate.acquire(key, "task-1", kLease);
-    gate.acquire(key, "task-1", kLease);
-    gate.acquire(key, "task-1", kLease);  // depth = 3
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);  // depth = 3
 
     gate.release(key, "task-1");  // depth = 2
     EXPECT_EQ(gate.active_slot_count(), 1);
@@ -91,8 +91,8 @@ TEST(ScopedWorkGate, CrossAggregateUsesNewSlot) {
     const GateKey key_a = make_key("t1", "scope", "agg-A", Lane::Soft);
     const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
 
-    gate.acquire(key_a, "task-1", kLease);
-    gate.acquire(key_b, "task-1", kLease);
+    ASSERT_EQ(gate.acquire(key_a, "task-1", kLease).status, AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key_b, "task-1", kLease).status, AdmitStatus::Admitted);
 
     EXPECT_EQ(gate.active_slot_count(), 2);
 }
@@ -121,8 +121,8 @@ TEST(ScopedWorkGate, SoftDropDoesNotConsumeASlot) {
     const GateKey key_a = make_key("t1", "scope", "agg-A", Lane::Soft);
     const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
 
-    gate.acquire(key_a, "task-1", kLease);
-    gate.acquire(key_b, "task-1", kLease);  // soft-dropped
+    ASSERT_EQ(gate.acquire(key_a, "task-1", kLease).status, AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key_b, "task-1", kLease).status, AdmitStatus::SoftDropped);  // soft-dropped
 
     // Release key_a; now the quota is free again
     gate.release(key_a, "task-1");
@@ -172,7 +172,7 @@ TEST(ScopedWorkGate, ReleaseFreesSlotEnablingSubsequentAcquire) {
     const GateKey key_a = make_key("t1", "scope", "agg-A", Lane::Soft);
     const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
 
-    gate.acquire(key_a, "task-1", kLease);
+    ASSERT_EQ(gate.acquire(key_a, "task-1", kLease).status, AdmitStatus::Admitted);
     const AcquireOutcome dropped = gate.acquire(key_b, "task-1", kLease);
     EXPECT_EQ(dropped.status, AdmitStatus::SoftDropped);
 
@@ -198,7 +198,7 @@ TEST(ScopedWorkGate, ReleaseWrongTaskIdForHeldKeyThrows) {
     ScopedWorkGate gate{GateConfig{.critical_quota = 0, .soft_quota = 2}};
     const GateKey key = make_key("t1", "scope", "agg-A", Lane::Soft);
 
-    gate.acquire(key, "task-1", kLease);
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);
 
     // wrong task_id for the held key — must throw
     EXPECT_THROW(gate.release(key, "task-WRONG"), std::runtime_error);
@@ -208,7 +208,7 @@ TEST(ScopedWorkGate, ReleaseAfterFullDepthUnwindThrows) {
     ScopedWorkGate gate{GateConfig{.critical_quota = 0, .soft_quota = 2}};
     const GateKey key = make_key("t1", "scope", "agg-A", Lane::Soft);
 
-    gate.acquire(key, "task-1", kLease);
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);
     gate.release(key, "task-1");  // depth → 0, slot freed
 
     // depth is already 0 (slot gone) — another release must throw
@@ -224,7 +224,7 @@ TEST(ScopedWorkGate, AcquireStoresLeaseUntil) {
     ScopedWorkGate gate{GateConfig{.critical_quota = 1, .soft_quota = 0}};
     const GateKey key = make_key("t1", "scope", "agg-A", Lane::Critical);
 
-    gate.acquire(key, "task-1", kLease);
+    ASSERT_EQ(gate.acquire(key, "task-1", kLease).status, AdmitStatus::Admitted);
     EXPECT_EQ(gate.active_slot_count(), 1);
 
     gate.release(key, "task-1");
@@ -238,8 +238,8 @@ TEST(ScopedWorkGate, CriticalAndSoftSlotsAreCounted) {
     const GateKey crit = make_key("t1", "scope", "agg-C", Lane::Critical);
     const GateKey soft = make_key("t1", "scope", "agg-S", Lane::Soft);
 
-    gate.acquire(crit, "task-c", kLease);
-    gate.acquire(soft, "task-s", kLease);
+    ASSERT_EQ(gate.acquire(crit, "task-c", kLease).status, AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(soft, "task-s", kLease).status, AdmitStatus::Admitted);
     EXPECT_EQ(gate.active_slot_count(), 2);
 
     gate.release(crit, "task-c");
@@ -254,9 +254,9 @@ TEST(ScopedWorkGate, DroppedCounterAccumulates) {
     const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
     const GateKey key_c = make_key("t1", "scope", "agg-C", Lane::Soft);
 
-    gate.acquire(key_a, "task-1", kLease);       // admitted
-    gate.acquire(key_b, "task-2", kLease);       // dropped → count=1
-    gate.acquire(key_c, "task-3", kLease);       // dropped → count=2
+    ASSERT_EQ(gate.acquire(key_a, "task-1", kLease).status, AdmitStatus::Admitted);     // admitted
+    ASSERT_EQ(gate.acquire(key_b, "task-2", kLease).status, AdmitStatus::SoftDropped);  // dropped → count=1
+    ASSERT_EQ(gate.acquire(key_c, "task-3", kLease).status, AdmitStatus::SoftDropped);  // dropped → count=2
 
     EXPECT_EQ(gate.dropped_soft_work_count(), 2LL);
 }
