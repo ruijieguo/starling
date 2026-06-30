@@ -35,8 +35,11 @@ using persistence::detail::make_sqlite_error;
 // Error handling: prepare or step failures throw SqliteError (mirrors store
 // idiom).  The host tick's try/except catches them — no spurious transitions.
 
+// gather() is an instance method by design: MetricsGatherer is the bound class
+// (the HealthSampler companion) and is expected to gain per-metric config in a
+// follow-up; making it static now would force an immediate revert.
 [[nodiscard]] MetricsSnapshot
-MetricsGatherer::gather(persistence::Connection& conn) const {
+MetricsGatherer::gather(persistence::Connection& conn) const {  // NOLINT(readability-convert-member-functions-to-static)
     sqlite3* const dbh = conn.raw();
 
     // Single query: COALESCE clamps missing events or missing checkpoint to 0.
