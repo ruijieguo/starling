@@ -143,10 +143,6 @@ class Runtime:
         supervisor mutex first while holding the engine lock in the reverse order."""
         self._sup.note_health(decision)
 
-    def last_event(self):
-        """Most recent transition event, or None (forwards to C++)."""
-        return self._sup.last_event()
-
     def start(self) -> None:
         outcome = self._sup.start()
         # D-P2-2: the C++ supervisor is the event source. start() recorded exactly
