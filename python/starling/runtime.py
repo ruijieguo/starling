@@ -136,6 +136,17 @@ class Runtime:
         supervisor self-locks, so no Python-side lock is taken here."""
         self._sup.begin_drain(trigger)
 
+    def note_health(self, decision) -> None:
+        """Apply a HealthDecision to the live C++ supervisor (Phase 5 backpressure
+        sampler path). The supervisor self-locks; no Python lock is taken here.
+        Lock order: engine-RLock → supervisor-mutex (L8); NEVER take the
+        supervisor mutex first while holding the engine lock in the reverse order."""
+        self._sup.note_health(decision)
+
+    def last_event(self):
+        """Most recent transition event, or None (forwards to C++)."""
+        return self._sup.last_event()
+
     def start(self) -> None:
         outcome = self._sup.start()
         # D-P2-2: the C++ supervisor is the event source. start() recorded exactly

@@ -13,13 +13,20 @@ embedder-dependent components, reusing the single writer connection (no WAL
 double-writer). API keys are injected via a transient os.environ swap at
 adapter-build time (the binding does not expose api_key; Config.from_env()
 captures it at build), so chat and embedder may use different providers/keys.
+
+Phase 5 (P3.c1): a backpressure sampler (HealthSampler + MetricsGatherer) runs
+after each background tick.  The C++ sampler is pure; debounce + DRAINING-
+suppress live in the host (_sample_backpressure).  Lock order (L8): engine-
+RLock → supervisor-mutex; NEVER the reverse.
 """
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +34,37 @@ from pathlib import Path
 from starling import _core
 from starling import runtime as _runtime
 from starling._memory_core import LLMNotConfigured, MemoryCore
+
+
+# ── Phase 5 backpressure sampler defaults (L1 / L2) ─────────────────────────
+#
+# c1 enables outbox_lag + runtime_event_loop_lag_ms ONLY.  The other 5 metrics
+# stay DISABLED (zero ≠ healthy; the sampler skips them).
+#
+# Recommended defaults (documented here as the single source of truth):
+#   outbox_lag.threshold              = 100  (sequences)
+#   runtime_event_loop_lag_ms.threshold = 200 (ms; proxy for background-tick overload, L6)
+_DEFAULT_OUTBOX_LAG_THRESHOLD: int = 100
+_DEFAULT_LOOP_LAG_THRESHOLD_MS: float = 200.0
+# Flapping damping (L3): how many CONSECUTIVE same-verdict evaluate() results
+# must accumulate before note_health is called.
+_DEFAULT_DEBOUNCE_TICKS: int = 3
+
+
+def _build_default_sampler_config(
+    *,
+    outbox_lag_threshold: int = _DEFAULT_OUTBOX_LAG_THRESHOLD,
+    loop_lag_threshold_ms: float = _DEFAULT_LOOP_LAG_THRESHOLD_MS,
+) -> "_core.HealthSamplerConfig":
+    """Construct a HealthSamplerConfig enabling outbox_lag + runtime_event_loop_lag_ms."""
+    cfg = _core.HealthSamplerConfig()
+    cfg.outbox_lag.enabled = True
+    cfg.outbox_lag.threshold = outbox_lag_threshold
+    cfg.runtime_event_loop_lag_ms.enabled = True
+    cfg.runtime_event_loop_lag_ms.threshold = loop_lag_threshold_ms
+    # subscriber_failure_rate, extraction_queue_depth, projection_lag_seconds,
+    # vector_delete_lag, erased_evidence — all DISABLED in c1 (L1).
+    return cfg
 
 
 def _now_iso() -> str:
@@ -126,6 +164,15 @@ class DashboardEngine:
         # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
         self._tick_thread: threading.Thread | None = None
         self._tick_stop: threading.Event | None = None
+        # Phase 5 — backpressure sampler (L1/L2): created once, process-lifetime.
+        # outbox_lag + runtime_event_loop_lag_ms ONLY in c1 (other 5 DISABLED).
+        # Debounce state (L3): a deque of the last `_debounce_ticks` verdicts.
+        # Lock order (L8): engine-RLock → supervisor-mutex (via note_health). NEVER reverse.
+        self._sampler = _core.HealthSampler(_build_default_sampler_config())
+        self._gatherer = _core.MetricsGatherer()
+        self._debounce_ticks: int = _DEFAULT_DEBOUNCE_TICKS
+        self._debounce_window: collections.deque = collections.deque(
+            maxlen=self._debounce_ticks)
         # Roles → adapters. Only extraction (the chat/LLM adapter MemoryCore
         # uses for remember) and embedding have live consumers today; chat is
         # wired in Phase 2c (converse). Unbound role → {} → no api_key → None /
@@ -195,6 +242,81 @@ class DashboardEngine:
             if reembed:
                 return self._reembed()
         return None
+
+    def _replace_sampler(self, *,
+                          outbox_lag_threshold: int = _DEFAULT_OUTBOX_LAG_THRESHOLD,
+                          loop_lag_threshold_ms: float = _DEFAULT_LOOP_LAG_THRESHOLD_MS,
+                          debounce_ticks: int = _DEFAULT_DEBOUNCE_TICKS) -> None:
+        """Test seam: replace the sampler + gatherer with a custom config.
+
+        Called from tests to inject low thresholds without rebuilding the engine.
+        Not thread-safe (call before start_background_tick).
+        """
+        self._sampler = _core.HealthSampler(
+            _build_default_sampler_config(
+                outbox_lag_threshold=outbox_lag_threshold,
+                loop_lag_threshold_ms=loop_lag_threshold_ms,
+            )
+        )
+        self._gatherer = _core.MetricsGatherer()
+        self._debounce_ticks = debounce_ticks
+        self._debounce_window = collections.deque(maxlen=debounce_ticks)
+
+    def _sample_backpressure(self, tick_started_at: float,
+                              scheduled_interval: float) -> None:
+        """Run the backpressure sample cycle under the engine lock (L3/L6/L7/L8).
+
+        Steps (LOCKED block authoritative):
+          L7 suppress  — skip entirely if health is DRAINING or UNREADY.
+          gather        — read outbox_lag_sequence from the live DB.  On failure,
+                          log + return (leave health unchanged; no spurious transition).
+          L6 tick-delay — set snapshot.runtime_event_loop_lag_ms to the actual
+                          elapsed time since the tick was scheduled (a host-overload
+                          proxy; NOT asyncio loop lag — L6).
+          evaluate      — pure C++ sampler produces a HealthDecision.
+          L3 debounce   — enqueue the verdict; call note_health ONLY when the last
+                          `_debounce_ticks` consecutive verdicts agree on the same
+                          target_status.  Resets when the verdict changes.
+
+        Lock order (L8): self._lock (engine-RLock) → _rt._sup mutex (via note_health).
+        The reverse order NEVER occurs: note_health/begin_drain hold no engine lock.
+        """
+        with self._lock:
+            # L7: suppress when DRAINING or UNREADY — don't fight the state machine.
+            current_health = self._rt.health()
+            if (current_health == _core.RuntimeHealth.DRAINING
+                    or current_health == _core.RuntimeHealth.UNREADY):
+                return
+
+            # gather — wrap in try/except (DB busy, missing table, etc.).
+            try:
+                snapshot = self._gatherer.gather(self._rt.adapter)
+            except Exception:  # noqa: BLE001 — gather failure leaves health unchanged
+                logger.exception("backpressure gather failed; health unchanged")
+                return
+
+            # L6: background-tick-delay as the loop-lag proxy.
+            # actual_elapsed = now - tick_started_at (seconds); convert to ms.
+            # Subtract scheduled_interval to get the *over* delay (clamped >=0).
+            # Example: if interval=60s and tick fires after 60.5s, delay=500ms.
+            now_mono = time.monotonic()
+            actual_elapsed_ms = (now_mono - tick_started_at) * 1000.0
+            loop_lag_ms = max(0.0, actual_elapsed_ms - scheduled_interval * 1000.0)
+            snapshot.runtime_event_loop_lag_ms = loop_lag_ms
+
+            # evaluate — pure C++ function (no I/O, no mutex).
+            decision = self._sampler.evaluate(snapshot)
+
+            # L3 debounce: track last N verdicts; fire only when all N agree.
+            verdict = decision.target_status
+            # Reset deque if the verdict changed (maxlen handles window trimming).
+            if self._debounce_window and self._debounce_window[-1] != verdict:
+                self._debounce_window.clear()
+            self._debounce_window.append(verdict)
+            if (len(self._debounce_window) == self._debounce_ticks
+                    and all(v == verdict for v in self._debounce_window)):
+                # N consecutive same verdicts → apply to the supervisor.
+                self._rt.note_health(decision)
 
     def _reembed(self) -> str | None:
         """Clear this tenant's stored vectors (dim/space changed) and re-embed.
@@ -404,6 +526,10 @@ class DashboardEngine:
 
         def _loop() -> None:
             while not stop.wait(interval_s):
+                # Record when this iteration actually started (L6: tick-delay
+                # measurement).  The scheduled wake was `interval_s` after the
+                # previous iteration; any surplus is the background-tick overload.
+                tick_started_at = time.monotonic()
                 try:
                     stats = self.tick(_now_iso())
                 except Exception:  # noqa: BLE001 — 保活:单轮失败不终结调度
@@ -417,6 +543,14 @@ class DashboardEngine:
                         on_tick(stats)
                     except Exception:  # noqa: BLE001
                         logger.exception("background tick on_tick callback failed")
+                # Phase 5: backpressure sample after each tick (L3/L6/L7).
+                # tick_started_at was recorded before tick() so the delay includes
+                # tick duration; that is intentional — a slow tick means the loop
+                # is overloaded.  Failures are caught inside _sample_backpressure.
+                try:
+                    self._sample_backpressure(tick_started_at, interval_s)
+                except Exception:  # noqa: BLE001
+                    logger.exception("backpressure sample failed")
 
         self._tick_stop = stop
         self._tick_thread = threading.Thread(
