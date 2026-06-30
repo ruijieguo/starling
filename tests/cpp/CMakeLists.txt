@@ -172,6 +172,7 @@ add_executable(starling_tests
     test_stage_timer.cpp
     test_scoped_work_gate.cpp
     test_restart_guard.cpp
+    test_health_sampler.cpp
     test_health_coupling.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
