@@ -79,6 +79,12 @@ public:
     // Number of soft work items dropped since construction.
     [[nodiscard]] long long dropped_soft_work_count() const;
 
+    // Force-release every held slot whose stored lease_until < now_iso (canonical
+    // iso8601 UTC string compare, same contract as PipelineRun::lease_until / CX-8 /
+    // L6). Reclaims each freed slot's lane quota. Returns the freed task_ids.
+    // Slots with lease_until >= now_iso remain held. Empty gate or none expired → {}.
+    [[nodiscard]] std::vector<std::string> sweep_leaked(std::string_view now_iso);
+
     // Number of distinct (GateKey, task_id) pairs currently holding a slot.
     // Test introspection — not a quota counter.
     [[nodiscard]] int active_slot_count() const;

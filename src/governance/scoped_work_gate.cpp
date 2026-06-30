@@ -102,6 +102,26 @@ void ScopedWorkGate::release(const GateKey& key, std::string_view task_id) {
     }
 }
 
+std::vector<std::string> ScopedWorkGate::sweep_leaked(std::string_view now_iso) {
+    // Collect task_ids of every expired slot (lease_until < now_iso, L6 string compare).
+    std::vector<std::string> freed;
+    for (const Slot& slot : slots_) {
+        if (slot.lease_until < now_iso) {
+            freed.push_back(slot.task_id);
+        }
+    }
+
+    // Erase expired slots and reclaim their lane quota.
+    // std::erase_if removes all elements satisfying the predicate — quota is implicit
+    // in the remaining slot count (lane_in_use_ counts slots_ directly), so erasing
+    // the slot is sufficient to reclaim the quota.
+    std::erase_if(slots_, [&now_iso](const Slot& slot) {
+        return slot.lease_until < now_iso;
+    });
+
+    return freed;
+}
+
 long long ScopedWorkGate::dropped_soft_work_count() const {
     return dropped_soft_work_count_;
 }

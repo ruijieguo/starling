@@ -261,4 +261,83 @@ TEST(ScopedWorkGate, DroppedCounterAccumulates) {
     EXPECT_EQ(gate.dropped_soft_work_count(), 2LL);
 }
 
+// ── sweep_leaked: force-release slots whose lease_until < now_iso ────────────
+
+// Canonical timestamps used throughout sweep tests:
+//   Past slots:   "2026-06-29T11:00:00Z"  (before now)
+//                 "2026-06-29T11:30:00Z"  (before now)
+//   Future slot:  "2026-06-29T13:00:00Z"  (after now)
+//   Sweep now:    "2026-06-29T12:00:00Z"
+
+TEST(ScopedWorkGate, SweepLeakedReturnsExpiredTaskIdsAndFreesSlots) {
+    // Two past slots + one future slot; sweep at "now" = 12:00 must return the 2 past
+    // task_ids, free their quota, and leave the future slot intact.
+    ScopedWorkGate gate{GateConfig{.critical_quota = 0, .soft_quota = 3}};
+    const GateKey key_a = make_key("t1", "scope", "agg-A", Lane::Soft);
+    const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
+    const GateKey key_c = make_key("t1", "scope", "agg-C", Lane::Soft);
+
+    ASSERT_EQ(gate.acquire(key_a, "past-task-1", "2026-06-29T11:00:00Z").status,
+              AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key_b, "past-task-2", "2026-06-29T11:30:00Z").status,
+              AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key_c, "future-task", "2026-06-29T13:00:00Z").status,
+              AdmitStatus::Admitted);
+
+    ASSERT_EQ(gate.active_slot_count(), 3);
+
+    std::vector<std::string> freed = gate.sweep_leaked("2026-06-29T12:00:00Z");
+
+    // Exactly the 2 past task_ids must be returned (order not guaranteed).
+    EXPECT_EQ(freed.size(), 2U);
+    EXPECT_NE(std::ranges::find(freed, "past-task-1"), freed.end());
+    EXPECT_NE(std::ranges::find(freed, "past-task-2"), freed.end());
+
+    // Two slots freed; one future slot remains.
+    EXPECT_EQ(gate.active_slot_count(), 1);
+
+    // The freed lane quota must be reclaimed: re-acquiring a past slot's lane succeeds.
+    const AcquireOutcome re_acq = gate.acquire(key_a, "new-task-A", "2026-06-29T13:00:00Z");
+    EXPECT_EQ(re_acq.status, AdmitStatus::Admitted);
+    EXPECT_EQ(re_acq.depth, 1);
+}
+
+TEST(ScopedWorkGate, SweepLeakedLeavesSlotAtExactCutoffHeld) {
+    // A slot whose lease_until == now_iso must NOT be swept (< is strict).
+    ScopedWorkGate gate{GateConfig{.critical_quota = 0, .soft_quota = 1}};
+    const GateKey key = make_key("t1", "scope", "agg-X", Lane::Soft);
+
+    ASSERT_EQ(gate.acquire(key, "exact-task", "2026-06-29T12:00:00Z").status,
+              AdmitStatus::Admitted);
+
+    std::vector<std::string> freed = gate.sweep_leaked("2026-06-29T12:00:00Z");
+
+    EXPECT_TRUE(freed.empty());
+    EXPECT_EQ(gate.active_slot_count(), 1);  // slot stays held
+}
+
+TEST(ScopedWorkGate, SweepLeakedOnEmptyGateReturnsEmptyVector) {
+    ScopedWorkGate gate{GateConfig{.critical_quota = 2, .soft_quota = 2}};
+
+    std::vector<std::string> freed = gate.sweep_leaked("2026-06-29T12:00:00Z");
+
+    EXPECT_TRUE(freed.empty());
+}
+
+TEST(ScopedWorkGate, SweepLeakedWithNoExpiredSlotsReturnsEmpty) {
+    ScopedWorkGate gate{GateConfig{.critical_quota = 0, .soft_quota = 2}};
+    const GateKey key_a = make_key("t1", "scope", "agg-A", Lane::Soft);
+    const GateKey key_b = make_key("t1", "scope", "agg-B", Lane::Soft);
+
+    ASSERT_EQ(gate.acquire(key_a, "task-1", "2026-06-29T13:00:00Z").status,
+              AdmitStatus::Admitted);
+    ASSERT_EQ(gate.acquire(key_b, "task-2", "2026-06-29T14:00:00Z").status,
+              AdmitStatus::Admitted);
+
+    std::vector<std::string> freed = gate.sweep_leaked("2026-06-29T12:00:00Z");
+
+    EXPECT_TRUE(freed.empty());
+    EXPECT_EQ(gate.active_slot_count(), 2);  // both slots intact
+}
+
 }  // namespace
