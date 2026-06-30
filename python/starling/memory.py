@@ -113,6 +113,8 @@ class TickStats:
     ttl_archived: int = 0
     projected: int = 0
     dispatched: int = 0
+    # P3.c1 Phase 3b: per-stage wall-clock timings — list of {"stage": str, "ms": int}.
+    stage_timings_ms: list = field(default_factory=list)
 
 
 class Memory:
