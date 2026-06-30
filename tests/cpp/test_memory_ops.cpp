@@ -156,4 +156,31 @@ TEST(MemoryOps, TickAllConsolidatesProjectsAndDispatches) {
     EXPECT_GE(t.projected, 0);
 }
 
+TEST(MemoryOps, TickAllRecordsStageTimings) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*a, llm, "", params("Bob owns auth")).outcome, "accepted");
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z");
+
+    ASSERT_EQ(t.stage_timings_ms.size(), 8U);
+    EXPECT_EQ(t.stage_timings_ms[0].stage, "embed");
+    EXPECT_EQ(t.stage_timings_ms[1].stage, "policy");
+    EXPECT_EQ(t.stage_timings_ms[2].stage, "common_ground");
+    EXPECT_EQ(t.stage_timings_ms[3].stage, "replay_oscillation_guard");
+    EXPECT_EQ(t.stage_timings_ms[4].stage, "replay_ttl_sweep");
+    EXPECT_EQ(t.stage_timings_ms[5].stage, "replay_idle");
+    EXPECT_EQ(t.stage_timings_ms[6].stage, "projection");
+    EXPECT_EQ(t.stage_timings_ms[7].stage, "outbox");
+    for (const auto& timing : t.stage_timings_ms) {
+        EXPECT_GE(timing.duration_ms, 0);
+    }
+}
+
 }  // namespace starling::memoryops

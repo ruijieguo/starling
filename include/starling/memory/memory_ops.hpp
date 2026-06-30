@@ -15,6 +15,7 @@
 #include "starling/embedding/embedding_worker.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/governance/stage_timer.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
@@ -118,6 +119,9 @@ struct TickOutcome {
     int ttl_archived = 0;     // VOLATILE TTL 超期归档数
     int projected = 0;        // 投影兜底批处理事件数
     int dispatched = 0;       // 出箱 pending→delivered 数(in_process 消费者)
+    // P3.c1 Phase 3b: per-stage wall-clock timings (embed/policy/common_ground/
+    // replay/projection/outbox), in execution order. metadata_only trace tier.
+    std::vector<governance::StageTiming> stage_timings_ms;
 };
 
 // 周期维护(P2.o 扩展):嵌入一批待向量语句 → 承诺触发器 tick → grounding
