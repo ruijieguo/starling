@@ -8,10 +8,12 @@
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/persistence/migration_runner.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/runtime_health.hpp"
 #include "starling/vector/vector_index.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -181,6 +183,146 @@ TEST(MemoryOps, TickAllRecordsStageTimings) {
     for (const auto& timing : t.stage_timings_ms) {
         EXPECT_GE(timing.duration_ms, 0);
     }
+}
+
+// ── P3.c live-wiring LW.2: health-gated load-shedding ───────────────────────
+
+// Helper: does stages_skipped contain the given label?
+static bool skipped(const TickOutcome& t, const std::string& label) {
+    return std::find(t.stages_skipped.begin(), t.stages_skipped.end(), label)
+           != t.stages_skipped.end();
+}
+
+// Helper: does stage_timings_ms contain the given label?
+static bool timed(const TickOutcome& t, const std::string& label) {
+    for (const auto& st : t.stage_timings_ms) {
+        if (st.stage == label) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// READY (regression): default param keeps all 8 stages running, stages_skipped
+// empty, timings all 8.
+TEST(MemoryOps, TickAllReadyRunsAllStages) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*a, llm, "", params("Alice reads code")).outcome, "accepted");
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    // Explicit READY — same as default-param path.
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
+                            RuntimeHealth::READY);
+
+    EXPECT_TRUE(t.stages_skipped.empty());
+    ASSERT_EQ(t.stage_timings_ms.size(), 8U);
+    // embed ran: the pending-embedding row got embedded.
+    EXPECT_EQ(t.embedded, 1);
+}
+
+// DEGRADED causality: soft stages are NOT run (embed effect absent); critical
+// stages DO run (outbox drains). stages_skipped == 4 soft labels. Timings only
+// for the 4 critical stages.
+TEST(MemoryOps, TickAllDegradedShedsEmbedLeavesRowUnembedded) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    // Seed a statement that needs embedding so the embed stage would do real work.
+    ASSERT_EQ(remember(*a, llm, "", params("Charlie deploys daily")).outcome, "accepted");
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
+                            RuntimeHealth::DEGRADED);
+
+    // Causality: soft stage effect absent — row remains un-embedded.
+    EXPECT_EQ(t.embedded, 0);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statement_vectors"), 0);
+
+    // stages_skipped == the 4 soft labels (order matches tick order).
+    ASSERT_EQ(t.stages_skipped.size(), 4U);
+    EXPECT_TRUE(skipped(t, "embed"));
+    EXPECT_TRUE(skipped(t, "common_ground"));
+    EXPECT_TRUE(skipped(t, "replay_idle"));
+    EXPECT_TRUE(skipped(t, "projection"));
+
+    // Timings only for the 4 critical stages.
+    EXPECT_EQ(t.stage_timings_ms.size(), 4U);
+    EXPECT_TRUE(timed(t, "policy"));
+    EXPECT_TRUE(timed(t, "replay_oscillation_guard"));
+    EXPECT_TRUE(timed(t, "replay_ttl_sweep"));
+    EXPECT_TRUE(timed(t, "outbox"));
+
+    // Critical stages ran: outbox dispatched pending bus events (bus_events seeded
+    // by remember's subscriber pump; Accept-all consumer marks them delivered).
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM bus_events WHERE dispatch_status='pending'"), 0);
+}
+
+// DRAINING: only outbox runs; 7 stages skipped, outbox NOT skipped; outbox
+// still drains pending delivery.
+TEST(MemoryOps, TickAllDrainingKeepsOnlyOutbox) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*a, llm, "", params("Dave ships features")).outcome, "accepted");
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
+                            RuntimeHealth::DRAINING);
+
+    // 7 stages skipped; outbox is NOT in the skip list.
+    ASSERT_EQ(t.stages_skipped.size(), 7U);
+    EXPECT_FALSE(skipped(t, "outbox"));
+    EXPECT_TRUE(skipped(t, "embed"));
+    EXPECT_TRUE(skipped(t, "policy"));
+    EXPECT_TRUE(skipped(t, "common_ground"));
+    EXPECT_TRUE(skipped(t, "replay_oscillation_guard"));
+    EXPECT_TRUE(skipped(t, "replay_ttl_sweep"));
+    EXPECT_TRUE(skipped(t, "replay_idle"));
+    EXPECT_TRUE(skipped(t, "projection"));
+
+    // Only outbox timed.
+    ASSERT_EQ(t.stage_timings_ms.size(), 1U);
+    EXPECT_EQ(t.stage_timings_ms[0].stage, "outbox");
+
+    // Outbox still drains (causality: critical delivery preserved under DRAINING).
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM bus_events WHERE dispatch_status='pending'"), 0);
+}
+
+// UNREADY: all 8 stages skipped; no timings; no side effects.
+TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*a, llm, "", params("Eve reviews PRs")).outcome, "accepted");
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+    prospective::PolicyEngine policy(*a);
+
+    const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
+                            RuntimeHealth::UNREADY);
+
+    ASSERT_EQ(t.stages_skipped.size(), 8U);
+    EXPECT_TRUE(t.stage_timings_ms.empty());
+    EXPECT_EQ(t.embedded, 0);
 }
 
 }  // namespace starling::memoryops
