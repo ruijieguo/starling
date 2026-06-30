@@ -148,9 +148,9 @@ void bind_14_governance(pybind11::module_& m) {
     // gather() to take the SqliteAdapter& (whose connection() method returns
     // the Connection&). This mirrors how RuntimeSupervisor is bound (adapter
     // arg) and keeps the Python caller free of raw Connection objects.
-    // keep_alive<0,1>: the returned MetricsSnapshot is a value (not a ref), so
-    // no lifetime coupling is needed here; the adapter must outlive each call
-    // but that is the caller's responsibility.
+    // The returned MetricsSnapshot is a value copy (not a ref), so no keep_alive
+    // policy is needed; the adapter must outlive each call, which is the caller's
+    // responsibility (self._rt.adapter is process-lifetime).
     py::class_<gov::MetricsGatherer>(m, "MetricsGatherer")
         .def(py::init<>())
         .def("gather",
