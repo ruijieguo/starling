@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stateTone, isHealthy, type RuntimeHealthResponse } from './runtime_health';
+import { stateTone, isHealthy, nonZeroMetrics, type RuntimeHealthResponse, type MetricsSnapshot } from './runtime_health';
 
 describe('stateTone', () => {
 	it('READY → success', () => {
@@ -16,6 +16,41 @@ describe('stateTone', () => {
 	});
 	it('DRAINING must NOT collide with DEGRADED (D2)', () => {
 		expect(stateTone('DRAINING')).not.toBe(stateTone('DEGRADED'));
+	});
+});
+
+const zeroMetrics: MetricsSnapshot = {
+	outbox_lag_sequence: 0,
+	subscriber_failure_rate: 0,
+	extraction_queue_depth: 0,
+	projection_lag_seconds: 0,
+	runtime_event_loop_lag_ms: 0,
+	vector_delete_lag: 0,
+	erased_evidence_visible_count: 0
+};
+
+describe('nonZeroMetrics', () => {
+	it('returns empty array when all metrics are zero', () => {
+		expect(nonZeroMetrics(zeroMetrics)).toEqual([]);
+	});
+	it('returns only the non-zero metric when outbox_lag_sequence = 42', () => {
+		const ms: MetricsSnapshot = { ...zeroMetrics, outbox_lag_sequence: 42 };
+		const result = nonZeroMetrics(ms);
+		expect(result).toContainEqual(['outbox_lag_sequence', 42]);
+		// zero fields are excluded
+		expect(result.every(([, v]) => v !== 0)).toBe(true);
+	});
+	it('returns both when outbox_lag_sequence = 5 and runtime_event_loop_lag_ms = 120', () => {
+		const ms: MetricsSnapshot = { ...zeroMetrics, outbox_lag_sequence: 5, runtime_event_loop_lag_ms: 120 };
+		const keys = nonZeroMetrics(ms).map(([k]) => k);
+		expect(keys).toContain('outbox_lag_sequence');
+		expect(keys).toContain('runtime_event_loop_lag_ms');
+		expect(keys.length).toBe(2);
+	});
+	it('value 42 appears in result when outbox_lag_sequence = 42 (renders that value)', () => {
+		const ms: MetricsSnapshot = { ...zeroMetrics, outbox_lag_sequence: 42 };
+		const values = nonZeroMetrics(ms).map(([, v]) => v);
+		expect(values).toContain(42);
 	});
 });
 

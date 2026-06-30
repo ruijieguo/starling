@@ -31,3 +31,8 @@ export function stateTone(s: RuntimeHealthStatus): Tone {
 export function isHealthy(r: RuntimeHealthResponse): boolean {
 	return r.status === 'READY';
 }
+
+/** Returns key-value pairs for metrics whose value is non-zero. */
+export function nonZeroMetrics(ms: MetricsSnapshot): [string, number][] {
+	return (Object.entries(ms) as [string, number][]).filter(([, v]) => v !== 0);
+}

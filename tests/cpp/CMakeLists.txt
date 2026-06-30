@@ -172,7 +172,9 @@ add_executable(starling_tests
     test_stage_timer.cpp
     test_scoped_work_gate.cpp
     test_restart_guard.cpp
+    test_health_sampler.cpp
     test_health_coupling.cpp
+    test_metrics_gatherer.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
