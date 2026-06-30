@@ -150,13 +150,19 @@ void bind_13_memory_ops(pybind11::module_& m) {
                   py::gil_scoped_release release;
                   t = starling::memoryops::tick_all(adapter, worker, policy, now_iso);
               }
+              py::list stages;
+              for (const auto& timing : t.stage_timings_ms) {
+                  stages.append(py::dict("stage"_a = timing.stage,
+                                         "ms"_a = timing.duration_ms));
+              }
               return py::dict("embedded"_a = t.embedded, "fired"_a = t.fired,
                               "broken"_a = t.broken, "auto_withdrawn"_a = t.auto_withdrawn,
                               "replay_sampled"_a = t.replay_sampled,
                               "consolidated"_a = t.consolidated,
                               "ttl_archived"_a = t.ttl_archived,
                               "projected"_a = t.projected,
-                              "dispatched"_a = t.dispatched);
+                              "dispatched"_a = t.dispatched,
+                              "stage_timings_ms"_a = stages);
           },
           py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"));
 

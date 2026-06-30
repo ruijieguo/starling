@@ -22,7 +22,7 @@ def test_unconfigured_llm_recall_tick_ok_but_remember_raises(engine):
     st = engine.tick("2026-06-01T10:00:00Z")
     assert set(st) == {"embedded", "fired", "broken", "auto_withdrawn",
                        "replay_sampled", "consolidated", "ttl_archived",
-                       "projected", "dispatched"}
+                       "projected", "dispatched", "stage_timings_ms"}
     with pytest.raises(_LLMNotConfigured):
         engine.remember("Bob owns auth")
 

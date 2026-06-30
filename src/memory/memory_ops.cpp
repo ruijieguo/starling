@@ -193,39 +193,73 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      prospective::PolicyEngine& policy,
                      std::string_view now_iso) {
     auto& conn = adapter.connection();
-    const auto es = worker.tick_one_batch(conn, now_iso);
-    const auto ps = policy.tick(conn, now_iso);
-    // P2.j:grounding 滞后事件冲账(与原 Memory.tick/MemoryCore.tick 对称)。
-    tom::CommonGroundSubscriber::tick_one_batch(adapter, conn, std::string(now_iso));
     TickOutcome t;
-    t.embedded       = es.embedded;
-    t.fired          = ps.fired;
-    t.broken         = ps.broken;
-    t.auto_withdrawn = ps.auto_withdrawn;
 
-    // P2.o 回放维护:防护先行(振荡强制巩固、TTL 归档把不该再采样的语句
-    // 移出池),再跑 idle 批(批 30)做正常巩固。
+    // Accumulate each stage's {stage, ms} (Option A — no PipelineRun in the inline
+    // tick; OQ-2/L1). The sink allocates a small SSO string + push_back; any
+    // allocation failure is swallowed by the StageTimer dtor (best-effort, L6).
+    std::vector<governance::StageTiming> timings;
+    timings.reserve(8);  // 8 stages (L3: replay split into 3 sub-stages)
+    const governance::StageTimer::Sink sink =
+        [&timings](std::string_view stage, long long duration_ms) {
+            timings.push_back(governance::StageTiming{
+                .stage = std::string(stage), .duration_ms = duration_ms});
+        };
+
+    {
+        governance::StageTimer timer("embed", sink);
+        t.embedded = worker.tick_one_batch(conn, now_iso).embedded;
+    }
+    {
+        governance::StageTimer timer("policy", sink);
+        const auto pstats = policy.tick(conn, now_iso);
+        t.fired          = pstats.fired;
+        t.broken         = pstats.broken;
+        t.auto_withdrawn = pstats.auto_withdrawn;
+    }
+    {
+        // P2.j: grounding 滞后事件冲账(与原 Memory.tick/MemoryCore.tick 对称)。
+        governance::StageTimer timer("common_ground", sink);
+        tom::CommonGroundSubscriber::tick_one_batch(adapter, conn, std::string(now_iso));
+    }
+    // P2.o 回放维护:防护先行(振荡强制巩固、TTL 归档),再跑 idle 批做正常巩固。
+    // L3 (codex #7): the 3 replay sub-calls are timed SEPARATELY so the Phase-5
+    // sampler can attribute cost to oscillation-guard vs TTL-sweep vs idle-replay.
+    // ReplayScheduler is a cheap borrowed-handle wrapper, constructed once outside.
     replay::ReplayScheduler replay(adapter);
-    const int forced  = replay.enforce_oscillation_guard(conn);
-    t.ttl_archived    = replay.sweep_volatile_ttl(conn, now_iso);
-    const auto rs     = replay.run_idle(conn, now_iso);
-    t.replay_sampled  = rs.sampled;
-    t.consolidated    = rs.compressed + forced;
+    int forced = 0;
+    {
+        governance::StageTimer timer("replay_oscillation_guard", sink);
+        forced = replay.enforce_oscillation_guard(conn);
+    }
+    {
+        governance::StageTimer timer("replay_ttl_sweep", sink);
+        t.ttl_archived = replay.sweep_volatile_ttl(conn, now_iso);
+    }
+    {
+        governance::StageTimer timer("replay_idle", sink);
+        const auto rstats    = replay.run_idle(conn, now_iso);
+        t.replay_sampled = rstats.sampled;
+        t.consolidated   = rstats.compressed + forced;
+    }
+    {
+        // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入。
+        governance::StageTimer timer("projection", sink);
+        t.projected = projection::ProjectionMaintainer(adapter)
+                          .tick_one_batch(conn, now_iso).events_processed;
+    }
+    {
+        // 出箱收敛:进程内五消费者按 consumer_checkpoints 推进,Accept-all 标记 delivered。
+        governance::StageTimer timer("outbox", sink);
+        bus::DispatchOptions opts;
+        opts.consumer_id = "in_process";
+        bus::OutboxDispatcher dispatcher(
+            conn, [](const bus::BusEvent&) { return bus::ConsumerDecision::Accept; },
+            opts);
+        t.dispatched = dispatcher.run_once().delivered;
+    }
 
-    // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入(种子/直调/回放
-    // 自身刚发出的事件)。
-    t.projected = projection::ProjectionMaintainer(adapter)
-                      .tick_one_batch(conn, now_iso).events_processed;
-
-    // 出箱收敛:嵌入式单进程没有外部消费者,进程内五消费者全部按
-    // consumer_checkpoints 推进且 SELECT 不过滤 dispatch_status,Accept-all
-    // 标记 delivered 不会饿死任何人;delivered 语义=进程内交付完成。
-    bus::DispatchOptions opts;
-    opts.consumer_id = "in_process";
-    bus::OutboxDispatcher dispatcher(
-        conn, [](const bus::BusEvent&) { return bus::ConsumerDecision::Accept; },
-        opts);
-    t.dispatched = dispatcher.run_once().delivered;
+    t.stage_timings_ms = std::move(timings);
     return t;
 }
 

@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "starling/governance/pipeline_run_store.hpp"
+#include "starling/governance/stage_timer.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/migration_runner.hpp"
 
@@ -627,4 +628,27 @@ TEST(PipelineRunStore, PartialTerminalRollupEmptyIsCompleted) {
     EXPECT_EQ(
         PipelineRunStore::partial_terminal_rollup(empty),
         PipelineRunStatus::Completed);
+}
+
+// ── 31. StageTimer sink wires to record_stage_timing — Phase-4 seam proof ────
+
+TEST(PipelineRunStore, StageTimerSinkPersistsViaRecordStageTiming) {
+    auto conn = fresh_db();
+    PipelineRunStore store(conn);
+    const PipelineRun running = enqueue_and_claim(store);  // RUNNING run to attach to
+
+    {
+        // The SAME StageTimer as the tick path — here its sink writes to the store
+        // instead of accumulating, proving the Phase-4 run-owner seam is wired.
+        starling::governance::StageTimer timer(
+            "embed", [&](std::string_view stage, long long ms) {
+                store.record_stage_timing(running.id, stage, ms);
+            });
+    }  // scope exit -> record_stage_timing(running.id, "embed", <elapsed>)
+
+    const auto after = store.get(running.id);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(eval_json_int(conn.raw(), "json_array_length", after->stage_timings_ms), 1);
+    EXPECT_EQ(eval_json_extract_str(conn.raw(), after->stage_timings_ms, "$[0].stage"), "embed");
+    EXPECT_GE(eval_json_extract_int(conn.raw(), after->stage_timings_ms, "$[0].ms"), 0LL);
 }
