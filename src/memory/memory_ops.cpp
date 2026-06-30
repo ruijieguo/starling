@@ -10,6 +10,7 @@
 #include "starling/evidence/engram.hpp"
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/extractor.hpp"
+#include "starling/governance/tick_load_shedding.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/retrieval/retrieval_planner.hpp"
@@ -191,7 +192,8 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
 TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      embedding::EmbeddingWorker& worker,
                      prospective::PolicyEngine& policy,
-                     std::string_view now_iso) {
+                     std::string_view now_iso,
+                     RuntimeHealth health) {
     auto& conn = adapter.connection();
     TickOutcome t;
 
@@ -206,50 +208,79 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                 .stage = std::string(stage), .duration_ms = duration_ms});
         };
 
-    {
+    // P3.c LW.2: gate each stage through the load-shedding policy. Skipped stages
+    // record their label in stages_skipped instead of running (LOCKED L8/OQ-LW.6).
+    if (governance::should_run_stage(governance::TickStage::Embed, health)) {
         governance::StageTimer timer("embed", sink);
         t.embedded = worker.tick_one_batch(conn, now_iso).embedded;
+    } else {
+        t.stages_skipped.emplace_back("embed");
     }
-    {
+
+    if (governance::should_run_stage(governance::TickStage::Policy, health)) {
         governance::StageTimer timer("policy", sink);
         const auto pstats = policy.tick(conn, now_iso);
         t.fired          = pstats.fired;
         t.broken         = pstats.broken;
         t.auto_withdrawn = pstats.auto_withdrawn;
+    } else {
+        t.stages_skipped.emplace_back("policy");
     }
-    {
-        // P2.j: grounding 滞后事件冲账(与原 Memory.tick/MemoryCore.tick 对称)。
+
+    // P2.j: grounding 滞后事件冲账(与原 Memory.tick/MemoryCore.tick 对称)。
+    if (governance::should_run_stage(governance::TickStage::CommonGround, health)) {
         governance::StageTimer timer("common_ground", sink);
         tom::CommonGroundSubscriber::tick_one_batch(adapter, conn, std::string(now_iso));
+    } else {
+        t.stages_skipped.emplace_back("common_ground");
     }
+
     // P2.o 回放维护:防护先行(振荡强制巩固、TTL 归档),再跑 idle 批做正常巩固。
     // L3 (codex #7): the 3 replay sub-calls are timed SEPARATELY so the Phase-5
     // sampler can attribute cost to oscillation-guard vs TTL-sweep vs idle-replay.
-    // ReplayScheduler is a cheap borrowed-handle wrapper, constructed once outside.
-    replay::ReplayScheduler replay(adapter);
+    // ReplayScheduler is a cheap borrowed-handle wrapper, constructed at function
+    // scope (outside the per-stage gates) so forced/replay are always accessible
+    // regardless of which replay substages are gated. Under DEGRADED, oscillation_guard
+    // runs (Critical) but replay_idle is skipped (Soft) — forced is computed but
+    // t.consolidated stays 0. Constructing replay even when all replay stages skip
+    // is harmless (cheap borrowed-handle, no side effect on construction).
+    replay::ReplayScheduler replayScheduler(adapter);
     int forced = 0;
-    {
+
+    if (governance::should_run_stage(governance::TickStage::ReplayOscillationGuard, health)) {
         governance::StageTimer timer("replay_oscillation_guard", sink);
-        forced = replay.enforce_oscillation_guard(conn);
+        forced = replayScheduler.enforce_oscillation_guard(conn);
+    } else {
+        t.stages_skipped.emplace_back("replay_oscillation_guard");
     }
-    {
+
+    if (governance::should_run_stage(governance::TickStage::ReplayTtlSweep, health)) {
         governance::StageTimer timer("replay_ttl_sweep", sink);
-        t.ttl_archived = replay.sweep_volatile_ttl(conn, now_iso);
+        t.ttl_archived = replayScheduler.sweep_volatile_ttl(conn, now_iso);
+    } else {
+        t.stages_skipped.emplace_back("replay_ttl_sweep");
     }
-    {
+
+    if (governance::should_run_stage(governance::TickStage::ReplayIdle, health)) {
         governance::StageTimer timer("replay_idle", sink);
-        const auto rstats    = replay.run_idle(conn, now_iso);
-        t.replay_sampled = rstats.sampled;
-        t.consolidated   = rstats.compressed + forced;
+        const auto rstats = replayScheduler.run_idle(conn, now_iso);
+        t.replay_sampled  = rstats.sampled;
+        t.consolidated    = rstats.compressed + forced;
+    } else {
+        t.stages_skipped.emplace_back("replay_idle");
     }
-    {
-        // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入。
+
+    // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入。
+    if (governance::should_run_stage(governance::TickStage::Projection, health)) {
         governance::StageTimer timer("projection", sink);
         t.projected = projection::ProjectionMaintainer(adapter)
                           .tick_one_batch(conn, now_iso).events_processed;
+    } else {
+        t.stages_skipped.emplace_back("projection");
     }
-    {
-        // 出箱收敛:进程内五消费者按 consumer_checkpoints 推进,Accept-all 标记 delivered。
+
+    // 出箱收敛:进程内五消费者按 consumer_checkpoints 推进,Accept-all 标记 delivered。
+    if (governance::should_run_stage(governance::TickStage::Outbox, health)) {
         governance::StageTimer timer("outbox", sink);
         bus::DispatchOptions opts;
         opts.consumer_id = "in_process";
@@ -257,6 +288,8 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
             conn, [](const bus::BusEvent&) { return bus::ConsumerDecision::Accept; },
             opts);
         t.dispatched = dispatcher.run_once().delivered;
+    } else {
+        t.stages_skipped.emplace_back("outbox");
     }
 
     t.stage_timings_ms = std::move(timings);

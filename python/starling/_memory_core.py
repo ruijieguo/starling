@@ -269,8 +269,10 @@ class MemoryCore:
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +
         flush grounding 滞后事件 (P2.j)。三连组合在 C++ `memoryops::tick_all`
-        (嵌入网络期间释放 GIL);这里只剩绑定转发。"""
-        return _core.memory_tick_all(self.rt.adapter, self.worker, self.policy, now)
+        (嵌入网络期间释放 GIL);这里只剩绑定转发。
+        P3.c LW.3: pass live supervisor health so C++ can gate soft stages."""
+        return _core.memory_tick_all(
+            self.rt.adapter, self.worker, self.policy, now, self.rt.health())
 
     def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000,
                           holder: str | None = None):

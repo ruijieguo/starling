@@ -535,9 +535,11 @@ class DashboardEngine:
                 except Exception:  # noqa: BLE001 — 保活:单轮失败不终结调度
                     logger.exception("background tick failed")
                     continue
-                # stage_timings_ms is always present (8 entries) — exclude it from the
-                # work-check, else every idle tick fires a WS heartbeat (3b L5b).
-                did_work = any(v for k, v in stats.items() if k != "stage_timings_ms")
+                # stage_timings_ms is always present (8 entries) and stages_skipped is
+                # non-empty under DEGRADED — exclude both from the work-check, else
+                # every idle DEGRADED tick spuriously fires a WS heartbeat (3b L8).
+                did_work = any(v for k, v in stats.items()
+                               if k not in ("stage_timings_ms", "stages_skipped"))
                 if on_tick is not None and did_work:
                     try:
                         on_tick(stats)

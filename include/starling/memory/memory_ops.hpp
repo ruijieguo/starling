@@ -19,6 +19,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
+#include "starling/runtime_health.hpp"
 
 namespace starling::memoryops {
 
@@ -123,6 +124,11 @@ struct TickOutcome {
     // (embed/policy/common_ground/replay_oscillation_guard/replay_ttl_sweep/
     // replay_idle/projection/outbox). metadata_only trace tier.
     std::vector<governance::StageTiming> stage_timings_ms;
+    // P3.c LW.2: stages skipped by load-shedding this tick (LOCKED L8/OQ-LW.6).
+    // Same string labels as stage_timings_ms; a stage is in exactly one of the
+    // two. Empty = nothing shed (READY). Excluded from the host idle-heartbeat
+    // predicate (LW.3).
+    std::vector<std::string> stages_skipped;
 };
 
 // 周期维护(P2.o 扩展):嵌入一批待向量语句 → 承诺触发器 tick → grounding
@@ -131,10 +137,13 @@ struct TickOutcome {
 // 消费者,五个进程内消费者均按 consumer_checkpoints 推进且不过滤
 // dispatch_status,故标记 delivered 安全;delivered=进程内交付完成)。
 // worker/policy 由调用方持有注入(embedder 可热换,见 DashboardEngine)。
+// health (P3.c LW.2): gates each stage through governance::should_run_stage;
+// defaults to READY (behavior-preserving — existing 4-arg callers unchanged).
 TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      embedding::EmbeddingWorker& worker,
                      prospective::PolicyEngine& policy,
-                     std::string_view now_iso);
+                     std::string_view now_iso,
+                     RuntimeHealth health = RuntimeHealth::READY);
 
 // P3.b2:逻辑删除一批 statements(→forgotten),返回实际转换计数。
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,

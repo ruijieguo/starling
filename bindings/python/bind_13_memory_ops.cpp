@@ -144,11 +144,12 @@ void bind_13_memory_ops(pybind11::module_& m) {
           [](starling::persistence::SqliteAdapter& adapter,
              starling::embedding::EmbeddingWorker& worker,
              starling::prospective::PolicyEngine& policy,
-             const std::string& now_iso) {
+             const std::string& now_iso,
+             starling::RuntimeHealth health) {
               starling::memoryops::TickOutcome t;
               {
                   py::gil_scoped_release release;
-                  t = starling::memoryops::tick_all(adapter, worker, policy, now_iso);
+                  t = starling::memoryops::tick_all(adapter, worker, policy, now_iso, health);
               }
               py::list stages;
               for (const auto& timing : t.stage_timings_ms) {
@@ -162,9 +163,11 @@ void bind_13_memory_ops(pybind11::module_& m) {
                               "ttl_archived"_a = t.ttl_archived,
                               "projected"_a = t.projected,
                               "dispatched"_a = t.dispatched,
-                              "stage_timings_ms"_a = stages);
+                              "stage_timings_ms"_a = stages,
+                              "stages_skipped"_a = t.stages_skipped);
           },
-          py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"));
+          py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"),
+          py::arg("health") = starling::RuntimeHealth::READY);
 
     m.def("memory_forget",
           [](starling::persistence::SqliteAdapter& adapter,
