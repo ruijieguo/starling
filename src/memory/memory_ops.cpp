@@ -212,10 +212,10 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
     }
     {
         governance::StageTimer timer("policy", sink);
-        const auto ps = policy.tick(conn, now_iso);
-        t.fired          = ps.fired;
-        t.broken         = ps.broken;
-        t.auto_withdrawn = ps.auto_withdrawn;
+        const auto pstats = policy.tick(conn, now_iso);
+        t.fired          = pstats.fired;
+        t.broken         = pstats.broken;
+        t.auto_withdrawn = pstats.auto_withdrawn;
     }
     {
         // P2.j: grounding 滞后事件冲账(与原 Memory.tick/MemoryCore.tick 对称)。
@@ -238,9 +238,9 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
     }
     {
         governance::StageTimer timer("replay_idle", sink);
-        const auto rs    = replay.run_idle(conn, now_iso);
-        t.replay_sampled = rs.sampled;
-        t.consolidated   = rs.compressed + forced;
+        const auto rstats    = replay.run_idle(conn, now_iso);
+        t.replay_sampled = rstats.sampled;
+        t.consolidated   = rstats.compressed + forced;
     }
     {
         // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入。
