@@ -152,11 +152,11 @@ class TestCausalityDegraded:
         )
 
     def test_embed_effect_absent_under_degraded(self, tmp_path):
-        """A pending-embed row is NOT embedded when health is DEGRADED (embed stage shed)."""
-        from starling import _core as core
+        """A pending-embed row is deferred (not embedded) when health is DEGRADED,
+        and then embeds on recovery to READY — proving shedding, not an empty queue."""
         eng = _engine(tmp_path)
         # Seed a statement via remember with a FakeLLM so there's a pending embed.
-        fake = core.FakeLLMAdapter()
+        fake = _core.FakeLLMAdapter()
         fake.set_default_response(
             '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
             '"subject":"X","predicate":"is","object":"test",'
@@ -164,14 +164,23 @@ class TestCausalityDegraded:
             True, "")
         eng.llm = fake
         eng.remember("X is a test")
-        # Verify there's something to embed (embedded=0 before tick).
-        stats_before = eng.tick(_NOW)
-        # Now force DEGRADED and tick again.
+        # Force DEGRADED BEFORE any tick so the pending-embed row is still queued.
         _force_degraded(eng)
         assert eng.health() == _core.RuntimeHealth.DEGRADED
+        # DEGRADED tick: embed stage is shed — the row must NOT be embedded.
         stats = eng.tick(_NOW)
         assert stats["embedded"] == 0, (
             f"embed stage should be shed under DEGRADED; embedded={stats['embedded']!r}"
+        )
+        assert "embed" in stats["stages_skipped"], (
+            f"embed must appear in stages_skipped under DEGRADED; got {stats['stages_skipped']!r}"
+        )
+        # Recover to READY — the same deferred row must now embed.
+        _force_ready(eng)
+        assert eng.health() == _core.RuntimeHealth.READY
+        stats2 = eng.tick(_NOW)
+        assert stats2["embedded"] == 1, (
+            f"deferred row must embed after recovery to READY; embedded={stats2['embedded']!r}"
         )
 
 
