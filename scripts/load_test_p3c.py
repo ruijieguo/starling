@@ -123,3 +123,89 @@ def run_retrieval(mem, *, queries: int, statements: int,
         "throughput_per_s": round(queries / elapsed, 2) if elapsed > 0 else 0.0,
         "abstained_count": abstained_count,
     }
+
+
+# Validity caveats — printed + embedded in the report so the baseline is never
+# mistaken for a production profile (eng-review MAJOR-3).
+_CAVEATS = [
+    "FakeLLM + StubEmbedding(8-dim): extraction-LLM and embedding-network cost "
+    "are EXCLUDED. A real embedder is ~1536-dim, so the O(n) cosine scan cost is "
+    "under-measured (~190x). top_stage reflects the SQLite/scan machinery, NOT "
+    "the production embedding/LLM hotspot — do not pick an optimization target "
+    "from this alone without an LLM-in-the-loop cross-check.",
+    "Retrieval is single-holder (holder=self owns all rows) and SEQUENTIAL; "
+    "sustained-concurrent 100 QPS is deferred (out of scope for this baseline).",
+    "If retrieval.abstained_count > 0, those queries hit the abstain path, not "
+    "the scan — their latencies are not retrieval-scan latency.",
+    "If tick.embed_shed_ticks > 0, the drain tripped DEGRADED load-shedding and "
+    "may be incomplete (some statements left un-embedded).",
+]
+
+
+def build_report(params: dict, seed: dict, tick: dict, retrieval: dict) -> dict:
+    return {"params": params, "seed": seed, "tick": tick,
+            "retrieval": retrieval, "caveats": _CAVEATS}
+
+
+def write_report(report: dict, out_dir: str) -> Path:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    p = report["params"]
+    path = out / f"p3c_baseline_{p['cognizers']}c_{p['statements']}s.json"
+    path.write_text(json.dumps(report, indent=2, sort_keys=True))
+    return path
+
+
+def format_summary(report: dict) -> str:
+    seed, tick, ret = report["seed"], report["tick"], report["retrieval"]
+    lines = [
+        "=== P3.c scale-baseline ===",
+        f"seed:      {seed['seeded']} stmts in {seed['elapsed_s']}s "
+        f"({seed['throughput_per_s']}/s)",
+        f"tick:      {tick['ticks']} ticks, {tick['elapsed_s']}s; "
+        f"top stage = {tick['top_stage']}; embed_shed_ticks={tick['embed_shed_ticks']}",
+        "  stage_ms_total: " + ", ".join(
+            f"{k}={v}" for k, v in sorted(
+                tick["stage_ms_total"].items(), key=lambda kv: -kv[1])),
+        f"retrieval: {ret['queries']} q; p50={ret['p50_ms']}ms "
+        f"p95={ret['p95_ms']}ms p99={ret['p99_ms']}ms "
+        f"({ret['throughput_per_s']}/s); abstained={ret['abstained_count']}/{ret['queries']}",
+        "caveats:",
+        *(f"  - {c}" for c in report.get("caveats", [])),
+    ]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="P3.c scale-baseline load-test harness.")
+    ap.add_argument("--db", required=True, help="SQLite path to seed into")
+    ap.add_argument("--cognizers", type=int, default=1000)
+    ap.add_argument("--statements", type=int, default=10000, help="total statements")
+    ap.add_argument("--queries", type=int, default=1000)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--out-dir", default="bench")
+    ap.add_argument("--max-ticks", type=int, default=100000)
+    args = ap.parse_args(argv)
+
+    rng = random.Random(args.seed)
+    mem, fake = open_memory(args.db)
+    params = {"cognizers": args.cognizers, "statements": args.statements,
+              "queries": args.queries, "seed": args.seed}
+    print(f"seeding {args.statements} stmts across {args.cognizers} cognizers ...")
+    seed = run_seed(mem, fake, cognizers=args.cognizers,
+                    statements=args.statements, rng=rng)
+    print(f"draining tick queue (max {args.max_ticks}) ...")
+    tick = run_tick_drain(mem, max_ticks=args.max_ticks)
+    print(f"retrieval x{args.queries} (existing objects, holder=self) ...")
+    retrieval = run_retrieval(mem, queries=args.queries,
+                              statements=args.statements, rng=rng)
+
+    report = build_report(params, seed, tick, retrieval)
+    path = write_report(report, args.out_dir)
+    print(format_summary(report))
+    print(f"report: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
