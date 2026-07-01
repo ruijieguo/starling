@@ -4,12 +4,31 @@ Seeds the memory machinery to scale, measures the maintenance tick (per-stage)
 and retrieval latency, and emits a baseline report. Application-layer tooling:
 seeds + measures through the public Memory API; adds no core semantics. See
 docs/superpowers/specs/2026-07-01-p3-c-scale-baseline-harness-design.md.
+
+Run modes (embedder)
+--------------------
+Default (stub, no key needed):
+    python scripts/load_test_p3c.py --db /tmp/bench.db
+
+OpenAI (text-embedding-3-small / text-embedding-3-large):
+    OPENAI_API_KEY=sk-... python scripts/load_test_p3c.py --db /tmp/bench.db --real-embed
+
+DeepSeek (no native embeddings — point at an OpenAI-compatible endpoint):
+    OPENAI_API_KEY=<dsk-key> OPENAI_BASE_URL=https://api.deepseek.com/v1 \\
+        python scripts/load_test_p3c.py --db /tmp/bench.db --real-embed
+
+DashScope / Alibaba (text-embedding-v3, 1024-dim):
+    OPENAI_API_KEY=<dashscope-key> OPENAI_BASE_URL=<dashscope-openai-url> \\
+        EMBEDDING_MODEL=text-embedding-v3 EMBEDDING_DIM=1024 \\
+        python scripts/load_test_p3c.py --db /tmp/bench.db --real-embed
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -127,12 +146,14 @@ def run_retrieval(mem, *, queries: int, statements: int,
 
 # Validity caveats — printed + embedded in the report so the baseline is never
 # mistaken for a production profile (eng-review MAJOR-3).
-_CAVEATS = [
+_STUB_EMBED_CAVEAT = (
     "FakeLLM + StubEmbedding(8-dim): extraction-LLM and embedding-network cost "
     "are EXCLUDED. A real embedder is ~1536-dim, so the O(n) cosine scan cost is "
     "under-measured (~190x). top_stage reflects the SQLite/scan machinery, NOT "
     "the production embedding/LLM hotspot — do not pick an optimization target "
-    "from this alone without an LLM-in-the-loop cross-check.",
+    "from this alone without an LLM-in-the-loop cross-check."
+)
+_EXTRA_CAVEATS = [
     "Retrieval is single-holder (holder=self owns all rows) and SEQUENTIAL; "
     "sustained-concurrent 100 QPS is deferred (out of scope for this baseline).",
     "If retrieval.abstained_count > 0, those queries hit the abstain path, not "
@@ -142,9 +163,17 @@ _CAVEATS = [
 ]
 
 
-def build_report(params: dict, seed: dict, tick: dict, retrieval: dict) -> dict:
+def build_report(params: dict, seed: dict, tick: dict, retrieval: dict,
+                 *, embedder_label: str | None = None) -> dict:
+    if embedder_label:
+        embed_caveat = (
+            f"real embedder: {embedder_label} — "
+            "extraction-LLM cost EXCLUDED; O(n×dim) cosine scan cost is measured accurately."
+        )
+    else:
+        embed_caveat = _STUB_EMBED_CAVEAT
     return {"params": params, "seed": seed, "tick": tick,
-            "retrieval": retrieval, "caveats": _CAVEATS}
+            "retrieval": retrieval, "caveats": [embed_caveat] + _EXTRA_CAVEATS}
 
 
 def write_report(report: dict, out_dir: str) -> Path:
@@ -185,12 +214,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out-dir", default="bench")
     ap.add_argument("--max-ticks", type=int, default=100000)
+    ap.add_argument("--real-embed", action="store_true",
+                    help="Swap the 8-dim stub for a real OpenAI-compatible embedder "
+                         "(requires OPENAI_API_KEY; OPENAI_BASE_URL/EMBEDDING_MODEL/"
+                         "EMBEDDING_DIM select DeepSeek/DashScope — see module docstring).")
     args = ap.parse_args(argv)
 
     rng = random.Random(args.seed)
     mem, fake = open_memory(args.db)
+    embedder_label = None
+    if args.real_embed:
+        if not os.environ.get("OPENAI_API_KEY"):
+            print("ERROR: --real-embed requires OPENAI_API_KEY (optionally "
+                  "OPENAI_BASE_URL for DeepSeek/DashScope, EMBEDDING_MODEL, "
+                  "EMBEDDING_DIM). See the module docstring.", file=sys.stderr)
+            return 2
+        from starling import _core
+        cfg = _core.OpenAIEmbeddingConfig.from_env()
+        dim_override = os.environ.get("EMBEDDING_DIM")
+        if dim_override:
+            cfg.dim = int(dim_override)
+        mem._core.set_embedder(_core.OpenAIEmbeddingAdapter(cfg))
+        embedder_label = f"{cfg.model} (dim={cfg.dim})"
+        print(f"real embedder: {embedder_label}")
     params = {"cognizers": args.cognizers, "statements": args.statements,
-              "queries": args.queries, "seed": args.seed}
+              "queries": args.queries, "seed": args.seed,
+              "embedder": embedder_label or "stub(dim=8)"}
     print(f"seeding {args.statements} stmts across {args.cognizers} cognizers ...")
     seed = run_seed(mem, fake, cognizers=args.cognizers,
                     statements=args.statements, rng=rng)
@@ -200,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     retrieval = run_retrieval(mem, queries=args.queries,
                               statements=args.statements, rng=rng)
 
-    report = build_report(params, seed, tick, retrieval)
+    report = build_report(params, seed, tick, retrieval,
+                          embedder_label=embedder_label)
     path = write_report(report, args.out_dir)
     print(format_summary(report))
     print(f"report: {path}")
