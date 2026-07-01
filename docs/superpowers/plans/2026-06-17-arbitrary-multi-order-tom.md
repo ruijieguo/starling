@@ -37,7 +37,7 @@
 - Rebuild editable `_core` after C++/binding changes (REQUIRED before pytest): `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --build-dir build --python-editable`
 - Run pytest: `.venv/bin/python -m pytest tests/python/<file> -v`
 
-**Standing constraints (every task):** core logic C++ only (Python = binding forwarding); new/changed bindings issuing recursive SQL use `gil_scoped_release`; subscriber code uses SAVEPOINT not BEGIN IMMEDIATE; explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`. Each phase must not break ctest 589 / pytest 609 except the spec §7 assertions intentionally changed here.
+**Standing constraints (every task):** core logic C++ only (Python = binding forwarding); new/changed bindings issuing recursive SQL use `gil_scoped_release`; subscriber code uses SAVEPOINT not BEGIN IMMEDIATE; explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`. Each phase must not break ctest 589 / pytest 609 except the spec §7 assertions intentionally changed here.
 
 ---
 
@@ -120,7 +120,6 @@ git add include/starling/tom/nesting_depth_writer.hpp tests/cpp/test_nesting_dep
 git commit -F - <<'EOF'
 feat(tom): NestingCycle type + soft-ceiling signature for nesting_depth_writer
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -260,7 +259,6 @@ computes depth, rejects cyclic chains (NestingCycle), and enforces the
 configurable soft ceiling (default 32; 0=unbounded). Foundation for arbitrary
 multi-order ToM. See docs/superpowers/specs/2026-06-17-arbitrary-multi-order-tom-design.md.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

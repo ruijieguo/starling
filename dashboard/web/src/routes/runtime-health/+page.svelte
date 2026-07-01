@@ -4,7 +4,7 @@
 	import { lastWsEvent } from '$lib/health';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, Badge, Skeleton, EmptyState } from '$lib/components/ui';
-	import { stateTone, isHealthy, type RuntimeHealthResponse } from '$lib/runtime_health';
+	import { stateTone, isHealthy, nonZeroMetrics, type RuntimeHealthResponse } from '$lib/runtime_health';
 
 	// D4 (/plan-design-review): reuse createQuery + existing WS tick refetch. No new WS event types.
 	const q = createQuery(() => api.get<RuntimeHealthResponse>('/api/runtime_health'));
@@ -42,13 +42,25 @@
 			{#if q.data.events.length}
 				<ul class="divide-y divide-border">
 					{#each [...q.data.events].reverse() as e}
-						<li class="flex items-center gap-2 py-2 text-sm">
-							<Badge tone={stateTone(e.previous_status)}>{e.previous_status}</Badge>
-							<span>→</span>
-							<Badge tone={stateTone(e.current_status)}>{e.current_status}</Badge>
-							<span class="text-muted">{e.trigger}</span>
-							{#if e.missing_capabilities.length}
-								<span class="text-danger">缺: {e.missing_capabilities.join(', ')}</span>
+						<li class="py-2 text-sm">
+							<div class="flex items-center gap-2">
+								<Badge tone={stateTone(e.previous_status)}>{e.previous_status}</Badge>
+								<span>→</span>
+								<Badge tone={stateTone(e.current_status)}>{e.current_status}</Badge>
+								<span class="text-muted">{e.trigger}</span>
+								{#if e.missing_capabilities.length}
+									<span class="text-danger">缺: {e.missing_capabilities.join(', ')}</span>
+								{/if}
+							</div>
+							{#if nonZeroMetrics(e.metrics_snapshot).length}
+								<dl class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted">
+									{#each nonZeroMetrics(e.metrics_snapshot) as [key, val]}
+										<div class="flex gap-1">
+											<dt class="text-subtle">{key}:</dt>
+											<dd class="font-mono" aria-label="{key} {val}">{val}</dd>
+										</div>
+									{/each}
+								</dl>
 							{/if}
 						</li>
 					{/each}

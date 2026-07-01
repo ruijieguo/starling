@@ -113,6 +113,11 @@ class TickStats:
     ttl_archived: int = 0
     projected: int = 0
     dispatched: int = 0
+    # P3.c1 Phase 3b: per-stage wall-clock timings — list of {"stage": str, "ms": int}.
+    stage_timings_ms: list = field(default_factory=list)
+    # P3.c LW.3: stages skipped by load-shedding this tick (same labels as
+    # stage_timings_ms); EXCLUDED from the engine idle-heartbeat work-check.
+    stages_skipped: list = field(default_factory=list)
 
 
 class Memory:

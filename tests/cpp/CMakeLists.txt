@@ -166,6 +166,16 @@ add_executable(starling_tests
     test_runtime_supervisor.cpp
     test_runtime_health_event.cpp
     test_runtime_supervisor_transitions.cpp
+    test_pipeline_run_types.cpp
+    test_pipeline_run_migration.cpp
+    test_pipeline_run_store.cpp
+    test_stage_timer.cpp
+    test_scoped_work_gate.cpp
+    test_restart_guard.cpp
+    test_health_sampler.cpp
+    test_health_coupling.cpp
+    test_metrics_gatherer.cpp
+    test_tick_load_shedding.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"

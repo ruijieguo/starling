@@ -177,7 +177,7 @@ StateBelief what_does_X_think_chain(
 - **不改 `canonicalize_*`、`what_does_X_think` 本体、`perceived_by_json`**。
 - normalize_theme 只对 entity/str-kind(承 M8)。cognizer 查询侧 lookup-only(不注册,best-effort 透传)。
 - TDD 先红后绿;构建 repo 根 `configure_build.py --build`,改 C++/绑定后 `--python-editable` 重建 + `cmake --install` 刷可编辑 `_core.so`;ctest 用 `.venv/bin/ctest`。
-- explicit-path `git add`(绝不 `.`/`-A`);commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;无 `--no-verify`/`--amend`;不推 main、不合 main、不登记 roadmap(需用户显式 consent)。
+- explicit-path `git add`(绝不 `.`/`-A`);无 `--no-verify`/`--amend`;不推 main、不合 main、不登记 roadmap(需用户显式 consent)。
 
 ## 11. 成功标准 / 测量 (Success Criteria)
 - **首要**:order 3-4 fallback 率显著下降(当前 39%/68%;定论注入后嵌套不再要模型推理 → 预期大降)。

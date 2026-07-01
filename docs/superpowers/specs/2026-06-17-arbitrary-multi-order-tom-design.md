@@ -219,7 +219,6 @@ order (any int); the cap is a runaway guard, not a cognitive-capacity limit.
 
 Core logic C++ only (`src/tom`, `include/starling/tom`); Python binding-forward
 only. New/changed bindings issuing recursive SQL use `gil_scoped_release`.
-explicit-path `git add`; commit trailer `Co-Authored-By: Claude Opus 4.8 (1M
-context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`. Rebuild editable
+explicit-path `git add`; no `--no-verify`/`--amend`. Rebuild editable
 `_core` after C++/binding changes (`--python-editable`); build from repo root.
 Subscriber code uses SAVEPOINT, never BEGIN IMMEDIATE.

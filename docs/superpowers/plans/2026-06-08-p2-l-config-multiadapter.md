@@ -6,7 +6,7 @@
 
 **Tech Stack:** C++20(libcurl + nlohmann/json,镜像 `openai_adapter.cpp`)· pybind11 · Python(FastAPI dashboard)· Svelte 5 前端。**无 migration**(配置文件级)。构建:`python scripts/configure_build.py --build`(C++/ctest)+ `--python-editable`(刷新 `_core`)。
 
-**全局约束:** worktree `p2-l-config-multiadapter`(C++ 隔离)。改 C++/绑定后必 `--build` + `--python-editable`。API key 仅 env(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`,env-swap 注入),绝不绑定 Python/记录/回传;`/api/config` 只回 `key_set`,`/api/config/test` 不记录请求体。explicit-path git add;commit 带 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;无 --no-verify/--amend。C++/Python 现有不变量不破(Extractor 接口不变,只加新适配器)。ci_static_scan 纳入收尾。
+**全局约束:** worktree `p2-l-config-multiadapter`(C++ 隔离)。改 C++/绑定后必 `--build` + `--python-editable`。API key 仅 env(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`,env-swap 注入),绝不绑定 Python/记录/回传;`/api/config` 只回 `key_set`,`/api/config/test` 不记录请求体。explicit-path git add;无 --no-verify/--amend。C++/Python 现有不变量不破(Extractor 接口不变,只加新适配器)。ci_static_scan 纳入收尾。
 
 ---
 

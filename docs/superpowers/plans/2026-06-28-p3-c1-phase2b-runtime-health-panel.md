@@ -16,7 +16,7 @@
 - **OV-5:** reach the LIVE supervisor through the engine passthroughs / `engine._rt._sup`; the bare `engine._runtime._sup` path is BROKEN (`_runtime` is the module). 2a added `begin_drain`; 2b adds `health()`/`events()` passthroughs (engine + Runtime).
 - **OV-8:** the route maps `MetricsSnapshot`/`RuntimeHealthEvent` to PLAIN dicts (mirror the `plan_query` receipt mapping / `queries.vitals` plain-dict return) — never return the raw bound struct. Enum fields → `.name`.
 - **Phase-2 scope:** DRAINING's full read-continue/`retry_after` contract is Phase 5; the panel shows STATE + events only. `runtime_event_loop_lag_ms` + the other metrics are 0 until Phase 5's sampler — the panel must render gracefully with all-zero metrics (don't imply live backpressure that isn't sampled yet).
-- **Gates:** `.venv/bin/python -m pytest tests/python` green; in `dashboard/web/`: `npm run check` + `npx vitest run` + `npm run build` green. git: explicit-path add; commit footer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- **Gates:** `.venv/bin/python -m pytest tests/python` green; in `dashboard/web/`: `npm run check` + `npx vitest run` + `npm run build` green. git: explicit-path add;
 - No `--python-editable` needed (no C++/binding change — the supervisor surface is already bound from 2a).
 
 ---

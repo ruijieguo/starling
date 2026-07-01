@@ -16,7 +16,7 @@
 - TDD: write the failing test first, see it fail, implement minimally, see it pass, commit.
 - Build from repo root: `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python scripts/configure_build.py --build --python-editable --build-dir build`. C++/binding changes need `--python-editable`. ctest: `.venv/bin/ctest --test-dir build`.
 - New C++ changed lines must pass the CI clang-tidy gate (`.clang-tidy` WarningsAsErrors:'*'): brace every single-statement if/for/while body; variable names ≥3 chars (loop counters i/j/k/it exempt); use `.contains()` for set membership; explicit `!= nullptr` for pointer-in-condition; `// NOLINTNEXTLINE(check)` for unavoidable patterns (e.g. sqlite `reinterpret_cast`).
-- explicit-path `git add` (never `./` or `-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; NO `--no-verify` / `--amend`.
+- explicit-path `git add` (never `./` or `-A`); NO `--no-verify` / `--amend`.
 - Do NOT push/merge main, register roadmap, or burn API (measure) without explicit user consent. The measure phase (Task 5) is run by the controller with the user present.
 - Honest framing: this is a lower-confidence bet. The compute is deterministic and the reuse is clean, but the GAIN depends on whether deepseek actually fails on complex public/private sequences. If deepseek can read the public/private distinction, this lands ≈ baseline (like the surface operators). Exit = measure, no promised lift.
 
@@ -269,7 +269,6 @@ group's latest perceived theme-event was co-witnessed by ALL members
 Reuses perceived_for_theme + the source_event_id co-witness intersection
 of what_does_X_think_chain. +5 ctest.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

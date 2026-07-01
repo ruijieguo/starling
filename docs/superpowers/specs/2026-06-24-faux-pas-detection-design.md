@@ -128,7 +128,7 @@ for T in themes:
 - 不改 `canonicalize_*`、`does_X_know`/`find_misalignment`/`what_does_X_think*` 本体、`perceived_by_json`、schema/migration(复用现有原语/perception/FactKey,无新表)。
 - 感知归属复用 reconstructor(per-character);cognizer 查询侧 lookup-only。
 - TDD 先红后绿;构建 repo 根 `configure_build.py --build`,改 C++/绑定后 `--python-editable`(+ 必要 `cmake --install`);ctest 用 `.venv/bin/ctest`。
-- explicit-path `git add`;commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;无 `--no-verify`/`--amend`;不推/合 main/登记 roadmap/烧 API(需显式 consent)。
+- explicit-path `git add`;无 `--no-verify`/`--amend`;不推/合 main/登记 roadmap/烧 API(需显式 consent)。
 
 ## 10. 成功标准 / 诚实风险 (Success Criteria / Honest Risk)
 - **首要**:`detect_faux_pas` 作为核心算子落地(ctest 钉死无知不对称契约)。

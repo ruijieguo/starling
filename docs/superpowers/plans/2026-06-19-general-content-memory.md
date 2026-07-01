@@ -18,7 +18,7 @@
 - Editable rebuild (after C++/binding): add `--python-editable`
 - pytest: `.venv/bin/python -m pytest <file> -v`
 
-**Hard constraints (every task):** reuse the belief `Extractor` (NO new C++ extractor); the only C++ is the predicate class. Do NOT touch `canonicalize_*`, the reconstructor, `validate_*` logic, or the belief/episodic prompt content. No new modality, no migration. General facts are self-held `BELIEVES`, recallable via the default `recall`. Third pass best-effort (never fails `remember`). TDD: failing test → red → minimal impl → green → commit. explicit-path `git add` (never `.`/`-A`); commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; no `--no-verify`/`--amend`; do NOT push / merge / touch roadmap.
+**Hard constraints (every task):** reuse the belief `Extractor` (NO new C++ extractor); the only C++ is the predicate class. Do NOT touch `canonicalize_*`, the reconstructor, `validate_*` logic, or the belief/episodic prompt content. No new modality, no migration. General facts are self-held `BELIEVES`, recallable via the default `recall`. Third pass best-effort (never fails `remember`). TDD: failing test → red → minimal impl → green → commit. explicit-path `git add` (never `.`/`-A`); no `--no-verify`/`--amend`; do NOT push / merge / touch roadmap.
 
 ---
 
@@ -93,7 +93,6 @@ related_to/depends_on/reports_to) scanned by is_core_predicate, mirroring A's
 kActionPredicates + B's kPerceptionPredicates. General-fact predicates are now
 approved (not REVIEW_REQUESTED). No overlap with the existing core set.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 (Drop `tests/cpp/CMakeLists.txt` from the add if no new test file was created.)
@@ -190,7 +189,6 @@ agent name) + {convo} (C++ fills the passage). Anti-overlap guidance skips
 mental-state claims + physical events. Predicate vocab synced with
 kGeneralFactPredicates.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -230,7 +228,6 @@ feat(general-content): ExtractionConfig.general_fact_prompt (default-on)
 4th carrier field defaulting to GENERAL_FACT_EXTRACTION_PROMPT, so the third pass
 is on by default and per-deployment overridable via the existing #3 seam.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -316,7 +313,6 @@ facts, statement-ids merged. {self} is filled with holder_id (=self.agent) so th
 facts land under the recall-default holder. Best-effort (empty general extraction
 is a no-op). Spy test pins the two-call sequence + the {self} fill.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 
@@ -365,7 +361,6 @@ stored as an approved (not review_requested), holder=self, FIRST_PERSON BELIEVES
 statement -> in the default recall(holder=self) scope. Closes the
 text -> recallable general fact loop.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 ```
 

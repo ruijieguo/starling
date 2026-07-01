@@ -176,7 +176,6 @@ generate_commitment_corpus.py 纯模板枚举(无 LLM):30 fulfill + 25 deadline_
 (commit + actions[tick/fulfill/withdraw/expire] + expected{final_state,detect_by_turn})。
 shape + 确定性(重跑同输出)测试通过。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -324,7 +323,6 @@ eval_commitment.py 经 CommitmentEngine/PolicyEngine replay 每场景 actions,�
 final_state 并记检出 turn;detection rate(>0.80)+ median timeliness(<3 turns);
 markdown 报告 + PASS/BLOCKED exit code。纯离线确定性,无 LLM/网络。100 条全过。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```

@@ -1,5 +1,6 @@
 // bind_14_governance — P3.c1 Phase 1: RuntimeSupervisor (capability+index
 // preflight -> READY/UNREADY, exit-78, write-gate) bound FLAT on _core.
+// Phase 5 (Task 5.3): HealthSampler + MetricsGatherer also bound here.
 // Registered after bind_13; requires ProfileCapability/RuntimeHealth (bind_01)
 // and SqliteAdapter (bind_02) to be registered first.
 
@@ -9,6 +10,8 @@
 #include <pybind11/stl.h>
 
 #include "starling/governance/capability_policy.hpp"
+#include "starling/governance/health_sampler.hpp"
+#include "starling/governance/metrics_gatherer.hpp"
 #include "starling/governance/runtime_health_event.hpp"
 #include "starling/governance/runtime_supervisor.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -89,6 +92,76 @@ void bind_14_governance(pybind11::module_& m) {
              py::arg("trigger") = "admin_drain")  // OV-8: wire the C++ default
         .def("events", &gov::RuntimeSupervisor::events)        // OV-2: DEFAULT (copy) policy
         .def("last_event", &gov::RuntimeSupervisor::last_event);  // OV-6
+
+    // ── Phase 5 (Task 5.3): per-metric configuration structs ────────────────
+    //
+    // Identifier names satisfy clang-tidy readability-identifier-length (>=3 chars).
+    // def_readwrite exposes enabled + threshold so Python can build configs without
+    // going through a C++-side factory.
+
+    py::class_<gov::NumericMetricCfg>(m, "NumericMetricCfg")
+        .def(py::init<>())
+        .def_readwrite("enabled",   &gov::NumericMetricCfg::enabled)
+        .def_readwrite("threshold", &gov::NumericMetricCfg::threshold);
+
+    py::class_<gov::FloatMetricCfg>(m, "FloatMetricCfg")
+        .def(py::init<>())
+        .def_readwrite("enabled",   &gov::FloatMetricCfg::enabled)
+        .def_readwrite("threshold", &gov::FloatMetricCfg::threshold);
+
+    py::class_<gov::ErasedEvidenceCfg>(m, "ErasedEvidenceCfg")
+        .def(py::init<>())
+        .def_readwrite("enabled", &gov::ErasedEvidenceCfg::enabled);
+
+    // ── HealthSamplerConfig — 7 nested metric configs ────────────────────────
+    //
+    // c1 enables outbox_lag + runtime_event_loop_lag_ms only; the other 5 stay
+    // DISABLED (zero != healthy; the sampler skips disabled metrics — L1).
+    py::class_<gov::HealthSamplerConfig>(m, "HealthSamplerConfig")
+        .def(py::init<>())
+        .def_readwrite("outbox_lag",
+                       &gov::HealthSamplerConfig::outbox_lag)
+        .def_readwrite("subscriber_failure_rate",
+                       &gov::HealthSamplerConfig::subscriber_failure_rate)
+        .def_readwrite("extraction_queue_depth",
+                       &gov::HealthSamplerConfig::extraction_queue_depth)
+        .def_readwrite("projection_lag_seconds",
+                       &gov::HealthSamplerConfig::projection_lag_seconds)
+        .def_readwrite("runtime_event_loop_lag_ms",
+                       &gov::HealthSamplerConfig::runtime_event_loop_lag_ms)
+        .def_readwrite("vector_delete_lag",
+                       &gov::HealthSamplerConfig::vector_delete_lag)
+        .def_readwrite("erased_evidence",
+                       &gov::HealthSamplerConfig::erased_evidence);
+
+    // ── HealthSampler — pure threshold evaluator (L3: no I/O, no mutex) ─────
+    py::class_<gov::HealthSampler>(m, "HealthSampler")
+        .def(py::init<gov::HealthSamplerConfig>(), py::arg("config"))
+        .def("evaluate", &gov::HealthSampler::evaluate, py::arg("snapshot"),
+             "Pure evaluation of the snapshot against config thresholds. "
+             "Returns a HealthDecision (READY or DEGRADED; never UNREADY). "
+             "Flapping debounce is HOST-SIDE (engine.py); not here.");
+
+    // ── MetricsGatherer — reads outbox_lag_sequence from the live DB ─────────
+    //
+    // Connection& is not constructible from Python; instead the binding wraps
+    // gather() to take the SqliteAdapter& (whose connection() method returns
+    // the Connection&). This mirrors how RuntimeSupervisor is bound (adapter
+    // arg) and keeps the Python caller free of raw Connection objects.
+    // The returned MetricsSnapshot is a value copy (not a ref), so no keep_alive
+    // policy is needed; the adapter must outlive each call, which is the caller's
+    // responsibility (self._rt.adapter is process-lifetime).
+    py::class_<gov::MetricsGatherer>(m, "MetricsGatherer")
+        .def(py::init<>())
+        .def("gather",
+             [](const gov::MetricsGatherer& self,
+                starling::persistence::SqliteAdapter& adp) {
+                 return self.gather(adp.connection());
+             },
+             py::arg("adapter"),
+             "Gather backpressure metrics via the adapter's live connection. "
+             "c1: outbox_lag_sequence only; other 6 fields remain 0. "
+             "Raises SqliteError on DB failure (host's tick try/except handles it).");
 }
 
 }  // namespace starling::bindings

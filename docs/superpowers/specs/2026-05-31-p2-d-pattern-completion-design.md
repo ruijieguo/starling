@@ -270,7 +270,7 @@ C++ 循环对 UNION 结果按 target max-merge。
 - pybind/绑定改动后刷新 `_core.so`：`cmake --build build` + `cmake --install build --prefix .venv/lib/python3.14/site-packages` + `pip install -e . --no-deps --force-reinstall`（`cmake --install` 是关键）
 - SQL helpers：`bus::detail::bind_sv` / `make_sqlite_error`、`persistence::StmtHandle`、checked `sqlite3_prepare_v2`；参考 `semantic_retriever.cpp` / `sqlite_blob_vector_index.cpp`
 - `:memory:` SQLite（unit）/ `tmp_path` + `relax_preflight_for_m0_3`（runtime fixture）
-- Co-Authored-By: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`；无 `--no-verify` / `--amend`；plan 文件 untracked 直到 milestone close；API key env-only
+- 无 `--no-verify` / `--amend`；plan 文件 untracked 直到 milestone close；API key env-only
 - **纯读 + 纯在线，无 migration**（最高现存 migration 0021 不变）
 
 ---

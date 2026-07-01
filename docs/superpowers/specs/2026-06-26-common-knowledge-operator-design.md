@@ -84,6 +84,6 @@ public/private 区分**已由现有抽取支持**:`publicly claimed` → 抽成 
 
 ## 8. 硬约束
 
-核心逻辑全 C++(`mentalizing_common_knowledge.cpp`);抽取零改动;绑定(`bind_08_tom.cpp` 加 `is_common_knowledge` def,同 chain/shared_with 模式)+ server 瘦转发。复用 perception_state / 交集逻辑 / dim_for_theme,不另起炉灶。不破既有钉测(canonicalize/perception/六态/冲突/grounding/chain/shared_with)。perceived_for_theme 不可变。TDD 先红后绿。explicit-path git add;commit 尾 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;改 C++/绑定后 `--python-editable`;构建 repo 根;不推/合 main/登记 roadmap/烧 API(评测)需显式 consent。
+核心逻辑全 C++(`mentalizing_common_knowledge.cpp`);抽取零改动;绑定(`bind_08_tom.cpp` 加 `is_common_knowledge` def,同 chain/shared_with 模式)+ server 瘦转发。复用 perception_state / 交集逻辑 / dim_for_theme,不另起炉灶。不破既有钉测(canonicalize/perception/六态/冲突/grounding/chain/shared_with)。perceived_for_theme 不可变。TDD 先红后绿。explicit-path git add;改 C++/绑定后 `--python-editable`;构建 repo 根;不推/合 main/登记 roadmap/烧 API(评测)需显式 consent。
 
 **诚实定调:** 这是 lower-confidence bet。共同知识的计算是确定的、复用干净;但**增益取决于 deepseek 是否真在复杂 public/private 序列上失败**——若它能读出,则像 surface 算子 ≈ baseline。出口=构造评测实测,不预先许诺升幅。

@@ -63,7 +63,7 @@ def test_remember_then_tick(client):
     assert t.status_code == 200 and set(t.json()) == {
         "embedded", "fired", "broken", "auto_withdrawn",
         "replay_sampled", "consolidated", "ttl_archived",
-        "projected", "dispatched"}
+        "projected", "dispatched", "stage_timings_ms", "stages_skipped"}
 
 
 def test_recall_shape(client):
