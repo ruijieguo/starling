@@ -11,7 +11,10 @@
 ## Global Constraints
 
 - **Design spec (authoritative):** `docs/superpowers/specs/2026-07-01-p3-c-scale-baseline-harness-design.md`. Scale interpretation: `--cognizers N` (target 1000), `--statements M` = **total** statements distributed across N cognizers (target 10000; NOT per-cognizer), `--queries Q`, `--seed S`.
-- **Offline determinism:** use `starling.make_stub_llm(default_response=...)` (a `_core.FakeLLMAdapter`) — no network. The FakeLLMAdapter **ignores the prompt** and returns the canned response, so to seed M **distinct** statements the harness MUST set a **unique canned response per remember** (`fake.set_default_response(unique_json, True, "")`) — otherwise statement idempotency-dedup collapses the corpus to 1 row. Vary `holder` across `cog-0..cog-(N-1)` to distribute across cognizers.
+- **Offline determinism:** use `starling.make_stub_llm(default_response=...)` (a `_core.FakeLLMAdapter`) — no network. The FakeLLMAdapter **ignores the prompt** and returns the canned response. Distinctness of the M statements comes from the **varying `remember()` payload text** (the idempotency key is `sha256(payload)`, `memory_ops.cpp:33` — distinct payloads never dedup); the **unique canned response per remember** (`fake.set_default_response(unique_json, True, "")`) makes the extracted STATEMENT vary (distinct subject/object → real corpus variety), NOT to avoid dedup. (Eng-review MEDIUM-4 corrected the original "dedup collapses to 1 row" claim — that never fires here.)
+- **Holder model (eng-review decision A — BLOCKER-1 fix):** in Starling one agent's `Memory` recalls only its OWN statements — `Memory.query` hard-codes `querier = self.agent = "self"` (`memory.py:172`, `_memory_core.py:225`) and the planner filters `holder_id = querier` (`retrieval_planner.cpp:208`, `semantic_retriever.cpp:37`). So seed ALL statements under **`holder="self"`** (NOT `cog-N` — that hides them from the querier) and make the **1000 cognizers distinct SUBJECTS** (`subject = cog-{idx % cognizers}` in the canned response). The agent's memory holds M statements ABOUT N cognizers; retrieval as self scans them all.
+- **Retrieval must exercise the real scan (BLOCKER-2 fix):** query with **NON-EMPTY** text (`query("")` skips the semantic path → abstains, `retrieval_planner.cpp:241`) for content that EXISTS in the corpus (an `obj_{k}` that was seeded), as `holder=self`. The smoke tests MUST assert `entries` non-empty / `abstained` False — else a green suite hides zero real retrieval (the O(n) cosine scan is `sqlite_blob_vector_index.cpp:61-95`, the actual bottleneck).
+- **Known load-bearing facts (eng-review MEDIUM-4/5):** seeded statements land `review_status = review_requested` (`pred_N` isn't a core predicate, `predicate_registry.hpp:16`) — still retrievable (planner excludes only `rejected`/`pending_review`), but document it. `remember()` runs **3 extraction passes** (belief/episodic/general-fact, `_memory_core.py:145-190`); under FakeLLM only 1 persists per call (1:1 remember:statement holds), but seed `throughput_per_s` includes all 3 passes + the post-write subscriber pump.
 - **Architecture boundary (CLAUDE.md):** this is tooling. Add NO algorithm / budget / state-machine / pipeline logic. Seed + measure through the public API only; consume `TickStats.stage_timings_ms` (already built in Phase 3b) for the per-stage breakdown.
 - **Phase order:** seed → tick-to-drain (embeds the corpus so retrieval has vectors) → retrieval. Retrieval runs after the tick so statements are embedded (the facade uses `StubEmbeddingAdapter(8)`).
 - **Build/test:** no C++ change → NO rebuild needed. Run tests with `.venv/bin/python -m pytest` (tools in `.venv/bin`, NOT system PATH). The harness itself runs as `.venv/bin/python scripts/load_test_p3c.py ...`.
@@ -37,8 +40,8 @@
 
 **Interfaces (Produces):**
 - `open_memory(db_path: str) -> tuple[Memory, FakeLLMAdapter]` — opens an offline `Memory` over `db_path`, returns it + the mutable fake so callers can set per-remember responses.
-- `unique_statement_json(idx: int) -> str` — a canned extraction response (JSON array of ONE statement) whose `subject`/`predicate`/`object` are unique per `idx` (so the seeded statement is distinct).
-- `run_seed(mem, fake, *, cognizers: int, statements: int, rng: random.Random) -> dict` — seeds `statements` distinct statements across `cognizers` holders; returns `{"seeded": int, "elapsed_s": float, "throughput_per_s": float}`.
+- `unique_statement_json(idx: int, cognizers: int) -> str` — a canned extraction response (JSON array of ONE statement); `subject = cog-{idx % cognizers}` (the cognizer as SUBJECT), `object = obj_{idx}` (unique) so the corpus spans N cognizer-subjects with M distinct objects.
+- `run_seed(mem, fake, *, cognizers: int, statements: int, rng: random.Random) -> dict` — seeds `statements` statements under **`holder=self`** (the agent — the querier that can retrieve them; decision A), spanning `cognizers` distinct subjects; returns `{"seeded": int, "elapsed_s": float, "throughput_per_s": float}`.
 
 - [ ] **Step 1: Write the failing smoke test (seed portion)**
 
@@ -57,21 +60,23 @@ lt = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(lt)
 
 
-def test_seed_produces_distinct_statements(tmp_path):
+def test_seed_runs_and_counts(tmp_path):
     mem, fake = lt.open_memory(str(tmp_path / "seed.db"))
     rng = random.Random(1234)
     res = lt.run_seed(mem, fake, cognizers=3, statements=12, rng=rng)
     assert res["seeded"] == 12
+    assert res["elapsed_s"] >= 0.0
     assert res["throughput_per_s"] > 0
-    # Distinctness: 12 remembers each set a unique canned response, so the
-    # corpus holds 12 statements, not 1 dedup'd row.
-    rows = mem.query("", intent="FACT_LOOKUP", k=100)["entries"]
-    assert len(rows) >= 12
+    # Distinctness is by-construction: each remember() gets a distinct payload
+    # (f"seed statement {idx} ...") so the engram idempotency key (sha256 of
+    # payload, memory_ops.cpp:33) never collides — M remembers → M engrams → M
+    # statements. Retrievability is proven in Task 2's retrieval test (retrieval
+    # needs the tick to embed the corpus into statement_vectors first).
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `.venv/bin/python -m pytest tests/python/test_load_test_p3c_smoke.py::test_seed_produces_distinct_statements -v`
+Run: `.venv/bin/python -m pytest tests/python/test_load_test_p3c_smoke.py::test_seed_runs_and_counts -v`
 Expected: FAIL (module `scripts/load_test_p3c.py` does not exist yet).
 
 - [ ] **Step 3: Implement the skeleton + seed phase**
@@ -103,16 +108,21 @@ def open_memory(db_path: str):
     The FakeLLMAdapter is returned so the caller can set a unique canned
     response before each remember (the adapter ignores the prompt).
     """
-    fake = make_stub_llm(default_response=unique_statement_json(0))
+    fake = make_stub_llm(default_response=unique_statement_json(0, 1))
     mem = Memory.open(db_path, agent="self", tenant_id="default", llm=fake)
     return mem, fake
 
 
-def unique_statement_json(idx: int) -> str:
-    """A canned extraction response (JSON array of ONE distinct statement)."""
+def unique_statement_json(idx: int, cognizers: int) -> str:
+    """A canned extraction response (JSON array of ONE statement).
+
+    holder=self (the agent owns it — the querier that can retrieve it);
+    subject=cog-{idx % cognizers} is the COGNIZER the fact is ABOUT (decision A:
+    cognizers are subjects, not holders); object=obj_{idx} is unique per idx.
+    """
     return (
         '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
-        f'"subject":"cog-{idx % 997}","predicate":"pred_{idx % 131}",'
+        f'"subject":"cog-{idx % cognizers}","predicate":"pred_{idx % 131}",'
         f'"object":"obj_{idx}","modality":"BELIEVES","polarity":"POS",'
         '"nesting_depth":0}]'
     )
@@ -120,16 +130,15 @@ def unique_statement_json(idx: int) -> str:
 
 def run_seed(mem, fake, *, cognizers: int, statements: int,
              rng: random.Random) -> dict:
-    """Seed `statements` distinct statements across `cognizers` holders."""
+    """Seed `statements` statements under holder=self, spanning N cognizer-subjects."""
     start = time.perf_counter()
     seeded = 0
     for idx in range(statements):
-        fake.set_default_response(unique_statement_json(idx), True, "")
-        holder = f"cog-{idx % cognizers}"
-        # Distinct evidence payload (idempotency key is content-derived) +
-        # distinct extracted statement (unique canned response above).
+        fake.set_default_response(unique_statement_json(idx, cognizers), True, "")
+        # holder defaults to the agent ("self") — the querier that can retrieve
+        # these (decision A). Distinct payload → distinct engram (no dedup).
         mem.remember(f"seed statement {idx} topic {rng.randint(0, 1_000_000)}",
-                     holder=holder, now="2026-07-01T00:00:00Z")
+                     now="2026-07-01T00:00:00Z")
         seeded += 1
     elapsed = time.perf_counter() - start
     return {
@@ -170,8 +179,8 @@ git commit -m "feat(P3.c/bench): harness skeleton + deterministic seed phase"
 **Interfaces:**
 - Consumes: `open_memory`, `run_seed` (Task 1); `Memory.tick(now) -> TickStats` (`.embedded`, `.stage_timings_ms` = list of `{"stage": str, "ms": int}`); `Memory.query(text, *, intent, k) -> dict` (`["entries"]`).
 - Produces:
-  - `run_tick_drain(mem, *, max_ticks: int = 1000) -> dict` — runs `tick()` until the embed queue drains (`TickStats.embedded == 0`) or `max_ticks`; returns `{"ticks": int, "elapsed_s": float, "stage_ms_total": dict[str, float], "top_stage": str}` (per-stage ms summed across ticks; `top_stage` = the costliest).
-  - `run_retrieval(mem, *, queries: int, rng: random.Random) -> dict` — issues `queries` `Memory.query` calls, times each; returns `{"queries": int, "p50_ms": float, "p95_ms": float, "p99_ms": float, "throughput_per_s": float}`.
+  - `run_tick_drain(mem, *, max_ticks: int = 1000) -> dict` — runs `tick()` until the embed queue TRULY drains (`TickStats.embedded == 0` **AND** `"embed"` NOT in `stats.stages_skipped` — LOW-6 guard: `embed` is a Soft stage shed under DEGRADED, so `embedded==0` alone can be a false drain) or `max_ticks`; returns `{"ticks": int, "elapsed_s": float, "stage_ms_total": dict[str, float], "top_stage": str, "embed_shed_ticks": int}` (per-stage ms summed across executed ticks; `top_stage` = costliest; `embed_shed_ticks` > 0 flags a DEGRADED-tripped run whose drain may be incomplete).
+  - `run_retrieval(mem, *, queries: int, statements: int, rng: random.Random) -> dict` — issues `queries` `Memory.query` calls for **EXISTING** objects (`obj_{rng.randint(0, statements-1)}`, non-empty text, `holder=self` — BLOCKER-2), times each; returns `{"queries": int, "p50_ms": float, "p95_ms": float, "p99_ms": float, "throughput_per_s": float, "abstained_count": int}`. `abstained_count` surfaces whether queries hit the real O(n) scan vs the abstain path (a green suite with all-abstain = meaningless numbers, the BLOCKER-2 trap).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -186,19 +195,25 @@ def test_tick_drain_reports_stage_breakdown(tmp_path):
     assert isinstance(res["stage_ms_total"], dict) and res["stage_ms_total"]
     # The 8 known stages are the only keys; top_stage is one of them.
     assert res["top_stage"] in res["stage_ms_total"]
+    # Smoke scale must not trip DEGRADED, so the drain is a real drain (LOW-6).
+    assert res["embed_shed_ticks"] == 0
 
 
-def test_retrieval_reports_percentiles(tmp_path):
+def test_retrieval_hits_the_scan_not_the_abstain_path(tmp_path):
     mem, fake = lt.open_memory(str(tmp_path / "ret.db"))
     rng = random.Random(9)
     lt.run_seed(mem, fake, cognizers=3, statements=12, rng=rng)
-    lt.run_tick_drain(mem, max_ticks=50)   # embed before retrieval
-    res = lt.run_retrieval(mem, queries=20, rng=rng)
+    lt.run_tick_drain(mem, max_ticks=50)   # embed the corpus before retrieval
+    res = lt.run_retrieval(mem, queries=20, statements=12, rng=rng)
     assert res["queries"] == 20
     for key in ("p50_ms", "p95_ms", "p99_ms"):
         assert res[key] >= 0.0
     assert res["p99_ms"] >= res["p50_ms"]   # monotone percentiles
     assert res["throughput_per_s"] > 0
+    # BLOCKER-2 proof: querying EXISTING objects as holder=self must hit the real
+    # O(n) scan, not the abstain path. If every query abstained (holder mismatch
+    # / empty text), the p-latencies would be meaningless. Not all-abstain:
+    assert res["abstained_count"] < res["queries"]
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -220,17 +235,22 @@ def _percentile(sorted_vals: list[float], pct: float) -> float:
 
 
 def run_tick_drain(mem, *, max_ticks: int = 1000) -> dict:
-    """Run tick() until the embed queue drains (or max_ticks); sum stage costs."""
+    """Run tick() until the embed queue TRULY drains (or max_ticks); sum stage costs."""
     start = time.perf_counter()
     stage_ms_total: dict[str, float] = {}
     ticks = 0
+    embed_shed_ticks = 0
     for _ in range(max_ticks):
         stats = mem.tick("2026-07-01T00:05:00Z")
         ticks += 1
+        if "embed" in stats.stages_skipped:
+            embed_shed_ticks += 1
         for entry in stats.stage_timings_ms:
             stage_ms_total[entry["stage"]] = (
                 stage_ms_total.get(entry["stage"], 0.0) + float(entry["ms"]))
-        if stats.embedded == 0:   # queue drained
+        # LOW-6 guard: `embed` is a Soft stage shed under DEGRADED, so
+        # embedded==0 while embed was SKIPPED is NOT a real drain — keep ticking.
+        if stats.embedded == 0 and "embed" not in stats.stages_skipped:
             break
     elapsed = time.perf_counter() - start
     top_stage = max(stage_ms_total, key=stage_ms_total.get) if stage_ms_total else ""
@@ -239,18 +259,24 @@ def run_tick_drain(mem, *, max_ticks: int = 1000) -> dict:
         "elapsed_s": round(elapsed, 4),
         "stage_ms_total": {k: round(v, 3) for k, v in stage_ms_total.items()},
         "top_stage": top_stage,
+        "embed_shed_ticks": embed_shed_ticks,
     }
 
 
-def run_retrieval(mem, *, queries: int, rng: random.Random) -> dict:
-    """Issue `queries` retrieval calls; report latency percentiles + throughput."""
+def run_retrieval(mem, *, queries: int, statements: int,
+                  rng: random.Random) -> dict:
+    """Issue `queries` retrieval calls for EXISTING objects; report percentiles."""
     latencies_ms: list[float] = []
+    abstained_count = 0
+    hi = max(0, statements - 1)
     start = time.perf_counter()
     for _ in range(queries):
-        text = f"obj_{rng.randint(0, 1_000_000)}"
+        text = f"obj_{rng.randint(0, hi)}"   # an object that was seeded (BLOCKER-2)
         t0 = time.perf_counter()
-        mem.query(text, intent="FACT_LOOKUP", k=10)
+        result = mem.query(text, intent="FACT_LOOKUP", k=10)
         latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+        if result.get("abstained"):
+            abstained_count += 1
     elapsed = time.perf_counter() - start
     latencies_ms.sort()
     return {
@@ -259,6 +285,7 @@ def run_retrieval(mem, *, queries: int, rng: random.Random) -> dict:
         "p95_ms": round(_percentile(latencies_ms, 95), 3),
         "p99_ms": round(_percentile(latencies_ms, 99), 3),
         "throughput_per_s": round(queries / elapsed, 2) if elapsed > 0 else 0.0,
+        "abstained_count": abstained_count,
     }
 ```
 
@@ -306,13 +333,21 @@ def test_main_end_to_end_writes_report(tmp_path):
     assert len(reports) == 1
     import json as _json
     report = _json.loads(reports[0].read_text())
-    for key in ("params", "seed", "tick", "retrieval"):
+    for key in ("params", "seed", "tick", "retrieval", "caveats"):
         assert key in report
     assert report["seed"]["seeded"] == 12
     assert report["retrieval"]["queries"] == 10
     assert report["tick"]["top_stage"]           # non-empty bottleneck call-out
-    # persona-rebuild is inert: it must NOT appear among tick stages.
-    assert "persona" not in " ".join(report["tick"]["stage_ms_total"]).lower()
+    # BLOCKER-2 e2e: retrieval hit the real scan, not the all-abstain path.
+    assert report["retrieval"]["abstained_count"] < report["retrieval"]["queries"]
+    # The tick stages are EXACTLY the 8 known ones — this meaningfully confirms
+    # persona-rebuild is NOT a live tick stage (the empirical inert check;
+    # replaces the vacuous "persona" substring assertion which was always true).
+    assert set(report["tick"]["stage_ms_total"]) == {
+        "embed", "policy", "common_ground", "replay_oscillation_guard",
+        "replay_ttl_sweep", "replay_idle", "projection", "outbox",
+    }
+    assert "persona" not in report["tick"]["stage_ms_total"]
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -325,8 +360,26 @@ Expected: FAIL (`main` not defined).
 ```python
 # add to scripts/load_test_p3c.py
 
+# Validity caveats — printed + embedded in the report so the baseline is never
+# mistaken for a production profile (eng-review MAJOR-3).
+_CAVEATS = [
+    "FakeLLM + StubEmbedding(8-dim): extraction-LLM and embedding-network cost "
+    "are EXCLUDED. A real embedder is ~1536-dim, so the O(n) cosine scan cost is "
+    "under-measured (~190x). top_stage reflects the SQLite/scan machinery, NOT "
+    "the production embedding/LLM hotspot — do not pick an optimization target "
+    "from this alone without an LLM-in-the-loop cross-check.",
+    "Retrieval is single-holder (holder=self owns all rows) and SEQUENTIAL; "
+    "sustained-concurrent 100 QPS is deferred (out of scope for this baseline).",
+    "If retrieval.abstained_count > 0, those queries hit the abstain path, not "
+    "the scan — their latencies are not retrieval-scan latency.",
+    "If tick.embed_shed_ticks > 0, the drain tripped DEGRADED load-shedding and "
+    "may be incomplete (some statements left un-embedded).",
+]
+
+
 def build_report(params: dict, seed: dict, tick: dict, retrieval: dict) -> dict:
-    return {"params": params, "seed": seed, "tick": tick, "retrieval": retrieval}
+    return {"params": params, "seed": seed, "tick": tick,
+            "retrieval": retrieval, "caveats": _CAVEATS}
 
 
 def write_report(report: dict, out_dir: str) -> Path:
@@ -345,13 +398,15 @@ def format_summary(report: dict) -> str:
         f"seed:      {seed['seeded']} stmts in {seed['elapsed_s']}s "
         f"({seed['throughput_per_s']}/s)",
         f"tick:      {tick['ticks']} ticks, {tick['elapsed_s']}s; "
-        f"top stage = {tick['top_stage']}",
+        f"top stage = {tick['top_stage']}; embed_shed_ticks={tick['embed_shed_ticks']}",
         "  stage_ms_total: " + ", ".join(
             f"{k}={v}" for k, v in sorted(
                 tick["stage_ms_total"].items(), key=lambda kv: -kv[1])),
         f"retrieval: {ret['queries']} q; p50={ret['p50_ms']}ms "
         f"p95={ret['p95_ms']}ms p99={ret['p99_ms']}ms "
-        f"({ret['throughput_per_s']}/s)",
+        f"({ret['throughput_per_s']}/s); abstained={ret['abstained_count']}/{ret['queries']}",
+        "caveats:",
+        *(f"  - {c}" for c in report.get("caveats", [])),
     ]
     return "\n".join(lines)
 
@@ -376,8 +431,9 @@ def main(argv: list[str] | None = None) -> int:
                     statements=args.statements, rng=rng)
     print(f"draining tick queue (max {args.max_ticks}) ...")
     tick = run_tick_drain(mem, max_ticks=args.max_ticks)
-    print(f"retrieval x{args.queries} ...")
-    retrieval = run_retrieval(mem, queries=args.queries, rng=rng)
+    print(f"retrieval x{args.queries} (existing objects, holder=self) ...")
+    retrieval = run_retrieval(mem, queries=args.queries,
+                              statements=args.statements, rng=rng)
 
     report = build_report(params, seed, tick, retrieval)
     path = write_report(report, args.out_dir)
@@ -413,7 +469,7 @@ git commit -m "feat(P3.c/bench): baseline report + CLI + end-to-end smoke"
 
 ## Slice acceptance
 
-The harness runs offline (FakeLLM) end-to-end: seeds M distinct statements across N cognizers (deterministic via `--seed`), drains the maintenance tick (per-stage breakdown from the 3b `StageTimer`), drives Q retrieval queries (p50/p95/p99 + throughput), and writes a JSON + human-readable baseline report under `bench/`, naming the top tick-stage bottleneck. The smoke pytest asserts harness mechanics (corpus size, report keys, percentile monotonicity, all phases ran, persona-rebuild absent) — no wall-clock thresholds. Full pytest green. **Deferred (next, now-measured slices):** admission thresholds set from the baseline; sustained-concurrent 100 QPS; optimizing the fingered bottleneck.
+The harness runs offline (FakeLLM) end-to-end: seeds M distinct statements under `holder=self` spanning N cognizer-SUBJECTS (deterministic via `--seed`; decision A), drains the maintenance tick (per-stage breakdown from the 3b `StageTimer`, LOW-6-guarded against a DEGRADED false-drain), drives Q retrieval queries for EXISTING objects as `holder=self` (p50/p95/p99 + throughput + `abstained_count`), and writes a JSON + human report under `bench/` with the top tick-stage bottleneck AND the validity caveats (embedding/LLM cost excluded). The smoke pytest asserts harness mechanics + **retrieval actually hits the O(n) scan, not the abstain path** (`abstained_count < queries` — BLOCKER-2) + the tick stages are exactly the 8 known ones (persona-rebuild is not among them) — no wall-clock thresholds. Full pytest green. **Deferred (next, now-measured slices):** admission thresholds set from the baseline; sustained-concurrent 100 QPS; optimizing the fingered bottleneck.
 
 ## Self-review
 
@@ -421,10 +477,51 @@ The harness runs offline (FakeLLM) end-to-end: seeds M distinct statements acros
 
 **Placeholder scan:** every step has real code + exact run commands + expected output. No TBD/TODO.
 
-**Type consistency:** `open_memory→(mem,fake)`, `run_seed(...)->dict{seeded,elapsed_s,throughput_per_s}`, `run_tick_drain(...)->dict{ticks,elapsed_s,stage_ms_total,top_stage}`, `run_retrieval(...)->dict{queries,p50_ms,p95_ms,p99_ms,throughput_per_s}`, `build_report(params,seed,tick,retrieval)`, `write_report->Path`, `main(argv)->int` — consistent across tasks. `TickStats.stage_timings_ms` entries are `{"stage","ms"}` (3b/LW.3), consumed in Task 2.
+**Type consistency:** `open_memory→(mem,fake)`, `unique_statement_json(idx,cognizers)->str`, `run_seed(...)->dict{seeded,elapsed_s,throughput_per_s}`, `run_tick_drain(...)->dict{ticks,elapsed_s,stage_ms_total,top_stage,embed_shed_ticks}`, `run_retrieval(mem,*,queries,statements,rng)->dict{queries,p50_ms,p95_ms,p99_ms,throughput_per_s,abstained_count}`, `build_report(params,seed,tick,retrieval)->dict{...,caveats}`, `write_report->Path`, `main(argv)->int` — consistent across tasks. `TickStats.stage_timings_ms` entries are `{"stage","ms"}`; `TickStats.stages_skipped` is a `list[str]` (3b/LW.3), both consumed in Task 2 (the drain guard reads `stages_skipped`).
 
-## Open questions for /plan-eng-review
-- Baseline scale feasibility under FakeLLM (full 1000×10000 wall-clock) — probe during impl; the `--statements`/`--cognizers` params make it tunable.
-- Should the smoke pytest carry a marker to keep CI fast (it uses 3 cognizers × 12 statements — already tiny)?
-- `bench/` vs `build/` for report output (eval scripts use `build/`, git-ignored) — align conventions.
-- Does `run_tick_drain`'s "drain when `embedded==0`" correctly terminate given a single embed batch per tick? (Verify the embed batch size vs statement count; `--max-ticks` caps runaway.)
+## /plan-eng-review resolutions (2026-07-01, FULL + outside-voice)
+- **BLOCKER-1 (holder model) → decision A:** seed under `holder=self`, cognizers = distinct SUBJECTS. `Memory.query` queries as `self`; rows under a different holder are invisible.
+- **BLOCKER-2 (retrieval measured the abstain path) → fixed:** query non-empty text for EXISTING objects as `holder=self`; smoke asserts `abstained_count < queries`.
+- **MAJOR-3 (validity) → fixed:** `_CAVEATS` embedded in the report + printed (embedding/LLM cost excluded; ~190× scan under-measure; single-holder sequential).
+- **MEDIUM-4/5 (wrong dedup mechanism; 3-pipeline remember) → documented** in Global Constraints.
+- **LOW-6 (drain false-stop under DEGRADED) → guarded:** `run_tick_drain` breaks only when `embedded==0` AND `embed` not in `stages_skipped`; `embed_shed_ticks` surfaced.
+- **Termination worry → RESOLVED** by the outside voice: embed batch=32 (`embedding_worker.hpp:11`), the LEFT-JOIN scan only re-fetches unembedded rows, stub never fails → M drains in ⌈M/32⌉ ticks; `--max-ticks` caps runaway.
+- Still tunable / left to impl: baseline scale under FakeLLM (`--cognizers`/`--statements`); `bench/` (not `build/`) for output; smoke stays tiny (3 cognizers × 12) so no CI marker needed.
+
+## Eng-review outputs
+
+**What already exists (reused, not rebuilt):** 3b `StageTimer` + `TickStats.stage_timings_ms`/`stages_skipped`; the public `Memory` API (`open`/`remember`/`query`/`tick`); `make_stub_llm` (offline FakeLLM); the `scripts/eval_*` argparse+report precedent; `StubEmbeddingAdapter(8)`. No parallel infra built.
+
+**NOT in scope (deferred, with rationale):** admission pass/fail thresholds (set from THIS baseline — guessing now = arbitrary red gate); sustained-concurrent 100 QPS (needs a read-path concurrency analysis — single-writer/GIL); optimizing the fingered bottleneck (the NEXT, now-measured slice); a real-LLM/real-embedder profile (this baseline is FakeLLM+stub by design — the caveats flag what it excludes).
+
+**Failure modes (per new codepath):**
+- `run_seed` remember() raises → propagates, crashes the run (fail-loud, correct for a measurement tool). No forced-failure test (internal tooling).
+- `run_tick_drain` non-termination → `--max-ticks` cap + LOW-6 guard; `embed_shed_ticks` surfaces a DEGRADED false-drain. Tested (`embed_shed_ticks == 0`).
+- `run_retrieval` all-abstain → **would silently produce meaningless p-latencies** (the critical gap). Now has BOTH a test (`abstained_count < queries`) AND a report signal.
+
+**Parallelization:** Sequential — all 3 tasks build one file (`scripts/load_test_p3c.py`) + its smoke test, each depending on the prior.
+
+## Implementation Tasks
+All findings were folded into the plan tasks above (not deferred); these mirror the revised Tasks 1-3.
+
+- [ ] **T1 (P1, CC: ~10min)** — seed phase, holder=self + cognizer-subjects (BLOCKER-1) — `scripts/load_test_p3c.py`, `tests/python/test_load_test_p3c_smoke.py`, `bench/.gitignore`. Verify: `pytest ...::test_seed_runs_and_counts`.
+- [ ] **T2 (P1, CC: ~15min)** — tick-drain guard + retrieval-over-existing-objects + `abstained_count` (BLOCKER-2 + LOW-6). Verify: `pytest ... -k "tick_drain or retrieval"`.
+- [ ] **T3 (P1, CC: ~10min)** — report + caveats + CLI + e2e smoke (MAJOR-3). Verify: full smoke + a small real-scale run.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | codex timed out (6m, no output) → Claude Opus outside-voice ran |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | 6 findings (2 blocker / 1 major / 2 medium / 1 low), ALL folded |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+Step 0 scope: ACCEPTED as-is — 3 files, 0 new classes, reuses existing infra; no complexity-gate trigger. Architecture sound (Python tooling over the public API, no core semantics). Code quality clean (`_percentile` nearest-rank correct-by-design; fail-loud). Tests strengthened to assert retrieval hits the real scan (`abstained_count < queries`).
+
+- **OUTSIDE VOICE (Claude Opus subagent; codex timed out at 6m):** empirically ran the harness logic against the built `_core` and caught 2 BLOCKERS the multi-section review missed — (1) `Memory.query` queries as `self` but the plan seeded under `holder=cog-N`, so retrieval returned 0/abstained (`memory.py:172`, `retrieval_planner.cpp:208`); (2) `run_retrieval` therefore timed the abstain path, not the O(n) scan — a green smoke suite hiding meaningless numbers. Plus MAJOR-3 (FakeLLM+stub excludes embedding+LLM cost; ~190× scan under-measure), MEDIUM-4 (the "dedup collapses to 1 row" mechanism was wrong — distinctness comes from the varying payload), MEDIUM-5 (3-pipeline remember), LOW-6 (embed is Soft → `embedded==0` can be a false drain). ALL folded.
+- **CROSS-MODEL:** no tension — the outside voice confirmed my read (the O(n) scan IS representative) then found the deeper bug that the query never reaches the scan. Both agree the architecture is sound; the blockers were measurement-correctness.
+- **VERDICT:** ENG CLEARED — 6 findings, ALL folded into the revised plan (holder=self+subjects / query-existing-objects+assert-non-abstain / report caveats / drain guard / doc corrections). Ready to implement subagent-driven.
+
+NO UNRESOLVED DECISIONS
