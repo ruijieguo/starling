@@ -138,6 +138,7 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             // Defensive swallow: a concurrent CAS race advanced this holder's
             // version between our read and write (rare in the single-writer tick
             // context; effectively never fires). Skip — a later tick reconverges.
+            continue;
         }
     }
 
