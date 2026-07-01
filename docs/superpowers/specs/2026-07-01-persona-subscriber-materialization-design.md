@@ -106,6 +106,20 @@ working_set.read() → "## About me" block in the recall context   ← the real 
 - Confirm the `bus_events` columns used (`event_type`, `outbox_sequence`) and the `statements` columns (`subject_id`, `holder_id`, `consolidation_state`, `review_status`, `predicate`, `object_value`, `confidence`) match the real schema.
 - Confirm the SubscriberPump `run_post_write` runs on the live remember path so slot #8 fires (and whether it also runs in `tick_all` — the pump is post-write; the harness's tick-drain does not run the pump, which is why the smoke assertion holds).
 
+## REVISION (A, post-eng-review 2026-07-01) — SUPERSEDES the pump-slot decisions above
+
+/plan-eng-review's Opus outside-voice ran the pipeline and found the pump-slot design INERT (3 blockers). Corrected design (user-chosen A = tick_all stage):
+
+- **Invocation = a `tick_all` STAGE (after the replay stages), NOT a SubscriberPump slot.** BLOCKER-2: `SubscriberPump::run_post_write` runs in `remember`/`Bus::write`, NOT in `tick_all`; consolidation happens in tick's replay. So persona rebuild must run as a tick stage right after replay (mirroring how `tick_all` already calls `CommonGroundSubscriber::tick_one_batch` as a stage). `PersonaSubscriber::tick_one_batch` (checkpoint-driven) is still the unit — just invoked as a tick stage. NOT also a pump slot (its trigger events are tick-driven, not post-write).
+- **Trigger = `statement.derived` (+ `statement.consolidated` + `statement.superseded`).** BLOCKER-1: `statement.consolidated` fires ONLY on reconsolidation (`arbitration.cpp:213/281`); normal volatile→consolidated via replay `op_compress` emits **`statement.derived`** (`replay_scheduler.cpp:376`). Include all three (derived = normal consolidation; consolidated = reconsolidation; superseded = correction).
+- **anchor `review_status IN ('approved','review_requested')`.** BLOCKER-3: remembered self-facts default `review_requested` and never auto-reach `approved`; the old `approved`-only filter excluded exactly the target. (Still exclude `rejected`/`pending_review`.)
+- **Load-shedding cascade (NEW scope):** persona becomes a **9th tick stage** → add `TickStage::Persona` (SOFT lane — non-critical background, skip under DEGRADED, like projection/replay_idle) to `include/starling/governance/tick_load_shedding.hpp`; gate the persona stage via `should_run_stage`; update the load-shedding truth-table tests (8×4→9×4) + the `TickAllRecordsStageTimings` "8 entries" test (→9, persona after replay_idle).
+- **P3.c smoke FLIPS:** `tests/python/test_load_test_p3c_smoke.py` currently asserts `"persona" not in stage_ms_total`; persona is now a tick stage → update to assert persona IS among the (now 9) tick stages.
+- **e2e consumer-proof = `render_working_set().render()`'s `## About me` block** (MAJOR-4), distinct from the `## Relevant memories` block (both would contain the anchor value — assert the About-me section specifically). NOT `Memory.query`'s `context_pack` (which `render_pack` builds from recall entries only, no persona).
+- **Test helpers purpose-built** (MAJOR-5): the CG `insert_statement`/`insert_bus_event` signatures are incompatible (`insert_bus_event` hardcodes `event_type='statement.written'`); write fresh seed helpers taking `object_value`/`event_type`/`review_status`.
+
+**The PLAN (`2026-07-01-persona-subscriber.md`) must be REWRITTEN for this tick-stage design + re-run through /plan-eng-review (the outside-voice must re-verify: a tick-stage-after-replay sees the just-emitted `statement.derived`; `review_requested` includes self-facts; `render_working_set` surfaces the persona).**
+
 ## Non-goals (deferred)
 
 - **c2.1 dimension-level Container CAS** — stays deferred. The slow channel keeps rebuild volume low; revisit only if a measured need appears (the P3.c harness, now on main, can measure it). Full rebuild from all sources is used here.
