@@ -1,49 +1,36 @@
-# PersonaSubscriber Implementation Plan
+# PersonaSubscriber Implementation Plan (v2 — tick_all stage)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+> **v2 supersedes the pump-slot v1** (eng-review found v1 inert — 3 blockers; see the spec REVISION + git history). Persona rebuild is now a `tick_all` STAGE.
 
-**Goal:** Wire persona materialization into the live dataflow — a new `PersonaSubscriber` (SubscriberPump slot #8) rebuilds a subject's persona container from consolidated+approved anchor statements on `statement.consolidated`/`statement.superseded`, so the Working Set's `## About me` block (empty in prod today) populates.
+**Goal:** Wire persona materialization live — `PersonaSubscriber` runs as a `tick_all` stage (after replay, where consolidation emits `statement.derived`) and rebuilds each affected subject's persona from its consolidated anchor statements, so `working_set`'s `## About me` block (empty in prod today) populates.
 
-**Architecture:** Mirror `src/tom/common_ground_subscriber.cpp`. A checkpoint-driven subscriber reads new `bus_events`, resolves affected `(tenant, subject_id)` holders, and calls the existing `PersonaContainer::rebuild` per holder. Registered as pump slot #8 (SAVEPOINT-isolated). Core semantics → C++; Python only benefits (working_set reads self's persona). Design spec: `docs/superpowers/specs/2026-07-01-persona-subscriber-materialization-design.md`.
+**Architecture:** `PersonaSubscriber::tick_one_batch` (checkpoint-driven, mirrors `common_ground_subscriber.cpp`) is invoked as a NEW `tick_all` stage inserted after `replay_idle` (mirrors how `tick_all` already calls the common_ground/replay subscribers as stages). It's a 9th `TickStage` (Soft lane — load-shed under DEGRADED). Core semantics → C++; Python only benefits + the e2e reads `render_working_set`. Spec: `docs/superpowers/specs/2026-07-01-persona-subscriber-materialization-design.md` (see the REVISION section).
 
-**Tech Stack:** C++20 (`src/tom/`, `include/starling/tom/`), SQLite (migration), GoogleTest, pybind11 (no binding change), pytest.
+**Tech Stack:** C++20, SQLite (migration 0030), GoogleTest, pybind11 (no binding change), pytest.
 
 ## Global Constraints
 
-- **Trigger = `statement.consolidated` + `statement.superseded`** (exact strings, `arbitration.cpp:213,281,432`). NOT `statement.written` (spec slow-channel; avoids per-write stampede → keeps c2.1 deferred).
-- **Anchor scope = `subject_id = holder AND consolidation_state = 'consolidated' AND review_status = 'approved'`** (exact enum strings, `statement_enums.cpp`). Classify `holder_id == subject_id` → `"self_model_anchor"`, else `"profile_anchor"`; `predicate → dimension`, `object_value → value`, `confidence → confidence`.
-- **Persona keyed by `subject_id`** — `rebuild`'s `holder_id` param receives the `subject_id`. Rebuild per affected subject (the subscriber cannot know "self" — that's `working_set`'s read-side `agent_id`).
-- **Do NOT add a `tick_all` stage for persona** — pump slots don't appear in `TickStats.stage_timings_ms`, so the P3.c smoke `"persona" not in stage_timings_ms` (`tests/python/test_load_test_p3c_smoke.py`) stays valid. Pump-slot only.
-- **Swallow `ConcurrentRebuildError`** (move on; CommonGround precedent). SAVEPOINT isolation via `run_isolated` (no `BEGIN` nesting — the write-discipline invariant).
-- **Build (C++ + migration + binding rebuild):** `python scripts/configure_build.py --build --python-editable`. Build tools in `.venv/bin/{cmake,ctest,ninja}` (NOT system PATH). Test binary `build-macos/tests/cpp/starling_tests`.
-- **clang-tidy CI-only gate** on `.cpp`/`.hpp` under `src/|bindings/`, changed-lines, `WarningsAsErrors *`. Write clean by construction: `[[nodiscard]]` where returning a value; identifiers ≥3 chars (loop vars: `found`/`evt`, not `it`/`ev`... note the CG template uses `ev`/`col`/`h` — those are pre-existing; NEW changed lines must be ≥3-char); braces; no `bugprone-branch-clone`. clang-tidy un-runnable locally — the IDE surfaces it; CI is the gate.
-- **Commit gate:** full `.venv/bin/ctest --test-dir build-macos` + `.venv/bin/python -m pytest tests/python` green.
+- **Trigger = `statement.derived` + `statement.consolidated` + `statement.superseded`** (exact strings). BLOCKER-1 fix: normal volatile→consolidated (replay `op_compress`) emits `statement.derived` (`replay_scheduler.cpp:376`); `statement.consolidated` fires ONLY on reconsolidation (`arbitration.cpp:213/281`); `statement.superseded` on correction (`:432`). The old v1 trigger (`statement.consolidated` alone) never fired on the primary path.
+- **Invocation = a `tick_all` STAGE after `replay_idle`** (BLOCKER-2 fix: the post-write `SubscriberPump` does NOT run in `tick_all`; consolidation happens in tick's replay). Confirmed: `run_idle`→`op_compress`→`emit_event("statement.derived",...)` writes into `bus_events` on the same `conn` in the same tick, so a persona stage right after `replay_idle` sees them via a checkpoint read.
+- **anchor `review_status IN ('approved','review_requested')`** (BLOCKER-3 fix: remembered self-facts default `review_requested` and never auto-reach `approved`). Exclude `rejected`/`pending_review`. Scope: `subject_id=holder AND consolidation_state='consolidated' AND review_status IN ('approved','review_requested')`. Classify `holder_id==subject_id`→`self_model_anchor` else `profile_anchor`; `predicate→dimension`, `object_value→value`, `confidence→confidence`.
+- **Persona = 9th `TickStage::Persona`, SOFT lane** — add to `include/starling/governance/tick_load_shedding.hpp` (Soft group in `lane_of`; `should_run_stage` unchanged, delegates to `lane_of`). Gate the stage via `should_run_stage(TickStage::Persona, health)`.
+- **P3.c smoke FLIPS** (persona is now a tick stage): `tests/python/test_load_test_p3c_smoke.py` must add `"persona"` to the expected 9-stage set + flip `"persona" not in` → `in`.
+- **e2e consumer-proof = `mem.render_working_set(...).render()`'s `## About me` block** (MAJOR-4 fix), distinct from `## Relevant memories`. NOT `Memory.query`'s `context_pack`.
+- **Build:** `python scripts/configure_build.py --build --python-editable` (C++ + migration + binding). Tools in `.venv/bin/{cmake,ctest,ninja}` (NOT system PATH). **clang-tidy CI-only gate** on `src/|bindings/` — write clean by construction (≥3-char ids on new lines, braces, no branch-clone, `reinterpret_cast` NOLINT mirroring CG). **Commit gate:** full ctest + pytest green.
 - **git:** explicit-path `git add`; no `-A`/`--no-verify`/`--amend`. Footer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
 ---
 
-## File structure
-- **Create** `migrations/0030_persona_subscriber_checkpoint.sql` — singleton checkpoint table (mirrors 0022).
-- **Create** `include/starling/tom/persona_subscriber.hpp` + `src/tom/persona_subscriber.cpp` — the subscriber.
-- **Create** `tests/cpp/test_persona_subscriber.cpp` — isolated ctest.
-- **Modify** root `CMakeLists.txt` (add the src after line 120) + `tests/cpp/CMakeLists.txt` (add the test after line 114).
-- **Modify** `src/bus/subscriber_pump.cpp` — add slot #8 + the include.
-- **Create** `tests/python/test_persona_materialization.py` — full-journey e2e (the real-consumer proof).
+## Task 1: PersonaSubscriber unit (migration + subscriber + isolated ctest)
 
----
-
-## Task 1: PersonaSubscriber + migration + isolated ctest
-
-**Files:** Create `migrations/0030_persona_subscriber_checkpoint.sql`, `include/starling/tom/persona_subscriber.hpp`, `src/tom/persona_subscriber.cpp`, `tests/cpp/test_persona_subscriber.cpp`; Modify root `CMakeLists.txt` + `tests/cpp/CMakeLists.txt`.
+**Files:** Create `migrations/0030_persona_subscriber_checkpoint.sql`, `include/starling/tom/persona_subscriber.hpp`, `src/tom/persona_subscriber.cpp`, `tests/cpp/test_persona_subscriber.cpp`; Modify root `CMakeLists.txt` (add src after line 120, next to `common_ground_subscriber.cpp`) + `tests/cpp/CMakeLists.txt` (add test after line 114).
 
 **Interfaces (Produces):**
 ```cpp
 namespace starling::tom {
 class PersonaSubscriber {
 public:
-    // Reads new statement.consolidated/.superseded bus_events since the checkpoint,
-    // rebuilds each affected subject's persona from its consolidated+approved anchor
-    // statements, advances the checkpoint. Returns the number of events processed.
     [[nodiscard]] static int tick_one_batch(persistence::SqliteAdapter& adapter,
                                             persistence::Connection& conn,
                                             std::string_view now_iso,
@@ -52,12 +39,10 @@ public:
 }
 ```
 
-- [ ] **Step 1: Write the migration** `migrations/0030_persona_subscriber_checkpoint.sql`:
-
+- [ ] **Step 1: Migration** `migrations/0030_persona_subscriber_checkpoint.sql`:
 ```sql
--- E (persona 物化接线): PersonaSubscriber outbox checkpoint (singleton, 仿 0022
--- common_ground_subscriber_checkpoint). Drives slow-channel persona rebuild on
--- statement.consolidated / statement.superseded.
+-- E (persona 物化接线): PersonaSubscriber outbox checkpoint (singleton, 仿 0022).
+-- Drives persona rebuild as a tick_all stage on statement.derived/consolidated/superseded.
 CREATE TABLE persona_subscriber_checkpoint (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_processed_outbox_sequence INTEGER NOT NULL DEFAULT 0,
@@ -67,238 +52,159 @@ INSERT INTO persona_subscriber_checkpoint (id, last_processed_outbox_sequence, l
     VALUES (1, 0, '2026-07-01T00:00:00Z');
 ```
 
-- [ ] **Step 2: Write the header** `include/starling/tom/persona_subscriber.hpp` (mirror common_ground_subscriber.hpp):
+- [ ] **Step 2: Header** `include/starling/tom/persona_subscriber.hpp` — exactly the Interfaces block above, with `#pragma once` + includes `starling/persistence/sqlite_adapter.hpp`, `starling/persistence/connection.hpp`, `<string_view>`.
+
+- [ ] **Step 3: Write the failing ctest** `tests/cpp/test_persona_subscriber.cpp`. Write PURPOSE-BUILT helpers (the CG helpers are incompatible — MAJOR-5). The `statements` INSERT has 25 columns (order: id,tenant_id,holder_id,holder_perspective,subject_kind,subject_id,predicate,object_kind,object_value,canonical_object_hash,canonical_object_hash_version,modality,polarity,confidence,observed_at,salience,affect_json,activation,last_accessed,provenance,consolidation_state,review_status,scope_parties_json,created_at,updated_at); `bus_events` INSERT has 9 (event_id,tenant_id,event_type,primary_id,aggregate_id,outbox_sequence,idempotency_key,payload_json,created_at):
 
 ```cpp
-#pragma once
-#include "starling/persistence/sqlite_adapter.hpp"
-#include "starling/persistence/connection.hpp"
-#include <string_view>
-
-namespace starling::tom {
-class PersonaSubscriber {
-public:
-    [[nodiscard]] static int tick_one_batch(persistence::SqliteAdapter& adapter,
-                                            persistence::Connection& conn,
-                                            std::string_view now_iso,
-                                            int batch_size = 100);
-};
-}  // namespace starling::tom
-```
-
-- [ ] **Step 3: Write the failing ctest** `tests/cpp/test_persona_subscriber.cpp`. Copy the `insert_statement` (25-column) + `insert_bus_event` helpers from `tests/cpp/test_common_ground_subscriber.cpp` (read that file for the exact helper bodies + column order). Then:
-
-```cpp
-// Seeds a consolidated+approved self-model anchor (holder==subject=="self"),
-// a bus_events row event_type='statement.consolidated' primary_id=that stmt,
-// runs the subscriber, asserts the persona materialized with the dimension.
-TEST(PersonaSubscriber, ConsolidatedSelfAnchorMaterializesPersona) {
-    auto adapter = persistence::SqliteAdapter::open(":memory:");
-    auto& conn = adapter->connection();
-    // holder==subject=="self", predicate="trait_curiosity", object="high",
-    // consolidation_state="consolidated", review_status="approved":
-    insert_statement(conn, /*id=*/"S1", /*tenant=*/"default", /*holder=*/"self",
-                     /*subject=*/"self", /*predicate=*/"trait_curiosity",
-                     /*object_value=*/"high", /*consolidation_state=*/"consolidated",
-                     /*review_status=*/"approved");
-    insert_bus_event(conn, /*event_type=*/"statement.consolidated",
-                     /*primary_id=*/"S1", /*tenant=*/"default", /*seq=*/1);
-
-    const int n = tom::PersonaSubscriber::tick_one_batch(*adapter, conn,
-                                                         "2026-07-01T10:00:00Z");
-    EXPECT_EQ(n, 1);
-
-    const auto view = neocortex::PersonaContainer(*adapter)
-                          .read(conn, "default", "self");
-    EXPECT_TRUE(view.found);
-    ASSERT_TRUE(view.dimensions.count("trait_curiosity"));
-    EXPECT_EQ(view.dimensions.at("trait_curiosity"), "high");
-}
-
-TEST(PersonaSubscriber, ProfileAnchorClassifiedAndCheckpointAdvances) {
-    auto adapter = persistence::SqliteAdapter::open(":memory:");
-    auto& conn = adapter->connection();
-    // holder="alice" != subject="bob" → profile_anchor about bob:
-    insert_statement(conn, "S2", "default", "alice", "bob", "role", "engineer",
-                     "consolidated", "approved");
-    insert_bus_event(conn, "statement.consolidated", "S2", "default", 5);
-    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
-    // bob's persona materialized from the profile anchor:
-    const auto view = neocortex::PersonaContainer(*adapter).read(conn, "default", "bob");
-    EXPECT_TRUE(view.found);
-    EXPECT_EQ(view.dimensions.at("role"), "engineer");
-    // checkpoint advanced to 5; a second tick processes 0 new events:
-    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:05:00Z"), 0);
-}
-
-TEST(PersonaSubscriber, IgnoresUnconsolidatedAndUnapproved) {
-    auto adapter = persistence::SqliteAdapter::open(":memory:");
-    auto& conn = adapter->connection();
-    // volatile (not consolidated) → not fed to persona even though the event fires:
-    insert_statement(conn, "S3", "default", "self", "self", "trait_x", "y",
-                     "volatile", "approved");
-    insert_bus_event(conn, "statement.consolidated", "S3", "default", 2);
-    tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z");
-    const auto view = neocortex::PersonaContainer(*adapter).read(conn, "default", "self");
-    EXPECT_FALSE(view.found);  // no consolidated+approved anchor → nothing materialized
-}
-```
-
-(If the CG test's `insert_statement` signature differs, adapt these calls to it — the point is: seed a consolidated+approved statement + a matching bus_events row, run the subscriber, assert the persona view. Match the real helper.)
-
-- [ ] **Step 4: Register in CMake + build to confirm the test FAILS** (subscriber absent). Add `src/tom/persona_subscriber.cpp` to root `CMakeLists.txt` after line 120 (next to `src/tom/common_ground_subscriber.cpp`); add `test_persona_subscriber.cpp` to `tests/cpp/CMakeLists.txt` after line 114. Run `python scripts/configure_build.py --build`; then `.venv/bin/ctest --test-dir build-macos -R 'PersonaSubscriber'` → FAIL (link error / not implemented).
-
-- [ ] **Step 5: Implement** `src/tom/persona_subscriber.cpp` (mirror common_ground_subscriber.cpp's idiom — `sqlite3_stmt* raw` + `StmtHandle` + `bind_sv`/`sqlite3_bind_int` + a `col` helper; identifiers ≥3 chars on new lines):
-
-```cpp
-#include "starling/tom/persona_subscriber.hpp"
-#include "starling/neocortex/persona_container.hpp"
-#include "starling/persistence/sqlite_helpers.hpp"
-#include "starling/persistence/sqlite_handles.hpp"
-#include <sqlite3.h>
-#include <set>
-#include <string>
-#include <vector>
-
-namespace starling::tom {
 namespace {
-using persistence::detail::bind_sv;
-using persistence::detail::make_sqlite_error;
-using persistence::StmtHandle;
-
-std::string col_text(sqlite3_stmt* stmt, int idx) {
-    const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, idx));  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) — mirrors common_ground_subscriber.cpp
-    return txt ? txt : "";
+// Purpose-built seed helpers (explicit object_value / consolidation_state /
+// review_status / event_type — the CG helpers hardcode these).
+void seed_statement(persistence::Connection& conn, const std::string& sid,
+                    const std::string& holder, const std::string& subject,
+                    const std::string& predicate, const std::string& object_value,
+                    const std::string& consolidation_state,
+                    const std::string& review_status) {
+    sqlite3_stmt* raw = nullptr;
+    sqlite3_prepare_v2(conn.raw(),
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,consolidation_state,review_status,scope_parties_json,"
+        "created_at,updated_at) VALUES "
+        "(?,'default',?,'first_person','entity',?,?,'str',?,'h','v1','believes',"
+        "'pos',0.8,'2026-01-01T00:00:00Z',0.5,'{}',1.0,'2026-01-01T00:00:00Z',"
+        "'user_input',?,?,'[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        -1, &raw, nullptr);
+    persistence::StmtHandle h(raw);
+    persistence::detail::bind_sv(h.get(), 1, sid);
+    persistence::detail::bind_sv(h.get(), 2, holder);
+    persistence::detail::bind_sv(h.get(), 3, subject);
+    persistence::detail::bind_sv(h.get(), 4, predicate);
+    persistence::detail::bind_sv(h.get(), 5, object_value);
+    persistence::detail::bind_sv(h.get(), 6, consolidation_state);
+    persistence::detail::bind_sv(h.get(), 7, review_status);
+    sqlite3_step(h.get());
+}
+void seed_event(persistence::Connection& conn, const std::string& eid,
+                const std::string& event_type, const std::string& primary_id, int seq) {
+    sqlite3_stmt* raw = nullptr;
+    sqlite3_prepare_v2(conn.raw(),
+        "INSERT INTO bus_events(event_id,tenant_id,event_type,primary_id,aggregate_id,"
+        "outbox_sequence,idempotency_key,payload_json,created_at) VALUES "
+        "(?,'default',?,?,?,?,?,'{}','2026-07-01T00:00:00Z')", -1, &raw, nullptr);
+    persistence::StmtHandle h(raw);
+    persistence::detail::bind_sv(h.get(), 1, eid);
+    persistence::detail::bind_sv(h.get(), 2, event_type);
+    persistence::detail::bind_sv(h.get(), 3, primary_id);
+    persistence::detail::bind_sv(h.get(), 4, primary_id);
+    sqlite3_bind_int(h.get(), 5, seq);
+    persistence::detail::bind_sv(h.get(), 6, std::string("ik-") + eid);
+    sqlite3_step(h.get());
 }
 }  // namespace
 
-int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
-                                      persistence::Connection& conn,
-                                      std::string_view now_iso, int batch_size) {
-    sqlite3* database = conn.raw();
-
-    int last_seq = 0;
-    {
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(database,
-            "SELECT last_processed_outbox_sequence FROM persona_subscriber_checkpoint WHERE id=1",
-            -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(database, "persona_subscriber: read checkpoint");
-        StmtHandle chk(raw);
-        if (sqlite3_step(chk.get()) == SQLITE_ROW) last_seq = sqlite3_column_int(chk.get(), 0);
-    }
-
-    // New consolidation/supersession events since the checkpoint.
-    struct Evt { std::string primary_id, tenant; int seq; };
-    std::vector<Evt> events;
-    int max_seq = last_seq;
-    {
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(database,
-            "SELECT primary_id, tenant_id, outbox_sequence FROM bus_events "
-            "WHERE outbox_sequence > ? AND event_type IN "
-            "('statement.consolidated','statement.superseded') "
-            "ORDER BY outbox_sequence LIMIT ?", -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(database, "persona_subscriber: read events");
-        StmtHandle evq(raw);
-        sqlite3_bind_int(evq.get(), 1, last_seq);
-        sqlite3_bind_int(evq.get(), 2, batch_size);
-        while (sqlite3_step(evq.get()) == SQLITE_ROW) {
-            events.push_back({col_text(evq.get(), 0), col_text(evq.get(), 1),
-                              sqlite3_column_int(evq.get(), 2)});
-            max_seq = sqlite3_column_int(evq.get(), 2);
-        }
-    }
-
-    // Resolve each event's statement → the SUBJECT it describes (the persona key).
-    // Dedup affected (tenant, subject_id) so each persona rebuilds once per batch.
-    std::set<std::pair<std::string, std::string>> affected;
-    for (const auto& evt : events) {
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(database,
-            "SELECT subject_id FROM statements WHERE id=? AND tenant_id=?",
-            -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(database, "persona_subscriber: resolve subject");
-        StmtHandle sub(raw);
-        bind_sv(sub.get(), 1, evt.primary_id);
-        bind_sv(sub.get(), 2, evt.tenant);
-        if (sqlite3_step(sub.get()) == SQLITE_ROW)
-            affected.insert({evt.tenant, col_text(sub.get(), 0)});
-    }
-
-    // Rebuild each affected subject's persona from its consolidated+approved anchors.
-    neocortex::PersonaContainer container(adapter);
-    for (const auto& [tenant, subject] : affected) {
-        std::vector<neocortex::AnchorStatement> sources;
-        {
-            sqlite3_stmt* raw = nullptr;
-            if (sqlite3_prepare_v2(database,
-                "SELECT id, holder_id, predicate, object_value, confidence FROM statements "
-                "WHERE tenant_id=? AND subject_id=? AND consolidation_state='consolidated' "
-                "AND review_status='approved'", -1, &raw, nullptr) != SQLITE_OK)
-                throw make_sqlite_error(database, "persona_subscriber: read anchors");
-            StmtHandle anc(raw);
-            bind_sv(anc.get(), 1, tenant);
-            bind_sv(anc.get(), 2, subject);
-            while (sqlite3_step(anc.get()) == SQLITE_ROW) {
-                const std::string holder = col_text(anc.get(), 1);
-                sources.push_back(neocortex::AnchorStatement{
-                    .stmt_id = col_text(anc.get(), 0),
-                    .anchor_type = (holder == subject) ? "self_model_anchor" : "profile_anchor",
-                    .dimension = col_text(anc.get(), 2),
-                    .value = col_text(anc.get(), 3),
-                    .confidence = sqlite3_column_double(anc.get(), 4),
-                });
-            }
-        }
-        if (sources.empty()) continue;  // event fired but no consolidated+approved anchor yet
-        try {
-            container.rebuild(conn, tenant, subject, sources, now_iso);
-        } catch (const neocortex::ConcurrentRebuildError&) {
-            // CAS lost to a concurrent rebuild; skip (CommonGround precedent).
-        }
-    }
-
-    // Advance checkpoint (only if we saw events).
-    if (!events.empty()) {
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(database,
-            "UPDATE persona_subscriber_checkpoint SET last_processed_outbox_sequence=?, "
-            "last_updated_at=? WHERE id=1", -1, &raw, nullptr) != SQLITE_OK)
-            throw make_sqlite_error(database, "persona_subscriber: advance checkpoint");
-        StmtHandle upd(raw);
-        sqlite3_bind_int(upd.get(), 1, max_seq);
-        bind_sv(upd.get(), 2, now_iso);
-        sqlite3_step(upd.get());
-    }
-    return static_cast<int>(events.size());
+// statement.derived (normal consolidation) on a self-anchor → persona materializes.
+TEST(PersonaSubscriber, DerivedSelfAnchorMaterializes) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    // review_requested is the DEFAULT for a remembered self-fact (BLOCKER-3):
+    seed_statement(conn, "S1", "self", "self", "trait_curiosity", "high",
+                   "consolidated", "review_requested");
+    seed_event(conn, "E1", "statement.derived", "S1", 1);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
+    const auto view = neocortex::PersonaContainer(*adapter).read(conn, "default", "self");
+    EXPECT_TRUE(view.found);
+    EXPECT_EQ(view.dimensions.at("trait_curiosity"), "high");
 }
-}  // namespace starling::tom
+
+// profile anchor (holder != subject) classified; checkpoint advances; idempotent.
+TEST(PersonaSubscriber, ProfileAnchorAndCheckpoint) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_statement(conn, "S2", "alice", "bob", "role", "engineer",
+                   "consolidated", "approved");
+    seed_event(conn, "E2", "statement.derived", "S2", 5);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
+    EXPECT_EQ(neocortex::PersonaContainer(*adapter).read(conn, "default", "bob")
+                  .dimensions.at("role"), "engineer");
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:05:00Z"), 0);
+}
+
+// volatile / rejected are excluded → no materialization.
+TEST(PersonaSubscriber, IgnoresVolatileAndRejected) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_statement(conn, "S3", "self", "self", "trait_x", "y", "volatile", "review_requested");
+    seed_event(conn, "E3", "statement.derived", "S3", 2);
+    tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z");
+    EXPECT_FALSE(neocortex::PersonaContainer(*adapter).read(conn, "default", "self").found);
+}
 ```
+(Adapt include paths / `StmtHandle`/`bind_sv` qualification to the repo's helpers — read `common_ground_subscriber.cpp` for the exact `persistence::detail::` names.)
 
-- [ ] **Step 6: Build + verify the ctest PASSES.** `python scripts/configure_build.py --build` then `.venv/bin/ctest --test-dir build-macos -R 'PersonaSubscriber' -V` → 3/3 pass. Then full `.venv/bin/ctest --test-dir build-macos` green.
+- [ ] **Step 4: Register in CMake, build, confirm FAIL.** `python scripts/configure_build.py --build`; `.venv/bin/ctest --test-dir build-macos -R 'PersonaSubscriber'` → FAIL (unimplemented).
 
-- [ ] **Step 7: Full gate + commit.** `.venv/bin/python -m pytest tests/python -q` green. Commit:
-  `feat(persona): PersonaSubscriber — rebuild persona on statement.consolidated/superseded`
+- [ ] **Step 5: Implement** `src/tom/persona_subscriber.cpp` — the checkpoint-driven `tick_one_batch` (mirror `common_ground_subscriber.cpp`'s `sqlite3_stmt*`+`StmtHandle`+`bind_sv`+`col` idiom). Key differences from the v1 draft: the event-type `IN` list is **`('statement.derived','statement.consolidated','statement.superseded')`**, and the anchor query's filter is **`review_status IN ('approved','review_requested')`**:
+  1. read `persona_subscriber_checkpoint.last_processed_outbox_sequence`;
+  2. `SELECT primary_id, tenant_id, outbox_sequence FROM bus_events WHERE outbox_sequence > ? AND event_type IN ('statement.derived','statement.consolidated','statement.superseded') ORDER BY outbox_sequence LIMIT ?` (track `max_seq`);
+  3. per event, `SELECT subject_id FROM statements WHERE id=? AND tenant_id=?` → dedup `(tenant, subject_id)` into a `std::set`;
+  4. per affected `(tenant, subject)`: `SELECT id, holder_id, predicate, object_value, confidence FROM statements WHERE tenant_id=? AND subject_id=? AND consolidation_state='consolidated' AND review_status IN ('approved','review_requested')` → build `vector<neocortex::AnchorStatement>` (`.anchor_type = (holder==subject)?"self_model_anchor":"profile_anchor"`, `.dimension=predicate`, `.value=object_value`, `.confidence=col_double`); if empty `continue`; else `PersonaContainer(adapter).rebuild(conn, tenant, subject, sources, now_iso)` inside `try{}catch(const neocortex::ConcurrentRebuildError&){}`;
+  5. if any events seen, `UPDATE persona_subscriber_checkpoint SET last_processed_outbox_sequence=?, last_updated_at=? WHERE id=1` (bind `max_seq`, `now_iso`);
+  6. `return static_cast<int>(events.size())`.
+  (The full v1 body is in git at plan v1 `src/tom/persona_subscriber.cpp` sketch — reuse it, applying the two SQL fixes above. Use ≥3-char identifiers on all new lines; NOLINT the `reinterpret_cast` in the `col` helper mirroring CG.)
+
+- [ ] **Step 6: Build + verify PASS** (`-R 'PersonaSubscriber'` 3/3) + full ctest green.
+
+- [ ] **Step 7: Full gate + commit.** `.venv/bin/python -m pytest tests/python -q` green. Commit: `feat(persona): PersonaSubscriber unit — rebuild on statement.derived/consolidated/superseded`.
 
 ---
 
-## Task 2: SubscriberPump slot #8 + Python full-journey e2e
+## Task 2: TickStage::Persona (Soft lane) + tick_all persona stage + C++ tests
 
-**Files:** Modify `src/bus/subscriber_pump.cpp`; Create `tests/python/test_persona_materialization.py`.
+**Files:** Modify `include/starling/governance/tick_load_shedding.hpp`, `tests/cpp/test_tick_load_shedding.cpp`, `src/memory/memory_ops.cpp`, `tests/cpp/test_memory_ops.cpp`.
 
 **Interfaces:**
-- Consumes: `PersonaSubscriber::tick_one_batch` (Task 1); `run_isolated(conn, name, fn)` (SAVEPOINT-isolated); the public `Memory` API + `working_set`.
+- Consumes: `PersonaSubscriber::tick_one_batch` (Task 1); `should_run_stage`/`StageTimer` (existing).
+- Produces: `TickStage::Persona` (Soft); a `"persona"` tick stage in `tick_all` after `replay_idle`.
 
-- [ ] **Step 1: Write the failing pytest** `tests/python/test_persona_materialization.py` (mirror `tests/python/test_dashboard_engine.py` fixtures + `test_m0_8_bindings.py` for how personas are read). The real-consumer proof:
+- [ ] **Step 1: Extend the load-shedding tests (RED)** in `tests/cpp/test_tick_load_shedding.cpp`: add `TEST(TickLoadShedding_LaneOf, PersonaIsSoft){ EXPECT_EQ(lane_of(TickStage::Persona), TickLane::Soft); }`; add `EXPECT_TRUE(should_run_stage(TickStage::Persona, RuntimeHealth::READY))` to `ReadyRunsAllStages`; add `EXPECT_FALSE(should_run_stage(TickStage::Persona, RuntimeHealth::DEGRADED))` to `DegradedSkipsSoftStages`; add `EXPECT_FALSE(...DRAINING)` to `DrainingRunsOutboxOnly`; add `EXPECT_FALSE(...UNREADY)` to `UnreadyRunsNoStages`. Build → FAIL (`Persona` undefined).
 
+- [ ] **Step 2: Add `TickStage::Persona`** to `include/starling/governance/tick_load_shedding.hpp` — insert into the enum after `ReplayIdle` and before `Projection`:
+```cpp
+    ReplayIdle,               // soft   — non-critical consolidation (replay.run_idle)
+    Persona,                  // soft   — non-critical persona rebuild (after replay)
+    Projection,               // soft   — non-critical projection batch
+```
+and add `case TickStage::Persona:` to the **Soft** arm of `lane_of` (alongside `ReplayIdle`/`Projection`). `should_run_stage` needs NO change. Build → `TickLoadShedding*` tests PASS.
+
+- [ ] **Step 3: Insert the persona tick stage (RED first via test in Step 5).** In `src/memory/memory_ops.cpp`: add `#include "starling/tom/persona_subscriber.hpp"`; change `timings.reserve(8)` → `timings.reserve(9)`; insert BETWEEN the `replay_idle` block and the `projection` block:
+```cpp
+    if (governance::should_run_stage(governance::TickStage::Persona, health)) {
+        governance::StageTimer timer("persona", sink);
+        tom::PersonaSubscriber::tick_one_batch(adapter, conn, now_iso);
+    } else {
+        t.stages_skipped.emplace_back("persona");
+    }
+```
+
+- [ ] **Step 4: Update the tick_all stage-timing/gating tests** in `tests/cpp/test_memory_ops.cpp`: in `TickAllRecordsStageTimings` change `size()` `8U`→`9U`, insert `EXPECT_EQ(t.stage_timings_ms[6].stage, "persona");` and bump `projection`→index 7, `outbox`→index 8. In the DEGRADED gating test bump soft-skip count `4U`→`5U` (persona joins embed/common_ground/replay_idle/projection); DRAINING skip `7U`→`8U`; UNREADY `8U`→`9U`. (Read the file for the exact assertion lines — the research cited ~161-186 for timings, ~253/289/323 for the gating tests.)
+
+- [ ] **Step 5: Build + verify** `.venv/bin/ctest --test-dir build-macos -R 'MemoryOps|TickLoadShedding'` PASS + full ctest green. (The persona stage runs after replay_idle; with a seeded consolidated self-fact + a `statement.derived` event from replay, it materializes — but `TickAllRecordsStageTimings` only pins the stage LABELS/order, which is what changed.)
+
+- [ ] **Step 6: Full gate + commit.** Full ctest + `.venv/bin/python -m pytest tests/python -q` (Python unaffected so far). Commit: `feat(persona): TickStage::Persona (soft lane) + tick_all persona stage after replay`.
+
+---
+
+## Task 3: P3.c smoke flip + Python full-journey e2e
+
+**Files:** Modify `tests/python/test_load_test_p3c_smoke.py`; Create `tests/python/test_persona_materialization.py`.
+
+- [ ] **Step 1: Write the failing e2e** `tests/python/test_persona_materialization.py` (real-consumer proof via `render_working_set`, MAJOR-4 fix):
 ```python
-# Full journey: remember self-facts → tick (consolidates → emits statement.consolidated
-# → the pump's PersonaSubscriber rebuilds self's persona) → working_set / recall shows
-# the "## About me" block populated (empty before this slice).
-def test_remember_then_tick_materializes_persona(tmp_path):
+def test_remember_then_tick_populates_about_me(tmp_path):
     from starling import Memory, make_stub_llm
-    # canned self-model anchor: holder=self, subject=self (cog-self), a trait predicate:
     fake = make_stub_llm(default_response=(
         '[{"holder":"self","holder_perspective":"FIRST_PERSON",'
         '"subject":"self","predicate":"trait_curiosity","object":"high",'
@@ -306,78 +212,41 @@ def test_remember_then_tick_materializes_persona(tmp_path):
     mem = Memory.open(str(tmp_path / "persona.db"), agent="self",
                       tenant_id="default", llm=fake)
     mem.remember("I am deeply curious.", now="2026-07-01T00:00:00Z")
-    # Drive ticks until consolidation happens + the persona subscriber runs:
-    for _ in range(20):
+    # Ticks drive replay consolidation → statement.derived → the persona tick
+    # stage (after replay) rebuilds self's persona in the SAME tick.
+    for _ in range(30):
         mem.tick("2026-07-01T00:05:00Z")
-    # The persona is now materialized; recall context should carry the About-me block.
-    # (Read via the public path the app uses — plan_query's context_pack, or a persona
-    #  read helper if exposed. Assert the persona dimension shows up.)
-    out = mem.query("what am I like", intent="FACT_LOOKUP", k=10)
-    assert "trait_curiosity" in out["context_pack"] or "curious" in out["context_pack"].lower()
+    cb = mem.render_working_set(interlocutor="other", goal="who am I")
+    rendered = cb.render()
+    # The persona ## About me block populated (empty before this slice) —
+    # assert the About-me section specifically, distinct from Relevant memories.
+    assert "## About me" in rendered
+    assert "trait_curiosity" in rendered
+    labels = [b.label for b in cb.blocks]
+    assert "persona" in labels
+    persona_block = next(b for b in cb.blocks if b.label == "persona")
+    assert persona_block.content   # non-empty
 ```
+**VERIFY at impl:** that 30 ticks reliably consolidate the self-fact (replay online-consolidation cadence) so `statement.derived` fires + the persona stage materializes. If not, drive consolidation explicitly (e.g. `mem.run_replay("idle")` if exposed) — do NOT weaken the About-me assertion.
 
-**VERIFY at impl time:** the exact public read path that surfaces the persona (the `## About me` block is built in `working_set.cpp`; confirm whether `Memory.query`/`recall`'s `context_pack` includes the working-set persona section, or whether a dedicated persona-read is needed — adjust the assertion to the real surfaced field). The non-negotiable proof: **before this slice the persona block is empty; after remember+tick it is populated.** If `context_pack` doesn't carry it, assert via whatever public API reads the working set / persona (do not weaken to a trivially-true assertion).
+- [ ] **Step 2: Run → verify FAIL** (persona empty without Tasks 1-2). Note: Tasks 1-2 are already merged into this branch, so this may already pass — if so, it's the confirmation the e2e works; still run it RED-first conceptually by reasoning about pre-Task-1-2 state.
 
-- [ ] **Step 2: Run it → verify it FAILS** (persona never materializes without the pump slot). `.venv/bin/python -m pytest tests/python/test_persona_materialization.py -v`.
+- [ ] **Step 3: Flip the P3.c smoke** `tests/python/test_load_test_p3c_smoke.py`: add `"persona"` to the expected stage set (now 9: embed/policy/common_ground/replay_oscillation_guard/replay_ttl_sweep/replay_idle/**persona**/projection/outbox) and flip `assert "persona" not in ...` → `assert "persona" in report["tick"]["stage_ms_total"]`. Update the "8 known stages" comment → 9.
 
-- [ ] **Step 3: Register slot #8** in `src/bus/subscriber_pump.cpp`. Add the include after line 8 (`#include "starling/tom/common_ground_subscriber.hpp"`):
+- [ ] **Step 4: Rebuild + verify.** `python scripts/configure_build.py --build --python-editable` (migration + C++). Run `test_persona_materialization.py` (PASS) + `test_load_test_p3c_smoke.py` (PASS, now expects persona) + full `.venv/bin/python -m pytest tests/python` + full ctest green.
 
-```cpp
-#include "starling/tom/persona_subscriber.hpp"
-```
-Add slot #8 after the common_ground slot (after line 74, before the closing `}`):
-
-```cpp
-    // 8. persona — rebuild a subject's persona container on consolidation/supersession
-    //    (slow channel; pump-slot only, NOT a tick_all stage — see plan Global Constraints).
-    run_isolated(conn, "persona", [&]{
-        starling::tom::PersonaSubscriber::tick_one_batch(adapter, conn, now_iso);
-    });
-```
-
-- [ ] **Step 4: Rebuild + verify.** Binding surface unchanged, but the migration + C++ changed → `python scripts/configure_build.py --build --python-editable`. Run the new pytest → PASS. Then `.venv/bin/python -m pytest tests/python/test_load_test_p3c_smoke.py -v` → still green (persona is a pump slot, NOT a tick stage → `"persona" not in stage_timings_ms` holds). Then full `.venv/bin/python -m pytest tests/python` + full `.venv/bin/ctest --test-dir build-macos` green.
-
-- [ ] **Step 5: Full gate + commit.**
-  `feat(persona): wire PersonaSubscriber as SubscriberPump slot #8 — About-me populates live`
+- [ ] **Step 5: Full gate + commit.** Commit: `feat(persona): e2e About-me materialization + P3.c smoke expects the persona tick stage`.
 
 ---
 
 ## Slice acceptance
-`PersonaSubscriber` (SubscriberPump slot #8) rebuilds each affected subject's persona from consolidated+approved anchor statements on `statement.consolidated`/`statement.superseded` (spec slow channel), checkpoint-driven, SAVEPOINT-isolated, `ConcurrentRebuildError` swallowed. Migration 0030 adds the checkpoint. `working_set.read(agent_id)`'s `## About me` block populates in production (empty before). Isolated ctest (consolidated self-anchor materializes; profile-anchor classified; unconsolidated/unapproved ignored; checkpoint advances/idempotent) + Python full-journey e2e (remember→tick→persona populated). P3.c smoke unaffected (pump slot ≠ tick stage). Full ctest + pytest green. **c2.1 dimension-CAS stays deferred** (slow channel = low volume).
+`PersonaSubscriber::tick_one_batch` runs as a `tick_all` stage after `replay_idle` (Soft lane, load-shed under DEGRADED), triggered by the `statement.derived` events replay emits in the same tick; rebuilds each affected subject's persona from consolidated statements (`review_status IN ('approved','review_requested')`), self/profile classified. `working_set`'s `## About me` block populates in production (empty before) — proven by a full-journey pytest reading `render_working_set().render()`. The P3.c smoke now expects persona as the 9th tick stage. Full ctest + pytest green. **All 3 v1 blockers fixed:** trigger fires (derived), runs where consolidation happens (tick stage), filter includes self-facts (review_requested).
 
 ## Self-review
-**Spec coverage:** trigger statement.consolidated+superseded (T1 event query) ✓; anchor scope consolidated+approved + classify (T1 anchor query) ✓; per-subject keying (T1 dedup by subject) ✓; migration 0030 (T1) ✓; pump slot #8 not tick stage (T2 + smoke re-check) ✓; swallow CAS (T1) ✓; real-consumer e2e (T2) ✓. **Placeholder scan:** real code + exact SQL + commands throughout; the T2 assertion has an explicit VERIFY (the surfaced persona field) with a no-weakening guard. **Type consistency:** `tick_one_batch(SqliteAdapter&, Connection&, string_view, int)->int`; `AnchorStatement{stmt_id,anchor_type,dimension,value,confidence}`; `PersonaView{found,dimensions}`; `rebuild(conn,tenant,holder,vector<AnchorStatement>,now_iso)` — all match the reference.
+**Spec coverage (REVISION):** tick-stage invocation (T2) ✓; trigger derived+consolidated+superseded (T1 query) ✓; review_status incl review_requested (T1 anchor query) ✓; TickStage::Persona Soft + gating (T2) ✓; P3.c smoke flip (T3) ✓; render_working_set e2e (T3) ✓; fresh test helpers (T1) ✓. **Placeholder scan:** real code/SQL/commands; the e2e has a VERIFY (consolidation cadence) with a no-weakening guard. **Type consistency:** `tick_one_batch(SqliteAdapter&,Connection&,string_view,int)->int`; `AnchorStatement{stmt_id,anchor_type,dimension,value,confidence}`; `TickStage::Persona` Soft; `render_working_set(interlocutor,*,goal,token_budget)->ContextBlock{.blocks[.label/.content],.render()->str}`.
 
-## Open questions for /plan-eng-review
-- Confirm the T2 e2e's surfaced-persona assertion path (does `query`/`recall`'s `context_pack` include the working-set persona block, or is a dedicated read needed?). The outside-voice should empirically verify the About-me block populates end-to-end (this is the real-consumer proof — the same class of bug the last two eng-reviews caught).
-- Confirm `insert_statement`/`insert_bus_event` helper signatures in `test_common_ground_subscriber.cpp` so the T1 test calls match.
-- Confirm `statement.consolidated` fires at the volume the e2e's 20-tick loop assumes (online consolidation cadence) — else drive consolidation explicitly.
-- Should PersonaSubscriber also process `statement.written` for faster self-model population, or strictly the slow channel? (Spec says slow; locked to consolidated+superseded.)
-
-## GSTACK REVIEW REPORT
-
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | codex timed out last session → Opus subagent ran (empirical) |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | **NOT CLEAN** | 3 blockers + 2 majors — plan inert as written |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
-
-Step 0 scope: ACCEPTED (right-sized, ~8 files/1 class, reuses CommonGround template; no complexity-gate trigger). But the OUTSIDE VOICE (Opus subagent, empirical — ran the remember→tick pipeline on the current build) found the design's core assumptions FALSE:
-
-- **BLOCKER-1:** the chosen trigger `statement.consolidated` NEVER fires on normal consolidation — it's reconsolidation-only (`arbitration.cpp:213/281`); volatile→consolidated via replay `op_compress` emits `statement.derived` (`replay_scheduler.cpp:376`). Empirically 0 `statement.consolidated` events after remember+60 ticks. Subscriber inert.
-- **BLOCKER-2:** `SubscriberPump::run_post_write` runs in `remember`/`Bus::write`, NOT in `tick_all` (`memory_ops.cpp:81` vs `:192-297`). Consolidation happens in tick's replay; the post-write pump slot never fires during the tick loop → producer/consumer disjoint. (Does confirm the P3.c smoke stays valid.)
-- **BLOCKER-3:** anchor filter `review_status='approved'` excludes remembered self-facts, which stay `review_requested` (only gist-promotion/manual reach `approved`) → `sources.empty()`.
-- **MAJOR-4:** the T2 e2e asserts `Memory.query(...)["context_pack"]`, which `render_pack` (`context_pack.cpp:51-64`) builds from recall entries only — the persona `## About me` block lives only in `working_set.cpp:101-113` (`render_working_set`). Wrong surface (the twice-caught green-but-vacuous class).
-- **MAJOR-5:** the T1 ctest calls the CG `insert_statement`/`insert_bus_event` helpers with incompatible signatures; `insert_bus_event` hardcodes `event_type='statement.written'` (can't emit the trigger). Task 1 won't compile as written.
-- MINOR-6 (superseded subject resolution sound); MINOR-7 (non-self personas = harmless dead rows, spec overclaims "latent consumers").
-
-- **CODEX:** timed out at 6 min last session → went straight to the Opus subagent (skill's timeout fallback). The subagent verified everything empirically against the built `_core`.
-- **CROSS-MODEL:** no tension — the inline review rated the plan "sound"; the outside voice went deeper by RUNNING the pipeline and found it inert. Consensus: not shippable as written.
-- **VERDICT:** **ENG NOT CLEARED — plan is inert as designed; send back to design.** The trigger, the pump-vs-tick invocation, the review_status scope, and the consumer-proof surface all rest on assumptions false against the real code. Requires re-design (not folds) before any implementation.
-
-**UNRESOLVED DECISIONS:**
-- Trigger + invocation fork: persona rebuild must run WHERE consolidation happens (tick's replay, emitting `statement.derived`) — options: (a) a `tick_all` stage after replay [breaks the pump-slot design + makes persona a tick stage → the P3.c smoke assertion flips], (b) trigger on `statement.derived` via the post-write pump [one-write latency; persona updates on the next write], (c) `statement.written` fast-channel + volatile scope [per-write, violates slow intent].
-- Anchor `review_status` scope: `approved` excludes self-facts (default `review_requested`) — must widen or rethink.
-- Consumer-proof surface: assert `render_working_set().render()`'s `## About me` block, distinct from `## Relevant memories`.
+## Open questions for /plan-eng-review (v2 re-verify)
+- Re-verify (the v1 review's method): does a `tick_all` persona stage AFTER `replay_idle` actually see the `statement.derived` events replay emits in the SAME tick (via the checkpoint read on the same `conn`)? Empirically run the T3 e2e.
+- Does 30 ticks reliably consolidate one self-fact (so `statement.derived` fires)? Confirm the online/idle consolidation cadence; if not, the e2e must drive replay explicitly.
+- Confirm `render_working_set().render()` surfaces `## About me` for `subject=self` (persona keyed by `agent_id`), distinct from `## Relevant memories`.
+- Confirm the persona stage's position (after replay_idle, before projection) is correct — replay must have emitted derived BEFORE persona reads them (same tick).
