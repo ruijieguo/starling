@@ -32,7 +32,7 @@ def test_tick_drain_reports_stage_breakdown(tmp_path):
     res = lt.run_tick_drain(mem, max_ticks=50)
     assert res["ticks"] >= 1
     assert isinstance(res["stage_ms_total"], dict) and res["stage_ms_total"]
-    # The 8 known stages are the only keys; top_stage is one of them.
+    # The 9 known stages are the only keys; top_stage is one of them.
     assert res["top_stage"] in res["stage_ms_total"]
     # Smoke scale must not trip DEGRADED, so the drain is a real drain (LOW-6).
     assert res["embed_shed_ticks"] == 0
@@ -74,11 +74,10 @@ def test_main_end_to_end_writes_report(tmp_path):
     assert report["tick"]["top_stage"]           # non-empty bottleneck call-out
     # BLOCKER-2 e2e: retrieval hit the real scan, not the all-abstain path.
     assert report["retrieval"]["abstained_count"] < report["retrieval"]["queries"]
-    # The tick stages are EXACTLY the 8 known ones — this meaningfully confirms
-    # persona-rebuild is NOT a live tick stage (the empirical inert check;
-    # replaces the vacuous "persona" substring assertion which was always true).
+    # The tick stages are EXACTLY the 9 known ones — persona is now live as the
+    # 9th tick_all stage (after replay_idle, before projection).
     assert set(report["tick"]["stage_ms_total"]) == {
         "embed", "policy", "common_ground", "replay_oscillation_guard",
-        "replay_ttl_sweep", "replay_idle", "projection", "outbox",
+        "replay_ttl_sweep", "replay_idle", "persona", "projection", "outbox",
     }
-    assert "persona" not in report["tick"]["stage_ms_total"]
+    assert "persona" in report["tick"]["stage_ms_total"]

@@ -1,4 +1,4 @@
-"""P3.c1 Phase 3b — a real offline tick surfaces per-stage timings (8 stages, L3)."""
+"""P3.c1 Phase 3b — a real offline tick surfaces per-stage timings (9 stages, L3)."""
 from __future__ import annotations
 
 import starling
@@ -14,7 +14,7 @@ CANNED_JSON = (
 EXPECTED_STAGES = [
     "embed", "policy", "common_ground",
     "replay_oscillation_guard", "replay_ttl_sweep", "replay_idle",
-    "projection", "outbox",
+    "persona", "projection", "outbox",
 ]
 
 
