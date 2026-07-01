@@ -135,9 +135,9 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         try {
             container.rebuild(conn, tenant, subject, sources, now_iso);
         } catch (const neocortex::ConcurrentRebuildError&) {
-            // Another writer advanced this holder's version between our read and
-            // write; skip — a later tick reconverges. Mirrors the swallow-and-
-            // move-on idiom in common_ground_subscriber.cpp.
+            // Defensive swallow: a concurrent CAS race advanced this holder's
+            // version between our read and write (rare in the single-writer tick
+            // context; effectively never fires). Skip — a later tick reconverges.
         }
     }
 
