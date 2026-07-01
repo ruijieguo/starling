@@ -15,6 +15,10 @@
 - **Invocation = a `tick_all` STAGE after `replay_idle`** (BLOCKER-2 fix: the post-write `SubscriberPump` does NOT run in `tick_all`; consolidation happens in tick's replay). Confirmed: `run_idle`→`op_compress`→`emit_event("statement.derived",...)` writes into `bus_events` on the same `conn` in the same tick, so a persona stage right after `replay_idle` sees them via a checkpoint read.
 - **anchor `review_status IN ('approved','review_requested')`** (BLOCKER-3 fix: remembered self-facts default `review_requested` and never auto-reach `approved`). Exclude `rejected`/`pending_review`. Scope: `subject_id=holder AND consolidation_state='consolidated' AND review_status IN ('approved','review_requested')`. Classify `holder_id==subject_id`→`self_model_anchor` else `profile_anchor`; `predicate→dimension`, `object_value→value`, `confidence→confidence`.
 - **Persona = 9th `TickStage::Persona`, SOFT lane** — add to `include/starling/governance/tick_load_shedding.hpp` (Soft group in `lane_of`; `should_run_stage` unchanged, delegates to `lane_of`). Gate the stage via `should_run_stage(TickStage::Persona, health)`.
+- **Write discipline (eng-review fold — tick-stage ≠ v1 pump slot):** the persona stage calls `PersonaContainer(adapter).rebuild(conn, …)` DIRECTLY inside `tick_all`'s transaction — it must write on `conn` with **NO `BEGIN`/`SAVEPOINT`** (matching the `projection` stage's `ProjectionMaintainer(adapter).tick_one_batch(conn,…)` precedent). v1's SAVEPOINT-via-`run_isolated` reasoning does NOT apply here (there's no pump wrapper). VERIFY at impl: confirm `PersonaContainer::rebuild` writes on `conn` without opening `BEGIN` (read `src/neocortex/persona_container.cpp`); if it opens `BEGIN`, that nests in the tick and hits the offline-only reentrancy trap → the stage is wrong until rebuild is conn-direct.
+- **Subject resolution (eng-review fold — confirmed correct):** the 3 trigger events do NOT uniformly carry `subject_id`, and their `aggregate_id` differs (`derived`=holder, `consolidated`=stmt, `superseded`=new_id). So resolve subject ONLY via `primary_id`→`SELECT subject_id FROM statements WHERE id=primary_id` (which the plan already does) — NEVER read subject from `aggregate_id`.
+- **Persona QUALITY is out of this slice (eng-review fold):** the anchor mapping is the spec's locked trivial `dimension=predicate, value=object_value` (no allowlist). The empirical outside voice flagged this yields raw `predicate: object` lines (not curated dimensions) and multi-valued predicates collide on the `dimension` key. DECISION (user, D2=A): ship the proven wiring + MVP mapping now; **persona quality is explicitly validated by the queued real-LLM baseline run (item A)** — add a curation/dimension-normalization layer ONLY if real LLM output warrants it. Do NOT build curation blind in this slice.
+- **Scope (eng-review fold — keep all-subjects):** the stage rebuilds every affected subject's persona; only `self`'s is read today (`working_set` reads `subject==agent_id`). Non-self personas are latent/harmless rows — kept because the system-level subscriber cannot know "self" (a read-side notion). Not over-engineering; the uniform mechanism is simpler than threading `agent_id` into `tick_all`.
 - **P3.c smoke FLIPS** (persona is now a tick stage): `tests/python/test_load_test_p3c_smoke.py` must add `"persona"` to the expected 9-stage set + flip `"persona" not in` → `in`.
 - **e2e consumer-proof = `mem.render_working_set(...).render()`'s `## About me` block** (MAJOR-4 fix), distinct from `## Relevant memories`. NOT `Memory.query`'s `context_pack`.
 - **Build:** `python scripts/configure_build.py --build --python-editable` (C++ + migration + binding). Tools in `.venv/bin/{cmake,ctest,ninja}` (NOT system PATH). **clang-tidy CI-only gate** on `src/|bindings/` — write clean by construction (≥3-char ids on new lines, braces, no branch-clone, `reinterpret_cast` NOLINT mirroring CG). **Commit gate:** full ctest + pytest green.
@@ -141,6 +145,20 @@ TEST(PersonaSubscriber, IgnoresVolatileAndRejected) {
     tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z");
     EXPECT_FALSE(neocortex::PersonaContainer(*adapter).read(conn, "default", "self").found);
 }
+
+// statement.superseded (correction) also triggers rebuild — the primary_id is
+// the NEW (forked) row, which carries the subject (Global Constraint: subject
+// via primary_id, never aggregate_id).
+TEST(PersonaSubscriber, SupersededTriggersRebuild) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_statement(conn, "S4new", "self", "self", "role", "staff_engineer",
+                   "consolidated", "review_requested");
+    seed_event(conn, "E4", "statement.superseded", "S4new", 7);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
+    EXPECT_EQ(neocortex::PersonaContainer(*adapter).read(conn, "default", "self")
+                  .dimensions.at("role"), "staff_engineer");
+}
 ```
 (Adapt include paths / `StmtHandle`/`bind_sv` qualification to the repo's helpers — read `common_ground_subscriber.cpp` for the exact `persistence::detail::` names.)
 
@@ -153,7 +171,7 @@ TEST(PersonaSubscriber, IgnoresVolatileAndRejected) {
   4. per affected `(tenant, subject)`: `SELECT id, holder_id, predicate, object_value, confidence FROM statements WHERE tenant_id=? AND subject_id=? AND consolidation_state='consolidated' AND review_status IN ('approved','review_requested')` → build `vector<neocortex::AnchorStatement>` (`.anchor_type = (holder==subject)?"self_model_anchor":"profile_anchor"`, `.dimension=predicate`, `.value=object_value`, `.confidence=col_double`); if empty `continue`; else `PersonaContainer(adapter).rebuild(conn, tenant, subject, sources, now_iso)` inside `try{}catch(const neocortex::ConcurrentRebuildError&){}`;
   5. if any events seen, `UPDATE persona_subscriber_checkpoint SET last_processed_outbox_sequence=?, last_updated_at=? WHERE id=1` (bind `max_seq`, `now_iso`);
   6. `return static_cast<int>(events.size())`.
-  (The full v1 body is in git at plan v1 `src/tom/persona_subscriber.cpp` sketch — reuse it, applying the two SQL fixes above. Use ≥3-char identifiers on all new lines; NOLINT the `reinterpret_cast` in the `col` helper mirroring CG.)
+  (Write the body fresh from steps 1-6 above + the `common_ground_subscriber.cpp` idiom as the template — there is NO prior persona_subscriber.cpp in git (v1 was a plan only, never implemented). Use ≥3-char identifiers on all new lines; NOLINT the `reinterpret_cast` in the `col` helper mirroring CG.)
 
 - [ ] **Step 6: Build + verify PASS** (`-R 'PersonaSubscriber'` 3/3) + full ctest green.
 
@@ -229,7 +247,7 @@ def test_remember_then_tick_populates_about_me(tmp_path):
 ```
 **VERIFY at impl:** that 30 ticks reliably consolidate the self-fact (replay online-consolidation cadence) so `statement.derived` fires + the persona stage materializes. If not, drive consolidation explicitly (e.g. `mem.run_replay("idle")` if exposed) — do NOT weaken the About-me assertion.
 
-- [ ] **Step 2: Run → verify FAIL** (persona empty without Tasks 1-2). Note: Tasks 1-2 are already merged into this branch, so this may already pass — if so, it's the confirmation the e2e works; still run it RED-first conceptually by reasoning about pre-Task-1-2 state.
+- [ ] **Step 2: Run → verify FAIL.** With Tasks 1-2 already committed on this branch (they precede Task 3 in execution order), the persona stage IS wired — so this asserts GREEN, proving the full journey (remember → tick consolidates → persona stage rebuilds → About-me populated). If it FAILS, the wiring is broken: debug before proceeding (do NOT weaken the About-me assertion). The empirical outside voice already confirmed each leg holds (derived fires in 1 tick; render_working_set surfaces About-me), so a failure here points to an integration defect, not a bad assumption.
 
 - [ ] **Step 3: Flip the P3.c smoke** `tests/python/test_load_test_p3c_smoke.py`: add `"persona"` to the expected stage set (now 9: embed/policy/common_ground/replay_oscillation_guard/replay_ttl_sweep/replay_idle/**persona**/projection/outbox) and flip `assert "persona" not in ...` → `assert "persona" in report["tick"]["stage_ms_total"]`. Update the "8 known stages" comment → 9.
 
@@ -250,3 +268,25 @@ def test_remember_then_tick_populates_about_me(tmp_path):
 - Does 30 ticks reliably consolidate one self-fact (so `statement.derived` fires)? Confirm the online/idle consolidation cadence; if not, the e2e must drive replay explicitly.
 - Confirm `render_working_set().render()` surfaces `## About me` for `subject=self` (persona keyed by `agent_id`), distinct from `## Relevant memories`.
 - Confirm the persona stage's position (after replay_idle, before projection) is correct — replay must have emitted derived BEFORE persona reads them (same tick).
+
+**ALL FOUR RESOLVED (empirical outside voice, 2026-07-01):** (1) yes — same `conn`, same tick, before projection/outbox (`replay_scheduler.cpp:376` emit + `memory_ops.cpp:198-283` stage order); (2) **1 tick** consolidates (30 is far more than enough, no explicit replay); (3) confirmed — `render_working_set().render()` prints a distinct `## About me` block with the anchor value, separate from `## Relevant memories`; (4) confirmed correct. Bonus: fresh self-fact is `review_requested` → the anchor filter includes it.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | timed out at 5 min (exit 124) → Opus empirical subagent ran instead |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | **CLEAN (v2)** | v1 NOT CLEARED (3 blockers); v2: 4 assumptions empirically VERIFIED, 1 quality decision (D2=A), 4 folds applied |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+Step 0 scope: ACCEPTED (~12 files trips the 8-file smell, but 5 are tests + 2 CMake + 1 migration; real new logic = 1 class + 1 tick stage + 1-line enum; the load-shedding cascade is required, not optional; user chose this scope via A). Sections 1-4: Architecture sound (Soft-lane persona sheds with replay_idle, no stranding); Code Quality DRY; Tests strong; Performance fine (per-tick cost bounded by consolidations/tick, Soft-shed under pressure).
+
+- **OUTSIDE VOICE (Opus empirical subagent — built + ran the pipeline, 604s):** all 4 load-bearing assumptions VERIFIED against the running `_core` — v1's 3 blockers are genuinely fixed (trigger `statement.derived` fires; runs in tick where consolidation happens; `review_requested` filter includes self-facts) + the e2e surface (`render_working_set` About-me) is correct. It surfaced ONE deeper issue: the statement→anchor mapping is the spec's trivial `dimension=predicate/value=object` (raw `predicate:object` lines, possible dimension collisions) — persona *quality*, not wiring.
+- **CODEX:** timed out at 5 min (exit 124, same as v1's session) → fell back to the Opus subagent, which is the stronger check here (read-only codex can't build+run the empirical verification that caught v1's blockers).
+- **CROSS-MODEL:** tension on the anchor mapping — the inline review treated it as the spec's locked MVP; the empirical outside voice called it under-designed. Resolved **D2=A**: ship the empirically-proven wiring + MVP mapping now; persona quality is explicitly validated by the queued real-LLM baseline run (item A); add curation only if real output warrants. Consistent with the project's measure-first / no-premature-abstraction discipline.
+- **FOLDS APPLIED (4):** write-discipline (rebuild writes on `conn`, no BEGIN — tick-stage ≠ v1 pump slot; must-verify `persona_container.cpp`); subject-resolution (via `primary_id`→statements, never `aggregate_id` — plan already correct, now explicit); scope (keep all-subjects, non-self rows latent/harmless); + 3 plan-polish minors (2 misleading-text fixes + an explicit `statement.superseded` ctest).
+- **VERDICT: ENG CLEARED (v2) — ready to implement.** The re-design is empirically validated; the one quality concern is a decided deferral (D2=A → item A), not a blocker.
+
+NO UNRESOLVED DECISIONS
