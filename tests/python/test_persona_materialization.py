@@ -41,5 +41,12 @@ def test_remember_then_tick_populates_about_me(tmp_path):
     labels = [b.label for b in cb.blocks]
     assert "persona" in labels, f"Expected 'persona' block in {labels}"
     persona_block = next(b for b in cb.blocks if b.label == "persona")
-    assert persona_block.content, "persona block must be non-empty"
+    # Airtight consumer proof: the anchor VALUE must be in the persona block
+    # specifically — not merely somewhere in the render (trait_curiosity also
+    # leaks into ## Relevant memories, so an in-`rendered` check alone is
+    # satisfiable without materialization). This ties the value to the block
+    # the persona tick stage rebuilt.
+    assert "trait_curiosity" in persona_block.content, (
+        f"persona block must contain the materialized anchor value; "
+        f"got {persona_block.content!r}")
     mem.close()
