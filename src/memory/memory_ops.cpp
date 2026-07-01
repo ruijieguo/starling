@@ -16,6 +16,7 @@
 #include "starling/retrieval/retrieval_planner.hpp"
 #include "starling/store/sqlite_statement_store.hpp"
 #include "starling/tom/common_ground_subscriber.hpp"
+#include "starling/tom/persona_subscriber.hpp"
 
 namespace starling::memoryops {
 
@@ -201,7 +202,7 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
     // tick; OQ-2/L1). The sink allocates a small SSO string + push_back; any
     // allocation failure is swallowed by the StageTimer dtor (best-effort, L6).
     std::vector<governance::StageTiming> timings;
-    timings.reserve(8);  // 8 stages (L3: replay split into 3 sub-stages)
+    timings.reserve(9);  // 9 stages (L3: replay split into 3 sub-stages)
     const governance::StageTimer::Sink sink =
         [&timings](std::string_view stage, long long duration_ms) {
             timings.push_back(governance::StageTiming{
@@ -268,6 +269,13 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
         t.consolidated    = rstats.compressed + forced;
     } else {
         t.stages_skipped.emplace_back("replay_idle");
+    }
+
+    if (governance::should_run_stage(governance::TickStage::Persona, health)) {
+        governance::StageTimer timer("persona", sink);
+        (void)tom::PersonaSubscriber::tick_one_batch(adapter, conn, now_iso);
+    } else {
+        t.stages_skipped.emplace_back("persona");
     }
 
     // 投影兜底批:泵覆盖 remember 路径,这里追平其余写入。

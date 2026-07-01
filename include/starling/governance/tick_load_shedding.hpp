@@ -4,7 +4,7 @@
 
 namespace starling::governance {
 
-// The 8 maintenance-tick stages, in tick execution order. Mirrors the
+// The 9 maintenance-tick stages, in tick execution order. Mirrors the
 // StageTimer labels in src/memory/memory_ops.cpp tick_all. Replay is SPLIT
 // into its 3 substages (LOCKED L4): the two safety/retention substages are
 // CRITICAL, only ReplayIdle is droppable.
@@ -15,6 +15,7 @@ enum class TickStage : std::uint8_t {
     ReplayOscillationGuard,   // critical — safety (replay.enforce_oscillation_guard)
     ReplayTtlSweep,           // critical — retention (replay.sweep_volatile_ttl)
     ReplayIdle,               // soft   — non-critical consolidation (replay.run_idle)
+    Persona,                  // soft   — non-critical persona rebuild (after replay)
     Projection,               // soft   — non-critical projection batch
     Outbox,                   // critical — delivery convergence / the lag drainer
 };
@@ -23,7 +24,7 @@ enum class TickLane : std::uint8_t { Soft, Critical };
 
 // Classify a stage as Soft or Critical (LOCKED L4).
 //
-// Soft  (skip under DEGRADED): Embed, CommonGround, ReplayIdle, Projection.
+// Soft  (skip under DEGRADED): Embed, CommonGround, ReplayIdle, Persona, Projection.
 // Critical (always-run lane): Policy, ReplayOscillationGuard, ReplayTtlSweep, Outbox.
 //
 // LOCKED L5 — trigger-awareness invariant:
@@ -43,6 +44,7 @@ enum class TickLane : std::uint8_t { Soft, Critical };
         case TickStage::Embed:
         case TickStage::CommonGround:
         case TickStage::ReplayIdle:
+        case TickStage::Persona:
         case TickStage::Projection:
             return TickLane::Soft;
     }
