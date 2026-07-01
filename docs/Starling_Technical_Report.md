@@ -12,7 +12,7 @@ Endowing large language model (LLM) agents with Theory of Mind (ToM) — the cap
 
 On this stance we built Starling Memory and offer three contributions. **First, a multi-subject social-mind representation.** We replace the subject-less *fact* with a holder-attributed *statement* as memory's atomic unit, collapsing five concerns that conventional memory treats separately — attribution, contradiction, retraction, perspective, and recursive belief — into facets of a single representational primitive. **Second, a dual representation of higher-order belief.** We distinguish *symbolic* nesting of propositional attitudes from *situated* reconstruction of perceptual access, and argue that the latter — grounding false belief in *which world-states each agent could observe, and when* — is the cognitively correct basis for higher-order ToM, and the source of our largest gains on nested-belief benchmarks. **Third, brain-like memory dynamics.** Drawing on Complementary Learning Systems (CLS), consolidation, and reconsolidation, we model memory as a dynamical system with fast encoding and slow consolidation, prioritized replay, recall-induced plasticity, adaptive forgetting, and prospective self-cueing — not as a static store.
 
-On the HiToM higher-order ToM benchmark, injecting Starling's deterministic nested-tracking machinery into a 14-billion-parameter model raises overall accuracy from 0.793 to 0.834, with the gain **monotonically concentrated at the deepest reasoning orders** (+10.8 points at order 3, +8.3 at order 4); for a stronger reasoning model the deep-order gain reaches 15–17 points. We characterize the **boundary** with equal rigor: deterministic structure yields a net gain only in the narrow regime where it is more reliable than the model's own reasoning (deep nested tracking), and is redundant or harmful where a strong model already succeeds. That boundary — a falsifiable account of *when structured memory beats free reasoning* — is itself one of our empirical contributions.
+On the HiToM higher-order ToM benchmark, injecting Starling's deterministic nested-tracking machinery into a 14-billion-parameter model raises overall accuracy from 0.793 to 0.834, with the gain **monotonically concentrated at the deepest reasoning orders** (+10.8 points at order 3, +8.3 at order 4); for a stronger reasoning model (deepseek-v4-pro) the deepest-order gain is larger still, roughly +14 to +18 points at orders 3–4. We characterize the **boundary** with equal rigor: deterministic structure yields a net gain only in the narrow regime where it is more reliable than the model's own reasoning (deep nested tracking), and is redundant or harmful where a strong model already succeeds. That boundary — a falsifiable account of *when structured memory beats free reasoning* — is itself one of our empirical contributions.
 
 ---
 
@@ -173,17 +173,19 @@ To isolate "the contribution of memory structure," we adopt a **same-model-in-th
 
 ### 5.2 Principal finding: the order-dependence of the gain
 
-The cleanest, most defensible result comes from a same-day paired experiment on the 14B model (zero fallback, zero extraction failure): injecting Starling's nested tracking raises HiToM overall accuracy from 0.793 to 0.834 (+4.2 points, paired p ≈ 2×10⁻⁵). But the aggregate hides a more meaningful structure — **the gain is monotonically concentrated at the deepest reasoning orders**:
+We evaluate the same mechanism on two models of differing strength: a 14-billion-parameter model reinforcement-tuned for reasoning (Qwen3-14B — our cleanest measurement, a same-day paired run with zero extraction failure on both arms) and a stronger reasoning model (deepseek-v4-pro). In both cases, injecting Starling's nested tracking raises overall HiToM accuracy (Qwen: 0.793 → 0.834, +4.2 points, paired p ≈ 2×10⁻⁵; deepseek: 0.751 → 0.803, +5.2 points). But the aggregate hides a more meaningful structure — **for both models the gain is monotonically concentrated at the deepest reasoning orders**:
 
-| Reasoning order | Bare model | + Starling | Gain (points) |
-|---|---|---|---|
-| 0 (fact) | 1.000 | 1.000 | 0 |
-| 1 | 0.913 | 0.925 | +1.3 |
-| 2 | 0.729 | 0.733 | +0.4 |
-| **3** | 0.663 | **0.771** | **+10.8** |
-| **4** | 0.658 | **0.742** | **+8.3** |
+| Order | Qwen3-14B — base → +Starling (Δ) | deepseek-v4-pro — base → +Starling (Δ) |
+|---|---|---|
+| 0 (fact) | 1.000 → 1.000 (0.0) | 0.992 → 0.933 (−5.8) |
+| 1 | 0.913 → 0.925 (+1.3) | 0.958 → 0.921 (−3.8) |
+| 2 | 0.729 → 0.733 (+0.4) | 0.675 → 0.733 (+5.8) |
+| **3** | 0.663 → **0.771** (**+10.8**) | 0.588 → **0.746** (**+15.8**) |
+| **4** | 0.658 → **0.742** (**+8.3**) | 0.542 → **0.679** (**+13.8**) |
 
-This distribution answers Q1 and Q2: the gain is real, and it appears exactly where the model's own reasoning begins to fail. Orders 0 and 1 are flat — the model is already competent, and should not be perturbed; only when nesting deepens beyond what its working memory can sustain does deterministic co-witness tracking show value. On a stronger reasoning model, the same mechanism yields 15–17 points at orders 3 and 4, confirming the generality of the picture.
+This distribution answers Q1 and Q2 for both models: the gain is real, and it appears exactly where each model's own reasoning begins to fail. Orders 0–1 carry no gain — the models are already competent there, and the injection is best gated off; only when nesting deepens beyond what working memory sustains does deterministic co-witness tracking pay off.
+
+The *comparison between the two models* is itself informative. The larger deep-order deltas for deepseek (+15.8 / +13.8 vs. Qwen's +10.8 / +8.3) do **not** indicate that structure helps stronger models more; they reflect a **lower untutored baseline** — deepseek degrades more steeply with depth (order-4 at 0.542) than the reasoning-tuned Qwen (0.658), leaving more room to recover. Tellingly, *after* injection the two models converge toward a common deep-order band (order-3 ≈ 0.75 for both; order-4 in 0.68–0.74), because that band is set largely by the deterministic tracker's own accuracy rather than by the base model — Starling supplies a near model-independent floor for deep-order tracking. The two diverge only at the shallow end, where the stronger deepseek is near-ceiling (order-0/1 ≈ 0.95–0.99) and the scaffold can only add noise (−5.8 / −3.8) — a divergence partly confounded, since the deepseek arms, unlike Qwen's, were not same-day paired. (The deepseek baseline here is a clean run with zero extraction failure; the widely-cited +6.4-point figure uses an earlier, fallback-depleted baseline, and against clean baselines the overall lift is +5.2 to +5.7 points, while the deep-order lift is robust across every baseline choice: +14 to +18 points at orders 3–4.)
 
 What underwrites the gain are three generalizable mechanism refinements, all within the perception-grounded representation of §3.3(b): **room-scope awareness** (a subject who has left is no longer mistaken for having witnessed moves elsewhere), **observation/hearsay separation** (firsthand observation is primary; telling and lies only fill gaps), and a **competence gate** (inject only at order ≥ 2, avoiding interference where the model is already competent). Notably, none of these is a benchmark-specific special case; each is a faithful realization of the principle "false belief is perceptual access."
 
