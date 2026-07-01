@@ -25,12 +25,12 @@ from starling.dashboard.engine import DashboardEngine
 
 _NOW = "2026-06-30T12:00:00Z"
 
-# LW.2 labels for the 8 stages.
+# LW.2 labels for the 9 stages.
 # Under DEGRADED: only Soft lane stages are skipped (LOCKED L4 in tick_load_shedding.hpp).
-# Soft  = embed, common_ground, replay_idle, projection.
+# Soft  = embed, common_ground, replay_idle, projection, persona.
 # Critical = policy, replay_oscillation_guard, replay_ttl_sweep, outbox (always run).
 _DEGRADED_SOFT = {"embed", "common_ground", "replay_idle", "projection"}
-# Under DRAINING: only outbox runs — all 7 others are skipped.
+# Under DRAINING: only outbox runs — all 8 others are skipped.
 _DRAINING_SHED = {"embed", "policy", "common_ground",
                   "replay_oscillation_guard", "replay_ttl_sweep",
                   "replay_idle", "projection"}

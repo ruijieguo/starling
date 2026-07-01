@@ -37,6 +37,10 @@ TEST(TickLoadShedding_LaneOf, ReplayIdleIsSoft) {
     EXPECT_EQ(lane_of(TickStage::ReplayIdle), TickLane::Soft);
 }
 
+TEST(TickLoadShedding_LaneOf, PersonaIsSoft) {
+    EXPECT_EQ(lane_of(TickStage::Persona), TickLane::Soft);
+}
+
 TEST(TickLoadShedding_LaneOf, ProjectionIsSoft) {
     EXPECT_EQ(lane_of(TickStage::Projection), TickLane::Soft);
 }
@@ -45,7 +49,7 @@ TEST(TickLoadShedding_LaneOf, OutboxIsCritical) {
     EXPECT_EQ(lane_of(TickStage::Outbox), TickLane::Critical);
 }
 
-// ── should_run_stage: READY → all 8 stages run ───────────────────────────────
+// ── should_run_stage: READY → all 9 stages run ───────────────────────────────
 
 TEST(TickLoadShedding_ShouldRunStage, ReadyRunsAllStages) {
     constexpr RuntimeHealth health = RuntimeHealth::READY;
@@ -55,6 +59,7 @@ TEST(TickLoadShedding_ShouldRunStage, ReadyRunsAllStages) {
     EXPECT_TRUE(should_run_stage(TickStage::ReplayOscillationGuard, health));
     EXPECT_TRUE(should_run_stage(TickStage::ReplayTtlSweep,         health));
     EXPECT_TRUE(should_run_stage(TickStage::ReplayIdle,             health));
+    EXPECT_TRUE(should_run_stage(TickStage::Persona,                health));
     EXPECT_TRUE(should_run_stage(TickStage::Projection,             health));
     EXPECT_TRUE(should_run_stage(TickStage::Outbox,                 health));
 }
@@ -63,10 +68,11 @@ TEST(TickLoadShedding_ShouldRunStage, ReadyRunsAllStages) {
 
 TEST(TickLoadShedding_ShouldRunStage, DegradedSkipsSoftStages) {
     constexpr RuntimeHealth health = RuntimeHealth::DEGRADED;
-    EXPECT_FALSE(should_run_stage(TickStage::Embed,       health));
+    EXPECT_FALSE(should_run_stage(TickStage::Embed,        health));
     EXPECT_FALSE(should_run_stage(TickStage::CommonGround, health));
-    EXPECT_FALSE(should_run_stage(TickStage::ReplayIdle,  health));
-    EXPECT_FALSE(should_run_stage(TickStage::Projection,  health));
+    EXPECT_FALSE(should_run_stage(TickStage::ReplayIdle,   health));
+    EXPECT_FALSE(should_run_stage(TickStage::Persona,      health));
+    EXPECT_FALSE(should_run_stage(TickStage::Projection,   health));
 }
 
 TEST(TickLoadShedding_ShouldRunStage, DegradedKeepsCriticalStages) {
@@ -87,6 +93,7 @@ TEST(TickLoadShedding_ShouldRunStage, DrainingRunsOutboxOnly) {
     EXPECT_FALSE(should_run_stage(TickStage::ReplayOscillationGuard, health));
     EXPECT_FALSE(should_run_stage(TickStage::ReplayTtlSweep,         health));
     EXPECT_FALSE(should_run_stage(TickStage::ReplayIdle,             health));
+    EXPECT_FALSE(should_run_stage(TickStage::Persona,                health));
     EXPECT_FALSE(should_run_stage(TickStage::Projection,             health));
     EXPECT_TRUE(should_run_stage(TickStage::Outbox,                  health));
 }
@@ -101,6 +108,7 @@ TEST(TickLoadShedding_ShouldRunStage, UnreadyRunsNoStages) {
     EXPECT_FALSE(should_run_stage(TickStage::ReplayOscillationGuard, health));
     EXPECT_FALSE(should_run_stage(TickStage::ReplayTtlSweep,         health));
     EXPECT_FALSE(should_run_stage(TickStage::ReplayIdle,             health));
+    EXPECT_FALSE(should_run_stage(TickStage::Persona,                health));
     EXPECT_FALSE(should_run_stage(TickStage::Projection,             health));
     EXPECT_FALSE(should_run_stage(TickStage::Outbox,                 health));
 }

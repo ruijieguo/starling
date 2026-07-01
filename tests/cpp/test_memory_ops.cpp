@@ -171,15 +171,16 @@ TEST(MemoryOps, TickAllRecordsStageTimings) {
 
     const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z");
 
-    ASSERT_EQ(t.stage_timings_ms.size(), 8U);
+    ASSERT_EQ(t.stage_timings_ms.size(), 9U);
     EXPECT_EQ(t.stage_timings_ms[0].stage, "embed");
     EXPECT_EQ(t.stage_timings_ms[1].stage, "policy");
     EXPECT_EQ(t.stage_timings_ms[2].stage, "common_ground");
     EXPECT_EQ(t.stage_timings_ms[3].stage, "replay_oscillation_guard");
     EXPECT_EQ(t.stage_timings_ms[4].stage, "replay_ttl_sweep");
     EXPECT_EQ(t.stage_timings_ms[5].stage, "replay_idle");
-    EXPECT_EQ(t.stage_timings_ms[6].stage, "projection");
-    EXPECT_EQ(t.stage_timings_ms[7].stage, "outbox");
+    EXPECT_EQ(t.stage_timings_ms[6].stage, "persona");
+    EXPECT_EQ(t.stage_timings_ms[7].stage, "projection");
+    EXPECT_EQ(t.stage_timings_ms[8].stage, "outbox");
     for (const auto& timing : t.stage_timings_ms) {
         EXPECT_GE(timing.duration_ms, 0);
     }
@@ -203,8 +204,8 @@ static bool timed(const TickOutcome& t, const std::string& label) {
     return false;
 }
 
-// READY (regression): default param keeps all 8 stages running, stages_skipped
-// empty, timings all 8.
+// READY (regression): default param keeps all 9 stages running, stages_skipped
+// empty, timings all 9.
 TEST(MemoryOps, TickAllReadyRunsAllStages) {
     auto a = make_adapter();
     extractor::FakeLLMAdapter llm;
@@ -221,13 +222,13 @@ TEST(MemoryOps, TickAllReadyRunsAllStages) {
                             RuntimeHealth::READY);
 
     EXPECT_TRUE(t.stages_skipped.empty());
-    ASSERT_EQ(t.stage_timings_ms.size(), 8U);
+    ASSERT_EQ(t.stage_timings_ms.size(), 9U);
     // embed ran: the pending-embedding row got embedded.
     EXPECT_EQ(t.embedded, 1);
 }
 
 // DEGRADED causality: soft stages are NOT run (embed effect absent); critical
-// stages DO run (outbox drains). stages_skipped == 4 soft labels. Timings only
+// stages DO run (outbox drains). stages_skipped == 5 soft labels. Timings only
 // for the 4 critical stages.
 TEST(MemoryOps, TickAllDegradedShedsEmbedLeavesRowUnembedded) {
     auto a = make_adapter();
@@ -249,11 +250,12 @@ TEST(MemoryOps, TickAllDegradedShedsEmbedLeavesRowUnembedded) {
     EXPECT_EQ(row_count(a->connection(),
         "SELECT COUNT(*) FROM statement_vectors"), 0);
 
-    // stages_skipped == the 4 soft labels (order matches tick order).
-    ASSERT_EQ(t.stages_skipped.size(), 4U);
+    // stages_skipped == the 5 soft labels (order matches tick order).
+    ASSERT_EQ(t.stages_skipped.size(), 5U);
     EXPECT_TRUE(skipped(t, "embed"));
     EXPECT_TRUE(skipped(t, "common_ground"));
     EXPECT_TRUE(skipped(t, "replay_idle"));
+    EXPECT_TRUE(skipped(t, "persona"));
     EXPECT_TRUE(skipped(t, "projection"));
 
     // Timings only for the 4 critical stages.
@@ -269,7 +271,7 @@ TEST(MemoryOps, TickAllDegradedShedsEmbedLeavesRowUnembedded) {
         "SELECT COUNT(*) FROM bus_events WHERE dispatch_status='pending'"), 0);
 }
 
-// DRAINING: only outbox runs; 7 stages skipped, outbox NOT skipped; outbox
+// DRAINING: only outbox runs; 8 stages skipped, outbox NOT skipped; outbox
 // still drains pending delivery.
 TEST(MemoryOps, TickAllDrainingKeepsOnlyOutbox) {
     auto a = make_adapter();
@@ -285,8 +287,8 @@ TEST(MemoryOps, TickAllDrainingKeepsOnlyOutbox) {
     const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
                             RuntimeHealth::DRAINING);
 
-    // 7 stages skipped; outbox is NOT in the skip list.
-    ASSERT_EQ(t.stages_skipped.size(), 7U);
+    // 8 stages skipped; outbox is NOT in the skip list.
+    ASSERT_EQ(t.stages_skipped.size(), 8U);
     EXPECT_FALSE(skipped(t, "outbox"));
     EXPECT_TRUE(skipped(t, "embed"));
     EXPECT_TRUE(skipped(t, "policy"));
@@ -294,6 +296,7 @@ TEST(MemoryOps, TickAllDrainingKeepsOnlyOutbox) {
     EXPECT_TRUE(skipped(t, "replay_oscillation_guard"));
     EXPECT_TRUE(skipped(t, "replay_ttl_sweep"));
     EXPECT_TRUE(skipped(t, "replay_idle"));
+    EXPECT_TRUE(skipped(t, "persona"));
     EXPECT_TRUE(skipped(t, "projection"));
 
     // Only outbox timed.
@@ -305,7 +308,7 @@ TEST(MemoryOps, TickAllDrainingKeepsOnlyOutbox) {
         "SELECT COUNT(*) FROM bus_events WHERE dispatch_status='pending'"), 0);
 }
 
-// UNREADY: all 8 stages skipped; no timings; no side effects.
+// UNREADY: all 9 stages skipped; no timings; no side effects.
 TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
     auto a = make_adapter();
     extractor::FakeLLMAdapter llm;
@@ -320,7 +323,7 @@ TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
     const auto t = tick_all(*a, worker, policy, "2026-06-11T10:05:00Z",
                             RuntimeHealth::UNREADY);
 
-    ASSERT_EQ(t.stages_skipped.size(), 8U);
+    ASSERT_EQ(t.stages_skipped.size(), 9U);
     EXPECT_TRUE(t.stage_timings_ms.empty());
     EXPECT_EQ(t.embedded, 0);
 }

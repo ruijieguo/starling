@@ -112,6 +112,7 @@ add_executable(starling_tests
     test_common_ground_container.cpp
     test_common_ground_writer.cpp
     test_common_ground_subscriber.cpp
+    test_persona_subscriber.cpp
     test_projection_incremental.cpp
     test_projection_repair_guard.cpp
     test_subscriber_pump.cpp

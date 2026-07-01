@@ -303,6 +303,7 @@ _PUMP_CHECKPOINTS = (
     ("reconsolidation", "reconsolidation_checkpoint", "last_processed_outbox_sequence"),
     ("projection", "projection_subscriber_checkpoint", "last_processed_outbox_sequence"),
     ("common_ground", "common_ground_subscriber_checkpoint", "last_processed_outbox_sequence"),
+    ("persona", "persona_subscriber_checkpoint", "last_processed_outbox_sequence"),
     ("policy_engine", "policy_engine_checkpoint", "seq"),
 )
 
