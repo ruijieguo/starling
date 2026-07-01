@@ -353,3 +353,31 @@ Add slot #8 after the common_ground slot (after line 74, before the closing `}`)
 - Confirm `insert_statement`/`insert_bus_event` helper signatures in `test_common_ground_subscriber.cpp` so the T1 test calls match.
 - Confirm `statement.consolidated` fires at the volume the e2e's 20-tick loop assumes (online consolidation cadence) — else drive consolidation explicitly.
 - Should PersonaSubscriber also process `statement.written` for faster self-model population, or strictly the slow channel? (Spec says slow; locked to consolidated+superseded.)
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | codex timed out last session → Opus subagent ran (empirical) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | **NOT CLEAN** | 3 blockers + 2 majors — plan inert as written |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+Step 0 scope: ACCEPTED (right-sized, ~8 files/1 class, reuses CommonGround template; no complexity-gate trigger). But the OUTSIDE VOICE (Opus subagent, empirical — ran the remember→tick pipeline on the current build) found the design's core assumptions FALSE:
+
+- **BLOCKER-1:** the chosen trigger `statement.consolidated` NEVER fires on normal consolidation — it's reconsolidation-only (`arbitration.cpp:213/281`); volatile→consolidated via replay `op_compress` emits `statement.derived` (`replay_scheduler.cpp:376`). Empirically 0 `statement.consolidated` events after remember+60 ticks. Subscriber inert.
+- **BLOCKER-2:** `SubscriberPump::run_post_write` runs in `remember`/`Bus::write`, NOT in `tick_all` (`memory_ops.cpp:81` vs `:192-297`). Consolidation happens in tick's replay; the post-write pump slot never fires during the tick loop → producer/consumer disjoint. (Does confirm the P3.c smoke stays valid.)
+- **BLOCKER-3:** anchor filter `review_status='approved'` excludes remembered self-facts, which stay `review_requested` (only gist-promotion/manual reach `approved`) → `sources.empty()`.
+- **MAJOR-4:** the T2 e2e asserts `Memory.query(...)["context_pack"]`, which `render_pack` (`context_pack.cpp:51-64`) builds from recall entries only — the persona `## About me` block lives only in `working_set.cpp:101-113` (`render_working_set`). Wrong surface (the twice-caught green-but-vacuous class).
+- **MAJOR-5:** the T1 ctest calls the CG `insert_statement`/`insert_bus_event` helpers with incompatible signatures; `insert_bus_event` hardcodes `event_type='statement.written'` (can't emit the trigger). Task 1 won't compile as written.
+- MINOR-6 (superseded subject resolution sound); MINOR-7 (non-self personas = harmless dead rows, spec overclaims "latent consumers").
+
+- **CODEX:** timed out at 6 min last session → went straight to the Opus subagent (skill's timeout fallback). The subagent verified everything empirically against the built `_core`.
+- **CROSS-MODEL:** no tension — the inline review rated the plan "sound"; the outside voice went deeper by RUNNING the pipeline and found it inert. Consensus: not shippable as written.
+- **VERDICT:** **ENG NOT CLEARED — plan is inert as designed; send back to design.** The trigger, the pump-vs-tick invocation, the review_status scope, and the consumer-proof surface all rest on assumptions false against the real code. Requires re-design (not folds) before any implementation.
+
+**UNRESOLVED DECISIONS:**
+- Trigger + invocation fork: persona rebuild must run WHERE consolidation happens (tick's replay, emitting `statement.derived`) — options: (a) a `tick_all` stage after replay [breaks the pump-slot design + makes persona a tick stage → the P3.c smoke assertion flips], (b) trigger on `statement.derived` via the post-write pump [one-write latency; persona updates on the next write], (c) `statement.written` fast-channel + volatile scope [per-write, violates slow intent].
+- Anchor `review_status` scope: `approved` excludes self-facts (default `review_requested`) — must widen or rethink.
+- Consumer-proof surface: assert `render_working_set().render()`'s `## About me` block, distinct from `## Relevant memories`.
