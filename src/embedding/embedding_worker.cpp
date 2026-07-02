@@ -215,6 +215,8 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
             continue;  // failed row — already marked above
         }
         const auto& row = pending[pos];
+        // NOLINTNEXTLINE(readability-identifier-length): 'er' matches the terse
+        // (grandfathered) embed-write body below; renaming cascades into it.
         const EmbeddingResult& er = *embeds[pos];
 
         // 3. Find neighbors via search_topk; fetch their index_vectors.
