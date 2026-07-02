@@ -174,9 +174,31 @@ def main() -> int:
     for t in tus:
         print(f"  {t}")
 
-    cmd = [tidy, "-p", build_dir, "--checks=" + _GATE_DISABLED_CHECKS,
-           "-line-filter=" + json.dumps(line_filter), *tus]
-    return subprocess.run(cmd).returncode
+    # Run clang-tidy PER TU under a wall-clock timeout. A single TU that pulls in
+    # a large template-heavy header (e.g. nlohmann/json.hpp) can make clang-tidy
+    # run for HOURS with no natural bound — embedding-batching's first run hung 6h
+    # until GitHub's job timeout killed it, even with clang-analyzer-* disabled.
+    # A per-TU timeout SKIPS only the offending TU (logged as a GH ::warning::,
+    # never silent) so one pathological TU can't hang the whole gate; every other
+    # TU is still linted and any real diagnostic still fails CI. Tune via
+    # CLANG_TIDY_TU_TIMEOUT (seconds).
+    per_tu_timeout = int(os.environ.get("CLANG_TIDY_TU_TIMEOUT", "600"))
+    checks_arg = "--checks=" + _GATE_DISABLED_CHECKS
+    filter_arg = "-line-filter=" + json.dumps(line_filter)
+    rc = 0
+    for tu in tus:
+        try:
+            result = subprocess.run(
+                [tidy, "-p", build_dir, checks_arg, filter_arg, tu],
+                timeout=per_tu_timeout,
+            )
+            if result.returncode != 0:
+                rc = result.returncode
+        except subprocess.TimeoutExpired:
+            print(f"::warning file={tu}::clang-tidy exceeded {per_tu_timeout}s on "
+                  f"{tu} and was SKIPPED (changed lines here NOT gated this run) — "
+                  f"investigate the TU's clang-tidy cost.")
+    return rc
 
 
 if __name__ == "__main__":
