@@ -151,23 +151,71 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
         }
     }
 
+    if (pending.empty()) {
+        return stats;  // nothing pending this tick — no batch call
+    }
+
     const int dim = embedder_.dim();
     const std::string model = embedder_.model();
 
-    // 2. Process each pending statement.
+    // 2. Render every pending text up-front.
+    std::vector<std::string> texts;
+    texts.reserve(pending.size());
     for (const auto& row : pending) {
-        const std::string text =
-            render_text(row.subject_id, row.predicate, row.object_value);
+        texts.push_back(render_text(row.subject_id, row.predicate, row.object_value));
+    }
 
-        EmbeddingResult er;
-        try {
-            er = embedder_.embed(text);
-        } catch (const EmbeddingError&) {
-            // Transient failure → mark failed, bump retry for backoff.
+    // 3. Embed. Fast path = ONE batched call. Failure handling is two-tier:
+    //    - transient (EmbeddingError: 429/5xx/network) is endpoint-wide → mark
+    //      the whole batch failed + bump retry and return (a per-row retry would
+    //      just re-fail every row);
+    //    - permanent/structural (a permanent_<code> 4xx, or a result-count
+    //      mismatch) → fall back to per-row embed() so healthy rows still embed
+    //      and only the offending row is marked failed.
+    //    Real-time invariant: runs only in the background tick; embeds whatever
+    //    is pending (up to batch_size), never waiting to fill a batch.
+    std::vector<std::optional<EmbeddingResult>> embeds(pending.size());
+    bool batched = false;
+    try {
+        std::vector<EmbeddingResult> results = embedder_.embed_batch(texts);
+        if (results.size() == pending.size()) {  // fail-closed: never index a short result
+            for (size_t pos = 0; pos < results.size(); ++pos) {
+                embeds[pos] = std::move(results[pos]);
+            }
+            batched = true;
+        }
+        // else: adapter returned the wrong count → fall through to per-row.
+    } catch (const EmbeddingError&) {
+        // Transient, endpoint-wide → mark all failed + retry; no per-row storm.
+        for (const auto& row : pending) {
             mark_failed(conn, row, dim, model, now_iso);
             stats.failed++;
-            continue;
         }
+        return stats;
+    } catch (const std::exception&) {
+        // Permanent/structural batch failure → isolate via per-row below.
+        batched = false;
+    }
+    if (!batched) {
+        for (size_t pos = 0; pos < pending.size(); ++pos) {
+            try {
+                embeds[pos] = embedder_.embed(std::string_view(texts[pos]));
+            } catch (const std::exception&) {
+                // This row can't embed (transient or permanent) → mark failed,
+                // bump retry; a poison row no longer wedges its batch-mates.
+                mark_failed(conn, pending[pos], dim, model, now_iso);
+                stats.failed++;
+            }
+        }
+    }
+
+    // 4. Persist every row that embedded successfully.
+    for (size_t pos = 0; pos < pending.size(); ++pos) {
+        if (!embeds[pos].has_value()) {
+            continue;  // failed row — already marked above
+        }
+        const auto& row = pending[pos];
+        const EmbeddingResult& er = *embeds[pos];
 
         // 3. Find neighbors via search_topk; fetch their index_vectors.
         std::vector<starling::vector::ScoredId> scored = index_.search_topk(
