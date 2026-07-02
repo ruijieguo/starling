@@ -1,10 +1,9 @@
 #include "starling/embedding/openai_embedding_adapter.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cstddef>
 #include <cstdlib>
-#include <cstring>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,7 +23,7 @@ void throw_for_http_error(const net::HttpResult& resp) {
     if (resp.ok) {
         return;
     }
-    if (resp.error.rfind("permanent_", 0) == 0) {
+    if (resp.error.starts_with("permanent_")) {
         throw std::runtime_error(resp.error);
     }
     throw EmbeddingError(resp.error);
@@ -46,9 +45,9 @@ OpenAIEmbeddingAdapter::Config OpenAIEmbeddingAdapter::Config::from_env() {
     }
     const char* max_batch = std::getenv("EMBEDDING_MAX_BATCH");
     if (max_batch != nullptr && *max_batch != '\0') {
+        std::istringstream iss{std::string(max_batch)};
         int parsed = 0;
-        const auto res = std::from_chars(max_batch, max_batch + std::strlen(max_batch), parsed);
-        if (res.ec == std::errc() && parsed > 0) {
+        if ((iss >> parsed) && parsed > 0) {
             c.max_batch_inputs = parsed;
         }
     }
@@ -150,7 +149,8 @@ OpenAIEmbeddingAdapter::embed_batch(const std::vector<std::string>& texts) {
         throw_for_http_error(resp);
         auto vecs = parse_embeddings_batch(resp.body, static_cast<int>(end - start), cfg_.dim);
         for (auto& vec : vecs) {
-            out.push_back(EmbeddingResult{std::move(vec), cfg_.dim, cfg_.model});
+            out.push_back(EmbeddingResult{.vector = std::move(vec), .dim = cfg_.dim,
+                                          .model = cfg_.model});
         }
     }
     return out;
