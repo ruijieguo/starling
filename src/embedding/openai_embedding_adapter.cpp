@@ -102,6 +102,9 @@ OpenAIEmbeddingAdapter::chunk_ranges(std::size_t count, int max_inputs) {
 std::vector<std::vector<float>>
 OpenAIEmbeddingAdapter::parse_embeddings_batch(const std::string& body,
                                                int expected_count, int expected_dim) {
+    if (expected_count < 0) {  // defensive: public static; a negative count would huge-alloc
+        throw std::runtime_error("malformed_response");
+    }
     std::vector<std::vector<float>> out(static_cast<std::size_t>(expected_count));
     std::vector<bool> seen(static_cast<std::size_t>(expected_count), false);
     try {

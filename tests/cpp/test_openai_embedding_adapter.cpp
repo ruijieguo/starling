@@ -45,6 +45,11 @@ TEST(OpenAIEmbeddingBatch, ParseMissingDataThrows) {
     EXPECT_THROW(OpenAIEmbeddingAdapter::parse_embeddings_batch("{}", 1, 0),
                  std::runtime_error);
 }
+TEST(OpenAIEmbeddingBatch, ParseNegativeCountThrows) {
+    // Defensive: a negative expected_count must not attempt a huge allocation.
+    EXPECT_THROW(OpenAIEmbeddingAdapter::parse_embeddings_batch("{}", -1, 0),
+                 std::runtime_error);
+}
 TEST(OpenAIEmbeddingBatch, ParseCountMismatchThrows) {
     const std::string body = R"({"data":[{"index":0,"embedding":[0.0]}]})";
     EXPECT_THROW(OpenAIEmbeddingAdapter::parse_embeddings_batch(body, 2, 0),
