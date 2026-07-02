@@ -16,6 +16,22 @@ class EmbeddingAdapter {
 public:
     virtual ~EmbeddingAdapter() = default;
     virtual EmbeddingResult embed(std::string_view text) = 0;
+
+    // Batch entry point. Default: loop embed() — keeps StubEmbeddingAdapter and
+    // any future adapter working unchanged. OpenAIEmbeddingAdapter overrides it
+    // with a single multi-input API call. Returns one result per input, in
+    // INPUT ORDER. A transient failure throws EmbeddingError (whole batch); a
+    // permanent failure throws std::runtime_error.
+    virtual std::vector<EmbeddingResult>
+    embed_batch(const std::vector<std::string>& texts) {
+        std::vector<EmbeddingResult> out;
+        out.reserve(texts.size());
+        for (const auto& text : texts) {
+            out.push_back(embed(std::string_view(text)));
+        }
+        return out;
+    }
+
     virtual int dim() const = 0;
     virtual std::string model() const = 0;
 };
