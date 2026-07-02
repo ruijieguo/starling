@@ -58,13 +58,21 @@ _ZERO_SHA = "0000000000000000000000000000000000000000"
 #     these fire on every sibling in a class of conn-passing methods the instant one
 #     is touched (commitment fulfill/withdraw: void→bool re-flagged the pre-existing
 #     4-string_view signature + "could be static" across the whole engine).
+#   - clang-analyzer-*: path-sensitive WHOLE-TU static analysis. It is (a) the
+#     clang-tidy performance killer — with no per-TU timeout it can run well over
+#     an hour on a template-heavy TU (e.g. one including nlohmann/json.hpp),
+#     HANGING the gate (bit embedding-batching: the first PR to lint
+#     src/embedding/openai_embedding_adapter.cpp + embedding_worker.cpp stalled CI
+#     ~90min on this step) — and (b) whole-TU rather than reliably changed-line
+#     attributable, like the checks above.
 # Appended to .clang-tidy via --checks (a leading '-' disables); .clang-tidy still
 # enforces all of them for any full-tree / whole-function review.
 _GATE_DISABLED_CHECKS = (
     "-readability-function-cognitive-complexity,"
     "-readability-function-size,"
     "-bugprone-easily-swappable-parameters,"
-    "-readability-convert-member-functions-to-static"
+    "-readability-convert-member-functions-to-static,"
+    "-clang-analyzer-*"
 )
 
 
