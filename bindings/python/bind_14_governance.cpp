@@ -42,7 +42,9 @@ void bind_14_governance(pybind11::module_& m) {
     py::register_exception<gov::WriteGateRejected>(m, "WriteGateRejected");
     m.def("install_write_gate", &gov::install_write_gate,
           py::arg("adapter"), py::arg("supervisor"),
-          "Wire adapter's write gate to supervisor.check_write() (production only).");
+          py::keep_alive<1, 2>(),
+          "Wire adapter's write gate to supervisor.check_write() (production only). "
+          "keep_alive<1,2>: supervisor (arg2) stays alive at least as long as adapter (arg1).");
 
     py::class_<gov::PreflightReport>(m, "PreflightReport")
         .def_readonly("passed", &gov::PreflightReport::passed)
