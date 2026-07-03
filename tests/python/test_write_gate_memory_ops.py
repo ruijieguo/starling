@@ -1,4 +1,3 @@
-from pathlib import Path
 import sqlite3
 import pytest
 from starling import _core

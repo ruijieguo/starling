@@ -1,5 +1,4 @@
 """端到端:DRAINING 拒全部 7 前台写(完整 quiesce,查表证零写);DEGRADED 仍放行。"""
-from pathlib import Path
 import sqlite3
 import pytest
 from starling import _core

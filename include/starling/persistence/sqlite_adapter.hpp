@@ -28,7 +28,7 @@ public:
     // 写门钩子(P3.c write-gate):未设 → 放行(behavior-neutral by construction)。
     // 返回 bool 避免 persistence 依赖 governance。production Runtime 经
     // governance::install_write_gate 设一次:钩子内读 supervisor 健康态。
-    void set_write_admit(std::function<bool()> fn) { write_admit_ = std::move(fn); }
+    void set_write_admit(std::function<bool()> hook) { write_admit_ = std::move(hook); }
     [[nodiscard]] bool write_admitted() const { return !write_admit_ || write_admit_(); }
 
     Connection& connection() noexcept { return conn_; }

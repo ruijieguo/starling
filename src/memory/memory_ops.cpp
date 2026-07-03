@@ -331,21 +331,21 @@ std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
                                     std::string_view now_iso) {
     governance::require_write_admission(adapter);        // 门前抛 = 零 DB 写
     auto& conn = adapter.connection();
-    persistence::TransactionGuard tx(conn);
-    bus::BusEvent ev;
-    ev.tenant_id    = std::string(tenant_id);
-    ev.event_type   = "reconsolidate.requested";
-    ev.primary_id   = std::string(stmt_id);
-    ev.aggregate_id = std::string(stmt_id);
-    ev.payload_json = std::string("{\"stmt_id\":\"") + std::string(stmt_id) +
-        "\",\"request_id\":\"" + std::string(request_id) + "\"}";
-    ev.version = "v1";
-    ev.idempotency_key = bus::compute_idempotency_key(
+    persistence::TransactionGuard txn(conn);
+    bus::BusEvent evt;
+    evt.tenant_id    = std::string(tenant_id);
+    evt.event_type   = "reconsolidate.requested";
+    evt.primary_id   = std::string(stmt_id);
+    evt.aggregate_id = std::string(stmt_id);
+    evt.payload_json = std::string(R"({"stmt_id":")") + std::string(stmt_id) +
+        R"(","request_id":")" + std::string(request_id) + R"("})";
+    evt.version = "v1";
+    evt.idempotency_key = bus::compute_idempotency_key(
         "reconsolidate.requested", stmt_id, stmt_id, request_id, now_iso.substr(0, 10));
-    bus::OutboxWriter w(conn);
-    w.append(ev);
-    tx.commit();
-    return ev.event_id;
+    bus::OutboxWriter writer(conn);
+    writer.append(evt);
+    txn.commit();
+    return evt.event_id;
 }
 
 }  // namespace starling::memoryops
