@@ -11,6 +11,7 @@
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/extractor.hpp"
 #include "starling/governance/tick_load_shedding.hpp"
+#include "starling/governance/write_gate.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/retrieval/retrieval_planner.hpp"
@@ -25,6 +26,7 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          std::string_view prompt_template,
                          const RememberParams& p,
                          const extractor::ValidationPolicy& policy) {
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
     evidence::EngramInput in;
     in.tenant_id              = p.tenant_id;
     in.source.adapter_name    = p.adapter_name;
@@ -108,6 +110,7 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
                          const ConverseParams& p,
                          const extractor::ValidationPolicy& policy,
                          const extractor::TokenSink& on_token) {
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
     ConverseOutcome r;
 
     // ── 1. recall (read) ── RetrievalPlanner 要求非空 trace/query id;由
@@ -306,6 +309,7 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
 
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso) {
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
     auto& conn = adapter.connection();
     int n = 0;
     for (const auto& id : ids)
@@ -315,6 +319,7 @@ int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
 
 int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
                    std::string_view stmt_id, std::string_view now_iso) {
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
     auto& conn = adapter.connection();
     return store::SqliteStatementStore(conn).approve_review(stmt_id, tenant, now_iso);
 }
