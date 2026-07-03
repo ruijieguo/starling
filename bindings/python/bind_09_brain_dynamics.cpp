@@ -8,6 +8,7 @@
 #include <vector>
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
+#include "starling/memory/memory_ops.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/replay/forgetting_curve.hpp"
 #include "starling/extractor/llm_adapter.hpp"
@@ -197,32 +198,17 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
     // ── P3.a3: reconsolidate.requested 显式触发(再巩固触发器 #4) ──
     // audit/用户编辑场景的入口:发一条 reconsolidate.requested 事件,
     // ReconsolidationEngine 异步消费开窗(payload {stmt_id, request_id})。
+    // 边界归位:写逻辑已提取至 memoryops::request_reconsolidation(受门管辖)。
     m.def("request_reconsolidation",
           [](starling::persistence::SqliteAdapter& adapter,
              const std::string& tenant_id, const std::string& stmt_id,
              const std::string& request_id, const std::string& now_iso) {
-              auto& conn = adapter.connection();
-              starling::persistence::TransactionGuard tx(conn);
-              starling::bus::BusEvent ev;
-              ev.tenant_id    = tenant_id;
-              ev.event_type   = "reconsolidate.requested";
-              ev.primary_id   = stmt_id;
-              ev.aggregate_id = stmt_id;
-              ev.payload_json = std::string("{\"stmt_id\":\"") + stmt_id +
-                  "\",\"request_id\":\"" + request_id + "\"}";
-              ev.version = "v1";
-              ev.idempotency_key = starling::bus::compute_idempotency_key(
-                  "reconsolidate.requested", stmt_id, stmt_id, request_id,
-                  now_iso.substr(0, 10));   // 同 request_id 当日去重
-              starling::bus::OutboxWriter w(conn);
-              w.append(ev);
-              tx.commit();
-              return ev.event_id;
+              return starling::memoryops::request_reconsolidation(
+                  adapter, tenant_id, stmt_id, request_id, now_iso);
           },
           py::arg("adapter"), py::arg("tenant_id"), py::arg("stmt_id"),
           py::arg("request_id"), py::arg("now_iso"),
-          "Emit reconsolidate.requested (explicit trigger #4); engine opens "
-          "the plastic window asynchronously.");
+          "Emit reconsolidate.requested (explicit trigger #4); gated: rejected while DRAINING/UNREADY.");
 
     // ── P3 片 5: 衰减曲线只读投影(forgetting_curve 纯函数转发,无 DB/无状态) ──
     // 公式与其逆都在 src/replay/forgetting_curve.cpp;这里仅构造 ForgettingInputs

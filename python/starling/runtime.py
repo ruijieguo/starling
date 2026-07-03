@@ -118,6 +118,9 @@ class Runtime:
             # via the SqliteAdapter& ctor — no governance decision through Python.
             self._sup = _core.RuntimeSupervisor(
                 self.capability, self.embedded, self.adapter)
+            # 前台写门(P3.c):把 adapter 钩子接到 supervisor 健康态。仅 production
+            # (adapter 提供)接线;test-seam(adapter=None)与 bare-adapter 测试无钩子 → 放行。
+            _core.install_write_gate(self.adapter, self._sup)
             self.bus = _SqliteBackedBus(self.adapter, check_write=self._sup.check_write)
 
     def health(self) -> _core.RuntimeHealth:

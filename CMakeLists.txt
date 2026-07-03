@@ -168,6 +168,7 @@ target_sources(starling_core PRIVATE
     src/retrieval/pattern_completor.cpp
     src/governance/capability_policy.cpp
     src/governance/runtime_supervisor.cpp
+    src/governance/write_gate.cpp
     src/governance/pipeline_run_store.cpp
     src/governance/scoped_work_gate.cpp
     src/governance/restart_guard.cpp

@@ -87,6 +87,10 @@ void bind_02_persistence(pybind11::module_& m) {
             w.append(ev);
             g.commit();
         }, py::arg("event"))
+        .def("write_admitted",
+             &starling::persistence::SqliteAdapter::write_admitted,
+             "Returns True when the adapter's write gate allows writes "
+             "(no hook set → always True; DRAINING → False).")
         .def("connection",
              &starling::persistence::SqliteAdapter::connection,
              py::return_value_policy::reference_internal);

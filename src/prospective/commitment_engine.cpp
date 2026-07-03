@@ -254,6 +254,7 @@ bool CommitmentEngine::fulfill(persistence::Connection& conn,
                                std::string_view stmt_id,
                                std::string_view tenant_id,
                                std::string_view now_iso) {
+    governance::require_write_admission(adapter_);   // 门前抛 = 零 DB 写(用类成员 adapter_ 的钩子)
     if (!update_state_if_active(conn, stmt_id, tenant_id, "FULFILLED", now_iso)) {
         return false;
     }
@@ -271,6 +272,7 @@ bool CommitmentEngine::withdraw(persistence::Connection& conn,
                                 std::string_view stmt_id,
                                 std::string_view tenant_id,
                                 std::string_view now_iso) {
+    governance::require_write_admission(adapter_);   // 门前抛 = 零 DB 写(用类成员 adapter_ 的钩子)
     if (!update_state_if_active(conn, stmt_id, tenant_id, "WITHDRAWN", now_iso)) {
         return false;
     }

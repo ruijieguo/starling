@@ -154,4 +154,12 @@ int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
 int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
                    std::string_view stmt_id, std::string_view now_iso);
 
+// P3.a3 再巩固显式触发:发 reconsolidate.requested 事件,engine 异步开窗。返回 outbox
+// event_id。(边界归位:原写逻辑在 bind_09 lambda,本 slice 提取入核心以受门管辖。)
+std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
+                                    std::string_view tenant_id,
+                                    std::string_view stmt_id,
+                                    std::string_view request_id,
+                                    std::string_view now_iso);
+
 }  // namespace starling::memoryops

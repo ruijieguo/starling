@@ -2,6 +2,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "starling/governance/write_gate.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 
 namespace starling::prospective {
