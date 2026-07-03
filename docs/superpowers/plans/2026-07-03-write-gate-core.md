@@ -2,167 +2,213 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把健康驱动的前台写门(`RuntimeSupervisor::check_write`)从生产死代码下沉进 C++ 核心写路径,使 DRAINING/UNREADY 真正拒绝所有 7 个前台写入口并抛统一 `WriteGateRejected`;READY/DEGRADED 行为不变。
+**Goal:** 把健康驱动的前台写门(`RuntimeSupervisor::check_write`)从生产死代码下沉进 C++ 核心写路径,使 DRAINING/UNREADY 真正拒绝所有前台**用户**写(经 C++ 核心的 7 个入口)并抛统一 `WriteGateRejected`;READY/DEGRADED 行为不变。
 
-**Architecture:** 新增一处 `governance::require_write_admission(sup)` helper(抛 `WriteGateRejected`)+ 一个类型化异常;7 个前台写的 **C++ 核心函数**顶端各调一行(binding 只转发 `RuntimeSupervisor&`,门绝不落在 pybind lambda)。`request_reconsolidation` 现无核心函数(写逻辑在 lambda,pre-existing 边界违规)→ 本 slice 顺手提取为 `memoryops::request_reconsolidation` 核心函数再 gate。Python `Runtime` 加公有 `supervisor` accessor 供 `MemoryCore` 转发。
+**Architecture(eng-review pivot — adapter-hook):** `SqliteAdapter` 持一个可空 `std::function<bool()>` 写门钩子;production `Runtime` 构造时 `install_write_gate(adapter, supervisor)` 设一次(钩子内 `sup.check_write() == kAccept`)。7 个核心写函数首行 `governance::require_write_admission(adapter)` —— 钩子未设(bare-adapter 测试)→ 放行;设了且 reject → 抛 `WriteGateRejected`。**零签名改动、零调用方破坏、behavior-neutral by construction**(bare adapter = 无钩子 = 放行)。门在 `src/` 核心,换绑定不可绕。
 
-**Tech Stack:** C++20 内核(`src/` + `include/starling/`)、pybind11 绑定、Python host、SQLite;ctest + pytest;spec `docs/superpowers/specs/2026-07-03-write-gate-core-design.md`。
+**Tech Stack:** C++20 内核(`src/` + `include/starling/`)、pybind11、Python host、SQLite;ctest + pytest;spec `docs/superpowers/specs/2026-07-03-write-gate-core-design.md`。
+
+> **为何 adapter-hook 而非参数注入(eng-review Finding #1/#2,已验证):** 给 `fulfill`/`withdraw` 加 `sup` 参会破**生产** `src/prospective/policy_engine.cpp:415/421`(自动 commitment 结算调 `commitment_engine_.fulfill/withdraw`,PolicyEngine 无 supervisor → 编译挂)+ 11 个直调测试(`test_commitment_engine.cpp:68…129`、`test_commitment_protection_decay.cpp:45`、`test_commitment_tenant_isolation.cpp:74`、`test_p2c_commitment_lifecycle.py:37`)。给 5 个 free fn 加参虽只破 `test_tom2_e2e.py:333`,但为一致性 + 溶解全部破坏,7 入口统一用 adapter-hook。
 
 ## Global Constraints
 
-- **架构边界(硬):** 门是核心语义 → 实现于 C++ 核心(`src/` + `include/starling/`),置于**核心函数顶端**,**非 pybind lambda**;Python/binding 只转发 `RuntimeSupervisor&`。判据「换绑定语言是否需重写」。
-- **Behavior-neutral:** READY/DEGRADED 下 7 入口行为不变,现有 `pytest tests/python` 无改动即绿。
+- **架构边界(硬):** 门是核心语义 → 实现于 C++ 核心(`src/` + `include/starling/`),门检查置于**核心函数顶端**,**非 pybind lambda**;`persistence`(SqliteAdapter)只持一个 `std::function<bool()>` 钩子(返回 bool,**不 `#include` governance**);`governance` 定义异常 + `require_write_admission`/`install_write_gate`。判据「换绑定语言是否需重写」。
+- **Behavior-neutral by construction:** bare adapter(无钩子)→ `write_admitted()==true` → 放行。只有 production `Runtime` 设钩子。**现有 ctest + pytest 无一改动即绿**(除本 slice 新增测试)。
 - **门前抛 = 零 DB 写**(early throw,不建 engram、不抽取、不开事务)。写后/订阅者路径仍用 SAVEPOINT 不用 BEGIN。
-- **Lock order** engine→supervisor(`check_write` 短暂持 supervisor mutex,不跨写持锁),与 `note_health`/L8 一致,无逆序。
-- 拒绝用 `check_write()`(自然覆盖 UNREADY+DRAINING);`remember()` 跨 mid-drain 的 belief-已写/general-fact-被拒部分完成为**已知可接受**边界,不做原子快照。
-- **构建:** `python scripts/configure_build.py --build --python-editable`(C++ + 绑定重装 `_core`,只 `pip install -e .` 不够)。clang-tidy CI-only 门,新 C++ clean by construction(identifier-length≥3、sized enums、`[[nodiscard]]`、无 empty/comment-only catch、避免 NEW `const`/`&` 数据成员→Task 5 NOLINT)。提交门:全量 ctest + `pytest tests/python` 绿。
-- **git:** 显式路径 `git add`(禁 `git add .` / `-A`);不用 `--no-verify` / `--amend`。分支 `feat/write-gate-core`。
+- **Lock order** engine→supervisor(钩子内 `check_write` 短暂持 supervisor mutex,不跨写持锁),与 `note_health`/L8 一致,无逆序。
+- 拒绝用 `check_write()`(自然覆盖 UNREADY+DRAINING);`remember()` 跨 mid-drain 的 belief-已写/general-fact-被拒部分完成为已知可接受边界。
+- **构建:** `python scripts/configure_build.py --build --python-editable`(C++ + 绑定重装 `_core`)。clang-tidy CI-only 门,新 C++ clean by construction(identifier-length≥3、sized enums、`[[nodiscard]]`、无 empty/comment-only catch;`std::function` 成员非 const/ref → 无 NOLINT)。提交门:全量 ctest + `pytest tests/python` 绿。
+- **git:** 显式路径 `git add`(禁 `git add .`/`-A`);不用 `--no-verify`/`--amend`。分支 `feat/write-gate-core`。
 
-## 现有接口(实现者据此,勿改语义)
+## 现有接口(实现者据此)
 
-- `include/starling/governance/runtime_supervisor.hpp`:`namespace starling::governance`;`enum class WriteGateDecision : std::uint8_t { kAccept, kPreconditionFailed };`;`class RuntimeSupervisor { ... [[nodiscard]] WriteGateDecision check_write() const; StartOutcome start(); void note_health(const HealthDecision&); void begin_drain(std::string trigger="admin_drain"); RuntimeHealth health() const; ... };`。
-- `include/starling/memory/memory_ops.hpp`(`namespace starling::memoryops`,已 include governance headers,用到 `RuntimeHealth`/`governance::StageTiming`):
-  - `RememberOutcome remember(persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm, std::string_view prompt_template, const RememberParams& params, const extractor::ValidationPolicy& policy = {});`
-  - `ConverseOutcome converse(persistence::SqliteAdapter& adapter, extractor::LLMAdapter& chat_llm, extractor::LLMAdapter& extraction_llm, retrieval::SemanticRetriever& semantic, std::string_view extraction_prompt, const ConverseParams& params, const extractor::ValidationPolicy& policy = {}, const extractor::TokenSink& on_token = {});`
-  - `int forget(persistence::SqliteAdapter& adapter, std::string_view tenant, const std::vector<std::string>& ids, std::string_view now_iso);`
-  - `int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant, std::string_view stmt_id, std::string_view now_iso);`
-- `include/starling/prospective/commitment_engine.hpp`(`namespace starling::prospective`):`class CommitmentEngine { explicit CommitmentEngine(persistence::SqliteAdapter& a); bool fulfill(persistence::Connection&, sv stmt_id, sv tenant_id, sv now_iso); bool withdraw(...); persistence::Connection& connection(); private: persistence::SqliteAdapter& adapter_; };`
-- `request_reconsolidation`:当前是 `bind_09_brain_dynamics.cpp` 里 `m.def("request_reconsolidation", [](adapter, tenant_id, stmt_id, request_id, now_iso){ conn=adapter.connection(); TransactionGuard tx(conn); BusEvent ev{...reconsolidate.requested...}; ev.idempotency_key=compute_idempotency_key("reconsolidate.requested", stmt_id, stmt_id, request_id, now_iso.substr(0,10)); OutboxWriter w(conn); w.append(ev); tx.commit(); return ev.event_id; })`。**无核心函数**。
-- Python:`Runtime`(`python/starling/runtime.py`,@dataclass)有 `_sup`(`_core.RuntimeSupervisor`)、`begin_drain(trigger)`、`note_health(decision)`、`health()`。`MemoryCore.__init__(rt, ...)`(`python/starling/_memory_core.py`)持 `self.rt`;line 109 `self.commitment_engine = _core.CommitmentEngine(rt.adapter)`;line 145/181 两次 `_core.memory_remember(self.rt.adapter, self.llm, prompt, ...)`;line 260 `_core.memory_converse(self.rt.adapter, ...)`;line 304 `_core.memory_forget(self.rt.adapter, ...)`;line 313 `_core.memory_approve_review(self.rt.adapter, ...)`;line 346 `_core.request_reconsolidation(self.rt.adapter, self.tenant, stmt_id, ...)`。
+- `include/starling/persistence/sqlite_adapter.hpp:19`:`class SqliteAdapter : public starling::Adapter { public: static std::unique_ptr<SqliteAdapter> open(...); ProfileCapability declare_capability() const; bool has_index(std::string_view); Connection& connection() noexcept; private: Connection conn_; };`。**未** include `<functional>`。
+- `include/starling/governance/runtime_supervisor.hpp`:`enum class WriteGateDecision : std::uint8_t { kAccept, kPreconditionFailed };`;`RuntimeSupervisor::check_write() const → WriteGateDecision`(READY/DEGRADED→kAccept;UNREADY/DRAINING→kPreconditionFailed);`start()`/`note_health(HealthDecision)`/`begin_drain(trigger)`/`health()`。已 fwd-decl `persistence::SqliteAdapter`(:17)。
+- 7 个前台写**核心函数(签名全部不变)**:
+  - `memoryops::remember(SqliteAdapter& adapter, LLMAdapter& llm, sv prompt, const RememberParams&, const ValidationPolicy&={})`(memory_ops.cpp:23)
+  - `memoryops::converse(SqliteAdapter& adapter, LLMAdapter& chat, LLMAdapter& extraction, SemanticRetriever&, sv prompt, const ConverseParams&, const ValidationPolicy&={}, const TokenSink&={})`(:103;内部 :176 调 `remember`,包在 :186 `catch(std::exception)`)
+  - `memoryops::forget(SqliteAdapter& adapter, sv tenant, const std::vector<std::string>& ids, sv now)`
+  - `memoryops::approve_review(SqliteAdapter& adapter, sv tenant, sv stmt_id, sv now)`
+  - `request_reconsolidation`:**现为 `bind_09_brain_dynamics.cpp:200` 的 lambda(无核心函数)** → Task 4 提取为 `memoryops::request_reconsolidation(SqliteAdapter& adapter, ...)`。
+  - `prospective::CommitmentEngine::fulfill(Connection& conn, sv stmt_id, sv tenant, sv now)` / `withdraw(...)`(commitment_engine.cpp:253/270;类持 `SqliteAdapter& adapter_`;**被 `src/prospective/policy_engine.cpp:415/421` + 11 测试直调 → 签名绝不能改**)。
+- Python:`_build_local_store_sqlite_runtime`(runtime.py:178)→ `Runtime(adapter=...)`;`Runtime.__post_init__`(:110)adapter 分支创建 `self._sup = _core.RuntimeSupervisor(cap, embedded, adapter)`(:119);`begin_drain`/`note_health` 已在 Runtime。`Memory.open`(memory.py:144)与 `DashboardEngine`(engine.py:156)都经此工厂。
 
 ## Deferred / Out of Scope(在此声明)
 
-- 清理 vestigial Python 门(`_StubBus`/`_SqliteBackedBus`/`rt.bus`/`BusFacade`)= 单独 cleanup slice(有 test churn)。
-- 后台写门(`memory_tick_all` 已被 `should_run_stage` 覆盖)。
-- `run_replay`(手动维护触发,replay offline-only 写不变式,默认排除)。
-- #2 并发、query-embed cache、向量扫描。
+- **`plan_query` 的 `statement.recalled` emit(eng-review #5 = exempt):** `retrieval_planner.cpp:445-467` 每命中 fire-and-forget 写一条 `statement.recalled` 审计事件到 outbox。这是**读侧审计写、非用户 write 意图 → 不 gate**(gate 一个读路径会 throw 断查询;drain 窗口短 + 几条审计行无害)。故本 slice「所有前台写」= **所有经 C++ 核心的前台用户写**,读侧 recalled-audit 显式豁免。
+- **`_reembed` + `run_replay`(eng-review #8 = out-of-scope):** `dashboard/engine.py:321 _reembed`(配置保存:裸 `DELETE FROM statement_vectors` + `worker.tick_one_batch`,绕 C++ 核心用不了核心门)与 `run_replay`(engine.py:443,重 DB 写)。均 dashboard admin/config 操作,本 slice 不 gate;要完整 quiesce 另开 host-gate 切片(Python 侧 `if rt.health()==DRAINING` skip)。
+- vestigial Python 门清理(`_StubBus`/`_SqliteBackedBus`/`rt.bus`/`BusFacade`)= 单独 cleanup slice。
+- 后台 tick 写(`memory_tick_all` 已被 `should_run_stage` 覆盖)。#2 并发、query-embed cache、向量扫描。
 
 ---
 
-### Task 1: 核心机制 — WriteGateRejected + require_write_admission
+### Task 1: 核心机制 — 钩子 + WriteGateRejected + require_write_admission + install_write_gate
 
 **Files:**
-- Modify: `include/starling/governance/runtime_supervisor.hpp`(在 `WriteGateDecision` 之后、`RuntimeSupervisor` 之外加异常 + helper;加 `#include <stdexcept>`)
-- Modify: `bindings/python/bind_14_governance.cpp`(`py::register_exception`)
-- Test: `tests/cpp/test_write_gate_admission.cpp`(新建)+ 注册进 `tests/cpp/CMakeLists.txt`(或既有 ctest 收集机制——比照邻近 test 文件的注册方式)
+- Modify: `include/starling/persistence/sqlite_adapter.hpp`(加 `<functional>` + 钩子成员 + `set_write_admit`/`write_admitted`)
+- Create: `include/starling/governance/write_gate.hpp`(`WriteGateRejected` + 两个自由函数声明)
+- Create: `src/governance/write_gate.cpp`(定义;注册进 governance 的 CMake 源列表)
+- Modify: `bindings/python/bind_14_governance.cpp`(`register_exception` + `install_write_gate` 绑定)
+- Test: `tests/cpp/test_write_gate_admission.cpp`(新建)+ 注册进 `tests/cpp/CMakeLists.txt`(比照邻近 test)
 
 **Interfaces:**
-- Produces: `governance::WriteGateRejected`(public `std::runtime_error`,`explicit WriteGateRejected(const std::string&)`);`inline void governance::require_write_admission(const RuntimeSupervisor& sup)`(reject 抛,accept 返回)。后续 Task 3/4/5 全依赖此二者。
-- Consumes: 现有 `RuntimeSupervisor::check_write()` + `WriteGateDecision`。
+- Produces: `SqliteAdapter::set_write_admit(std::function<bool()>)` + `[[nodiscard]] bool SqliteAdapter::write_admitted() const`;`governance::WriteGateRejected`;`void governance::require_write_admission(const persistence::SqliteAdapter&)`;`void governance::install_write_gate(persistence::SqliteAdapter&, const RuntimeSupervisor&)`。Task 2-5 全依赖。
 
-- [ ] **Step 1: 写 helper 单测(失败)** — `tests/cpp/test_write_gate_admission.cpp`
+- [ ] **Step 1: SqliteAdapter 钩子(hpp)** — `include/starling/persistence/sqlite_adapter.hpp`:顶部 `#include <functional>`;public 加:
+
+```cpp
+    // 写门钩子(P3.c write-gate):未设 → 放行(behavior-neutral by construction)。
+    // 返回 bool 避免 persistence 依赖 governance。production Runtime 经
+    // governance::install_write_gate 设一次:钩子内读 supervisor 健康态。
+    void set_write_admit(std::function<bool()> fn) { write_admit_ = std::move(fn); }
+    [[nodiscard]] bool write_admitted() const { return !write_admit_ || write_admit_(); }
+```
+private 加成员:`std::function<bool()> write_admit_;`。
+
+- [ ] **Step 2: write_gate.hpp** — `include/starling/governance/write_gate.hpp`:
+
+```cpp
+#pragma once
+#include <stdexcept>
+#include <string>
+
+namespace starling::persistence { class SqliteAdapter; }
+
+namespace starling::governance {
+
+class RuntimeSupervisor;  // fwd
+
+// 治理写拒绝。std::runtime_error 子类 → pybind register_exception → _core.WriteGateRejected。
+class WriteGateRejected : public std::runtime_error {
+ public:
+  explicit WriteGateRejected(const std::string& what) : std::runtime_error(what) {}
+};
+
+// 前台写准入门(策略一处):adapter 无钩子 → 放行;钩子 reject → 抛 WriteGateRejected。
+// 7 个核心写函数各首行调一次。
+void require_write_admission(const persistence::SqliteAdapter& adapter);
+
+// production Runtime 构造时调一次:把 adapter 的钩子接到 sup.check_write()。
+void install_write_gate(persistence::SqliteAdapter& adapter, const RuntimeSupervisor& sup);
+
+}  // namespace starling::governance
+```
+
+- [ ] **Step 3: write_gate.cpp** — `src/governance/write_gate.cpp`:
+
+```cpp
+#include "starling/governance/write_gate.hpp"
+#include "starling/governance/runtime_supervisor.hpp"
+#include "starling/persistence/sqlite_adapter.hpp"
+
+namespace starling::governance {
+
+void require_write_admission(const persistence::SqliteAdapter& adapter) {
+  if (!adapter.write_admitted()) {
+    throw WriteGateRejected("write rejected: runtime not accepting writes");
+  }
+}
+
+void install_write_gate(persistence::SqliteAdapter& adapter, const RuntimeSupervisor& sup) {
+  // 引用捕获:production 下 adapter 与 sup 同由 Runtime 持有,sup 生命周期不短于
+  // adapter 的写调用(sup 本身也持 adapter 的 has_index 引用,互引用,Runtime 共管)。
+  adapter.set_write_admit([&sup]() { return sup.check_write() == WriteGateDecision::kAccept; });
+}
+
+}  // namespace starling::governance
+```
+把 `src/governance/write_gate.cpp` 加进 governance 的 CMake 源列表(比照 `runtime_supervisor.cpp` 所在 target)。
+
+- [ ] **Step 4: 写 helper 单测(失败)** — `tests/cpp/test_write_gate_admission.cpp`:
 
 ```cpp
 // tests/cpp/test_write_gate_admission.cpp
+#include "starling/governance/write_gate.hpp"
 #include "starling/governance/runtime_supervisor.hpp"
+#include "starling/persistence/sqlite_adapter.hpp"
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <functional>
 using starling::ProfileCapability;
 using starling::RuntimeHealth;
 using namespace starling::governance;
 
 namespace {
-// COPY of tests/cpp/test_runtime_supervisor.cpp:18 all_present() — a fully
-// populated capability set. RuntimeSupervisor holds a std::mutex → non-movable,
-// so it MUST be constructed in-place per TEST (never returned by value from a
-// factory). embedded=true + idx-present lambda → start() reaches READY (mirrors
-// that file's EmbeddedStartReadyWithoutDeferredCaps at :75-81).
+// COPY of tests/cpp/test_runtime_supervisor.cpp:18 all_present() (逐字复制;
+// tests/cpp 不受 clang-tidy 门)。RuntimeSupervisor 有 std::mutex → 非可移动,
+// 就地构造,勿按值返回。
 ProfileCapability all_present() {
-    // 复制 test_runtime_supervisor.cpp:18-35 的 all_present() 字段(tests/cpp 不受
-    // clang-tidy 门,保持其风格逐字复制;字段以该文件为准)。
-    return ProfileCapability{ /* …copy verbatim from test_runtime_supervisor.cpp… */ };
+  return ProfileCapability{ /* …copy verbatim from test_runtime_supervisor.cpp… */ };
+}
+std::unique_ptr<starling::persistence::SqliteAdapter> open_tmp(const char* name) {
+  return starling::persistence::SqliteAdapter::open(
+      std::filesystem::temp_directory_path() / name);
 }
 }  // namespace
 
-TEST(WriteGateAdmission, ReadyAdmits) {
-    RuntimeSupervisor sup(all_present(), /*embedded=*/true,
-                          std::function<bool()>([] { return true; }));
-    sup.start();                                     // preflight passes → READY
-    ASSERT_EQ(sup.health(), RuntimeHealth::READY);
-    EXPECT_NO_THROW(require_write_admission(sup));    // READY → no throw
+TEST(WriteGateAdmission, NoHookAdmits) {
+  auto a = open_tmp("wg_nohook.db");
+  EXPECT_TRUE(a->write_admitted());
+  EXPECT_NO_THROW(require_write_admission(*a));   // 无钩子 → 放行
 }
-
-TEST(WriteGateAdmission, DrainingRejects) {
-    RuntimeSupervisor sup(all_present(), /*embedded=*/true,
-                          std::function<bool()>([] { return true; }));
-    sup.start();                                     // → READY
-    sup.begin_drain("test");                         // READY → DRAINING
-    ASSERT_EQ(sup.health(), RuntimeHealth::DRAINING);
-    EXPECT_THROW(require_write_admission(sup), WriteGateRejected);
+TEST(WriteGateAdmission, HookRejectThrows) {
+  auto a = open_tmp("wg_reject.db");
+  a->set_write_admit([] { return false; });
+  EXPECT_FALSE(a->write_admitted());
+  EXPECT_THROW(require_write_admission(*a), WriteGateRejected);
 }
-
-TEST(WriteGateAdmission, UnreadyRejects) {
-    RuntimeSupervisor sup(all_present(), /*embedded=*/true,
-                          std::function<bool()>([] { return false; }));  // idx absent
-    sup.start();                                     // preflight fails → UNREADY
-    ASSERT_EQ(sup.health(), RuntimeHealth::UNREADY);
-    EXPECT_THROW(require_write_admission(sup), WriteGateRejected);
+TEST(WriteGateAdmission, HookAdmitPasses) {
+  auto a = open_tmp("wg_admit.db");
+  a->set_write_admit([] { return true; });
+  EXPECT_NO_THROW(require_write_admission(*a));
 }
-```
-
-> **关键:** `RuntimeSupervisor` 有 `std::mutex` 成员 → 非可拷贝/移动,**不能**用按值返回的 factory(编译失败),每个 TEST 内就地构造(现有 `test_runtime_supervisor.cpp` 正是此范式)。`all_present()` 从 `tests/cpp/test_runtime_supervisor.cpp:18` **逐字复制**(该 helper 是 test-local;tests/cpp 不受 clang-tidy 门)。DEGRADED 放行分支在 Task 6 的 pytest 覆盖;此处 READY/DRAINING/UNREADY 三态足证 helper。
-
-- [ ] **Step 2: 跑测试确认失败(未声明)** — `cd` 后 `python scripts/configure_build.py --build`;预期编译失败 `WriteGateRejected` / `require_write_admission` 未声明。
-
-- [ ] **Step 3: 加异常 + helper** — `include/starling/governance/runtime_supervisor.hpp`,在 `enum class WriteGateDecision ...;`(:25)之后加,并在文件顶 `#include` 区加 `#include <stdexcept>`:
-
-```cpp
-// 治理写拒绝:前台写在 UNREADY/DRAINING 被门拦下时抛此异常。std::runtime_error
-// 子类 → pybind register_exception 映射成 _core.WriteGateRejected。fail-loud,
-// 跨 7 个异构返回值的写入口统一(对齐 UNREADY 的 RuntimeUnreadyError 先例)。
-class WriteGateRejected : public std::runtime_error {
- public:
-  explicit WriteGateRejected(const std::string& what) : std::runtime_error(what) {}
-};
-```
-
-并在 `RuntimeSupervisor` 类定义**之后**(class 已完整声明,helper 可调 `check_write`)、`namespace` 闭合**之前**加:
-
-```cpp
-// 前台写准入门(策略只此一份):UNREADY/DRAINING → 抛 WriteGateRejected;
-// READY/DEGRADED → 返回。7 个前台写核心函数各在顶端调一行。check_write() 仅在
-// 检查瞬间短暂持 supervisor mutex(lock order engine→supervisor,与 note_health 一致)。
-inline void require_write_admission(const RuntimeSupervisor& sup) {
-  if (sup.check_write() != WriteGateDecision::kAccept) {
-    throw WriteGateRejected("write rejected: runtime not accepting writes");
-  }
+TEST(WriteGateAdmission, InstallWiresSupervisorDraining) {
+  auto a = open_tmp("wg_install.db");
+  RuntimeSupervisor sup(all_present(), /*embedded=*/true,
+                        std::function<bool()>([] { return true; }));
+  sup.start();                                    // → READY
+  install_write_gate(*a, sup);
+  EXPECT_NO_THROW(require_write_admission(*a));    // READY 放行
+  sup.begin_drain("test");                        // → DRAINING
+  EXPECT_THROW(require_write_admission(*a), WriteGateRejected);
 }
 ```
 
-- [ ] **Step 4: 注册 pybind 异常** — `bindings/python/bind_14_governance.cpp`,在 `WriteGateDecision` enum 绑定(:37-39)附近加:
+- [ ] **Step 5: 跑测试确认失败** — `python scripts/configure_build.py --build`;预期编译失败(`write_admitted`/`require_write_admission`/`install_write_gate` 未声明)。
+
+- [ ] **Step 6: 实现 Step 1-3 的代码,再跑** — 已在 Step 1-3 给出。`python scripts/configure_build.py --build --test`;预期 `WriteGateAdmission.*` 4 例 PASS,ctest 全绿。
+
+- [ ] **Step 7: pybind 异常 + install 绑定** — `bindings/python/bind_14_governance.cpp`:`#include "starling/governance/write_gate.hpp"`;在 `WriteGateDecision` 绑定附近加:
 
 ```cpp
-    // 前台写门拒绝 → Python _core.WriteGateRejected(std::runtime_error 子类)。
     py::register_exception<gov::WriteGateRejected>(m, "WriteGateRejected");
+    m.def("install_write_gate", &gov::install_write_gate,
+          py::arg("adapter"), py::arg("supervisor"),
+          "Wire adapter's write gate to supervisor.check_write() (production only).");
 ```
 
-（`gov` 为该文件既有的 `namespace gov = starling::governance;` 别名——比照文件顶已用的别名;若无则用全名。）
-
-- [ ] **Step 5: 跑测试确认通过** — `python scripts/configure_build.py --build --test`;预期 `WriteGateAdmission.*` 三例 PASS,ctest 全绿。
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add include/starling/governance/runtime_supervisor.hpp bindings/python/bind_14_governance.cpp tests/cpp/test_write_gate_admission.cpp tests/cpp/CMakeLists.txt
-git commit -m "feat(governance): WriteGateRejected + require_write_admission write-gate helper
+git add include/starling/persistence/sqlite_adapter.hpp include/starling/governance/write_gate.hpp src/governance/write_gate.cpp bindings/python/bind_14_governance.cpp tests/cpp/test_write_gate_admission.cpp tests/cpp/CMakeLists.txt
+git commit -m "feat(governance): adapter write-gate hook + WriteGateRejected + require_write_admission
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 2: Python enabler — Runtime.supervisor accessor
+### Task 2: 生产 Runtime 接线 install_write_gate
 
 **Files:**
-- Modify: `python/starling/runtime.py`(`Runtime` 加 `supervisor` @property)
-- Modify: `python/starling/_memory_core.py`(`MemoryCore.__init__` 加 `self._sup = rt.supervisor`)
-- Test: `tests/python/test_runtime_supervisor_accessor.py`(新建)
+- Modify: `python/starling/runtime.py`(`Runtime.__post_init__` adapter 分支接线)
+- Test: `tests/python/test_write_gate_wired.py`(新建)
 
 **Interfaces:**
-- Consumes: `Runtime._sup`(`_core.RuntimeSupervisor`);Task 1 的 `_core.WriteGateRejected`(不在本 task 用)。
-- Produces: `Runtime.supervisor` → `_core.RuntimeSupervisor`;`MemoryCore._sup`。Task 3/4/5 的 Python 调用点从 `self._sup` 取。
+- Consumes: `_core.install_write_gate`(Task 1)。
+- Produces: production runtime 的 adapter 钩子已接到 supervisor —— `rt.begin_drain()` 后 `rt.adapter.write_admitted()` 为 False。
 
-- [ ] **Step 1: 写测试(失败)** — `tests/python/test_runtime_supervisor_accessor.py`
+- [ ] **Step 1: 写测试(失败)** — `tests/python/test_write_gate_wired.py`:
 
 ```python
 from pathlib import Path
@@ -170,41 +216,32 @@ from starling import _core
 from starling import runtime as rt_mod
 
 
-def test_runtime_exposes_supervisor_accessor(tmp_path):
-    rt = rt_mod._build_local_store_sqlite_runtime(tmp_path / "acc.db")
+def test_production_runtime_wires_write_gate(tmp_path):
+    rt = rt_mod._build_local_store_sqlite_runtime(tmp_path / "wired.db")
     rt.start()
-    sup = rt.supervisor
-    # accessor 返回活的 C++ supervisor:check_write 可达且 READY 下 accept。
-    assert sup is rt._sup
-    assert sup.check_write() == _core.WriteGateDecision.kAccept
+    assert rt.adapter.write_admitted() is True     # READY → 放行
+    rt.begin_drain()
+    assert rt.adapter.write_admitted() is False     # DRAINING → 拒
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_runtime_supervisor_accessor.py -v`;预期 FAIL(`Runtime` 无 `supervisor`)。
+- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_wired.py -v`;预期 FAIL(`write_admitted()` 恒 True,未接线)。
 
-- [ ] **Step 3: 加 accessor** — `python/starling/runtime.py`,在 `Runtime` 类里(`health()` 方法附近)加:
+- [ ] **Step 3: 接线** — `python/starling/runtime.py` `Runtime.__post_init__` 的 **adapter 分支**(:116-121),在 `self._sup = _core.RuntimeSupervisor(self.capability, self.embedded, self.adapter)` 之后加:
 
 ```python
-    @property
-    def supervisor(self):
-        """The live C++ governance supervisor (for passing into gated C++ write
-        entries). Read-only handle; mutate via begin_drain()/note_health()."""
-        return self._sup
+            # 前台写门(P3.c):把 adapter 钩子接到 supervisor 健康态。仅 production
+            # (adapter 提供)接线;test-seam(adapter=None)与 bare-adapter 测试无钩子 → 放行。
+            _core.install_write_gate(self.adapter, self._sup)
 ```
+（test-seam 分支 adapter=None 不加。）
 
-并在 `python/starling/_memory_core.py` `MemoryCore.__init__` 里(`self.rt = rt` 之后)加:
-
-```python
-        # 前台写门:把活 supervisor 传给 C++ 写入口(Task 3/4/5)。
-        self._sup = rt.supervisor
-```
-
-- [ ] **Step 4: 跑测试确认通过 + 现有绿** — `pytest tests/python/test_runtime_supervisor_accessor.py -v`(PASS);`pytest tests/python -q`(全绿,behavior-neutral)。
+- [ ] **Step 4: 跑测试确认通过 + 现有绿** — `pytest tests/python/test_write_gate_wired.py -v`(PASS);`pytest tests/python -q`(全绿,behavior-neutral)。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add python/starling/runtime.py python/starling/_memory_core.py tests/python/test_runtime_supervisor_accessor.py
-git commit -m "feat(runtime): public Runtime.supervisor accessor + MemoryCore._sup
+git add python/starling/runtime.py tests/python/test_write_gate_wired.py
+git commit -m "feat(runtime): wire adapter write-gate to supervisor in production Runtime
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -214,119 +251,92 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ### Task 3: Gate memory_ops 四入口(remember/converse/forget/approve_review)
 
 **Files:**
-- Modify: `include/starling/memory/memory_ops.hpp`(4 个签名加 `sup` 参;确认 include `runtime_supervisor.hpp`)
-- Modify: `src/memory/memory_ops.cpp`(4 个定义加 `sup` 参 + 首行 gate)
-- Modify: `bindings/python/bind_13_memory_ops.cpp`(4 个 `m.def` 加 `RuntimeSupervisor&` 入参 + 转发 + `py::arg`)
-- Modify: `python/starling/_memory_core.py`(remember 两次 + converse + forget + approve_review 共 5 个调用点传 `self._sup`)
+- Modify: `src/memory/memory_ops.cpp`(4 个函数首行 gate;含 converse 内部 remember 的说明)
+- Modify: `include/starling/memory/memory_ops.hpp`(确认 include `write_gate.hpp`;签名**不改**)
 - Test: `tests/python/test_write_gate_memory_ops.py`(新建)
 
-**Interfaces:**
-- Consumes: `governance::require_write_admission`(Task 1)、`MemoryCore._sup`(Task 2)、`_core.WriteGateRejected`(Task 1)。
-- Produces: 4 个入口的新签名 `sup` 紧随 `adapter`:`memoryops::remember(adapter, sup, llm, prompt, params, policy)`;`converse(adapter, sup, chat_llm, extraction_llm, semantic, extraction_prompt, params, policy, on_token)`;`forget(adapter, sup, tenant, ids, now_iso)`;`approve_review(adapter, sup, tenant, stmt_id, now_iso)`。Python `_core.memory_remember(adapter, sup, llm, ...)` 等(sup 第二位置参)。
+> **签名/绑定/Python 调用点全部不改** —— gate 仅是每个核心函数体内首行加 `governance::require_write_admission(adapter);`。
 
-- [ ] **Step 1: 写 DRAINING 拒绝测试(失败)** — `tests/python/test_write_gate_memory_ops.py`
+**Interfaces:** Consumes `governance::require_write_admission`(Task 1)、production 接线(Task 2)、`_core.WriteGateRejected`(Task 1)。
+
+- [ ] **Step 1: 写 DRAINING 拒绝测试(失败,直接查表证明零写)** — `tests/python/test_write_gate_memory_ops.py`:
 
 ```python
 from pathlib import Path
+import sqlite3
 import pytest
 from starling import _core
 from starling.memory import Memory, make_stub_llm
 
-_STUB = '[]'  # 空抽取:门拒时根本不会用到,但 remember 需 llm 已配置(否则先抛 LLMNotConfigured)
+_STUB = '[]'
 
 
-def _drained(tmp_path, name="wg.db"):
-    mem = Memory.open(tmp_path / name, llm=make_stub_llm(default_response=_STUB))
-    mem._rt.begin_drain()            # READY → DRAINING
+def _row_counts(db_path):
+    # 直接查表证明「零写」(eng-review #4:recall()==[] 无法证明,remember 不 embed)。
+    con = sqlite3.connect(str(db_path))
+    try:
+        n = {}
+        for t in ("engrams", "statements", "bus_events"):
+            try:
+                n[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            except sqlite3.OperationalError:
+                n[t] = None   # 表不存在则跳过
+        return n
+    finally:
+        con.close()
+
+
+def _drained(tmp_path, name):
+    db = tmp_path / name
+    mem = Memory.open(db, llm=make_stub_llm(default_response=_STUB))
+    mem._rt.begin_drain()
     assert mem._rt.health() == _core.RuntimeHealth.DRAINING
-    return mem
+    return mem, db
 
 
 def test_remember_rejected_when_draining(tmp_path):
-    mem = _drained(tmp_path)
+    mem, db = _drained(tmp_path, "wg.db")
+    before = _row_counts(db)
     with pytest.raises(_core.WriteGateRejected):
         mem.remember("Alice likes tea")
-    # 门前抛 = 零写:recall(读,不 gate)返回空。
-    assert mem.recall("tea") == []
+    assert _row_counts(db) == before          # 门前抛 = 零新行
 
 
 def test_forget_rejected_when_draining(tmp_path):
-    mem = _drained(tmp_path, "wg_forget.db")
+    mem, _ = _drained(tmp_path, "wg_forget.db")
     with pytest.raises(_core.WriteGateRejected):
         mem._core.forget(["stmt-nonexistent"])
 
 
 def test_approve_review_rejected_when_draining(tmp_path):
-    mem = _drained(tmp_path, "wg_appr.db")
+    mem, _ = _drained(tmp_path, "wg_appr.db")
     with pytest.raises(_core.WriteGateRejected):
         mem._core.approve_review("stmt-nonexistent")
 
 
 def test_converse_rejected_when_draining(tmp_path):
-    mem = _drained(tmp_path, "wg_conv.db")
+    mem, _ = _drained(tmp_path, "wg_conv.db")
     with pytest.raises(_core.WriteGateRejected):
-        mem._core.converse("hello")
+        mem._core.converse("hello")           # drain-at-start → 顶端 gate 抛
 ```
 
-> `mem._core` = `MemoryCore`;`forget`/`approve_review`/`converse` 是其方法(`MemoryCore.forget(ids)` / `.approve_review(stmt_id)` / `.converse(message)`)。门在核心函数顶端,故即便 stmt_id 不存在也先抛 `WriteGateRejected`。
+- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_memory_ops.py -v`;预期 FAIL(无门,不抛)。
 
-- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_memory_ops.py -v`;预期 FAIL(当前无门,`remember` 返回正常 dict / `forget` 返回 0,不抛)。
-
-- [ ] **Step 3: 核心签名 + gate(hpp)** — `include/starling/memory/memory_ops.hpp`,4 个声明的 `adapter` 参后各加 `const governance::RuntimeSupervisor& sup,`。例:
+- [ ] **Step 3: 首行 gate(cpp)** — `src/memory/memory_ops.cpp`:确认 `#include "starling/governance/write_gate.hpp"`;在 `remember`(:23)/`converse`(:103)/`forget`/`approve_review` 每个函数体**第一行**(任何 DB/事务/LLM 之前)加:
 
 ```cpp
-RememberOutcome remember(persistence::SqliteAdapter& adapter,
-                         const governance::RuntimeSupervisor& sup,
-                         extractor::LLMAdapter& llm,
-                         std::string_view prompt_template,
-                         const RememberParams& params,
-                         const extractor::ValidationPolicy& policy = {});
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
 ```
-同法改 `converse`（`adapter` 后插 `sup`）、`forget`（`adapter` 后插 `sup`）、`approve_review`（`adapter` 后插 `sup`）。确认文件顶已 `#include "starling/governance/runtime_supervisor.hpp"`;若只 include 了 `runtime_health.hpp`,补上。
 
-- [ ] **Step 4: 核心定义首行 gate(cpp)** — `src/memory/memory_ops.cpp`,4 个函数定义同步签名,并在**函数体第一行**(任何 DB/事务/LLM 之前)加 `governance::require_write_admission(sup);`。例 `remember`(:23):
+- [ ] **Step 4: converse 二次 gate 已验证安全(eng-review #7,记录)** — `converse` 顶端 gate 抛 = drain-at-start(整轮拒,尚未 recall/generate)。converse 内部 `remember`(:176)也首行 gate;若 drain 恰落在 converse 开头与 :176 之间,内部 remember 抛的 `WriteGateRejected` 被 `:186` 现有 `catch (const std::exception& e){ r.remember_ok=false; r.remember_error=e.what(); }` **吃掉**(`WriteGateRejected` 是 `std::exception` 子类)→ 回复保留、`remember_ok=false`,符合 converse「回复绝不因 remember 失败而丢」不变式。**这是 converse 对 spec §6「统一传播」的有意例外**(spec §6 已注)。无需额外代码;不要在 :186 之前 rethrow(那会破坏 converse 不变式)。
 
-```cpp
-RememberOutcome remember(persistence::SqliteAdapter& adapter,
-                         const governance::RuntimeSupervisor& sup,
-                         extractor::LLMAdapter& llm,
-                         std::string_view prompt_template,
-                         const RememberParams& params,
-                         const extractor::ValidationPolicy& policy) {
-    governance::require_write_admission(sup);   // 门前抛 = 零 DB 写
-    /* …既有函数体不变… */
-```
-`converse`(:103)体内首行同加(在 recall/generate 之前）；`forget`、`approve_review` 定义同法。**注意** `converse` 内部会调 `remember`(:176)——那次内部调用也需传 `sup`(见下),但 gate 只在最外层 `converse` 顶端一次即够;内部 `remember` 的 gate 会二次检查(无害,健康态未变)。
+- [ ] **Step 5: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable`;`pytest tests/python/test_write_gate_memory_ops.py -v`(4 例 PASS);`pytest tests/python -q`(全绿,behavior-neutral;签名未改,现有调用方无影响)。
 
-- [ ] **Step 5: 绑定转发(bind_13)** — `bindings/python/bind_13_memory_ops.cpp`,4 个 `m.def` 的 lambda 参数列表在 `SqliteAdapter& adapter` 后加 `starling::governance::RuntimeSupervisor& sup,`,转发给核心函数时把 `sup` 作第二实参,并在 `py::arg("adapter")` 后加 `py::arg("sup")`。例 memory_remember:
-
-```cpp
-    m.def("memory_remember",
-          [](starling::persistence::SqliteAdapter& adapter,
-             starling::governance::RuntimeSupervisor& sup,       // NEW
-             starling::extractor::LLMAdapter& llm, /* …其余不变… */) {
-              /* …构造 RememberParams rp… */
-              auto out = starling::memoryops::remember(adapter, sup, llm, prompt, rp, policy);  // sup 第二参
-              /* …既有 dict 组装不变… */
-          },
-          py::arg("adapter"), py::arg("sup"), /* …其余 py::arg 不变… */);
-```
-`memory_converse`、`memory_forget`、`memory_approve_review` 同法(各自 lambda 加 `sup` 参 + 转发 + `py::arg("sup")`)。
-
-- [ ] **Step 6: Python 调用点传 sup** — `python/starling/_memory_core.py`:
-  - `remember`(:145 belief 与 :181 general-fact 两处):`_core.memory_remember(self.rt.adapter, self._sup, self.llm, prompt, ...)`。
-  - `converse`(:260):`_core.memory_converse(self.rt.adapter, self._sup, ...)`。
-  - `forget`(:304):`_core.memory_forget(self.rt.adapter, self._sup, tenant=..., ...)`。
-  - `approve_review`(:313):`_core.memory_approve_review(self.rt.adapter, self._sup, tenant=..., ...)`。
-  （sup 为第二位置参,紧随 adapter,与 binding `py::arg` 顺序一致。）
-
-- [ ] **Step 7: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable`;`pytest tests/python/test_write_gate_memory_ops.py -v`(4 例 PASS);`pytest tests/python -q`(全绿 = behavior-neutral,READY 下 4 入口行为不变)。
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add include/starling/memory/memory_ops.hpp src/memory/memory_ops.cpp bindings/python/bind_13_memory_ops.cpp python/starling/_memory_core.py tests/python/test_write_gate_memory_ops.py
-git commit -m "feat(memory): gate remember/converse/forget/approve_review foreground writes
+git add src/memory/memory_ops.cpp include/starling/memory/memory_ops.hpp tests/python/test_write_gate_memory_ops.py
+git commit -m "feat(memory): gate remember/converse/forget/approve_review at core-fn entry
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -337,16 +347,15 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `include/starling/memory/memory_ops.hpp`(声明 `request_reconsolidation`)
-- Modify: `src/memory/memory_ops.cpp`(定义:搬 lambda 体 + gate;确认 include `bus/bus_event.hpp`、`bus/outbox_writer.hpp`、`persistence/transaction_guard.hpp`——若未 include 则补,或若 include 变重则新建 `src/memory/reconsolidation_request.cpp` 同 namespace)
-- Modify: `bindings/python/bind_09_brain_dynamics.cpp`(:200 lambda → 转发核心函数)
-- Modify: `python/starling/_memory_core.py`(`request_reconsolidation` 传 `self._sup`)
+- Modify: `src/memory/memory_ops.cpp`(定义:搬 lambda 体 + 首行 gate)
+- Modify: `bindings/python/bind_09_brain_dynamics.cpp:200`(lambda → 转发核心函数;**签名/py::arg 不变**)
 - Test: `tests/python/test_write_gate_reconsolidation.py`(新建)
 
-**Interfaces:**
-- Consumes: `governance::require_write_admission`(Task 1)、`MemoryCore._sup`(Task 2)。
-- Produces: `std::string memoryops::request_reconsolidation(persistence::SqliteAdapter& adapter, const governance::RuntimeSupervisor& sup, std::string_view tenant_id, std::string_view stmt_id, std::string_view request_id, std::string_view now_iso);`(返回 `event_id`)。Python `_core.request_reconsolidation(adapter, sup, tenant_id, stmt_id, request_id, now_iso)`。
+> **绑定签名不变** → `test_tom2_e2e.py:333` 直调 `_core.request_reconsolidation(adapter, ...)` 用 bare adapter(无钩子)→ 放行 → **不破**(eng-review Finding B 被 adapter-hook 溶解,无需改该测试)。
 
-- [ ] **Step 1: 写 DRAINING 拒绝测试(失败)** — `tests/python/test_write_gate_reconsolidation.py`
+**Interfaces:** Produces `std::string memoryops::request_reconsolidation(persistence::SqliteAdapter& adapter, std::string_view tenant_id, std::string_view stmt_id, std::string_view request_id, std::string_view now_iso);`(返回 outbox event_id)。
+
+- [ ] **Step 1: 写 DRAINING 拒绝测试(失败)** — `tests/python/test_write_gate_reconsolidation.py`:
 
 ```python
 from pathlib import Path
@@ -363,32 +372,29 @@ def test_request_reconsolidation_rejected_when_draining(tmp_path):
         mem._core.request_reconsolidation("stmt-x", request_id="req-1")
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_reconsolidation.py -v`;预期 FAIL(当前 lambda 无门 → 正常 append + 返回 event_id)。
+- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_reconsolidation.py -v`;预期 FAIL(lambda 无门)。
 
 - [ ] **Step 3: 声明核心函数(hpp)** — `include/starling/memory/memory_ops.hpp`,`approve_review` 声明后加:
 
 ```cpp
-// P3.a3 再巩固显式触发:发 reconsolidate.requested 事件(payload {stmt_id, request_id}),
-// engine 异步开窗。前台写 → 经写门。返回 outbox event_id。(边界归位:原写逻辑在
-// bind_09 lambda,本 slice 提取入核心以受门管辖 + 守「核心写在 C++」硬规。)
+// P3.a3 再巩固显式触发:发 reconsolidate.requested 事件,engine 异步开窗。返回 outbox
+// event_id。(边界归位:原写逻辑在 bind_09 lambda,本 slice 提取入核心以受门管辖。)
 std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
-                                    const governance::RuntimeSupervisor& sup,
                                     std::string_view tenant_id,
                                     std::string_view stmt_id,
                                     std::string_view request_id,
                                     std::string_view now_iso);
 ```
 
-- [ ] **Step 4: 定义核心函数(cpp)** — `src/memory/memory_ops.cpp`(或新建 `src/memory/reconsolidation_request.cpp`,`namespace starling::memoryops`),搬 lambda 体、首行 gate:
+- [ ] **Step 4: 定义核心函数(cpp)** — `src/memory/memory_ops.cpp`,搬 `bind_09:200` lambda 体 + 首行 gate:
 
 ```cpp
 std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
-                                    const governance::RuntimeSupervisor& sup,
                                     std::string_view tenant_id,
                                     std::string_view stmt_id,
                                     std::string_view request_id,
                                     std::string_view now_iso) {
-    governance::require_write_admission(sup);            // 门前抛 = 零 DB 写
+    governance::require_write_admission(adapter);        // 门前抛 = 零 DB 写
     auto& conn = adapter.connection();
     persistence::TransactionGuard tx(conn);
     bus::BusEvent ev;
@@ -400,63 +406,56 @@ std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
         "\",\"request_id\":\"" + std::string(request_id) + "\"}";
     ev.version = "v1";
     ev.idempotency_key = bus::compute_idempotency_key(
-        "reconsolidate.requested", stmt_id, stmt_id, request_id,
-        now_iso.substr(0, 10));                          // 同 request_id 当日去重
+        "reconsolidate.requested", stmt_id, stmt_id, request_id, now_iso.substr(0, 10));
     bus::OutboxWriter w(conn);
     w.append(ev);
     tx.commit();
     return ev.event_id;
 }
 ```
-> 确认 include:`starling/bus/bus_event.hpp`、`starling/bus/outbox_writer.hpp`、`starling/persistence/transaction_guard.hpp`(或 memory_ops.cpp 里等价的 conn/tx 头)。字段名/去重逻辑与原 lambda **逐字一致**(behavior-neutral)。`std::string_view` 参转 `std::string` 供 BusEvent 字段(原 lambda 收 `const std::string&`,语义相同)。
+> 确认 include `bus/bus_event.hpp`、`bus/outbox_writer.hpp`、`persistence/transaction_guard.hpp`。字段/去重与原 lambda **逐字一致**(behavior-neutral,eng-review 已核实原 lambda 字段匹配)。`compute_idempotency_key` 若形参是 `std::string_view` 则直接传 `now_iso.substr(0,10)`(sv 的 substr 返回 sv);若是 `const std::string&` 则包 `std::string(...)`。
 
-- [ ] **Step 5: 绑定改转发(bind_09)** — `bindings/python/bind_09_brain_dynamics.cpp:200`,把整段 lambda 换成转发核心函数:
+- [ ] **Step 5: 绑定改转发(bind_09)** — `bindings/python/bind_09_brain_dynamics.cpp:200`,lambda 体换成转发(**py::arg 保持不变**):
 
 ```cpp
     m.def("request_reconsolidation",
           [](starling::persistence::SqliteAdapter& adapter,
-             starling::governance::RuntimeSupervisor& sup,
              const std::string& tenant_id, const std::string& stmt_id,
              const std::string& request_id, const std::string& now_iso) {
               return starling::memoryops::request_reconsolidation(
-                  adapter, sup, tenant_id, stmt_id, request_id, now_iso);
+                  adapter, tenant_id, stmt_id, request_id, now_iso);
           },
-          py::arg("adapter"), py::arg("sup"), py::arg("tenant_id"),
-          py::arg("stmt_id"), py::arg("request_id"), py::arg("now_iso"),
-          "Emit reconsolidate.requested (explicit trigger #4); engine opens "
-          "the plastic window asynchronously. Gated: rejected while DRAINING/UNREADY.");
+          py::arg("adapter"), py::arg("tenant_id"), py::arg("stmt_id"),
+          py::arg("request_id"), py::arg("now_iso"),
+          "Emit reconsolidate.requested (explicit trigger #4); gated: rejected while DRAINING/UNREADY.");
 ```
-（确认 `bind_09` 已 include `starling/memory/memory_ops.hpp`;若无则补。原先的 `TransactionGuard`/`BusEvent`/`OutboxWriter` include 若 bind_09 无其他用户可留可删,勿引入未用告警。)
+确认 `bind_09` include `starling/memory/memory_ops.hpp`。
 
-- [ ] **Step 6: Python 传 sup** — `python/starling/_memory_core.py:346` `request_reconsolidation`:`_core.request_reconsolidation(self.rt.adapter, self._sup, self.tenant, stmt_id, request_id=request_id, now_iso=...)`(sup 第二位置参)。
+- [ ] **Step 6: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable`;`pytest tests/python/test_write_gate_reconsolidation.py -v`(PASS);`test_tom2_e2e.py`、`test_dashboard_intervention.py` + `pytest tests/python -q` 全绿(behavior-neutral;绑定签名未改)。
 
-- [ ] **Step 7: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable`;`pytest tests/python/test_write_gate_reconsolidation.py -v`(PASS);既有再巩固相关用例(grep `request_reconsolidation` in tests/python)+ `pytest tests/python -q` 全绿(behavior-neutral)。
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add include/starling/memory/memory_ops.hpp src/memory/memory_ops.cpp bindings/python/bind_09_brain_dynamics.cpp python/starling/_memory_core.py tests/python/test_write_gate_reconsolidation.py
-git commit -m "refactor(memory): extract request_reconsolidation to core + gate it
+git add include/starling/memory/memory_ops.hpp src/memory/memory_ops.cpp bindings/python/bind_09_brain_dynamics.cpp tests/python/test_write_gate_reconsolidation.py
+git commit -m "refactor(memory): extract request_reconsolidation to gated core fn
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: Gate CommitmentEngine.fulfill/withdraw(构造注入 supervisor)
+### Task 5: Gate CommitmentEngine.fulfill/withdraw(首行,签名不变)
 
 **Files:**
-- Modify: `include/starling/prospective/commitment_engine.hpp`(ctor 加 `const RuntimeSupervisor&` 参 + 成员 + NOLINT)
-- Modify: `src/prospective/commitment_engine.cpp`(`fulfill`/`withdraw` 首行 gate;确认 ctor 定义若在 cpp 则同步)
-- Modify: `bindings/python/bind_12_prospective.cpp`(`CommitmentEngine` 构造绑定加 `RuntimeSupervisor&`)
-- Modify: `python/starling/_memory_core.py:109`(`_core.CommitmentEngine(rt.adapter, rt.supervisor)`)
+- Modify: `include/starling/prospective/commitment_engine.hpp`(`#include write_gate.hpp`;签名**不改**)
+- Modify: `src/prospective/commitment_engine.cpp`(`fulfill`/`withdraw` 首行 gate)
 - Test: `tests/python/test_write_gate_commitment.py`(新建)
 
-**Interfaces:**
-- Consumes: `governance::require_write_admission`(Task 1)、`Runtime.supervisor`(Task 2)。
-- Produces: `CommitmentEngine(persistence::SqliteAdapter& a, const governance::RuntimeSupervisor& sup)`;`fulfill`/`withdraw` DRAINING/UNREADY 抛 `WriteGateRejected`。Python `_core.CommitmentEngine(adapter, sup)`。
+> **签名不改 → `policy_engine.cpp:415/421` + 全部 11 个直调测试(`test_commitment_engine.cpp` 等)不受影响**(bare adapter 无钩子 → 放行)。gate 用类成员 `adapter_` 的钩子。**无新成员 → 无 clang-tidy NOLINT。** DRAINING 时 policy_engine 的自动结算不冲突:Policy stage 在 DRAINING 被 `should_run_stage` shed(只留 Outbox),且无新前台写触发结算级联。
 
-- [ ] **Step 1: 写 DRAINING 拒绝测试(失败)** — `tests/python/test_write_gate_commitment.py`
+**Interfaces:** Consumes `governance::require_write_admission`(Task 1)。`fulfill`/`withdraw` 在钩子 reject 时抛 `WriteGateRejected`。
+
+- [ ] **Step 1: 写 DRAINING 拒绝测试(失败)** — `tests/python/test_write_gate_commitment.py`:
 
 ```python
 from pathlib import Path
@@ -484,44 +483,21 @@ def test_withdraw_rejected_when_draining(tmp_path):
         mem._core.withdraw_commitment("stmt-nonexistent")
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_commitment.py -v`;预期 FAIL(当前 fulfill/withdraw 对不存在的 commitment 返回 no-op dict,不抛)。
+- [ ] **Step 2: 跑测试确认失败** — `pytest tests/python/test_write_gate_commitment.py -v`;预期 FAIL(无门,对不存在的 commitment 返回 no-op)。
 
-- [ ] **Step 3: ctor + 成员 + gate(hpp/cpp)** — `include/starling/prospective/commitment_engine.hpp`:ctor 改双参,加成员(带 NOLINT + 借用句柄理由),并 `#include "starling/governance/runtime_supervisor.hpp"`:
-
-```cpp
-    CommitmentEngine(persistence::SqliteAdapter& a,
-                     const governance::RuntimeSupervisor& sup)
-        : adapter_(a), sup_(sup) {}
-```
-```cpp
- private:
-    persistence::SqliteAdapter& adapter_;
-    // 借用句柄:supervisor 由调用方(Runtime)持有、生命周期长于本引擎;不可拷贝。
-    // NOLINT: 有意的引用成员(与 adapter_ 同模式)。
-    const governance::RuntimeSupervisor& sup_;  // NOLINT(cppcoreguidelines-avoid-const-or-ref-data-members)
-```
-`fulfill`/`withdraw` 定义(`src/prospective/commitment_engine.cpp`)体内**首行**加 `governance::require_write_admission(sup_);`(在任何 conn/查询之前)。
-
-> clang-tidy:新增 `const&` 成员触 `cppcoreguidelines-avoid-const-or-ref-data-members` → 成员行尾 `// NOLINT(...)` 已加(见 [[clang-tidy-ci-only-gate-gotchas]]:NOLINT 必须在成员**本行**,不能置于上方注释块)。`adapter_` 已是引用成员(grandfathered);新成员不 grandfathered 故需显式 NOLINT。
-
-- [ ] **Step 4: 绑定构造改双参(bind_12)** — `bindings/python/bind_12_prospective.cpp:68`,`py::class_<CommitmentEngine>` 的 `.def(py::init<...>())` 或构造 lambda 加 `RuntimeSupervisor&`:
+- [ ] **Step 3: 首行 gate(hpp/cpp)** — `include/starling/prospective/commitment_engine.hpp`:`#include "starling/governance/write_gate.hpp"`(**ctor/成员/签名全不改**)。`src/prospective/commitment_engine.cpp` 的 `fulfill`(:253)/`withdraw`(:270)体内**首行**(任何 conn 查询之前)加:
 
 ```cpp
-        .def(py::init<starling::persistence::SqliteAdapter&,
-                      const starling::governance::RuntimeSupervisor&>(),
-             py::arg("adapter"), py::arg("sup"))
+    governance::require_write_admission(adapter_);   // 门前抛 = 零 DB 写(用类成员 adapter_ 的钩子)
 ```
-（若原绑定用显式 lambda 构造,镜像其形式加 `sup` 参。确认 `bind_12` include `runtime_supervisor.hpp`。）
 
-- [ ] **Step 5: Python 双参构造** — `python/starling/_memory_core.py:109`:`self.commitment_engine = _core.CommitmentEngine(rt.adapter, rt.supervisor)`。
+- [ ] **Step 4: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable --test`(C++ ctest 含 policy_engine/commitment 测试全绿,签名未改);`pytest tests/python/test_write_gate_commitment.py -v`(2 例 PASS);既有 commitment 用例 + `pytest tests/python -q` 全绿。
 
-- [ ] **Step 6: 重建 + 跑测试** — `python scripts/configure_build.py --build --python-editable`;`pytest tests/python/test_write_gate_commitment.py -v`(2 例 PASS);既有 commitment 用例(`test_p2c_commitment_lifecycle.py` 等)+ `pytest tests/python -q` 全绿(behavior-neutral)。
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add include/starling/prospective/commitment_engine.hpp src/prospective/commitment_engine.cpp bindings/python/bind_12_prospective.cpp python/starling/_memory_core.py tests/python/test_write_gate_commitment.py
-git commit -m "feat(prospective): gate CommitmentEngine fulfill/withdraw via injected supervisor
+git add include/starling/prospective/commitment_engine.hpp src/prospective/commitment_engine.cpp tests/python/test_write_gate_commitment.py
+git commit -m "feat(prospective): gate CommitmentEngine fulfill/withdraw at core (adapter hook)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -533,14 +509,14 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Files:**
 - Test: `tests/python/test_write_gate_draining.py`(新建)
 
-**Interfaces:**
-- Consumes: 全部 7 入口的门(Task 3/4/5)、`Runtime.begin_drain`/`note_health`、`_core.WriteGateRejected`、`_core.HealthSampler`/`degraded_decision`(驱 DEGRADED)。
+**Interfaces:** Consumes 全部 7 入口的门(Task 3/4/5)、`Runtime.begin_drain`/`note_health`、`_core.WriteGateRejected`、`_core.HealthDecision`。
 
-- [ ] **Step 1: 写端到端测试** — `tests/python/test_write_gate_draining.py`
+- [ ] **Step 1: 写端到端测试** — `tests/python/test_write_gate_draining.py`:
 
 ```python
-"""端到端:DRAINING 拒全部 7 前台写(完整 quiesce);DEGRADED 仍放行(DEGRADED≠DRAINING)。"""
+"""端到端:DRAINING 拒全部 7 前台写(完整 quiesce,查表证零写);DEGRADED 仍放行。"""
 from pathlib import Path
+import sqlite3
 import pytest
 from starling import _core
 from starling.memory import Memory, make_stub_llm
@@ -551,49 +527,55 @@ _BELIEF = ('[{"holder":"self","holder_perspective":"FIRST_PERSON",'
 
 
 def _mem(tmp_path, name):
-    return Memory.open(tmp_path / name, llm=make_stub_llm(default_response=_BELIEF))
+    db = tmp_path / name
+    return Memory.open(db, llm=make_stub_llm(default_response=_BELIEF)), db
+
+
+def _total_rows(db):
+    con = sqlite3.connect(str(db))
+    try:
+        total = 0
+        for (t,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            total += con.execute(f"SELECT COUNT(*) FROM \"{t}\"").fetchone()[0]
+        return total
+    finally:
+        con.close()
 
 
 def test_draining_rejects_all_foreground_writes(tmp_path):
-    mem = _mem(tmp_path, "quiesce.db")
+    mem, db = _mem(tmp_path, "quiesce.db")
     mem._rt.begin_drain()
     assert mem._rt.health() == _core.RuntimeHealth.DRAINING
     core = mem._core
-    with pytest.raises(_core.WriteGateRejected):
-        mem.remember("Alice likes tea")
-    with pytest.raises(_core.WriteGateRejected):
-        core.converse("hello")
-    with pytest.raises(_core.WriteGateRejected):
-        core.forget(["s-x"])
-    with pytest.raises(_core.WriteGateRejected):
-        core.approve_review("s-x")
-    with pytest.raises(_core.WriteGateRejected):
-        core.request_reconsolidation("s-x", request_id="r-1")
-    with pytest.raises(_core.WriteGateRejected):
-        core.fulfill_commitment("s-x")
-    with pytest.raises(_core.WriteGateRejected):
-        core.withdraw_commitment("s-x")
-    # 门前抛 = 零写:读路径证明库空。
-    assert mem.recall("tea") == []
+    before = _total_rows(db)
+    for call in (
+        lambda: mem.remember("Alice likes tea"),
+        lambda: core.converse("hello"),
+        lambda: core.forget(["s-x"]),
+        lambda: core.approve_review("s-x"),
+        lambda: core.request_reconsolidation("s-x", request_id="r-1"),
+        lambda: core.fulfill_commitment("s-x"),
+        lambda: core.withdraw_commitment("s-x"),
+    ):
+        with pytest.raises(_core.WriteGateRejected):
+            call()
+    assert _total_rows(db) == before        # 门前抛 = 全库零新行
 
 
 def test_degraded_still_allows_remember(tmp_path):
     """DEGRADED 只 shed 后台 Soft stage,不拒前台写。"""
-    mem = _mem(tmp_path, "degraded.db")
-    # 无 degraded_decision 自由函数:HealthDecision 是 Python-constructible
-    # (bind_14_governance.cpp:68 def_readwrite target_status/trigger),note_health
-    # 收它。READY→DEGRADED 合法转移。
-    d = _core.HealthDecision()
-    d.target_status = _core.RuntimeHealth.DEGRADED
+    mem, _ = _mem(tmp_path, "degraded.db")
+    d = _core.HealthDecision()               # 无 degraded_decision 自由函数;手构 HealthDecision
+    d.target_status = _core.RuntimeHealth.DEGRADED   # bind_14_governance.cpp:70 def_readwrite
     d.trigger = "test_backpressure"
     mem._rt.note_health(d)
     assert mem._rt.health() == _core.RuntimeHealth.DEGRADED
-    r = mem.remember("Alice likes tea")     # DEGRADED 下写仍成功
-    assert r.engram_ref                      # 有 engram → 写成功
-    assert mem.recall("tea")                 # 可召回 → 真落库
+    r = mem.remember("Alice likes tea")      # DEGRADED 下写成功(不抛)
+    assert r.engram_ref                       # 有 engram → 写落库
+    mem.tick("2026-06-01T10:00:00Z")          # eng-review #3:remember 不 embed;recall 需先 tick
+    assert mem.recall("tea")                  # tick 后可召回 → 真落库 + 可检索
 ```
-
-> `_core.HealthDecision` 有 `target_status`(`_core.RuntimeHealth`)、`trigger`、`metrics_snapshot` 三个 def_readwrite 字段(`bind_14_governance.cpp:68-72`),默认构造 + 赋值即可;`note_health(decision)` 已绑定(:90)。这是驱 DEGRADED 的唯一 Python 途径(无 `degraded_decision` 自由函数)。
 
 - [ ] **Step 2: 跑测试确认通过** — `pytest tests/python/test_write_gate_draining.py -v`(2 例 PASS)。
 
@@ -610,4 +592,29 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## 执行后
 
-全 6 task 完成后走 whole-branch review(subagent-driven-development 的终审,最强模型)→ PR → CI 绿 → 用户合并。**本 plan 先经 /plan-eng-review(outside-voice)锁定再执行。**
+全 6 task 完成后走 whole-branch review(subagent-driven-development 终审,最强模型)→ PR → CI 绿 → 用户合并。
+
+## eng-review 已解决项(2026-07-03,adapter-hook pivot)
+
+- **#1/#2(P1,已验证):** 参数注入破 `policy_engine.cpp:415/421`(生产)+ 11 测试 → **pivot 到 adapter-hook,7 签名全不改,零破坏。**
+- **#3/#4(P1/P2):** `remember` 不 embed → DEGRADED 测试 `tick` 后再 recall;DRAINING「零写」证明改**直接查表 COUNT**(非 `recall()==[]`)。
+- **#5(exempt):** `plan_query` 的 `statement.recalled` = 读侧审计,不 gate(见 Deferred)。
+- **#7:** converse `:186 catch` 吞内部 gate = 有意例外,已文档化(Task 3 Step 4)。
+- **#8(out-of-scope):** `_reembed`/`run_replay` = dashboard admin 写,列 Deferred。
+- Finding B(request_reconsolidation 直调测试)被 adapter-hook 溶解(绑定签名不变)。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_found → all resolved | 8 findings (2×P1), all folded via adapter-hook pivot |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **Outside voice:** Codex timed out (5min, high-effort reading files) → **Claude subagent** ran (fresh context). It caught what the section review + I missed: param-injection breaks production `policy_engine.cpp:415/421` + 11 direct test callers (P1×2), `remember` doesn't embed so the DEGRADED/DRAINING test assertions were invalid (P1/P2), `plan_query` writes the outbox (P2), `_reembed`/`run_replay` ungated (P3), converse propagate-vs-swallow (P3). All verified against code, all resolved.
+- **CROSS-MODEL:** Section review said "param-inject, blast radius 8→1"; outside voice said "param-inject breaks src policy_engine + 11 callers → adapter-hook." Verified: outside voice correct → **pivoted to adapter-hook** (zero signature changes, behavior-neutral by construction).
+- **VERDICT:** ENG CLEARED (after adapter-hook pivot) — ready to implement. The reworked design (adapter-hook) is grounded in the independent outside voice + code verification; the subagent-driven whole-branch review validates the actual implementation before PR.
+
+NO UNRESOLVED DECISIONS

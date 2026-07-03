@@ -2,6 +2,8 @@
 
 > Slice: D-latent 写门修复。把健康驱动的前台写门(`RuntimeSupervisor::check_write`)从**生产死代码**下沉进 C++ 核心写路径,使 DRAINING/UNREADY 真正拒绝**所有前台写**。
 
+> **⚠ REVISION(2026-07-03,eng-review pivot — 以 plan 为准):** 本 spec 原设计为「7 个核心写函数各加 `const RuntimeSupervisor& sup` 参 + `require_write_admission(sup)`」。/plan-eng-review 的 outside voice 验证发现**参数注入破生产 `policy_engine.cpp:415/421` + 11 个直调测试**(fulfill/withdraw 被 PolicyEngine 自动结算 + 大量测试直调,无 supervisor)。**机制已 pivot 为 adapter-hook**:`SqliteAdapter` 持可空 `std::function<bool()>` 写门钩子,`Runtime` 构造时 `install_write_gate` 设一次,7 个核心写函数首行 `require_write_admission(adapter)`(§4/§5 的「传 sup」全部作废,改「读 adapter 钩子」)。**零签名改动、behavior-neutral by construction**。另:`plan_query` 的 `statement.recalled` emit = 读侧审计**豁免**;`_reembed`/`run_replay` = dashboard admin 写**列 out-of-scope**;converse `:186 catch` 吞内部 gate = 对 §6「统一传播」的有意例外。完整修订见 `docs/superpowers/plans/2026-07-03-write-gate-core.md`(含「eng-review 已解决项」)。
+
 **状态:** 设计已定(brainstorm 决策 D1=A 完整切片、D2=A 所有前台写、D3=A 统一异常),待用户过 spec → writing-plans → /plan-eng-review(outside-voice)→ subagent 执行。
 
 **分支:** `feat/write-gate-core`(off main @ 2846188)。
