@@ -95,6 +95,6 @@ TEST(OpenAIEmbeddingAdapter, FromEnvDefaultMaxBatch) {
     setenv("OPENAI_API_KEY", "sk-test", 1);
     unsetenv("EMBEDDING_MAX_BATCH");
     auto c = OpenAIEmbeddingAdapter::Config::from_env();
-    EXPECT_EQ(c.max_batch_inputs, 25);
+    EXPECT_EQ(c.max_batch_inputs, 10);
     unsetenv("OPENAI_API_KEY");
 }
