@@ -17,7 +17,11 @@ public:
         int dim = 1536;
         int timeout_ms = 60000;
         int max_retries = 3;
-        int max_batch_inputs = 25;                 // per-call input cap (DashScope-safe; see V1)
+        // Per-call input cap. Default 10 batches correctly out-of-the-box on
+        // BOTH OpenAI (cap 2048) and DashScope compatible-mode text-embedding-v3
+        // (cap 10 — a 25-input batch 400s → per-row fallback → no speedup, MEASURED
+        // 2026-07-03). Raise via EMBEDDING_MAX_BATCH on higher-cap providers.
+        int max_batch_inputs = 10;
         static Config from_env();                  // throw std::runtime_error if api_key unset
     };
     explicit OpenAIEmbeddingAdapter(Config cfg) : cfg_(std::move(cfg)) {}

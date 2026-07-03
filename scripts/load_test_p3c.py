@@ -21,6 +21,11 @@ DashScope / Alibaba (text-embedding-v3, 1024-dim):
     OPENAI_API_KEY=<dashscope-key> OPENAI_BASE_URL=<dashscope-openai-url> \\
         EMBEDDING_MODEL=text-embedding-v3 EMBEDDING_DIM=1024 \\
         python scripts/load_test_p3c.py --db /tmp/bench.db --real-embed
+
+Embed batching is on by default (max_batch_inputs=10, which DashScope
+text-embedding-v3 accepts — measured ~3.5x faster embed at n=2000). A too-high
+batch 400s and silently falls back to per-row (no speedup), so raise
+EMBEDDING_MAX_BATCH only on higher-cap providers (OpenAI accepts up to 2048).
 """
 from __future__ import annotations
 
