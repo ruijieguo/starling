@@ -58,21 +58,20 @@ _ZERO_SHA = "0000000000000000000000000000000000000000"
 #     these fire on every sibling in a class of conn-passing methods the instant one
 #     is touched (commitment fulfill/withdraw: void→bool re-flagged the pre-existing
 #     4-string_view signature + "could be static" across the whole engine).
-#   - clang-analyzer-*: path-sensitive WHOLE-TU static analysis. It is (a) the
-#     clang-tidy performance killer — with no per-TU timeout it can run well over
-#     an hour on a template-heavy TU (e.g. one including nlohmann/json.hpp),
-#     HANGING the gate (bit embedding-batching: the first PR to lint
-#     src/embedding/openai_embedding_adapter.cpp + embedding_worker.cpp stalled CI
-#     ~90min on this step) — and (b) whole-TU rather than reliably changed-line
-#     attributable, like the checks above.
+# clang-analyzer-* is deliberately NOT disabled here. It was briefly disabled
+# during embedding-batching on the theory it hung CI, but that "6h clang-tidy
+# hang" was traced to a GitHub Actions INFRA incident (multi-hour API outage /
+# stuck runners), NOT clang-tidy — clang-analyzer lints these nlohmann-heavy TUs
+# in ~11s locally. Unlike the whole-function/signature checks above, its
+# diagnostics anchor at the bug site (which -line-filter keeps), so it is
+# changed-line-attributable and stays enabled for its null-deref/leak/UB value.
 # Appended to .clang-tidy via --checks (a leading '-' disables); .clang-tidy still
 # enforces all of them for any full-tree / whole-function review.
 _GATE_DISABLED_CHECKS = (
     "-readability-function-cognitive-complexity,"
     "-readability-function-size,"
     "-bugprone-easily-swappable-parameters,"
-    "-readability-convert-member-functions-to-static,"
-    "-clang-analyzer-*"
+    "-readability-convert-member-functions-to-static"
 )
 
 
@@ -174,14 +173,14 @@ def main() -> int:
     for t in tus:
         print(f"  {t}")
 
-    # Run clang-tidy PER TU under a wall-clock timeout. A single TU that pulls in
-    # a large template-heavy header (e.g. nlohmann/json.hpp) can make clang-tidy
-    # run for HOURS with no natural bound — embedding-batching's first run hung 6h
-    # until GitHub's job timeout killed it, even with clang-analyzer-* disabled.
-    # A per-TU timeout SKIPS only the offending TU (logged as a GH ::warning::,
-    # never silent) so one pathological TU can't hang the whole gate; every other
-    # TU is still linted and any real diagnostic still fails CI. Tune via
-    # CLANG_TIDY_TU_TIMEOUT (seconds).
+    # Run clang-tidy PER TU under a wall-clock timeout — cheap defensive insurance
+    # so no single TU (or a stuck runner) can hang the whole gate. Kept even though
+    # the embedding-batching "6h hang" that first motivated it was traced to a
+    # GitHub Actions infra incident rather than clang-tidy (these TUs lint in ~11s
+    # locally, WITH clang-analyzer). A TU that exceeds the timeout is SKIPPED with a
+    # GH ::warning:: (loud, never silent) so one genuinely-pathological TU can't
+    # hang the gate; every other TU is still linted and any real diagnostic still
+    # fails CI. Tune via CLANG_TIDY_TU_TIMEOUT (seconds).
     per_tu_timeout = int(os.environ.get("CLANG_TIDY_TU_TIMEOUT", "600"))
     checks_arg = "--checks=" + _GATE_DISABLED_CHECKS
     filter_arg = "-line-filter=" + json.dumps(line_filter)
