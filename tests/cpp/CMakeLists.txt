@@ -165,6 +165,7 @@ add_executable(starling_tests
     test_capability_policy.cpp
     test_sqlite_adapter_index_preflight.cpp
     test_runtime_supervisor.cpp
+    test_write_gate_admission.cpp
     test_runtime_health_event.cpp
     test_runtime_supervisor_transitions.cpp
     test_pipeline_run_types.cpp

@@ -14,6 +14,7 @@
 #include "starling/governance/metrics_gatherer.hpp"
 #include "starling/governance/runtime_health_event.hpp"
 #include "starling/governance/runtime_supervisor.hpp"
+#include "starling/governance/write_gate.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/profile_capability.hpp"
 
@@ -37,6 +38,11 @@ void bind_14_governance(pybind11::module_& m) {
     py::enum_<gov::WriteGateDecision>(m, "WriteGateDecision")
         .value("kAccept", gov::WriteGateDecision::kAccept)
         .value("kPreconditionFailed", gov::WriteGateDecision::kPreconditionFailed);
+
+    py::register_exception<gov::WriteGateRejected>(m, "WriteGateRejected");
+    m.def("install_write_gate", &gov::install_write_gate,
+          py::arg("adapter"), py::arg("supervisor"),
+          "Wire adapter's write gate to supervisor.check_write() (production only).");
 
     py::class_<gov::PreflightReport>(m, "PreflightReport")
         .def_readonly("passed", &gov::PreflightReport::passed)
