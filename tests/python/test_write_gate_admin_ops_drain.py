@@ -31,9 +31,13 @@ def test_run_replay_allowed_ready_rejected_draining(tmp_path):
         eng.close()
 
 
-def test_reembed_rejected_when_draining(tmp_path):
+def test_reembed_allowed_ready_rejected_draining(tmp_path):
     eng = _engine(tmp_path, "re.db")
     try:
+        assert eng._rt.health() == _core.RuntimeHealth.READY
+        ready = eng._reembed()                            # READY → runs (not drain-gated);
+        assert ready is None or "draining" not in ready   # None or an embedding warning, never drain
+
         eng.begin_drain()
         assert eng._rt.health() == _core.RuntimeHealth.DRAINING
         msg = eng._reembed()                              # host-gated before raw DELETE
