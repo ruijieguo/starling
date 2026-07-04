@@ -83,6 +83,15 @@ def test_recall_with_intent_goes_through_planner(client):
     assert [s["step"] for s in body["plan_steps"]][:3] == ["parse", "mask", "plan"]
 
 
+def test_recall_invalid_intent_is_422_not_500(client):
+    """REGRESSION: an intent not in _core.QueryIntent used to reach plan_query's
+    getattr and blow up as AttributeError → 500. The route must reject it as 422."""
+    r = client.post("/api/recall", json={
+        "query": "auth", "intent": "about", "k": 5})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "invalid_intent"
+
+
 def test_recall_intent_receipt_additive_regression(client):
     """REGRESSION (Phase 0): plan_query gained a `receipt` block. The original
     six keys the interact page depends on MUST stay; the new attribution fields

@@ -106,6 +106,13 @@ def build_commands_router(require_token) -> APIRouter:
     async def recall(body: RecallBody, request: Request):
         eng = _engine(request)
         if body.intent:
+            # intent 以 C++ QueryIntent 枚举为单一源;非法值在这里挡成 422,
+            # 否则 plan_query 的 getattr 会 AttributeError → 500。
+            from starling import _core
+            if not hasattr(_core.QueryIntent, body.intent):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="invalid_intent")
             payload = await to_thread.run_sync(partial(
                 eng.plan_query, body.query, intent=body.intent,
                 target=body.target, k=body.k))
