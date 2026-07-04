@@ -330,6 +330,13 @@ class DashboardEngine:
         swallowed, mirroring the background tick's own non-fatal handling — and
         returned as a warning string so the save can surface it (silent success
         with broken embeddings is worse than a clear heads-up)."""
+        if not self._rt.adapter.write_admitted():
+            # 前台写门 follow-up(P3.c write-gate):这个 config-save 重嵌是绕过 C++ 核心的
+            # 裸 sqlite 写(DELETE statement_vectors + tick_one_batch),核心门管不到 → host-side
+            # gate,复用 PR #45 的 adapter 钩子。DRAINING/UNREADY 时跳过(不 DELETE),返回
+            # warning(贴合本方法 str|None 契约,config-save 展示)。
+            return ("re-embed skipped: runtime is draining; vectors NOT cleared "
+                    "(writes are rejected during shutdown)")
         conn = sqlite3.connect(self._db_path)
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
@@ -440,6 +447,11 @@ class DashboardEngine:
 
     def run_replay(self, mode: str, *, now=None) -> dict:
         with self._lock:
+            if not self._rt.adapter.write_admitted():
+                # host-side gate(P3.c write-gate follow-up):手动 replay 是重 DB 写。
+                # DRAINING/UNREADY 时拒(不跑 ReplayScheduler)。返回带标记 dict —— route
+                # (replay_trigger)只透传广播/返回,不访问 dict 的 key,故安全。
+                return {"mode": mode, "rejected": "draining"}
             return self._core.run_replay(mode, now=now)
 
     def request_reconsolidation(self, stmt_id: str, *, request_id: str, now=None) -> dict:
