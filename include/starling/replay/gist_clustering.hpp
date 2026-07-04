@@ -31,8 +31,9 @@ struct GistCluster {
                                              // sorted. NON-EMPTY only for SEMANTIC clusters
                                              // (members carry VARIED objects); empty for an
                                              // exact cluster (members share object_value).
-                                             // Drives the member-aware judge + per-member
-                                             // entailment that guard against false-merge.
+                                             // Drives the member-aware judge + the set-level
+                                             // faithful-generalization entailment (coverage +
+                                             // tightness) that guards against false-merge.
 };
 
 // A detected cluster tagged with its tenant, ready for the Phase-2 write path.
@@ -96,8 +97,9 @@ struct GistThresholds {
 // settled & norm-eligible (the SAME state filter as exact, replay_count >= T) join the
 // candidate. It becomes a cluster iff seed+neighbors span >= K distinct holders. The
 // representative (predicate/object/hash) is the lexicographically smallest member id;
-// members carry VARIED (predicate,object) by design, so downstream gating must use
-// per-member entailment to guard against false-merge. Returns empty (disabled) when
+// members carry VARIED (predicate,object) by design, so downstream gating uses a
+// set-level faithful-generalization entailment (coverage + tightness over the whole
+// member set) to guard against false-merge. Returns empty (disabled) when
 // similarity_threshold <= 0. Idempotent: skips a representative key already abstracted,
 // AND a candidate whose representative is a near neighbor of an existing gist.
 [[nodiscard]] std::vector<GistCluster> find_semantic_gist_clusters(

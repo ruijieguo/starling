@@ -32,12 +32,20 @@ struct EntailmentVerdict {
     bool ok = false;        // false ⇒ LLM errored or reply unparseable
     bool entailed = false;  // is the summary entailed by the cluster's evidence?
 };
-// `object` is the single member phrasing checked this call. For #38-C v2 semantic
-// clusters the gate calls this PER member (each varied object verified against the
-// summary); exact clusters call it once with the shared object_value.
+// `object` is the single member phrasing checked this call. EXACT / entity clusters
+// call this once with the shared object_value. (Semantic clusters — varied objects —
+// use build_semantic_entailment_prompt instead; see gate_candidate.)
 [[nodiscard]] std::string build_entailment_prompt(const GistCluster& cluster,
                                                   std::string_view object,
                                                   std::string_view summary);
+
+// #38-C v2 semantic-cluster entailment (set-level). A semantic cluster groups the SAME
+// predicate over VARIED objects; a summary generalizing across them is never entailed by
+// any single object, so per-object verification structurally rejects every semantic gist.
+// This lists ALL member objects and asks for a FAITHFUL GENERALIZATION — coverage (every
+// object is an instance of the summary) AND tightness (no scope broader than the set).
+[[nodiscard]] std::string build_semantic_entailment_prompt(const GistCluster& cluster,
+                                                           std::string_view summary);
 [[nodiscard]] EntailmentVerdict parse_entailment_verdict(std::string_view llm_reply);
 
 }  // namespace starling::replay

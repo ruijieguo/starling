@@ -108,20 +108,30 @@ GateDecision gate_candidate(extractor::LLMAdapter& gist_llm, const GistCluster& 
     judgment = parse_gist_judgment(judge_resp.raw_xml);
     if (!judgment.ok) { return GateDecision::Failed; }
     if (judgment.confidence < confidence_floor) { return GateDecision::Gated; }
-    // Per-member entailment (#38-C v2 false-merge safety): verify the summary against
-    // EACH member phrasing independently. A semantic cluster lists its VARIED objects,
-    // so a false-merged outlier the summary does not entail gates the whole candidate;
-    // an exact cluster (member_objects empty) checks its one shared object, as before.
-    const std::vector<std::string> objects =
-        cluster.member_objects.empty() ? std::vector<std::string>{cluster.object_value}
-                                       : cluster.member_objects;
-    for (const auto& object : objects) {
+    // Phase-4 entailment (#38-C v2 false-merge safety). Semantic clusters (varied objects)
+    // use ONE set-level faithful-generalization check — a summary that generalizes across
+    // varied objects is never entailed by any single object, so per-object verification
+    // structurally rejects every semantic gist. Exact / entity clusters (member_objects
+    // empty, or a degenerate single object) keep the per-object check unchanged.
+    if (cluster.member_objects.size() > 1) {
         const extractor::LLMResponse verify_resp =
-            gist_llm.generate(build_entailment_prompt(cluster, object, judgment.summary));
+            gist_llm.generate(build_semantic_entailment_prompt(cluster, judgment.summary));
         if (!verify_resp.ok) { return GateDecision::Failed; }
         const EntailmentVerdict verdict = parse_entailment_verdict(verify_resp.raw_xml);
         if (!verdict.ok) { return GateDecision::Failed; }
         if (!verdict.entailed) { return GateDecision::Gated; }
+    } else {
+        const std::vector<std::string> objects =
+            cluster.member_objects.empty() ? std::vector<std::string>{cluster.object_value}
+                                           : cluster.member_objects;
+        for (const auto& object : objects) {
+            const extractor::LLMResponse verify_resp =
+                gist_llm.generate(build_entailment_prompt(cluster, object, judgment.summary));
+            if (!verify_resp.ok) { return GateDecision::Failed; }
+            const EntailmentVerdict verdict = parse_entailment_verdict(verify_resp.raw_xml);
+            if (!verdict.ok) { return GateDecision::Failed; }
+            if (!verdict.entailed) { return GateDecision::Gated; }
+        }
     }
     return GateDecision::Pass;
 }

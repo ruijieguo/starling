@@ -110,3 +110,31 @@ TEST(GistPrompt, RejectsMalformedVerdict) {
     EXPECT_FALSE(parse_entailment_verdict(R"({"foo": 1})").ok);           // missing field
     EXPECT_FALSE(parse_entailment_verdict("garbage").ok);
 }
+
+// Set-level semantic entailment prompt: lists EVERY varied member object (joined),
+// fills holder_count/predicate/summary, and leaves no residual {placeholder}.
+TEST(GistPrompt, SemanticEntailmentListsAllObjectsNoResidualPlaceholders) {
+    starling::replay::GistCluster cluster;
+    cluster.predicate = "enjoys";
+    cluster.holder_ids = {"alice", "bob", "carol"};
+    cluster.member_objects = {"espresso", "cappuccino", "latte"};
+
+    const std::string prompt = starling::replay::build_semantic_entailment_prompt(
+        cluster, "People enjoy coffee drinks.");
+
+    // Every varied object appears.
+    EXPECT_NE(prompt.find("espresso"), std::string::npos);
+    EXPECT_NE(prompt.find("cappuccino"), std::string::npos);
+    EXPECT_NE(prompt.find("latte"), std::string::npos);
+    // predicate, holder_count, summary all filled.
+    EXPECT_NE(prompt.find("enjoys"), std::string::npos);
+    EXPECT_NE(prompt.find("3"), std::string::npos);                       // holder_count
+    EXPECT_NE(prompt.find("People enjoy coffee drinks."), std::string::npos);
+    // Reuses the existing verdict contract.
+    EXPECT_NE(prompt.find("entailed"), std::string::npos);
+    // No residual template placeholders.
+    EXPECT_EQ(prompt.find("{objects}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{predicate}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{holder_count}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{summary}"), std::string::npos);
+}

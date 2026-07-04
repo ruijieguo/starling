@@ -42,6 +42,21 @@ Reply with ONLY a JSON object (no prose, no markdown):
 {"entailed": <true if the summary is faithfully entailed by the evidence; false if it over-reaches, adds unsupported detail, or confabulates>}
 )PROMPT";
 
+// #38-C v2 set-level semantic entailment. Lists every varied member object and asks the
+// verifier to confirm the summary FAITHFULLY GENERALIZES the set: coverage (each object
+// is an instance) + tightness (no scope broader than the set warrants). Reuses the
+// {entailed} reply shape → parse_entailment_verdict unchanged.
+constexpr std::string_view kSemanticEntailmentTemplate =
+    R"PROMPT(You are the verification faculty of a memory system. A consolidation step produced a candidate NORM summary generalizing over {holder_count} distinct holders who each INDEPENDENTLY assert a related belief with the SAME predicate ({predicate}) but VARIED objects:
+  {objects}
+Check whether the summary is a FAITHFUL GENERALIZATION of this set — (a) COVERAGE: every listed object is an instance or case of the summary; (b) TIGHTNESS: the summary introduces no scope, claim, category, or detail broader than this set of objects warrants. If ANY listed object is not an instance of the summary, or the summary over-reaches beyond what the set supports, it is NOT faithful.
+
+Candidate summary: {summary}
+
+Reply with ONLY a JSON object (no prose, no markdown):
+{"entailed": <true if the summary covers EVERY listed object AND stays within the set's scope; false otherwise>}
+)PROMPT";
+
 // #38-C v2 entity-gist judge: same shape as the NORM judge, but the candidate is a
 // CONSENSUS ABOUT A SPECIFIC ENTITY ({subject}), not a people-general norm. Used when
 // the cluster carries a subject (build_norm_gist_prompt routes on cluster.subject_id).
@@ -161,11 +176,20 @@ std::string build_entailment_prompt(const GistCluster& cluster, std::string_view
     }
     replace_first(prompt, "{holder_count}", std::to_string(cluster.holder_ids.size()));
     replace_first(prompt, "{predicate}", cluster.predicate);
-    // `object` is the ONE member being checked this call: the gate verifies the summary
-    // against EACH varied member (per-member entailment), so a false-merged outlier that
-    // the summary does not entail gates the whole candidate. Exact clusters pass the
-    // shared object_value (one call, unchanged).
+    // `object` is the single shared object for exact / entity clusters (one call per
+    // cluster). Semantic clusters (varied objects) use build_semantic_entailment_prompt
+    // instead — see gate_candidate.
     replace_first(prompt, "{object}", object);
+    replace_first(prompt, "{summary}", summary);
+    return prompt;
+}
+
+std::string build_semantic_entailment_prompt(const GistCluster& cluster,
+                                             std::string_view summary) {
+    std::string prompt(kSemanticEntailmentTemplate);
+    replace_first(prompt, "{holder_count}", std::to_string(cluster.holder_ids.size()));
+    replace_first(prompt, "{predicate}", cluster.predicate);
+    replace_first(prompt, "{objects}", join_with_commas(cluster.member_objects));
     replace_first(prompt, "{summary}", summary);
     return prompt;
 }
