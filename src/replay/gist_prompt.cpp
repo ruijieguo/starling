@@ -16,7 +16,7 @@ namespace {
 // JSON object {confidence, summary}; parse_gist_judgment tolerates fences/prose
 // around it. Placeholders are filled by build_norm_gist_prompt.
 constexpr std::string_view kNormGistPromptTemplate =
-    R"PROMPT(You are the consolidation faculty of a brain-like memory system. Several DISTINCT holders have INDEPENDENTLY asserted the same belief. Judge whether this is a genuine, generalizable NORM — something people in general believe or do — rather than a coincidental overlap.
+    R"PROMPT(You are the consolidation faculty of a brain-like memory system. Several DISTINCT holders have INDEPENDENTLY asserted the same belief. Their independent agreement IS the evidence — you are consolidating THIS memory's observed consensus, NOT judging whether the wider population holds it, so do NOT require demographic, cultural, or sample-size evidence. Judge only whether their shared belief is a COHERENT, generalizable belief worth recording as a norm, rather than a coincidental or incoherent overlap.
 
 Candidate norm:
   predicate: {predicate}
@@ -24,7 +24,7 @@ Candidate norm:
   asserted by {holder_count} distinct holders: {holders}
 
 Reply with ONLY a JSON object (no prose, no markdown):
-{"confidence": <number 0.0-1.0 — how strongly this is a real generalizable norm>, "summary": "<one concise sentence stating the norm in natural language>"}
+{"confidence": <number 0.0-1.0 — how coherent and generalizable the shared belief is, GIVEN the holders' agreement as sufficient evidence>, "summary": "<ONE short plain sentence stating ONLY the shared belief; add no cause, scope, category, interpretation, or detail beyond what the holders assert>"}
 )PROMPT";
 
 // CORE single-source ENTAILMENT-VERIFICATION prompt (#38-C Phase 4 gating). An
