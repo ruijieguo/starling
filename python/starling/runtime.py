@@ -62,36 +62,6 @@ class _StubEngramStore:
     appended_count: int = 0
 
 
-class _SqliteBackedBus:
-    """M0.2 SQLite-backed bus surface.
-
-    Mirrors `_StubBus`'s shape so existing callers keep working when an adapter
-    is supplied. The actual append-into-bus_events flow lands behind
-    OutboxWriter in M0.3 (engram) + M0.4 (statement); M0.2 only needs the
-    write gate and the adapter handle exposed to producers.
-    """
-
-    def __init__(self, adapter, *, check_write: Callable[[], Any]):
-        self._adapter = adapter
-        self._check_write = check_write
-        self.written_count = 0
-
-    def adapter(self):
-        return self._adapter
-
-    def append_evidence(self, _engram) -> str:
-        if self._check_write() != _core.WriteGateDecision.kAccept:
-            return "PRECONDITION_FAILED"
-        self.written_count += 1
-        return "OK"
-
-    def write(self, _stmt) -> str:
-        if self._check_write() != _core.WriteGateDecision.kAccept:
-            return "PRECONDITION_FAILED"
-        self.written_count += 1
-        return "OK"
-
-
 @dataclass
 class Runtime:
     capability: _core.ProfileCapability
@@ -121,7 +91,12 @@ class Runtime:
             # 前台写门(P3.c):把 adapter 钩子接到 supervisor 健康态。仅 production
             # (adapter 提供)接线;test-seam(adapter=None)与 bare-adapter 测试无钩子 → 放行。
             _core.install_write_gate(self.adapter, self._sup)
-            self.bus = _SqliteBackedBus(self.adapter, check_write=self._sup.check_write)
+            # M0.3 bus surface: the real C++ Bus via BusFacade. Lazy-import to avoid a
+            # circular dependency (starling.__init__ → runtime → append_evidence → _core).
+            # (前台写门已由 install_write_gate 在 C++ 核心接管;旧的 Python _SqliteBackedBus
+            #  门是 PR #45 后的死代码,已删。)
+            from starling.bus.append_evidence import BusFacade
+            self.bus = BusFacade(self.adapter)
 
     def health(self) -> _core.RuntimeHealth:
         return self._sup.health()
@@ -194,10 +169,7 @@ def _build_local_store_sqlite_runtime(db_path: Path) -> "Runtime":
         embedded=True,
         idx_statement_id_tenant_present=lambda: adapter.has_index("idx_statement_id_tenant"),
     )
-    # M0.3 bus surface: replace the stub bus with the real C++ Bus via BusFacade.
-    # Lazy-import to avoid a circular dependency.
-    from starling.bus.append_evidence import BusFacade
-    rt.bus = BusFacade(adapter)
+    # rt.bus is BusFacade — set in Runtime.__post_init__ (adapter branch).
     return rt
 
 
