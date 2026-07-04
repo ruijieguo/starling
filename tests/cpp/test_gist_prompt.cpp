@@ -138,3 +138,18 @@ TEST(GistPrompt, SemanticEntailmentListsAllObjectsNoResidualPlaceholders) {
     EXPECT_EQ(prompt.find("{holder_count}"), std::string::npos);
     EXPECT_EQ(prompt.find("{summary}"), std::string::npos);
 }
+
+// The reworded norm judge carries the consensus-is-evidence + concise-no-scope framing,
+// and leaves NO residual placeholder. A duplicated {holder_count} (replace_first fills
+// only the first) or a reversion to the old demographic-skeptic wording would fail this.
+TEST(GistPrompt, NormJudgeConsensusFramingNoResidualPlaceholders) {
+    const std::string prompt = build_norm_gist_prompt(sample_cluster());
+    // consensus-is-evidence (anti-skepticism) + concise-no-scope intent present
+    EXPECT_NE(prompt.find("independent agreement IS the evidence"), std::string::npos);
+    EXPECT_NE(prompt.find("add no cause"), std::string::npos);
+    // every placeholder filled exactly once → none survives literally
+    EXPECT_EQ(prompt.find("{holder_count}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{predicate}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{object}"), std::string::npos);
+    EXPECT_EQ(prompt.find("{holders}"), std::string::npos);
+}
