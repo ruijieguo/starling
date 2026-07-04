@@ -176,10 +176,9 @@ std::string build_entailment_prompt(const GistCluster& cluster, std::string_view
     }
     replace_first(prompt, "{holder_count}", std::to_string(cluster.holder_ids.size()));
     replace_first(prompt, "{predicate}", cluster.predicate);
-    // `object` is the ONE member being checked this call: the gate verifies the summary
-    // against EACH varied member (per-member entailment), so a false-merged outlier that
-    // the summary does not entail gates the whole candidate. Exact clusters pass the
-    // shared object_value (one call, unchanged).
+    // `object` is the single shared object for exact / entity clusters (one call per
+    // cluster). Semantic clusters (varied objects) use build_semantic_entailment_prompt
+    // instead — see gate_candidate.
     replace_first(prompt, "{object}", object);
     replace_first(prompt, "{summary}", summary);
     return prompt;

@@ -97,16 +97,21 @@ int col_int(sqlite3* db, const std::string& sql) {
 // Returns canned LLM responses in call order (1st = judge, 2nd = entailment
 // verify), so a test can give the two gate calls DIFFERENT replies — proving the
 // entailment verdict comes from the INDEPENDENT second call, not the judge's reply.
+// seen_prompts records every prompt received in call order, so tests can assert
+// which prompt builder was used (set-level vs. per-object).
 class SequencedLLM : public starling::extractor::LLMAdapter {
 public:
     explicit SequencedLLM(std::vector<starling::extractor::LLMResponse> replies)
         : replies_(std::move(replies)) {}
-    starling::extractor::LLMResponse extract(std::string_view, std::string_view) override {
+    starling::extractor::LLMResponse extract(std::string_view prompt,
+                                             std::string_view) override {
+        seen_prompts.emplace_back(prompt);
         if (next_ < replies_.size()) {
             return replies_[next_++];
         }
         return starling::extractor::LLMResponse{.ok = false, .error = "seq_exhausted"};
     }
+    std::vector<std::string> seen_prompts;   // prompts received, in call order
 private:
     std::vector<starling::extractor::LLMResponse> replies_;
     std::size_t next_ = 0;
@@ -606,11 +611,11 @@ TEST(GistWriter, EntailmentVerifyIndependentlyPasses) {
               "consolidated");
 }
 
-// #38-C v2 false-merge safety: a SEMANTIC cluster's summary is verified against EACH
-// varied member (per-member entailment). If it fails to entail even one — a
-// false-merged outlier — the whole candidate is GATED, not written. Single-rep
-// entailment would have checked only the representative and missed the outlier.
-TEST(GistWriter, PerMemberEntailmentGatesSemanticFalseMerge) {
+// #38-C v2 (fixed): a SEMANTIC cluster is verified by ONE set-level faithful-generalization
+// call, NOT per member. The sequence gives a set-level FALSE then a would-be second reply;
+// only the FALSE is consumed (gated), proving a single entailment call. The recorded prompt
+// carries every varied object (the set-level builder was used).
+TEST(GistWriter, SemanticSetLevelEntailmentGatesFalseMerge) {
     auto adapter = SqliteAdapter::open(":memory:");
     auto& conn = adapter->connection();
     sqlite3* db = conn.raw();
@@ -630,21 +635,65 @@ TEST(GistWriter, PerMemberEntailmentGatesSemanticFalseMerge) {
     const auto clusters =
         find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {});
     ASSERT_EQ(clusters.size(), 1U);
-    ASSERT_EQ(clusters[0].member_objects.size(), 3U);  // varied → per-member gate engages
+    ASSERT_EQ(clusters[0].member_objects.size(), 3U);   // varied → set-level gate engages
 
-    // Judge passes the floor; per-member entailment: true, true, FALSE → the outlier
-    // gates the candidate (4 LLM calls = 1 judge + 3 members, proving it is per-member).
+    // judge passes floor; set-level entailment FALSE → gated. A trailing reply proves the
+    // gate does NOT make a second (per-member) call — it stays unconsumed.
     SequencedLLM llm({
         starling::extractor::LLMResponse{.raw_xml = R"({"confidence":0.9,"summary":"value review"})",
                                          .ok = true},
-        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
-        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
         starling::extractor::LLMResponse{.raw_xml = R"({"entailed": false})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},  // must stay unused
     });
     const auto outcome = write_gist_proposals(
         *adapter, {{.tenant_id = "default", .cluster = clusters[0]}}, "2026-06-28T12:00:00Z", &llm);
-    EXPECT_EQ(outcome.gated, 1);    // the outlier member gated it
-    EXPECT_EQ(outcome.written, 0);  // false-merge blocked — nothing written
+    EXPECT_EQ(outcome.gated, 1);
+    EXPECT_EQ(outcome.written, 0);
+    // Exactly two prompts: judge + ONE set-level entailment (not 1 + 3).
+    ASSERT_EQ(llm.seen_prompts.size(), 2U);
+    // The entailment prompt is the set-level one: it names every varied object.
+    EXPECT_NE(llm.seen_prompts[1].find("code review"), std::string::npos);
+    EXPECT_NE(llm.seen_prompts[1].find("reviewing code"), std::string::npos);
+    EXPECT_NE(llm.seen_prompts[1].find("pull-request review"), std::string::npos);
+}
+
+// Converse: a semantic cluster whose set-level entailment is TRUE is promoted — the fix
+// lets faithful semantic gists through (pre-fix they were 100% gated). The trailing FALSE
+// reply again stays unconsumed, proving a single entailment call.
+TEST(GistWriter, SemanticSetLevelEntailmentPromotes) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed(db, {.id = "m1", .holder = "alice", .hashfill = 'a', .state = "consolidated",
+              .object_value = "code review"});
+    seed(db, {.id = "m2", .holder = "bob", .hashfill = 'b', .state = "consolidated",
+              .object_value = "reviewing code"});
+    seed(db, {.id = "m3", .holder = "carol", .hashfill = 'c', .state = "consolidated",
+              .object_value = "pull-request review"});
+    starling::vector::SqliteBlobVectorIndex index;
+    index.insert(conn, "m1", "default", {1.0F, 0.0F});
+    index.insert(conn, "m2", "default", {0.99F, 0.10F});
+    index.insert(conn, "m3", "default", {0.98F, 0.15F});
+
+    const GistThresholds cfg{.min_distinct_holders = 3, .min_replay_count = 1,
+                             .min_confidence = 0.6, .similarity_threshold = 0.8};
+    const auto clusters =
+        find_semantic_gist_clusters(conn, index, "default", {"m1", "m2", "m3"}, cfg, {});
+    ASSERT_EQ(clusters.size(), 1U);
+
+    SequencedLLM llm({
+        starling::extractor::LLMResponse{.raw_xml = R"({"confidence":0.9,"summary":"people review code"})",
+                                         .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": true})", .ok = true},
+        starling::extractor::LLMResponse{.raw_xml = R"({"entailed": false})", .ok = true},  // must stay unused
+    });
+    const auto outcome = write_gist_proposals(
+        *adapter, {{.tenant_id = "default", .cluster = clusters[0]}}, "2026-06-28T12:00:00Z", &llm);
+    EXPECT_EQ(outcome.written, 1);
+    EXPECT_EQ(outcome.gated, 0);
+    ASSERT_EQ(llm.seen_prompts.size(), 2U);   // one judge + one set-level entailment
+    EXPECT_EQ(col_int(conn.raw(),
+                      std::string("SELECT COUNT(*) FROM statements ") + kGistWhere), 1);
 }
 
 // Floor boundary: confidence exactly at the floor passes (strict <), proceeding
