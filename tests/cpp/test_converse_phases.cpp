@@ -1,6 +1,7 @@
 // test_converse_phases.cpp — converse 三相拆分(2026-07-05 锁外生成)。
 // 钉住:prepare+generate+commit ≡ 单体 converse(parity)、generate 失败 →
-// commit 干净无回复、写门中途关闭 → reply 保留 + remember_ok=false。零网络。
+// commit 干净无回复、写门中途关闭 → reply 保留 + remember_ok=false、
+// commit 以 prepared 携带的 created_at 为权威(即使 params 两次传入漂移)。零网络。
 
 #include "starling/memory/memory_ops.hpp"
 
@@ -139,6 +140,49 @@ TEST(ConversePhases, PrepareFailsFastWhenGateClosed) {
     fx.adapter->set_write_admit([] { return false; });
     EXPECT_THROW(converse_prepare(*fx.adapter, fx.semantic, conv_params("x")),
                  governance::WriteGateRejected);
+}
+
+TEST(ConversePhases, CommitUsesPreparedCreatedAtWhenParamsDrift) {
+    // 同刻不变式的类型强制:prepare 快照 created_at=T1;commit 调用时 params 却
+    // 漂移到 T2(模拟未来直呼者对两段各传 now=None 产生的两个 wall-clock)。
+    // 落库权威必须是 T1(prepared 携带的时刻),而非 commit 这次传入的 T2——
+    // 否则幂等键的时间成分与召回种子(已在 prepare 用 T1 派生)会分叉。
+    Fixture fx;
+    ConverseParams params = conv_params("hello");
+    params.created_at_iso8601 = "2026-07-05T10:00:00Z";   // T1
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    ASSERT_EQ(prepared.created_at_iso8601, "2026-07-05T10:00:00Z");
+
+    const auto gen_resp = fx.chat.generate_stream(prepared.prompt, {});
+
+    ConverseParams drifted = params;
+    drifted.created_at_iso8601 = "2026-07-05T10:05:00Z";  // T2 ≠ T1 —— 调用方漂移
+
+    const auto out1 = converse_commit(*fx.adapter, fx.extraction, "", drifted,
+                                      prepared, gen_resp);
+    ASSERT_TRUE(out1.ok);
+    ASSERT_TRUE(out1.remember_ok);
+    EXPECT_EQ(out1.statement_ids.size(), 1u);
+
+    // 落库 created_at 以 prepared(T1)为权威,commit 调用时漂移的 T2 未生效。
+    EXPECT_EQ(row_count(fx.adapter->connection(),
+                        "SELECT COUNT(*) FROM engrams WHERE created_at = "
+                        "'2026-07-05T10:00:00Z'"),
+              1);
+    EXPECT_EQ(row_count(fx.adapter->connection(),
+                        "SELECT COUNT(*) FROM engrams WHERE created_at = "
+                        "'2026-07-05T10:05:00Z'"),
+              0);
+
+    // 佐证:同一 prepared + gen_resp 再 commit 一次(params 仍是漂移的 T2),
+    // 内容确定性幂等键命中——第二次是 idempotent 而非 accepted,statements/engrams
+    // 行数都没有翻倍(gen_resp 是纯值,可安全重用)。
+    const auto out2 = converse_commit(*fx.adapter, fx.extraction, "", drifted,
+                                      prepared, gen_resp);
+    EXPECT_TRUE(out2.remember_ok);
+    EXPECT_TRUE(out2.statement_ids.empty());
+    EXPECT_EQ(row_count(fx.adapter->connection(), "SELECT COUNT(*) FROM engrams"), 1);
+    EXPECT_EQ(row_count(fx.adapter->connection(), "SELECT COUNT(*) FROM statements"), 1);
 }
 
 TEST(ConversePhases, GateClosingMidTurnKeepsReplyAndFlagsRememberError) {

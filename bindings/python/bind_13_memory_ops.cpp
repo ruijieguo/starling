@@ -167,7 +167,9 @@ void bind_13_memory_ops(pybind11::module_& m) {
     py::class_<starling::memoryops::ConversePrepared>(m, "ConversePrepared")
         .def_readonly("prompt",       &starling::memoryops::ConversePrepared::prompt)
         .def_readonly("context_pack", &starling::memoryops::ConversePrepared::context_pack)
-        .def_readonly("abstained",    &starling::memoryops::ConversePrepared::abstained);
+        .def_readonly("abstained",    &starling::memoryops::ConversePrepared::abstained)
+        .def_readonly("created_at_iso8601",
+                       &starling::memoryops::ConversePrepared::created_at_iso8601);
 
     m.def("memory_converse_prepare",
           [](starling::persistence::SqliteAdapter& adapter,

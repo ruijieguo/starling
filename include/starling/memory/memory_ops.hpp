@@ -114,6 +114,10 @@ struct ConversePrepared {
     std::string prompt;         // 拼好待发给 chat_llm 的完整 prompt(围栏+召回+问题)
     std::string context_pack;   // 注入的记忆(带标签),原样透传给 commit 供轨迹展示
     bool abstained = false;     // recall 阶段的主动拒答标记,原样透传
+    // prepare 时刻快照;commit 以此为权威时刻(而非 commit 调用时另传的
+    // params.created_at_iso8601),保证幂等键/召回种子与 prepare 阶段同刻——
+    // 即使调用方在 prepare/commit 两次传入的 now 发生漂移,也不产生分叉。
+    std::string created_at_iso8601;
 };
 
 // 相位 1(recall)+ 相位 2(inject):只读,不持写事务。开头即 fail-fast 写门校验——

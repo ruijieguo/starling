@@ -125,6 +125,7 @@ ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
     const auto plan = planner.run(query);
     prep.context_pack = plan.context_pack;
     prep.abstained    = plan.abstained;
+    prep.created_at_iso8601 = params.created_at_iso8601;   // prepare 时刻快照,commit 以此为权威
 
     // ── 2. inject ── 召回记忆(带标签)+ 用户本轮 → chat prompt。
     // 召回记忆是「之前由用户/摄入写入的、可被攻击者控制的」内容(二阶提示注入
@@ -153,6 +154,13 @@ ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
                                 const ConversePrepared& prepared,
                                 const extractor::LLMResponse& gen_resp,
                                 const extractor::ValidationPolicy& policy) {
+    // 同刻不变式类型强制:commit 以 prepared 携带的 prepare 时刻为权威,而非调用方
+    // 这次传入的 params.created_at_iso8601——避免未来直呼者 prepare/commit 各传
+    // now=None 时静默产生两个 wall-clock,导致幂等键与召回种子分叉(单体路径
+    // 两值恒同,行为不变)。
+    ConverseParams commit_params = params;
+    commit_params.created_at_iso8601 = prepared.created_at_iso8601;
+
     ConverseOutcome outcome;
     outcome.context_pack = prepared.context_pack;
     outcome.abstained    = prepared.abstained;
@@ -174,14 +182,14 @@ ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
     // 丢用户已看到的回复;记忆缺失记为可观测的 remember_error。
     try {
         const std::string exchange =
-            "User: " + params.message + "\nAssistant: " + outcome.reply;
+            "User: " + commit_params.message + "\nAssistant: " + outcome.reply;
         RememberParams rem_params;
-        rem_params.tenant_id          = params.tenant_id;
-        rem_params.holder_id          = params.holder_id;
-        rem_params.interlocutor       = params.interlocutor;
-        rem_params.adapter_name       = params.adapter_name;
-        rem_params.source_prefix      = params.source_prefix;
-        rem_params.created_at_iso8601 = params.created_at_iso8601;
+        rem_params.tenant_id          = commit_params.tenant_id;
+        rem_params.holder_id          = commit_params.holder_id;
+        rem_params.interlocutor       = commit_params.interlocutor;
+        rem_params.adapter_name       = commit_params.adapter_name;
+        rem_params.source_prefix      = commit_params.source_prefix;
+        rem_params.created_at_iso8601 = commit_params.created_at_iso8601;
         rem_params.payload.assign(exchange.begin(), exchange.end());
         const auto rem_result =
             remember(adapter, extraction_llm, extraction_prompt, rem_params, policy);
