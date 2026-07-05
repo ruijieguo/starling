@@ -389,34 +389,60 @@ class DashboardEngine:
             return self._core.remember(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
 
+    def _resolve_chat(self, provider: str | None):
+        """锁内调用:解析本轮 chat 适配器为局部引用(锁外使用)。取代旧
+        _role_override('chat_llm', …) 的全局 slot 换入换出——锁外生成期间
+        换 slot 会被并发轮读到错误模型。"""
+        if provider:
+            cfg = self._cfg.resolve_provider(provider)
+            if not cfg or not cfg.get("api_key"):
+                raise _LLMNotConfigured(
+                    f"selected provider '{provider}' is not configured")
+            return _build_chat_adapter(cfg)
+        return self._core.chat_llm or self._core.llm
+
+    def _converse_phased(self, message: str, *, on_token=None, holder=None,
+                         interlocutor=None, k: int = 6, now=None,
+                         provider: str | None = None) -> dict:
+        """converse/converse_stream 共享实现:三段化落锁,与 remember(也在
+        LLM 调用期间持锁)不同——生成段(网络/延时)现在在锁外运行,只有
+        prepare(recall + 组 prompt)和 commit(抽取 + 写)持锁,后台 tick 等
+        并发调用不再被一次生成段整体阻塞。C++ 侧 no-write-txn-across-generate
+        的结构保证不变(remember 的写事务仍是 commit 阶段,在 generate 之后)。
+
+        prepare 与 commit 必须共用同一时刻(幂等键/召回哈希含 created_at)。"""
+        now = now or datetime.now(timezone.utc)
+        with self._lock:                                    # ① 短:读 + prompt
+            chat = self._resolve_chat(provider)
+            prepared = self._core.converse_prepare(
+                message, holder=holder, interlocutor=interlocutor, k=k, now=now)
+        gen_resp = self._core.generate_stream(chat, prepared.prompt, on_token)  # ② 锁外
+        with self._lock:                                    # ③ 抽取 + 写
+            return self._core.converse_commit(
+                message, prepared, gen_resp, holder=holder,
+                interlocutor=interlocutor, k=k, now=now)
+
     def converse(self, message: str, *, holder=None, interlocutor=None,
                  k: int = 6, now=None, provider: str | None = None) -> dict:
-        # Same lock discipline as remember (which also holds it during its LLM
-        # call). The three-phase no-write-txn-across-generate guarantee is
-        # structural inside C++ converse (remember's write txn is phase 4, after
-        # generate); the C++ binding releases the GIL during the network legs.
-        # provider (optional) overrides the bound chat role for this turn only.
-        with self._lock, self._role_override("chat_llm", provider):
-            return self._core.converse(message, holder=holder,
-                                       interlocutor=interlocutor, k=k, now=now)
+        return self._converse_phased(message, holder=holder,
+                                     interlocutor=interlocutor, k=k, now=now,
+                                     provider=provider)
 
     def converse_stream(self, message: str, *, on_token, holder=None,
                         interlocutor=None, k: int = 6, now=None,
                         provider: str | None = None) -> dict:
         """Streaming converse: on_token(delta:str) fires per token during the
-        generation phase (WS token stream). Identical lock + role-override +
-        no-write-txn-across-generate discipline as converse(); on_token only
-        relays the reply incrementally, the returned dict is the same as
-        converse() (reply / statement_ids / remember_ok / gen_* cost).
+        generation phase (WS token stream, running outside the lock). Returns
+        the same dict shape as converse() (reply / statement_ids / remember_ok /
+        gen_* cost); on_token only relays the reply incrementally.
 
         on_token runs on the C++ worker thread (the binding re-acquires the GIL
         per delta), so it must be cheap and thread-safe — the WS bridge hands
         each delta to the event loop via call_soon_threadsafe and never touches
         the DB or socket from inside the callback."""
-        with self._lock, self._role_override("chat_llm", provider):
-            return self._core.converse(message, holder=holder,
-                                       interlocutor=interlocutor, k=k, now=now,
-                                       on_token=on_token)
+        return self._converse_phased(message, on_token=on_token, holder=holder,
+                                     interlocutor=interlocutor, k=k, now=now,
+                                     provider=provider)
 
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
                holder=None) -> list:

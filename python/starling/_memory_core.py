@@ -59,14 +59,21 @@ class LLMNotConfigured(RuntimeError):
     make_anthropic_llm, or the dashboard provider factory)."""
 
 
-def parse_now(now: Optional[str]) -> datetime:
-    """Coerce an optional ISO-8601 string into a tz-aware datetime.
+def parse_now(now: "Optional[str | datetime]") -> datetime:
+    """Coerce an optional ISO-8601 string (or an already-resolved datetime)
+    into a tz-aware datetime.
 
     `for_user_input` expects a datetime (it formats via `_iso`). Default to
-    the current UTC time when no override is given.
+    the current UTC time when no override is given. The datetime pass-through
+    lets a caller resolve `now` ONCE and hand the same instant to two
+    downstream calls (e.g. DashboardEngine._converse_phased resolving `now`
+    once for both converse_prepare and converse_commit, whose idempotency
+    key/recall hash must share the same created_at).
     """
     if now is None:
         return datetime.now(timezone.utc)
+    if isinstance(now, datetime):
+        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     s = now.replace("Z", "+00:00") if now.endswith("Z") else now
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
@@ -237,6 +244,46 @@ class MemoryCore:
         planner = _core.RetrievalPlanner(self.rt.adapter, self.semantic)
         return planner.run(q)
 
+    def _converse_turn_args(self, holder, now):
+        """converse 三相共享的参数规整(与单体 converse 相同的缺省逻辑)。"""
+        if self.llm is None:
+            raise LLMNotConfigured(
+                "converse requires an extraction llm adapter "
+                "(configure a provider + bind the extraction role)")
+        holder_id = holder or self.agent
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        return holder_id, created_iso
+
+    def converse_prepare(self, message: str, *, holder=None, interlocutor=None,
+                         k: int = 6, now=None):
+        """三相之一(锁内):写门 fail-fast + recall + 围栏 + prompt。"""
+        holder_id, created_iso = self._converse_turn_args(holder, now)
+        return _core.memory_converse_prepare(
+            self.rt.adapter, self.semantic,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, message=message, recall_k=k)
+
+    def generate_stream(self, chat_llm, prompt: str, on_token=None):
+        """三相之二(锁外):纯网络,绑定释放 GIL、逐 delta 回调。"""
+        return _core.memory_generate_stream(chat_llm, prompt, on_token)
+
+    def converse_commit(self, message: str, prepared, gen_resp, *, holder=None,
+                        interlocutor=None, k: int = 6, now=None) -> dict:
+        """三相之三(锁内):失败语义 A 收口 + remember。now 必须与 prepare
+        同值(幂等键/召回哈希共用 created_at)——调用方负责传同一时刻。"""
+        holder_id, created_iso = self._converse_turn_args(holder, now)
+        return _core.memory_converse_commit(
+            self.rt.adapter, self.llm, self._extraction.belief_prompt,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "",
+            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
+            created_at_iso8601=created_iso, message=message, recall_k=k,
+            prepared=prepared, gen_resp=gen_resp,
+            policy=_build_policy(self._extraction))
+
     def converse(self, message: str, *, holder=None, interlocutor=None,
                  k: int = 6, now=None, on_token=None) -> dict:
         """Phase 2c chat-with-memory turn — thin forward to C++
@@ -250,13 +297,8 @@ class MemoryCore:
         on_token(可空):流式回调 fn(delta:str)。非空时回复在「生成段」逐 token
         增量回传(C++ 在 GIL 释放下运行,binding 每个 delta 重新 acquire GIL 再
         回调);空 = 非流式(等价旧行为)。回调只是把同样的文本先推一遍,不改返回值。"""
-        if self.llm is None:
-            raise LLMNotConfigured(
-                "converse requires an extraction llm adapter "
-                "(configure a provider + bind the extraction role)")
+        holder_id, created_iso = self._converse_turn_args(holder, now)
         chat = self.chat_llm or self.llm
-        holder_id = holder or self.agent
-        created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return _core.memory_converse(
             self.rt.adapter, chat, self.llm, self.semantic,
             self._extraction.belief_prompt,
