@@ -1,13 +1,11 @@
-"""三相绑定冒烟(绑定层直呼版 —— Task 3 的 MemoryCore 转发落地前的过渡):
-memory_converse_prepare → memory_generate_stream → memory_converse_commit 组合
-的 dict shape 须与单体 memory_converse 完全一致。Task 3 落地 MemoryCore.
-converse_prepare/generate_stream/converse_commit 转发后,本文件改为经
-`eng._core` 转发的版本(见 task-2-brief.md Step 1 附注)。
+"""三相绑定冒烟(MemoryCore 转发版 —— Task 3 落地后的正式版本):
+MemoryCore.converse_prepare → generate_stream → converse_commit 组合的 dict
+shape 须与单体 MemoryCore.converse 完全一致。经 `eng._core` 转发,不再直呼
+`_core.memory_converse_prepare/...`(那是 Task 2 的绑定层过渡态,已被
+_memory_core.py 的薄转发取代)。
 
 夹具模式抄 tests/python/test_dashboard_commands.py / test_dashboard_converse.py
-(FakeLLMAdapter + DashboardEngine);字段名(rt.adapter/semantic/tenant/agent/
-adapter_name/source_prefix/_extraction.belief_prompt)抄 python/starling/
-_memory_core.py 现有 converse() 的转发代码,以其为权威。
+(FakeLLMAdapter + DashboardEngine)。
 """
 from starling import _core
 from starling.dashboard import DashboardConfig
@@ -29,32 +27,22 @@ def _core_handles(tmp_path):
     return eng._core, fake         # MemoryCore + 抽取/聊天两用 fake
 
 
-def _kwargs(core, message):
-    """与 _memory_core.py MemoryCore.converse() 的 kwargs 组装同构(同字段名)。"""
-    return dict(
-        tenant_id=core.tenant, holder_id=core.agent, interlocutor="",
-        adapter_name=core.adapter_name, source_prefix=core.source_prefix,
-        created_at_iso8601="2026-07-05T10:00:00Z", message=message, recall_k=6,
-    )
-
-
 def test_phased_binding_matches_monolith_shape(tmp_path):
     core, fake = _core_handles(tmp_path)
-    kwargs = _kwargs(core, "Bob owns auth")
+    now = "2026-07-05T10:00:00Z"
+    message = "Bob owns auth"
 
-    mono = _core.memory_converse(
-        core.rt.adapter, fake, fake, core.semantic, core._extraction.belief_prompt,
-        **kwargs)
+    mono = core.converse(message, holder=None, interlocutor=None, k=6, now=now)
 
-    prepared = _core.memory_converse_prepare(core.rt.adapter, core.semantic, **kwargs)
+    prepared = core.converse_prepare(message, holder=None, interlocutor=None,
+                                     k=6, now=now)
     assert prepared.prompt and "recalled_memory" in prepared.prompt
 
-    gen = _core.memory_generate_stream(fake, prepared.prompt, None)
+    gen = core.generate_stream(fake, prepared.prompt, None)
     assert gen.ok
 
-    phased = _core.memory_converse_commit(
-        core.rt.adapter, fake, core._extraction.belief_prompt, **kwargs,
-        prepared=prepared, gen_resp=gen)
+    phased = core.converse_commit(message, prepared, gen, holder=None,
+                                  interlocutor=None, k=6, now=now)
 
     assert set(phased) == set(mono)          # dict 键完全一致
     assert phased["ok"] and phased["reply"] == gen.raw_xml
@@ -63,9 +51,9 @@ def test_phased_binding_matches_monolith_shape(tmp_path):
 
 def test_generate_stream_relays_tokens(tmp_path):
     core, fake = _core_handles(tmp_path)
-    kwargs = _kwargs(core, "hi")
-    prepared = _core.memory_converse_prepare(core.rt.adapter, core.semantic, **kwargs)
+    prepared = core.converse_prepare("hi", holder=None, interlocutor=None, k=6,
+                                     now="2026-07-05T10:00:00Z")
 
     seen: list[str] = []
-    gen = _core.memory_generate_stream(fake, prepared.prompt, seen.append)
+    gen = core.generate_stream(fake, prepared.prompt, seen.append)
     assert gen.ok and "".join(seen) == gen.raw_xml
