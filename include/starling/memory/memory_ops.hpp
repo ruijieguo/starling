@@ -105,6 +105,38 @@ ConverseOutcome converse(persistence::SqliteAdapter& adapter,
                          const extractor::ValidationPolicy& policy = {},
                          const extractor::TokenSink& on_token = {});
 
+// converse 三相拆分(2026-07-05,锁外生成 slice 第一步):prepare(相位 1+2,只读
+// recall + inject)/ commit(相位 3 失败短路+成本填充 + 相位 4 write remember)。
+// host 后续会在 prepare/commit 之间持锁外调用 chat_llm.generate_stream——三相
+// 拆分让「持写事务的锁」不再跨网络生成段。converse() 本身内联三相,行为字节级
+// 不变(单一语义源:分调用与单体调用逐字段 parity,见 test_converse_phases.cpp)。
+struct ConversePrepared {
+    std::string prompt;         // 拼好待发给 chat_llm 的完整 prompt(围栏+召回+问题)
+    std::string context_pack;   // 注入的记忆(带标签),原样透传给 commit 供轨迹展示
+    bool abstained = false;     // recall 阶段的主动拒答标记,原样透传
+};
+
+// 相位 1(recall)+ 相位 2(inject):只读,不持写事务。开头即 fail-fast 写门校验——
+// 若门已关(DRAINING/UNREADY),在烧生成段网络成本之前就抛 WriteGateRejected,
+// 避免「白烧一次 LLM 调用后才发现无法沉淀」。
+ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
+                                  retrieval::SemanticRetriever& semantic,
+                                  const ConverseParams& params);
+
+// 相位 3(generate 失败短路 + 成本填充)+ 相位 4(remember 写)。调用方在
+// prepare 与 commit 之间自行调用 chat_llm.generate_stream(不持写事务的网络段)。
+// commit 不再另查一次 write admission——remember() 内部的 require_write_admission
+// 已经覆盖「prepare 时门开、生成期间门关(DRAINING)」的中途翻转:门关时
+// remember 抛 WriteGateRejected,被下面的 catch 降级为 remember_ok=false +
+// remember_error(回复绝不因此丢,失败语义 A)。
+ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
+                                extractor::LLMAdapter& extraction_llm,
+                                std::string_view extraction_prompt,
+                                const ConverseParams& params,
+                                const ConversePrepared& prepared,
+                                const extractor::LLMResponse& gen_resp,
+                                const extractor::ValidationPolicy& policy = {});
+
 // 二阶提示注入防御:中和召回文本里的围栏定界符 token,使存储数据无法伪造
 // <recalled_memory> 开/闭标签提前闭合围栏(converse 拼 prompt 前调用)。导出以便单测。
 std::string neutralize_recall_fence(std::string_view context_pack);
