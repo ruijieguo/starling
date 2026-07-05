@@ -42,9 +42,15 @@ HttpResult http_post_json(const std::string& url,
                           int max_retries);
 
 // Streaming POST: invokes on_chunk(bytes) for each response-body chunk as it
-// arrives (for SSE). SINGLE attempt, NO retry — once any byte is handed to
-// on_chunk, retrying would duplicate streamed output, so a transport failure is
-// surfaced as ok=false (the caller emits a clean no-reply rather than replaying).
+// arrives (for SSE). Retry policy: the same retryable curl transport failures
+// as http_post_json (handshake / connect / resolve / …) get the same bounded
+// backoff, but ONLY while NO byte has been handed to on_chunk — a failure
+// before the first byte (e.g. CURLE_SSL_CONNECT_ERROR: the request never
+// reached the server) demonstrably streamed nothing, so a retry cannot
+// duplicate output. From the first delivered byte onward the original
+// single-attempt semantics apply: a torn stream surfaces as ok=false (the
+// caller emits a clean no-reply rather than replaying). HTTP 429/5xx are never
+// retried here — their error bodies stream to on_chunk.
 // on_chunk MUST NOT throw (it runs inside libcurl's write callback); callers pass
 // a non-throwing sink (e.g. sse::StreamAccumulator::feed). `body` is empty on
 // return — the caller assembles the response via on_chunk. ok=true only for
@@ -54,6 +60,7 @@ HttpResult http_post_json_stream(const std::string& url,
                                  const std::vector<std::string>& extra_headers,
                                  const std::string& body,
                                  int timeout_ms,
+                                 int max_retries,
                                  const std::function<void(std::string_view)>& on_chunk);
 
 }  // namespace starling::net

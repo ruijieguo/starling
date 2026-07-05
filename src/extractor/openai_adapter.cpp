@@ -83,7 +83,7 @@ LLMResponse OpenAIAdapter::generate_stream(std::string_view prompt,
     const auto resp = net::http_post_json_stream(
         cfg_.base_url + "/chat/completions",
         {"Authorization: Bearer " + cfg_.api_key},
-        body.dump(), cfg_.timeout_ms,
+        body.dump(), cfg_.timeout_ms, cfg_.max_retries,
         [&acc](std::string_view chunk) { acc.feed(chunk); });
     const int latency_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(

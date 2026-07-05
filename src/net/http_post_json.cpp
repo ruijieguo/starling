@@ -163,6 +163,7 @@ HttpResult http_post_json_stream(const std::string& url,
                                  const std::vector<std::string>& extra_headers,
                                  const std::string& body,
                                  int timeout_ms,
+                                 int max_retries,
                                  const std::function<void(std::string_view)>& on_chunk) {
     ensure_curl_global();
     thread_local CurlHandle tls;
@@ -171,40 +172,58 @@ HttpResult http_post_json_stream(const std::string& url,
         return {.ok = false, .http_code = 0, .body = {}, .error = "curl_init_failed"};
     }
 
-    // Single attempt: streamed bytes already reached on_chunk, so a retry would
-    // duplicate output (see header). The reused handle keeps keep-alive/TLS warm.
-    curl_easy_reset(curl);
-    curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    for (const auto& header : extra_headers) {
-        headers = curl_slist_append(headers, header.c_str());
-    }
+    // Retry is legal ONLY while nothing has streamed (see header): the sink
+    // wrapper records the first delivered byte, and the retry gate below checks
+    // it. Once any byte reached on_chunk, a retry would duplicate output, so a
+    // later failure surfaces immediately. The reused handle keeps TLS warm.
+    bool streamed = false;
+    const std::function<void(std::string_view)> guarded_sink =
+        [&streamed, &on_chunk](std::string_view chunk) {
+            streamed = true;
+            on_chunk(chunk);
+        };
 
-    curl_easy_setopt(curl, CURLOPT_URL,           url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
-    curl_easy_setopt(curl, CURLOPT_POST,          1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &on_chunk);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,    static_cast<long>(timeout_ms));
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,      1L);
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,  CURL_HTTP_VERSION_1_1);
+    int delay_ms = 1000;
+    for (int attempt = 0; attempt <= max_retries; ++attempt) {
+        curl_easy_reset(curl);
+        curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        for (const auto& header : extra_headers) {
+            headers = curl_slist_append(headers, header.c_str());
+        }
 
-    const CURLcode curl_code = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
+        curl_easy_setopt(curl, CURLOPT_URL,           url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
+        curl_easy_setopt(curl, CURLOPT_POST,          1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &guarded_sink);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,    static_cast<long>(timeout_ms));
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,      1L);
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,  CURL_HTTP_VERSION_1_1);
 
-    if (curl_code != CURLE_OK) {
-        return {.ok = false, .http_code = 0, .body = {},
-                .error = std::string("transport_error:") + curl_easy_strerror(curl_code)};
+        const CURLcode curl_code = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_slist_free_all(headers);
+
+        if (curl_code != CURLE_OK) {
+            if (!streamed && is_retryable_curl_code(curl_code) && attempt < max_retries) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                delay_ms *= 2;
+                continue;
+            }
+            return {.ok = false, .http_code = 0, .body = {},
+                    .error = std::string("transport_error:") + curl_easy_strerror(curl_code)};
+        }
+        if (http_code >= 400) {
+            return {.ok = false, .http_code = http_code, .body = {},
+                    .error = "permanent_" + std::to_string(http_code)};
+        }
+        return {.ok = true, .http_code = http_code, .body = {}, .error = {}};
     }
-    if (http_code >= 400) {
-        return {.ok = false, .http_code = http_code, .body = {},
-                .error = "permanent_" + std::to_string(http_code)};
-    }
-    return {.ok = true, .http_code = http_code, .body = {}, .error = {}};
+    return {.ok = false, .http_code = 0, .body = {}, .error = "transient_after_retry"};
 }
 
 }  // namespace starling::net

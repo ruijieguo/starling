@@ -79,7 +79,7 @@ LLMResponse AnthropicAdapter::generate_stream(std::string_view prompt,
         cfg_.base_url + "/v1/messages",
         {"x-api-key: " + cfg_.api_key,
          "anthropic-version: " + cfg_.api_version},
-        body.dump(), cfg_.timeout_ms,
+        body.dump(), cfg_.timeout_ms, cfg_.max_retries,
         [&acc](std::string_view chunk) { acc.feed(chunk); });
     const int latency_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
