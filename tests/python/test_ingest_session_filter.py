@@ -14,8 +14,8 @@ def test_clean_keeps_dialogue_drops_thinking_tools_tool_results():
             {"type": "thinking", "thinking": "secret reasoning"},
             {"type": "text", "text": "Got it, Bob owns auth."},
             {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls -la"}}]}},
-        {"type": "user", "message": {"role": "user",
-            "content": "<tool-result><content>file1 file2</content></tool-result>"}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "file1 file2"}]}},
     )
     turns = clean_turns(lines)
     assert turns == [("user", "Bob owns auth"), ("assistant", "Got it, Bob owns auth.")]
@@ -46,3 +46,42 @@ def test_malformed_lines_skipped_not_raised():
     lines = ["{not json", json.dumps(
         {"type": "user", "message": {"role": "user", "content": "ok"}})]
     assert clean_turns(lines) == [("user", "ok")]
+
+
+def test_user_list_tool_result_dropped():
+    # 真实 transcript 里 89% 的 user 轮是 list:tool_result(工具输出噪声)——该丢。
+    lines = _lines({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "cmd output"}]}})
+    assert clean_turns(lines) == []
+
+
+def test_user_list_text_kept():
+    # 真实 transcript 里 1.5% 的 user 轮是 list:text(真用户文本)——之前被误丢,现在该留。
+    lines = _lines({"type": "user", "message": {"role": "user", "content": [
+        {"type": "text", "text": "Continue from where you left off."}]}})
+    assert clean_turns(lines) == [("user", "Continue from where you left off.")]
+
+
+def test_user_str_still_kept():
+    lines = _lines({"type": "user", "message": {"role": "user", "content": "Bob owns auth"}})
+    assert clean_turns(lines) == [("user", "Bob owns auth")]
+
+
+def test_unclosed_fence():
+    # 未闭合的 ``` 开头:_FENCE 非贪婪匹配要求成对反引号,单个不闭合不匹配 —— 原样穿过,不抛异常。
+    text = "Before fence\n```python\ndef f():\n    return 1"
+    lines = _lines({"type": "assistant",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}})
+    assert clean_turns(lines) == [("assistant", text)]
+
+
+def test_line_exactly_at_threshold():
+    # _LONG_LINE=400 用 <= 语义:恰好 400 char 的行保留,401 char 的行剔除。
+    at_400 = "a" * 400
+    at_401 = "b" * 401
+    text = f"{at_400}\n{at_401}"
+    lines = _lines({"type": "assistant",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}})
+    kept = clean_turns(lines)[0][1]
+    assert at_400 in kept
+    assert at_401 not in kept

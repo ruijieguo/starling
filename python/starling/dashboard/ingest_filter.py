@@ -37,17 +37,18 @@ def clean_turns(lines: list[str]) -> list[tuple[str, str]]:
         msg = ev.get("message") or {}
         role, content = msg.get("role"), msg.get("content")
         if role == "user" and isinstance(content, str):
-            if "<tool-result>" in content:
-                continue
             text = _strip_code(content)
             if text:
                 out.append(("user", text))
-        elif role == "assistant" and isinstance(content, list):
+        elif role in ("user", "assistant") and isinstance(content, list):
+            # 真实 transcript 里 user content 也可能是 list(如
+            # [{"type":"tool_result",...}] 或 [{"type":"text",...}]);
+            # 与 assistant 对齐:只取 text 块,其余(tool_result 等)丢弃。
             parts = [blk.get("text", "") for blk in content
                      if isinstance(blk, dict) and blk.get("type") == "text"]
             text = _strip_code("\n".join(p for p in parts if p))
             if text:
-                out.append(("assistant", text))
+                out.append((role, text))
     return out
 
 
