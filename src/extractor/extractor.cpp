@@ -247,6 +247,13 @@ ExtractionRunResult Extractor::persist(
         const int attempt = rec.attempt;
         const std::string attempt_suffix = "attempt=" + std::to_string(attempt);
         // cost 归属:每 attempt 只算一次,落到本轮写的第一行(移自原 run)。
+        // One extract() call per iteration, but the success path records one
+        // ledger row PER statement-span. Attribute this call's cost to exactly
+        // the FIRST row written this iteration; take_cost() returns it once then
+        // {} so SUM(total_tokens) over a run's rows equals the per-call cost
+        // (no double-counting). The first record_attempt of any iteration always
+        // writes a fresh (run,span,attempt) row — dups only hit on a span's 2nd
+        // occurrence — so the cost always lands on a persisted row.
         bool attempt_cost_used = false;
         auto take_cost = [&]() -> AttemptCost {
             if (attempt_cost_used) {
@@ -307,6 +314,18 @@ ExtractionRunResult Extractor::persist(
                 stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
                     *cog_hub, holder_tenant_id, stmt.subject_id);
             }
+            // Holder attribution. Default (and historical) behaviour: the agent
+            // (the run arg) holds every extracted attitude. OPT-IN
+            // (ValidationPolicy.attribute_first_order_mental_to_holder, default
+            // OFF): a FIRST-ORDER DESIRE statement is instead attributed to its
+            // cognizer-resolved subject (the desirer), so a narrated 3rd-person
+            // desire ("Xiao Hong wants X") lands under holder_id="Xiao Hong".
+            // Validation showed the LLM's `holder` field is always the narrator
+            // (fragmented narrator/叙述者/Narrator); `subject` is reliably the
+            // desirer for the desire family. BELIEVES/KNOWS are excluded — their
+            // subject is the topic, not the bearer.
+            // Gated to nesting_depth==0 + desire modality/predicate + non-empty
+            // non-agent subject; anything else falls back to the agent — additive.
             if (policy_.attribute_first_order_mental_to_holder
                     && stmt.llm_nesting_depth == 0
                     && is_first_order_desire(stmt.modality, stmt.predicate)
@@ -335,6 +354,11 @@ ExtractionRunResult Extractor::persist(
 
             const std::string span_key = compute_extraction_span_key(
                 engram_ref_id, chunk_index, stmt.predicate, stmt.canonical_object_hash);
+            // Cross-run idempotency: if a prior run already succeeded for this
+            // span_key, emit noop. Intra-run duplicates (same span_key written
+            // earlier in this loop) are handled by StatementWriter as
+            // ChunkDuplicate — don't noop them here or we'd hit a UNIQUE
+            // constraint on the attempt row.
             if (written_span_keys.find(span_key) == written_span_keys.end()
                     && extraction_span_key_already_succeeded(conn_, span_key)) {
                 if (ledger.record_attempt(run_id, span_key, attempt,
