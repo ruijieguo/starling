@@ -862,3 +862,72 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             "overdue_windows": overdue_windows,
             "overdue_windows_total": overdue_windows_total,
         }
+
+
+# ── Metrics: dogfood 子项 B(时间序列)— embed 深度 + 抽取时延,只读、host-derive ──
+#
+# embed_depth 读 Task 1 采样器写的 host metrics.db(embed_depth_samples;独立于
+# dashboard.db 的文件,采样器负责建表/建索引)。metrics.db 尚不存在(采样器还没跑
+# 过一轮,例如刚起的全新部署)时诚实返回空 series,不报错——采样器与本查询解耦,
+# 谁先跑不影响另一方(镜像本文件其余只读查询「缺表→降级」的一贯风格)。
+#
+# latency 派生 dashboard.db 的 extraction_attempt(0001 建表 + 0027 补 token/latency
+# 列)。该表当前无 tenant_id 列(M0.4 ledger 表原设计如此),故不按 tenant 过滤——
+# tenant 参数保留给该列补上后的未来接入点,不是死代码去不掉的残留。
+#
+# 百分位在 Python 算(SQLite 无内置 percentile_cont);数据量是 dashboard 规模
+# (单机、单店铺量级),排序取下标的近似足够,不需要插值。
+def _bucket(ts: str, bucket_s: int) -> str:
+    """ts(ISO8601,Z 或 +00:00 后缀)→ 桶起点 ISO,按 bucket_s 秒对齐(epoch 整除)。"""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    epoch = int(dt.timestamp())
+    start = epoch - (epoch % bucket_s)
+    return datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def metrics_embed_depth(db_path: str, since_iso: str, bucket_s: int) -> dict:
+    """embed 队列深度时间序列。每桶聚合桶内样本:backlog 的 max/avg,embedded 取桶内
+    最后一条样本的值(累计量快照,取末值而非求和)。"""
+    mp = Path(db_path).parent / "metrics.db"
+    if not mp.exists():
+        return {"series": []}
+    with open_ro(str(mp)) as conn:
+        rows = _rows(conn, "SELECT ts, backlog, embedded FROM embed_depth_samples "
+                           "WHERE ts >= ? ORDER BY ts", (since_iso,))
+    buckets: dict = {}
+    for r in rows:
+        b = _bucket(r["ts"], bucket_s)
+        agg = buckets.setdefault(b, {"backlog_max": 0, "backlog_sum": 0, "n": 0, "embedded": 0})
+        agg["backlog_max"] = max(agg["backlog_max"], r["backlog"])
+        agg["backlog_sum"] += r["backlog"]; agg["n"] += 1; agg["embedded"] = r["embedded"]
+    series = [{"bucket_ts": b, "backlog_max": a["backlog_max"],
+               "backlog_avg": round(a["backlog_sum"] / a["n"], 1), "embedded": a["embedded"]}
+              for b, a in sorted(buckets.items())]
+    return {"series": series}
+
+
+def _pct(sorted_vals: list, q: float) -> int:
+    """近似分位数:已排序值按 q 比例定位下标(数据量小,够用;非插值)。"""
+    if not sorted_vals:
+        return 0
+    idx = min(len(sorted_vals) - 1, int(q * len(sorted_vals)))
+    return int(sorted_vals[idx])
+
+
+def metrics_latency(db_path: str, tenant: str, since_iso: str, bucket_s: int) -> dict:
+    """抽取时延时间序列(dashboard.db 的 extraction_attempt)。tenant 当前不生效
+    (该表无 tenant_id 列,见文件头注),参数留给该列补上后接入。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(conn, "SELECT created_at, latency_ms, total_tokens FROM extraction_attempt "
+                           "WHERE created_at >= ? ORDER BY created_at", (since_iso,))
+    buckets: dict = {}
+    for r in rows:
+        b = _bucket(r["created_at"], bucket_s)
+        agg = buckets.setdefault(b, {"lat": [], "tokens": 0})
+        agg["lat"].append(r["latency_ms"]); agg["tokens"] += r["total_tokens"] or 0
+    series = []
+    for b, a in sorted(buckets.items()):
+        lat = sorted(a["lat"])
+        series.append({"bucket_ts": b, "count": len(lat), "p50_ms": _pct(lat, 0.50),
+                       "p95_ms": _pct(lat, 0.95), "total_tokens": a["tokens"]})
+    return {"series": series}
