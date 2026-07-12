@@ -10,6 +10,8 @@
 
 **实测代价(dogfood A+B 双重证明):** 摄入一块 remember 期间并发 `/api/tick` 等锁 **37.8s**(A);extraction latency p95 **51s**,Clash 黑洞日 **247s**(B `/api/metrics/latency`)。#51 只修了 converse 的 chat 生成,没修 remember 的 extraction——而 remember 被摄入 worker、converse_commit、tick、直接写全用,是更中心的长腿。
 
+**关键实情(勘察 `_memory_core.py:134-198`):`MemoryCore.remember` 跑三条带 LLM 的抽取管线**,不是两条:① **belief**(`_core.memory_remember` + belief_prompt,走 `Extractor`)② **episodic**(`_core.EpisodicExtractor.extract`,**独立类**,叙事→OCCURRED 事件)③ **general-fact**(`_core.memory_remember` + gf_prompt,也走 `Extractor`)。三条锁内顺序跑 ≈ 三次 LLM 之和 = 44s。**本 slice = option B**:只拆 `Extractor`(belief+gf 共用它,一拆两得),把这两条 LLM 出锁;**episodic 是独立 `EpisodicExtractor` 类,本 slice 保持单体、仍在锁内**(约 1/3 残留),留作 follow-up。预期 44s → ~15s(episodic 残留),而非归零——measure-first:先看 belief+gf 出锁后 episodic 残留是否还痛,再决定拆不拆 `EpisodicExtractor`。
+
 **关键约束(决定设计,无捷径):** 不能只释放 host `_lock` 而不动 DB 事务——host 放锁后 extractor 仍持 `BEGIN IMMEDIATE`,并发写同一单写者连接照样 BEGIN 套 BEGIN 抛错/丢写(正是子项 A Task 3 撞的单写者隐患,见记忆 replay-write-reentrancy)。**必须同时**把 extractor 事务与 host 锁都挪出 extraction。
 
 ## Goal / Non-Goals
@@ -20,42 +22,45 @@
 - embedding 出锁 / query-embed cache —— 仍 gated。
 - 改 extraction 重试策略/prompt/attempt 语义 —— 只搬事务边界,不改语义。
 - 多 remember 真并发 —— 非目标(prepare/commit 仍按锁序串行,同 #51)。
-- MemoryCore 的 general-fact 第二次 remember 调用的独立三相化 —— 若单体三相化后它自动受益则免;否则记 follow-up(见 §blast radius)。
+- **episodic(`EpisodicExtractor`)三相化** —— 本 slice 保持单体、其 LLM 仍在锁内(commit 段的残留);measure-first follow-up(见 §Blast Radius/§Out of Scope)。
 
 ## Design(三相,照 #51 converse)
 
 ### ① Extractor 拆两段(`src/extractor/extractor.cpp` + hpp)
 
-`Extractor::run`(单体保留)拆成:
-- **`extract_llm(engram_ref, payload, holder, tenant, existing_ref_map, interlocutor) → ExtractionLlmResult`**:跑重试循环**只做 LLM 调用 + parse**,把每轮 `{attempt, status, raw_output, error, cost, parsed_statements?}` 收集进 `ExtractionLlmResult`(纯内存,**零 DB 写、无 TransactionGuard**)。LLM 只吃 `payload`+`existing_ref_map`,不需 engram 在库。
-- **`persist(engram_ref, holder, tenant, ExtractionLlmResult) → ExtractionRunResult`**:开 `TransactionGuard`,按收集的结果写 ledger(start_run)+ 逐 attempt 行 + events + 成功 attempt 的 statements(StatementWriter + CognizerHub register-on-miss,都 join 此 txn)。**FAILED 仍 COMMIT attempt 行**(现语义不变)。终态与现单体逐字节等价(同一 txn 原子写,只是所有 DB 写集中在 LLM 之后)。
-- **单体 `Extractor::run` 内联** `extract_llm` → `persist`(单一语义源,同 converse 单体)。既有全部 extractor 测试照跑。
-
-注意点:CognizerHub resolve-or-register 的写必须留在 `persist` 的 txn 内(现在就在 txn 内);`take_cost`/span-key/幂等 dedup 语义搬运不变。
+`Extractor::run`(单体保留)拆成两个方法:
+- **`extract_llm(payload_bytes, holder_id, existing_ref_map) → ExtractionLlmResult`**:跑重试循环**只做 `adapter_.extract` + `parse_extractor_json`**,把每轮收集进 `ExtractionLlmResult{prompt_body, prompt_input_hash, vector<ExtractionLlmAttempt>}`(每 attempt = `{attempt, LLMResponse resp, bool parsed, ParseResult parse, bool terminal}`,`terminal`=parse 成功那轮)。**零 DB、无 `TransactionGuard`**。**correctness crux:重试的决策(`!resp.ok` 或 `!parse.errors.empty()` 才重试;parse 成功 break)纯由 LLM 响应+parse 决定,不读任何 DB**——故 attempt 序列可无 DB 完整确定、persist 忠实重放。
+- **`persist(engram_ref, holder_id, holder_tenant_id, interlocutor, const ExtractionLlmResult&) → ExtractionRunResult`**:开 `TransactionGuard`,遍历收集的 attempts 重放:失败/parse-error attempt → `record_attempt(Failed)` + `extraction.failed`(+`retry_scheduled` if attempt<max);terminal attempt → 逐 statement 写(StatementWriter + CognizerHub register-on-miss + holder 归属 + scope_parties + span_key noop 检查,**verbatim 移自 `run()` 现:283-421**,`resp`→`rec.resp`、`parsed`→`ParseResult parsed = rec.parse`)。终态计算 + `finish_run` + emit(移自 `run()` 现:424-444)。**FAILED 仍 COMMIT attempt 行**(现语义不变)。`take_cost` 语义搬运不变(cost 取自 `rec.resp`,per-attempt 归第一行)。
+- **单体 `Extractor::run` 内联** `extract_llm` → `persist`(单一语义源,同 converse 单体)。既有全部 extractor 测试(driven via `run()`)照跑不改。
 
 ### ② remember 三相(`src/memory/memory_ops.cpp` + hpp)
 
-- **`remember_prepare(adapter, params) → RememberPrepared`**:`append_evidence`(engram 写,DB)。返回 `{engram_ref, outcome, should_extract}`(no_store/rejected → should_extract=false,提前收尾)。锁内短。
-- **(extract:host 驱动)`Extractor::extract_llm`**:LLM,**锁外无事务**。
-- **`remember_commit(adapter, extraction_llm, extraction_prompt, params, prepared, llm_result) → RememberOutcome`**:`Extractor::persist`(txn 写 statements/attempt/events)。填 `statement_ids`/`extraction_failed`。锁内短。
-- **单体 `remember` 内联** prepare → extract_llm → commit(单一语义源)。
+见 §Design 开头「C++ 三相原语」块的三个签名(`remember_prepare`/`extract_llm`/`remember_commit`)+ 单体 `remember` 内联。`RememberPrepared{engram_ref, outcome, should_extract}` 新结构入 `memory_ops.hpp`;`ExtractionLlmResult` 入 `extractor.hpp`(§①)。
 
 ### ③ 绑定(`bindings/python/bind_13_memory_ops.cpp`)
 
+照 converse 三相绑定范式(bind_13 现:166-254):
+- opaque `py::class_<RememberPrepared>` + `py::class_<extractor::ExtractionLlmResult>`(无方法,只作句柄在三段间传递,Python 不解构)。
 - `memory_remember_prepare(...) → RememberPrepared`(gil_release 包 engram 写)。
-- `memory_extract_llm(extraction_llm, <payload/params>) → ExtractionLlmResult`(gil_release 包纯 LLM 段)。
-- `memory_remember_commit(..., prepared, llm_result) → dict`(gil_release 包 txn 写;返回 shape 与现 `memory_remember` 一致,含 `extraction_failed`)。
-- 现 `memory_remember`(单体)**保留不动**。`ExtractionLlmResult`/`RememberPrepared` 需 opaque 绑定(只作句柄在三段间传递,Python 不解构)。
+- `memory_extract_llm(adapter, llm, prompt_template, holder_id, payload, policy) → ExtractionLlmResult`(gil_release 包纯 LLM 段)。
+- `memory_remember_commit(adapter, llm, prepared, tenant/holder/interlocutor/created_at, llm_result, policy) → dict`(gil_release 包 txn 写;返回 shape 与现 `memory_remember` 一致,含 `extraction_failed`)。
+- 现 `memory_remember`(单体)**保留不动**。
 
 ### ④ host(`python/starling/dashboard/engine.py` + `_memory_core.py`)
 
-**关键:`MemoryCore.remember` 跑两次 extraction**——belief(`_core.memory_remember`,`_memory_core.py:152`)+ general-fact(同一 idempotent engram 再跑一次 general prompt,`:184-188`)。要真释放锁,**两次 LLM 都必须锁外**(否则 commit 段还含 general-fact 的 LLM 调用就不「短」)。故三相在 `MemoryCore` 层编排,把 belief+gf 细节封在内:
-- `MemoryCore.remember_prepare(text, ...) → prepared`:`append_evidence` 写 engram **一次**(belief+gf 共用同一 engram)。
-- `MemoryCore.extract_llm(chat_llm, prepared) → llm_result`:**belief LLM + general-fact LLM 两次调用都在此**(锁外无事务),结果收进 `llm_result`。
-- `MemoryCore.remember_commit(prepared, llm_result, ...) → dict`:txn 持久化 belief + gf 两路 statements/attempt/events;返回 dict shape 与现 `remember` 一致。
-- 现 `MemoryCore.remember()` 保留(单体走 prepare→extract→commit 内联,belief+gf 顺序不变)。
-- `engine.remember` 三段化:锁内 prepare + `_resolve` extraction adapter 局部引用 → **锁外** extract_llm(含两次 LLM)→ 锁内 commit(照 #51 `_converse_phased`)。`_role_override("llm",provider)` 改局部解析(避拆锁后全局 slot 竞态,同 #51 `_resolve_chat`)。
-- **payoff**:摄入 worker(`_ingest_drain_once` 调 `self.remember`)自动受益——两次 extraction 期都不再持锁,A 实测 37.8s 卡顿消除。`ingest_remember_ms_total` 会显示锁外时长骤降。
+**`MemoryCore.remember` 编排三条管线(belief+episodic+gf);本 slice 把 belief+gf 的 LLM 出锁,episodic 单体留 commit 内(残留)。** belief+gf 都走 `Extractor`(拆一个类两条都出锁);episodic 是独立 `EpisodicExtractor`,本 slice 不拆。三相在 `MemoryCore` 层编排(belief+episodic+gf 细节封在内):
+- `MemoryCore.remember_prepare(text, holder, interlocutor, now) → bundle`:`_core.memory_remember_prepare` 写 engram **一次**(belief+gf 共用同一 idempotent engram);返回 bundle{prepared(engram_ref/outcome/should_extract), created_iso, holder_id, interlocutor, text}。
+- `MemoryCore.remember_extract(bundle) → extracted`:**belief LLM + general-fact LLM 两次 `_core.memory_extract_llm`**(锁外无事务;should_extract=False 时短路空)。收进 extracted{belief_llm, gf_llm}。
+- `MemoryCore.remember_commit(bundle, extracted) → dict`:belief `_core.memory_remember_commit`(txn 写 belief statements)→ **episodic 单体**(`EpisodicExtractor.extract` + `PerceptionReconstructor`,LLM+DB 仍在此锁内 = 残留)→ gf `_core.memory_remember_commit`(复用同 engram_ref,txn 写 gf statements);statement_ids 顺序 belief+episodic+gf 与现状逐字节一致。
+- 现 `MemoryCore.remember()` 保留(内部改调三方法顺序内联,belief/episodic/gf 顺序不变)。
+- `engine.remember` 三段化:锁内 `remember_prepare` + `_resolve` extraction adapter 局部引用 → **锁外** `remember_extract`(belief+gf 两次 LLM)→ 锁内 `remember_commit`(照 #51 `_converse_phased`)。provider 解析改局部引用(避拆锁后全局 slot 竞态,同 #51 `_resolve_chat`)。
+- **payoff**:摄入 worker(`_ingest_drain_once` 调 `self.remember`)自动受益——belief+gf extraction 期不再持锁(episodic 残留 ~15s),A 实测 37.8s 卡顿大幅缩短。`ingest_remember_ms_total`(锁内墙钟)会显示骤降。
+
+**C++ 三相原语是单次 extraction**(belief/gf 各调一遍),不感知 belief/gf/episodic——那是 host `MemoryCore` 的编排。`memoryops`:
+- `remember_prepare(adapter, params) → RememberPrepared{engram_ref, outcome, should_extract}`:`require_write_admission`(fail-fast)+ `append_evidence`。
+- `extract_llm(adapter, llm, prompt_template, params, policy) → extractor::ExtractionLlmResult`:构 `Extractor` → `ex.extract_llm`(纯 LLM+parse,无 DB/txn)。
+- `remember_commit(adapter, llm, params, prepared, llm_result, policy) → RememberOutcome`:`require_write_admission`(捕中途转 DRAINING)+ `ex.persist`(txn 写)+ 写后泵;`should_extract=False` 时直接回 prepared 的 outcome/engram_ref(no_store/rejected 短路,不泵)。
+- 单体 `remember` 内联三者(单一语义源)。`converse_commit` 仍调单体 `remember`(其 extraction 仍锁内——非摄入热路径,不动)。
 
 ### ⑤ 并发 hazard(单写者)
 
@@ -65,17 +70,20 @@
 
 ## Blast Radius
 
-`remember` 单体保留 = 单一语义源;非 host 调用方**零感知**:`converse_commit`(memory_ops 内调 remember)、tick、`MemoryCore.remember` 的 belief + general-fact 两次调用都走单体,行为不变。**仅 `engine.remember` 显式改走三相**释放锁。converse_commit 内部仍走单体 remember(其 extraction 仍持锁)——但 converse 的 chat 生成已 #51 出锁,extraction 段短且非摄入热路径,本 slice 不动(若实测 converse extraction 仍痛再 follow-up)。Extractor 是核心、blast radius 广:全量 ctest 是回归网;shared-caller 签名注入陷阱(见记忆)——grep `src/` + `tests/` 的 `::run(`/`.run(` 全调用方确认。
+`Extractor::run` / `memoryops::remember` 单体都保留 = 单一语义源;非 host 调用方**零感知**:`converse_commit`(内调单体 `remember`)、tick、facade `Memory`、以及所有 `ex.run(` 调用方行为不变。**仅 host `MemoryCore.remember`(→ `engine.remember`)改走三相**释放锁。
+- **episodic 残留**:`MemoryCore.remember_commit` 内 episodic(`EpisodicExtractor` 单体)的 LLM 仍在锁内(~15s)。本 slice 接受(measure-first,option B);拆 `EpisodicExtractor` 是 follow-up。
+- **converse_commit 残留**:仍走单体 `remember`,其 extraction 仍锁内——但 converse 的 chat 生成已 #51 出锁,extraction 短且非摄入热路径,本 slice 不动。
+- **Extractor 是核心、blast radius 广**:全量 ctest 是回归网;`run()` 内联 `extract_llm→persist` 后行为须逐字节不变(既有 extractor/memory_ops 测试全绿 = 首道网);shared-caller 签名注入陷阱(见记忆 clang-tidy-gotchas)——`extract_llm`/`persist` 是**新增**方法,`run()` 签名不改,零调用方受影响。
 
 ## Testing
 
-- **C++ parity 钉测**:同输入 `extract_llm+persist` 组合与单体 `Extractor::run` 的 `ExtractionRunResult` + 落库 statements/attempt 行逐字段一致(FakeLLM,覆盖成功/parse失败/LLM失败/重试后成功)。
-- **extract_llm 无事务证**:extract_llm 执行期间 `sqlite3_get_autocommit(conn)` 为真(无开事务)——钉死「LLM 在事务外」。
-- **remember 三相 parity**:prepare+extract_llm+commit ≡ 单体 remember(RememberOutcome 逐字段 + 落库);no_store/rejected 短路;FAILED 仍写 attempt 行。
-- **锁纪律(Python)**:慢 stub extraction(`set_delay_ms`)驱动 `engine.remember`,并发线程 `engine.tick` 在生成段内 <阈值 拿到锁(拆锁前必阻塞;同 #51 锁测)。
-- **摄入端到端**:样例 job → 摄入 worker → 消化期并发 `/api/tick` 秒回(A 的 37.8s 卡顿消除)。
-- **门**:全量 ctest + pytest 绿;`--python-editable` 重装;clang-tidy 由构清洁。
+- **C++ Extractor parity 钉测**(`test_extractor_phases.cpp`):同输入 `extract_llm→persist` 组合与单体 `Extractor::run` 的 `ExtractionRunResult` + 落库 statements/attempt/pipeline_run/bus_events 行逐字段一致(FakeLLM,覆盖成功/parse失败/LLM失败重试满/重试后成功/noop 重忆)。
+- **extract_llm 无事务证**:extract_llm 返回后 `sqlite3_get_autocommit(conn)==1`(无开事务)+ 执行期间零行写入(statements/attempt/pipeline_run 计数不变)——钉死「LLM 在事务外、零 DB」。
+- **C++ remember 三相 parity**(`test_remember_phases.cpp`):prepare+extract_llm+commit ≡ 单体 remember(RememberOutcome 逐字段 + 落库);no_store/rejected 时 should_extract=false 短路(不 persist、不泵);FAILED 仍写 3 attempt 行;门中途转关 → commit 抛 `WriteGateRejected`。
+- **锁纪律(Python)**:慢 stub extraction 驱动 `engine.remember` 三相,并发线程 `engine.recall`/tick 在 extract 段内拿到锁(拆锁前必阻塞;同 #51 锁测思路)。
+- **belief+episodic+gf 顺序/输出 parity(Python)**:三相 `engine.remember` 的返回 dict(engram_ref/statement_ids/outcome)与旧单体路径一致(episodic 事件 + gf 事实都在,顺序不变)。
+- **门**:全量 ctest + `.venv/bin/python -m pytest tests/python` 绿;改 C++/绑定后 `--python-editable` 重装;clang-tidy 由构清洁。
 
 ## Out of Scope
 
-embedding 出锁 / query-embed cache;converse_commit 内 remember 的 extraction(非摄入热路径,gated);general-fact 第二次 remember 独立三相化(若单体三相化不自动惠及则 follow-up);多 remember 真并发。
+**`EpisodicExtractor` 三相化(episodic LLM 出锁)= measure-first follow-up**:本 slice 只拆 `Extractor`(belief+gf);episodic 单体的 LLM 仍在 commit 锁内(~15s 残留)。先跑起来看 B 的 latency 端点里 episodic 残留是否还痛,再决定拆。其余:embedding 出锁 / query-embed cache;converse_commit 内 remember 的 extraction(非摄入热路径,gated);多 remember 真并发。
