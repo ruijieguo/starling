@@ -104,7 +104,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
               }
               return py::dict("engram_ref"_a = r.engram_ref,
                               "statement_ids"_a = r.statement_ids,
-                              "outcome"_a = r.outcome);
+                              "outcome"_a = r.outcome,
+                              "extraction_failed"_a = r.extraction_failed);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("prompt_template"),
           py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),

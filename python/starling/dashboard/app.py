@@ -63,15 +63,28 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
                         mgr.broadcast({"type": "tick", "payload": stats}), loop)
 
                 eng.start_background_tick(config.tick_interval_s, _on_tick)
+        # dogfood 子项 A(Task 3):spool ingest worker——独立于 tick_interval_s
+        # (codex:关掉维护 tick 不该连带禁掉摄入,两者是不同的闭环)。只要有引擎
+        # (刚才按 tick 建的,或外部注入的),就启动它;tick_interval_s=0 时引擎
+        # 本就可能是 None(见上面的分支),此时无引擎可启——与 tick 关闭时的
+        # 既有行为一致,不额外建引擎。
+        eng = app.state.engine
+        if eng is not None and hasattr(eng, "start_ingest_worker"):
+            eng.start_ingest_worker()
         yield
         eng = app.state.engine
         if eng is not None:
             # D-P2-6: enter DRAINING on host shutdown — post-yield, NOT a signal
             # handler (a signal handler races uvicorn's own shutdown). Drain ENTRY
-            # first (flips the write gate to reject), THEN stop the background tick.
-            # Capability-probed: tests inject partial-interface engine doubles.
+            # first (flips the write gate to reject), THEN stop the ingest worker
+            # (in-flight remember() calls stop being picked up before the
+            # maintenance tick — codex's specified order), THEN stop the
+            # background tick. Capability-probed: tests inject partial-interface
+            # engine doubles.
             if hasattr(eng, "begin_drain"):
                 eng.begin_drain()
+            if hasattr(eng, "stop_ingest_worker"):
+                eng.stop_ingest_worker()
             if hasattr(eng, "stop_background_tick"):
                 eng.stop_background_tick()
 
