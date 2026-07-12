@@ -59,6 +59,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
                 def _on_tick(stats: dict) -> None:
                     # 维护线程 → 事件循环的桥;消息形状与手动 /api/tick 一致,
                     # 前端无需区分自动/手动。
+                    if hasattr(eng, "sample_embed_depth"):
+                        eng.sample_embed_depth()    # 子项 B:每 tick 采 embed 深度样本
                     asyncio.run_coroutine_threadsafe(
                         mgr.broadcast({"type": "tick", "payload": stats}), loop)
 

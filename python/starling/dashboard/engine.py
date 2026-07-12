@@ -29,7 +29,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from starling import _core
@@ -195,6 +195,12 @@ class DashboardEngine:
         self._ingest_throttle_s = 5.0           # gap after each processed job (dashboard breathing room)
         self._ingest_max_attempts = 5           # bounded retry before dead-lettering to failed/
 
+        # dogfood 子项 B:embed 深度采样序列。HOST 独立 sqlite(唯一写者=采样器,
+        # 天然单写者;与 core 的 dashboard.db 无共享写连接)。非记忆 schema,不进
+        # C++ MigrationRunner。
+        self._metrics_db_path = Path(self._db_path).parent / "metrics.db"
+        self._metrics_retention_days = 30
+
     # `engine.llm` stays read/write: tests and offline harnesses inject a
     # FakeLLMAdapter directly (`eng.llm = fake`).
     @property
@@ -329,6 +335,34 @@ class DashboardEngine:
                     and all(v == verdict for v in self._debounce_window)):
                 # N consecutive same verdicts → apply to the supervisor.
                 self._rt.note_health(decision)
+
+    def sample_embed_depth(self) -> None:
+        """采一个 embed 队列深度样本 → metrics.db(host,append-only + retention)。
+        由后台 tick 每轮调用。异常吞掉记 log,绝不杀 tick(保活)。"""
+        try:
+            # 只读 dashboard.db 算 backlog(未 embed 的 statement 数)+ embedded 数
+            with sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True) as ro:
+                backlog = ro.execute(
+                    "SELECT COUNT(*) FROM statements s LEFT JOIN statement_vectors v "
+                    "ON v.stmt_id=s.id WHERE s.tenant_id=? AND v.stmt_id IS NULL",
+                    (self._core.tenant,)).fetchone()[0]
+                embedded = ro.execute(
+                    "SELECT COUNT(*) FROM statement_vectors WHERE tenant_id=? AND status='embedded'",
+                    (self._core.tenant,)).fetchone()[0]
+            with sqlite3.connect(str(self._metrics_db_path)) as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS embed_depth_samples ("
+                    " ts TEXT NOT NULL, backlog INTEGER NOT NULL, embedded INTEGER NOT NULL)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_embed_depth_ts ON embed_depth_samples(ts)")
+                conn.execute("INSERT INTO embed_depth_samples(ts,backlog,embedded) VALUES(?,?,?)",
+                             (_now_iso(), backlog, embedded))
+                cutoff = (datetime.now(timezone.utc)
+                          - timedelta(days=self._metrics_retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                conn.execute("DELETE FROM embed_depth_samples WHERE ts < ?", (cutoff,))
+                conn.commit()
+        except Exception:  # noqa: BLE001 — 保活:采样失败不杀 tick
+            logger.exception("embed-depth sampler failed")
 
     def _reembed(self) -> str | None:
         """Clear this tenant's stored vectors (dim/space changed) and re-embed.
