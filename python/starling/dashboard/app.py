@@ -58,7 +58,9 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
 
                 def _on_tick(stats: dict) -> None:
                     # 维护线程 → 事件循环的桥;消息形状与手动 /api/tick 一致,
-                    # 前端无需区分自动/手动。
+                    # 前端无需区分自动/手动。子项 B 的 embed-depth 采样已下沉到
+                    # engine._loop 里无条件调用(review fix:此处受 did_work
+                    # 门控,会丢空闲/卡死轮的样本),不再挂在这个回调上。
                     asyncio.run_coroutine_threadsafe(
                         mgr.broadcast({"type": "tick", "payload": stats}), loop)
 
