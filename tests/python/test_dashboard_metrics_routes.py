@@ -102,3 +102,49 @@ def test_metrics_requires_token(tmp_path):
     client = TestClient(create_app(cfg, engine=eng))
     assert client.get("/api/metrics/embed_depth").status_code == 401
     assert client.get("/api/metrics/latency").status_code == 401
+    assert client.get("/api/metrics/gist_quality").status_code == 401
+
+
+# ── gist_quality (Task 3): funnel(candidates+abstracted) + confidence/member/summary
+# distributions. funnel is only two stages — NOT the full candidates→abstracted/
+# gated/failed pipeline — because replay_scheduler.cpp's write_ledger only persists
+# ops_applied_json={"compress","gist_candidates"}; abstracted/gated/failed never hit
+# the ledger. So candidates comes from replay_ledger.ops_applied_json (bucketed by
+# started_at) and abstracted comes from counting consolidation_abstract statements
+# (bucketed by created_at) — each such statement IS a promoted gist. ──
+def _seed_gist(cfg):
+    conn = sqlite3.connect(cfg.db_path)
+    # replay_ledger: one idle batch, ops_applied_json carries gist_candidates=3.
+    conn.execute("INSERT INTO replay_ledger(replay_batch_id,mode,sampled_count,ops_applied_json,started_at)"
+                 " VALUES('b1','idle',3,'{\"compress\":0,\"gist_candidates\":3}','2026-07-12T00:00:10Z')")
+    # consolidation_abstract statements (the gists themselves): distinct
+    # confidence/derived_from/summary to drive the three distribution assertions.
+    # Column set is the full real NOT NULL set from `PRAGMA table_info(statements)`
+    # (the brief's sample row omitted affect_json, which is NOT NULL with no default).
+    for i, (conf, df, summ) in enumerate([(0.82, '["a","b"]', "People value X"),
+                                          (0.55, '["a","b","c"]', "A longer summary sentence here")]):
+        conn.execute(
+            "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,subject_kind,"
+            "subject_id,predicate,object_kind,object_value,canonical_object_hash,"
+            "canonical_object_hash_version,modality,polarity,confidence,observed_at,salience,"
+            "affect_json,activation,last_accessed,provenance,consolidation_state,review_status,"
+            "derived_from_json,consolidation_summary,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"g{i}", "default", "__common_ground__", "inferred", "entity",
+             "__people__", "values", "str", f"X{i}", ("h" + str(i)) * 16,
+             "v1", "believes", "pos", conf, "2026-07-12T00:00:10Z", 0.5,
+             "{}", 0.0, "2026-07-12T00:00:10Z", "consolidation_abstract", "consolidated",
+             "approved", df, summ, "2026-07-12T00:00:10Z", "2026-07-12T00:00:10Z"))
+    conn.commit(); conn.close()
+
+
+def test_gist_quality_funnel_and_distributions(env):
+    cfg, client = env
+    _seed_gist(cfg)
+    r = client.get("/api/metrics/gist_quality?since=2026-07-11T00:00:00Z&bucket=3600")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["funnel"][0]["candidates"] == 3 and d["funnel"][0]["abstracted"] == 2
+    assert sum(c["n"] for c in d["confidence"]) == 2       # 两个 gist 的 confidence
+    assert sum(m["n"] for m in d["member_counts"]) == 2    # derived_from 长度分布
+    assert sum(s["n"] for s in d["summary_lengths"]) == 2

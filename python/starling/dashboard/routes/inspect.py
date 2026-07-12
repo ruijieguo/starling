@@ -131,6 +131,15 @@ def build_inspect_router(require_token) -> APIRouter:
         c = _cfg(request)
         return queries.metrics_latency(c.db_path, c.tenant, since or _default_since(), max(1, bucket))
 
+    @router.get("/metrics/gist_quality")
+    async def metrics_gist_quality(request: Request, since: str = "", bucket: int = 3600):
+        # dogfood 子项 B(Task 3):gist 质量代理——funnel(gist_candidates→abstracted,
+        # gated/failed 未持久化不派生)+ confidence/member/summary 分布。bucket 钳制到
+        # >=1,理由同 metrics_embed_depth(否则 _bucket 对 bucket_s 取模会除零 500)。
+        c = _cfg(request)
+        return queries.metrics_gist_quality(c.db_path, c.tenant, since or _default_since(),
+                                            max(1, bucket))
+
     @router.get("/vitals")
     async def vitals(request: Request, limit: int = 50):
         c = _cfg(request)

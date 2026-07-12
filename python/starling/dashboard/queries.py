@@ -927,6 +927,85 @@ def _pct(sorted_vals: list, q: float) -> int:
     return int(sorted_vals[idx])
 
 
+_SUMMARY_LEN_BUCKETS = ("0-50", "50-100", "100-200", "200+")
+
+
+def metrics_gist_quality(db_path: str, tenant: str, since_iso: str, bucket_s: int) -> dict:
+    """dogfood 子项 B(Task 3):gist 质量代理——funnel(candidates→abstracted)+
+    confidence/member/summary 分布。
+
+    funnel 只有两段,**不是** candidates→abstracted/gated/failed 全派生:
+    replay_scheduler.cpp 的 write_ledger 只持久化 ops_applied_json=
+    {"compress":n,"gist_candidates":n}(见该文件尾部 write_ledger 调用点),
+    abstracted/gated/failed 从未落盘,现有表派不出来(需 C++ 侧改 replay 才能补,
+    deferred backlog——别试图从别处凑)。故:
+      ① candidates = 解 replay_ledger.ops_applied_json.gist_candidates,按 started_at 分桶;
+      ② abstracted = provenance='consolidation_abstract' 的 statements 计数(每条即一次
+         促成的 gist),按 created_at 同桶。
+    confidence / member_counts / summary_lengths 三个分布派生同一批 consolidation_abstract
+    行:confidence 按 0.1 分桶;member 数 = derived_from_json 数组长度;summary 长度 =
+    consolidation_summary 字符数按 0-50/50-100/100-200/200+ 分桶(固定枚举顺序输出,
+    跳过未观测到的桶——字典序会把 "100-200" 排到 "200+"/"50-100" 前,不是数值序)。
+
+    since 过滤按解析后的时间值比较(_parse_iso),不做字典序 SQL WHERE——replay_ledger.
+    started_at / statements.created_at 与其他表一样,整秒 since 对带微秒的存量值在同一
+    墙钟秒内字典序会误判(同类 bug 已在 metrics_embed_depth 修过,见 _parse_iso
+    docstring)。replay_ledger 无 tenant_id 列(镜像 metrics_latency 对 extraction_attempt
+    的处理),故只有 consolidation_abstract statements 按 tenant 过滤。
+    """
+    since_dt = _parse_iso(since_iso)
+    with open_ro(db_path) as conn:
+        led = _rows(conn, "SELECT ops_applied_json, started_at FROM replay_ledger "
+                          "ORDER BY started_at")
+        gists = _rows(conn, "SELECT confidence, derived_from_json, consolidation_summary, "
+                            "created_at FROM statements WHERE tenant_id=? AND "
+                            "provenance='consolidation_abstract' ORDER BY created_at",
+                      (tenant,))
+
+    # funnel: candidates(ledger) + abstracted(consolidation_abstract 计数) 按桶。
+    funnel: dict = {}
+    for r in led:
+        if _parse_iso(r["started_at"]) < since_dt:
+            continue
+        b = _bucket(r["started_at"], bucket_s)
+        try:
+            cand = int(json.loads(r["ops_applied_json"] or "{}").get("gist_candidates", 0))
+        except Exception:
+            cand = 0
+        funnel.setdefault(b, {"candidates": 0, "abstracted": 0})["candidates"] += cand
+    gists = [g for g in gists if _parse_iso(g["created_at"]) >= since_dt]
+    for g in gists:
+        b = _bucket(g["created_at"], bucket_s)
+        funnel.setdefault(b, {"candidates": 0, "abstracted": 0})["abstracted"] += 1
+    funnel_series = [{"bucket_ts": b, **v} for b, v in sorted(funnel.items())]
+
+    # confidence 分布(0.1 桶)
+    conf: dict = {}
+    for g in gists:
+        key = round(float(g["confidence"] or 0), 1)
+        conf[key] = conf.get(key, 0) + 1
+
+    # member 数分布 + summary 长度分布
+    members: dict = {}
+    summ: dict = {}
+    for g in gists:
+        try:
+            m = len(json.loads(g["derived_from_json"] or "[]"))
+        except Exception:
+            m = 0
+        members[m] = members.get(m, 0) + 1
+        slen = len(g["consolidation_summary"] or "")
+        lb = ("0-50" if slen < 50 else "50-100" if slen < 100
+              else "100-200" if slen < 200 else "200+")
+        summ[lb] = summ.get(lb, 0) + 1
+
+    return {"funnel": funnel_series,
+            "confidence": [{"bucket": k, "n": v} for k, v in sorted(conf.items())],
+            "member_counts": [{"members": k, "n": v} for k, v in sorted(members.items())],
+            "summary_lengths": [{"len_bucket": k, "n": summ[k]}
+                                for k in _SUMMARY_LEN_BUCKETS if k in summ]}
+
+
 def metrics_latency(db_path: str, tenant: str, since_iso: str, bucket_s: int) -> dict:
     """抽取时延时间序列(dashboard.db 的 extraction_attempt)。tenant 当前不生效
     (该表无 tenant_id 列,见文件头注),参数留给该列补上后接入。since 过滤按解析后的
