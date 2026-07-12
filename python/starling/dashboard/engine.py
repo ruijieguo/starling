@@ -338,7 +338,10 @@ class DashboardEngine:
 
     def sample_embed_depth(self) -> None:
         """采一个 embed 队列深度样本 → metrics.db(host,append-only + retention)。
-        由后台 tick 每轮调用。异常吞掉记 log,绝不杀 tick(保活)。"""
+        由后台 tick `_loop` 每轮无条件调用(紧邻 _sample_backpressure,不经
+        did_work 门控——backlog/embedded 是绝对状态快照,空闲/卡死轮也要采,
+        否则恰好在「backlog 卡住/增长」这个要回答的场景丢样本)。异常吞掉记
+        log,绝不杀 tick(保活)。"""
         try:
             # 只读 dashboard.db 算 backlog(未 embed 的 statement 数)+ embedded 数
             with sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True) as ro:
@@ -357,8 +360,12 @@ class DashboardEngine:
                     "CREATE INDEX IF NOT EXISTS idx_embed_depth_ts ON embed_depth_samples(ts)")
                 conn.execute("INSERT INTO embed_depth_samples(ts,backlog,embedded) VALUES(?,?,?)",
                              (_now_iso(), backlog, embedded))
+                # cutoff 必须与插入的 ts 同一格式(isoformat + 微秒)——之前用
+                # strftime 整秒会在同一墙钟秒内和 _now_iso() 的微秒串做字典序
+                # 比较（"."排在"Z"之前），把边界行提前删掉一点点。
                 cutoff = (datetime.now(timezone.utc)
-                          - timedelta(days=self._metrics_retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                          - timedelta(days=self._metrics_retention_days)
+                          ).isoformat().replace("+00:00", "Z")
                 conn.execute("DELETE FROM embed_depth_samples WHERE ts < ?", (cutoff,))
                 conn.commit()
         except Exception:  # noqa: BLE001 — 保活:采样失败不杀 tick
@@ -601,6 +608,8 @@ class DashboardEngine:
         - tick 持引擎 RLock,期间 UI 命令请求排队——与手动 tick 同语义;
         - on_tick(stats) 仅在本轮有实际变化(任一计数非零)时回调,调用方
           用它做 WS 广播;
+        - sample_embed_depth()/_sample_backpressure() 每轮都跑,不受 on_tick
+          的 did_work 门控(它们采的是绝对状态快照,空闲/卡死轮也要采);
         - 异常记日志后继续循环(网络嵌入失败不杀线程);
         - interval_s <= 0 或已启动时为 no-op。
         """
@@ -629,6 +638,19 @@ class DashboardEngine:
                         on_tick(stats)
                     except Exception:  # noqa: BLE001
                         logger.exception("background tick on_tick callback failed")
+                # dogfood 子项 B: embed-depth 采样——UNCONDITIONAL, not did_work-gated
+                # (review fix: previously only ran from app.py's did_work-gated
+                # on_tick, which silently dropped exactly the "embedder stalled /
+                # backlog stuck" samples this series exists to show). backlog/
+                # embedded are absolute state snapshots, independent of whether
+                # this round's maintenance stack did anything — sample every
+                # round, same rationale as _sample_backpressure below.
+                # sample_embed_depth already keeps its own try/except keepalive;
+                # wrapped again here so it can never take the loop down either.
+                try:
+                    self.sample_embed_depth()
+                except Exception:  # noqa: BLE001
+                    logger.exception("embed-depth sample failed")
                 # Phase 5: backpressure sample after each tick (L3/L6/L7).
                 # tick_started_at was recorded before tick() so the delay includes
                 # tick duration; that is intentional — a slow tick means the loop
