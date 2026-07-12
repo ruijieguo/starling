@@ -10,6 +10,8 @@
 
 **Approved spec:** `docs/superpowers/specs/2026-07-11-session-ingestion-channel-design.md`(v2,spool;经 plan-eng-review + codex outside voice 重构)。
 
+**⚠️ v3 amendment(D3=A,2026-07-12 实现期定谳 — 取代本文所有「worker 不外套 _lock / 锁等待埋点」表述):** opus 审出 worker 绕 `_lock` 直调 `_core.remember` = 单写者 VIOLATION(`remember` 的 `BEGIN IMMEDIATE` 横跨 44s extraction,并发写同一连接抛错/丢写)。用户裁定 **D3=A:worker 用 `self.remember` 持锁 + 重限流(`_ingest_throttle_s`)**;metric 改 `ingest_remember_ms_total`(持锁抽取墙钟)。空抽取(`extraction_failed=False`)= 成功进 done/(不再「零语句=失败」);`extraction_failed` 经绑定转发暴露;有界重试(attempts<5→留 spool、>=5→failed/)+ reaper 收残留 `.processing`。Task 3 的最终代码以 commit 952a456 为准(非本文 v2 伪代码)。
+
 **v1→v2(plan-eng-review 定谳 2026-07-11):** 弃 v1 的「同步 POST 端点 + SQLite 队列表 + worker 外套锁」。codex 指出 v1 破两核心承诺(hook 同步 POST N 块阻塞退出;dashboard 挂时静默丢失)且外层锁零收益(remember 自持锁)。v2 spool 架构根除三者且更简单。**架构边界 eng-review 定谳:全 host(去重=remember 自带幂等/分块=传输/dead-letter=spool 目录机械,无一是记忆语义);队列=spool 文件(不碰 SQLite,彻底不涉单写者)。**
 
 ## Global Constraints
@@ -646,6 +648,11 @@ superpowers:subagent-driven-development(每任务 implementer+reviewer,最后 wh
 
 - **CODEX:** 17 findings。核心 2:(1) POST-from-hook 破「不阻塞退出 + 不静默丢失」→ 采纳 spool-file 架构(用户 D2=A);(2) worker 外套 `_lock` 零收益且锁死 dashboard(remember 自持锁)→ worker 不外套锁 + 埋点测锁等待。其余(去 tenant/unknown 碰撞、代码围栏未剥、测试只查 provenance、tick=0 禁摄入、关停时序、瞬态 vs 永久重试、崩溃恢复、请求上限、spool 隐形)——spool 架构溶解半数,其余折叠进 v2 计划各任务。
 - **CROSS-MODEL:** 无分歧(claude 审同意 codex 全部;codex 补了 claude 漏的一致性/时序/过滤缺陷)。
-- **VERDICT:** ENG CLEARED(v2 已折叠全部发现)——ready to implement。
+- **IMPLEMENTATION REVIEWS(subagent-driven,per-task implementer+reviewer + fix waves):**
+  - Task 1(过滤):真实 transcript 采样抓到 `clean_turns` 只处理 str-user、漏 list 形态 → 丢 14% 真用户轮 + `<tool-result>` 字符串检查死代码 → 修(2ca955e)。
+  - Task 3(worker):**opus 两轮严查** → Hazard1 锁旁路 = 单写者 VIOLATION、Hazard2 零语句=失败 WRONG、busy-spin、stranded `.processing`、错 metric → 用户裁定 D3=A(持锁+限流)+ 全修(952a456);顺带修 `RememberResult(**dict)` TickOutcome 式地雷。
+  - Whole-branch(controller 亲审,因 2 次 opus 子代理退化返回垃圾/注入):跨任务一致 ✅、架构边界 ✅(host + 唯一 binding-forward extraction_failed、单写者由 self.remember 尊重)、e2e 实测 3 条真记忆落库 + 单写者持锁 37.8s 可测。唯一发现 = 本文「不外套锁」文档漂移 → 已加 v3 amendment 更正。
+- **Minor(backlog,非阻塞)**:Task2 malformed-stdin 测试写真 ~/.starling/ingest.log;Task1 其他合成标签漏过;general-fact 的 extraction_failed 被丢弃;poison-job 头阻塞 ~10s;LLMNotConfigured 重试后进 failed/。
+- **VERDICT:** READY FOR PR(4 任务 + fix waves 全绿:ctest 949/949、pytest 850;e2e 实测通过)。
 
 NO UNRESOLVED DECISIONS
