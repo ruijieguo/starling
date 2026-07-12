@@ -259,6 +259,102 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("prepared"), py::arg("gen_resp"),
           py::arg("policy") = starling::extractor::ValidationPolicy{});
 
+    // 方案2 三相(2026-07-12 remember extraction 出锁):host 在 prepare/commit
+    // 段持引擎锁、extract 段释放——写事务不再跨 extraction 网络。opaque 句柄只在
+    // 三段间传递,Python 不解构(照 converse 三相绑定范式)。
+    py::class_<starling::memoryops::RememberPrepared>(m, "RememberPrepared")
+        .def_readonly("engram_ref",     &starling::memoryops::RememberPrepared::engram_ref)
+        .def_readonly("outcome",        &starling::memoryops::RememberPrepared::outcome)
+        .def_readonly("should_extract", &starling::memoryops::RememberPrepared::should_extract)
+        .def_readonly("created_at_iso8601",   // #6:Python(episodic)从此读,不再自持 created_iso
+                       &starling::memoryops::RememberPrepared::created_at_iso8601);
+
+    // 纯句柄:extract→commit 之间传递,无成员导出。
+    py::class_<starling::extractor::ExtractionLlmResult>(m, "ExtractionLlmResult");
+
+    m.def("memory_remember_prepare",
+          [](starling::persistence::SqliteAdapter& adapter,
+             const std::string& tenant_id, const std::string& holder_id,
+             const std::string& interlocutor, const std::string& adapter_name,
+             const std::string& source_prefix, const std::string& created_at_iso8601,
+             const py::bytes& payload) {
+              starling::memoryops::RememberParams params;
+              params.tenant_id          = tenant_id;
+              params.holder_id          = holder_id;
+              params.interlocutor       = interlocutor;
+              params.adapter_name       = adapter_name;
+              params.source_prefix      = source_prefix;
+              params.created_at_iso8601 = created_at_iso8601;
+              {   // bytes → vector 须持 GIL
+                  const std::string raw = payload;
+                  params.payload.assign(raw.begin(), raw.end());
+              }
+              starling::memoryops::RememberPrepared prep;
+              {
+                  py::gil_scoped_release release;
+                  prep = starling::memoryops::remember_prepare(adapter, params);
+              }
+              return prep;
+          },
+          py::arg("adapter"), py::arg("tenant_id"), py::arg("holder_id"),
+          py::arg("interlocutor"), py::arg("adapter_name"), py::arg("source_prefix"),
+          py::arg("created_at_iso8601"), py::arg("payload"));
+
+    m.def("memory_extract_llm",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& prompt_template, const std::string& holder_id,
+             const py::bytes& payload,
+             starling::extractor::ValidationPolicy policy) {
+              starling::memoryops::RememberParams params;
+              params.holder_id = holder_id;
+              {
+                  const std::string raw = payload;
+                  params.payload.assign(raw.begin(), raw.end());
+              }
+              starling::extractor::ExtractionLlmResult out;
+              {
+                  py::gil_scoped_release release;   // 纯 LLM 段
+                  out = starling::memoryops::extract_llm(
+                      adapter, llm, prompt_template, params, policy);
+              }
+              return out;
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("prompt_template"),
+          py::arg("holder_id"), py::arg("payload"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
+    m.def("memory_remember_commit",
+          // #6:不收 created_at_iso8601——commit 以 prepared.created_at_iso8601 为权威
+          // (防 prepare/commit 时戳漂移,镜像 converse_commit)。
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& tenant_id, const std::string& holder_id,
+             const std::string& interlocutor,
+             const starling::memoryops::RememberPrepared& prepared,
+             const starling::extractor::ExtractionLlmResult& llm_result,
+             starling::extractor::ValidationPolicy policy) {
+              starling::memoryops::RememberParams params;
+              params.tenant_id    = tenant_id;
+              params.holder_id    = holder_id;
+              params.interlocutor = interlocutor;
+              // params.created_at_iso8601 留空:commit 用 prepared 的权威时戳。
+              starling::memoryops::RememberOutcome result;
+              {
+                  py::gil_scoped_release release;   // 内含 persist txn 写 + 写后泵
+                  result = starling::memoryops::remember_commit(
+                      adapter, llm, params, prepared, llm_result, policy);
+              }
+              return py::dict("engram_ref"_a = result.engram_ref,
+                              "statement_ids"_a = result.statement_ids,
+                              "outcome"_a = result.outcome,
+                              "extraction_failed"_a = result.extraction_failed);
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"), py::arg("holder_id"),
+          py::arg("interlocutor"),
+          py::arg("prepared"), py::arg("llm_result"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
     m.def("memory_tick_all",
           [](starling::persistence::SqliteAdapter& adapter,
              starling::embedding::EmbeddingWorker& worker,
