@@ -119,14 +119,17 @@ def build_inspect_router(require_token) -> APIRouter:
     async def metrics_embed_depth(request: Request, since: str = "", bucket: int = 3600):
         # dogfood 子项 B(Task 2):embed 队列深度时间序列,读 Task 1 采样器写的
         # host metrics.db(与 dashboard.db 分离的文件;缺文件→空 series,不 500)。
+        # bucket 钳制到 >=1(同 vitals/forecast/search 等兄弟路由的 limit 钳制一致)——
+        # 0 或负值会在 _bucket 里对 bucket_s 取模,除零崩 500。
         c = _cfg(request)
-        return queries.metrics_embed_depth(c.db_path, since or _default_since(), bucket)
+        return queries.metrics_embed_depth(c.db_path, since or _default_since(), max(1, bucket))
 
     @router.get("/metrics/latency")
     async def metrics_latency(request: Request, since: str = "", bucket: int = 3600):
         # dogfood 子项 B(Task 2):抽取时延时间序列(p50/p95),派生 extraction_attempt。
+        # bucket 钳制到 >=1,理由同 metrics_embed_depth。
         c = _cfg(request)
-        return queries.metrics_latency(c.db_path, c.tenant, since or _default_since(), bucket)
+        return queries.metrics_latency(c.db_path, c.tenant, since or _default_since(), max(1, bucket))
 
     @router.get("/vitals")
     async def vitals(request: Request, limit: int = 50):

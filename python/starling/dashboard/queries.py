@@ -877,9 +877,18 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
 #
 # 百分位在 Python 算(SQLite 无内置 percentile_cont);数据量是 dashboard 规模
 # (单机、单店铺量级),排序取下标的近似足够,不需要插值。
+def _parse_iso(s: str) -> datetime:
+    """ISO8601(Z 或 +00:00 后缀,含/不含微秒)→ aware datetime,供按值比较。
+    since 过滤必须走这里而非字典序字符串比较:since 常整秒、存量 ts 常带微秒,
+    同一墙钟秒内 "." (0x2E) 排在 "Z" (0x5A) 之前会把整秒 since 字典序判定为
+    "大于"带微秒的同秒 ts,静默丢边界行——同类 bug 已在采样保留期截断修过
+    (engine.py:363 的注释)。"""
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
 def _bucket(ts: str, bucket_s: int) -> str:
     """ts(ISO8601,Z 或 +00:00 后缀)→ 桶起点 ISO,按 bucket_s 秒对齐(epoch 整除)。"""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    dt = _parse_iso(ts)
     epoch = int(dt.timestamp())
     start = epoch - (epoch % bucket_s)
     return datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -887,15 +896,19 @@ def _bucket(ts: str, bucket_s: int) -> str:
 
 def metrics_embed_depth(db_path: str, since_iso: str, bucket_s: int) -> dict:
     """embed 队列深度时间序列。每桶聚合桶内样本:backlog 的 max/avg,embedded 取桶内
-    最后一条样本的值(累计量快照,取末值而非求和)。"""
+    最后一条样本的值(累计量快照,取末值而非求和)。since 过滤按解析后的时间值比较
+    (_parse_iso),不在 SQL 层做字典序 WHERE——理由见 _parse_iso docstring。metrics.db
+    受采样器 retention 约束(dashboard 规模),全量读入 Python 过滤/分桶开销可忽略。"""
     mp = Path(db_path).parent / "metrics.db"
     if not mp.exists():
         return {"series": []}
+    since_dt = _parse_iso(since_iso)
     with open_ro(str(mp)) as conn:
-        rows = _rows(conn, "SELECT ts, backlog, embedded FROM embed_depth_samples "
-                           "WHERE ts >= ? ORDER BY ts", (since_iso,))
+        rows = _rows(conn, "SELECT ts, backlog, embedded FROM embed_depth_samples ORDER BY ts")
     buckets: dict = {}
     for r in rows:
+        if _parse_iso(r["ts"]) < since_dt:
+            continue
         b = _bucket(r["ts"], bucket_s)
         agg = buckets.setdefault(b, {"backlog_max": 0, "backlog_sum": 0, "n": 0, "embedded": 0})
         agg["backlog_max"] = max(agg["backlog_max"], r["backlog"])
@@ -916,12 +929,18 @@ def _pct(sorted_vals: list, q: float) -> int:
 
 def metrics_latency(db_path: str, tenant: str, since_iso: str, bucket_s: int) -> dict:
     """抽取时延时间序列(dashboard.db 的 extraction_attempt)。tenant 当前不生效
-    (该表无 tenant_id 列,见文件头注),参数留给该列补上后接入。"""
+    (该表无 tenant_id 列,见文件头注),参数留给该列补上后接入。since 过滤按解析后的
+    时间值比较(_parse_iso),不做字典序 SQL WHERE——created_at 由 C++ iso8601_utc()
+    写入、恒整秒,本表暂不触发字典序边界 bug,但与 metrics_embed_depth 统一走同一条
+    健壮路径,避免写入格式未来变化时静默重犯(见 _parse_iso docstring)。"""
+    since_dt = _parse_iso(since_iso)
     with open_ro(db_path) as conn:
         rows = _rows(conn, "SELECT created_at, latency_ms, total_tokens FROM extraction_attempt "
-                           "WHERE created_at >= ? ORDER BY created_at", (since_iso,))
+                           "ORDER BY created_at")
     buckets: dict = {}
     for r in rows:
+        if _parse_iso(r["created_at"]) < since_dt:
+            continue
         b = _bucket(r["created_at"], bucket_s)
         agg = buckets.setdefault(b, {"lat": [], "tokens": 0})
         agg["lat"].append(r["latency_ms"]); agg["tokens"] += r["total_tokens"] or 0

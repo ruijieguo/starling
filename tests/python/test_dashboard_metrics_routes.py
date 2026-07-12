@@ -51,6 +51,9 @@ def test_embed_depth_buckets(env):
     series = r.json()["series"]
     assert len(series) == 2                          # 两个小时桶
     assert series[0]["backlog_max"] == 7             # 第一个桶两样本 max
+    assert series[0]["backlog_avg"] == 6.0            # (5+7)/2,round(...,1)
+    assert series[0]["embedded"] == 12                # 桶内最后一条样本的值(非求和)
+    assert series[1]["backlog_avg"] == 2.0 and series[1]["embedded"] == 20
 
 
 def test_latency_buckets_percentiles(env):
@@ -62,6 +65,35 @@ def test_latency_buckets_percentiles(env):
     b = r.json()["series"][0]
     assert b["count"] == 3 and b["total_tokens"] == 180
     assert 100 <= b["p50_ms"] <= 300 and b["p95_ms"] >= b["p50_ms"]
+
+
+def test_latency_cross_bucket(env):
+    cfg, client = env
+    _seed_extraction(cfg, [("2026-07-12T00:00:10Z", 100, 50), ("2026-07-12T00:00:20Z", 300, 60),
+                           ("2026-07-12T01:00:10Z", 200, 70)])
+    r = client.get("/api/metrics/latency?since=2026-07-11T00:00:00Z&bucket=3600")
+    assert r.status_code == 200
+    series = r.json()["series"]
+    assert len(series) == 2                          # 两个小时桶
+    assert series[0]["count"] == 2 and series[0]["total_tokens"] == 110
+    assert series[1]["count"] == 1 and series[1]["total_tokens"] == 70
+
+
+def test_embed_depth_missing_metrics_db_returns_empty(env):
+    cfg, client = env
+    # metrics.db 从未被采样器建过(Task 1 采样器与本查询解耦,谁先跑不影响另一方)——
+    # 缺文件必须诚实返回空 series,不 500。
+    r = client.get("/api/metrics/embed_depth?since=2026-07-11T00:00:00Z&bucket=3600")
+    assert r.status_code == 200
+    assert r.json() == {"series": []}
+
+
+def test_bucket_zero_does_not_500(env):
+    cfg, client = env
+    _seed_metrics(cfg, [("2026-07-12T00:00:10Z", 5, 10)])
+    r = client.get("/api/metrics/embed_depth?since=2026-07-11T00:00:00Z&bucket=0")
+    assert r.status_code == 200                      # 路由钳制 bucket>=1,不除零 500
+    assert len(r.json()["series"]) == 1
 
 
 def test_metrics_requires_token(tmp_path):
