@@ -191,7 +191,9 @@ class DashboardEngine:
         self._ingest_spool = Path.home() / ".starling" / "ingest-spool"
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
-        self._ingest_lock_wait_ms_total = 0     # observability: see _ingest_drain_once
+        self._ingest_remember_ms_total = 0      # observability: see _ingest_drain_once
+        self._ingest_throttle_s = 5.0           # gap after each processed job (dashboard breathing room)
+        self._ingest_max_attempts = 5           # bounded retry before dead-lettering to failed/
 
     # `engine.llm` stays read/write: tests and offline harnesses inject a
     # FakeLLMAdapter directly (`eng.llm = fake`).
@@ -622,13 +624,14 @@ class DashboardEngine:
     # `scripts/ingest_session.py`(Task 2)把 SessionEnd hook 的 transcript
     # 摄入 job 原子落到 `<spool>/*.json`;这里在 dashboard 进程内轮询消化:
     # claim(rename → .json.processing)→ 读 transcript → clean_turns/
-    # chunk_dialogue(ingest_filter,Task 1)→ 逐块 remember()→ done/ 或
-    # failed/,瞬态错误留在 spool 根下等下一轮重试。
+    # chunk_dialogue(ingest_filter,Task 1)→ 逐块 self.remember()(持锁,见
+    # 下方 docstring)→ done/ 或 failed/,可重试的失败留在 spool 根下等下一
+    # 轮重试(有界,见 _ingest_max_attempts;opus review 2026-07-12 fix wave)。
 
     def ingest_status(self) -> dict:
         """Spool queue depths for the ingest worker — pure directory listing,
         no engine lock needed (pending/processing/done/failed are just glob
-        counts; lock_wait_ms_total is an in-memory counter, see
+        counts; ingest_remember_ms_total is an in-memory counter, see
         _ingest_drain_once)."""
         sp = self._ingest_spool
         cnt = lambda p, pat: len(list(p.glob(pat))) if p.exists() else 0
@@ -636,138 +639,171 @@ class DashboardEngine:
                 "processing": cnt(sp, "*.json.processing"),
                 "done": cnt(sp / "done", "*.json"),
                 "failed": cnt(sp / "failed", "*.json"),
-                "lock_wait_ms_total": self._ingest_lock_wait_ms_total}
+                "ingest_remember_ms_total": self._ingest_remember_ms_total}
 
-    def _ingest_drain_once(self) -> bool:
+    def _ingest_reap_stale_processing(self) -> None:
+        """Startup reaper (opus review Hazard — crash strands the claim): a
+        single worker means any `*.json.processing` file found here was
+        claimed by a PRIOR process that died before routing it to
+        done/failed/spool (claim-rename and done/failed/spool-rename are the
+        only ways a `.processing` file is created or removed, and both
+        happen inside _ingest_drain_once in this same process). Rename it
+        back to `*.json` so the very next poll re-claims and reprocesses it
+        — restores the "no data loss on crash" property. Must run once,
+        BEFORE the poll loop starts (see start_ingest_worker), so it never
+        races the live worker's own in-flight claim."""
+        sp = self._ingest_spool
+        if not sp.exists():
+            return
+        for stale in sp.glob("*.json.processing"):
+            stale.rename(stale.with_suffix(""))    # strip the trailing ".processing"
+
+    def _ingest_drain_once(self) -> str:
         """Drain ONE spool job: claim (atomic rename to .json.processing) ->
-        read transcript -> clean/chunk -> remember() each chunk -> done/ on
-        success, failed/ on a permanent error, or back to the spool root
-        (unclaimed) on a transient one so the next poll retries it with no
-        data loss. Returns True if a job was claimed (whether it ultimately
-        succeeded, was retried, or was dead-lettered), False when the spool
-        is empty (the caller's cue to stop draining and go back to sleep).
+        read transcript -> clean/chunk -> self.remember() each chunk -> done/
+        on success or once retries are exhausted, or back to the spool root
+        (unclaimed, attempts incremented) on a still-retryable failure so a
+        LATER poll retries it with no data loss. Returns "empty" (nothing to
+        claim), "done" (the job left the spool this round — succeeded or was
+        dead-lettered), or "deferred" (left back in the spool for a later
+        poll — never hot-reclaimed within this call). Callers (see
+        start_ingest_worker) must not busy-loop on "deferred"/"empty".
 
-        Lock discipline (verified against src/memory/memory_ops.cpp +
-        python/starling/_memory_core.py — this is the crux of Task 3, not a
-        brief placeholder): this calls `self._core.remember(...)` — the
-        underlying MemoryCore, NOT `self.remember()`. DashboardEngine.
-        remember() wraps its ENTIRE body, including the extraction LLM
-        network call, in `with self._lock` (same as every other engine
-        entry point; see _converse_phased's own comment: "与 remember(也在
-        LLM 调用期间持锁)不同" — remember was NOT given converse's 3-phase
-        lock-release treatment). remember() has no C++-level prepare/
-        generate/commit split to call into instead (unlike converse, there
-        is no memory_remember_prepare/commit — Extractor::run interleaves
-        the LLM retry loop with statement writes inside ONE transaction),
-        and adding one is a C++ change (out of scope: this task is
-        Python-only, no rebuild). So going through self.remember() would
-        serialize every other engine user (UI commands, background tick,
-        concurrent /api/converse) behind this worker for the FULL duration
-        of each chunk's extraction call — unacceptable for a worker meant to
-        churn an unattended backlog. Calling self._core.remember() directly
-        means this write is NOT mutually exclusive with concurrent tick/
-        HTTP-triggered engine calls at the Python level; the accepted
-        residual risk (see task-3-report.md) is a same-connection
-        transaction-interleaving error if this and another writer overlap
-        (e.g. "cannot start a transaction within a transaction") — the
-        single sqlite3 connection is opened SQLITE_OPEN_FULLMUTEX
-        (src/persistence/connection.cpp), so a race cannot corrupt the
-        connection or crash the process, and such an error is classified
-        transient below (self-heals on the next poll) rather than
-        dead-lettered. The lock IS still taken here, briefly, to measure
-        contention (`_ingest_lock_wait_ms_total`, an observability probe of
-        what a fully-locked call would have waited) — acquired and released
-        BEFORE the remember() call, never held across it.
+        Lock discipline (opus review Hazard 1, single-writer VIOLATION —
+        user-adjudicated fix): this calls `self.remember(...)`, the
+        ENGINE-wrapped method that holds `self._lock` across the ENTIRE
+        call including the extraction LLM network call — same as every
+        other engine writer (tick/forget/approve_review/converse_commit).
+        A prior version of this worker called `self._core.remember(...)`
+        directly to avoid serializing behind the lock, reasoning that the
+        shared sqlite3 connection is opened SQLITE_OPEN_FULLMUTEX so a race
+        could not corrupt it. That reasoning was wrong: FULLMUTEX only
+        serializes individual C-API calls, not a BEGIN…COMMIT span (SQLite
+        transaction state is per-*connection*, not per-thread), and
+        remember's `BEGIN IMMEDIATE` (extractor.cpp TransactionGuard) stays
+        open across the full multi-second extraction retry loop — a
+        concurrent writer on the same connection (background tick, an HTTP
+        /api/converse) hitting BEGIN while that transaction is open throws
+        "cannot start a transaction within a transaction", silently
+        dropping a whole maintenance tick or surfacing a spurious 500 to a
+        user. That is exactly the single-writer serialization `self._lock`
+        exists to enforce (this class's docstring: "SQLite has a single
+        writer connection"), so bypassing it was a genuine violation, not a
+        safe optimization. Holding the lock here means the worker's writes
+        correctly queue behind every other engine caller (the whole point
+        of a single-writer DB) — the cost is that ingest is serialized with
+        the rest of the dashboard for the duration of each chunk's
+        extraction. That cost is deliberately accepted and mitigated by a
+        heavy throttle (`_ingest_throttle_s`, applied in start_ingest_
+        worker's _loop): after every job this worker actually processes, it
+        sleeps a multi-second gap so tick/HTTP get guaranteed windows even
+        while churning a large backlog, instead of chaining remember() call
+        after remember() call with zero gap between them.
+
+        Failure classification (opus review Hazard 2, "zero statements ==
+        failure" — WRONG): a legitimate no-facts chunk (most pure-coding
+        Claude Code turns: "run the tests" / "ok" / "done") extracts zero
+        statements via a successful `ok=True` empty `[]` response —
+        indistinguishable, at the old binding surface, from a systemic
+        extraction outage. `RememberOutcome.extraction_failed`
+        (src/memory/memory_ops.cpp:78, derived from Extractor::run's
+        Status::FAILED — set only when the LLM adapter/JSON-parse failed on
+        EVERY retry attempt, never for a successful-but-empty extraction) is
+        now surfaced through the `memory_remember` binding (bindings/python/
+        bind_13_memory_ops.cpp) and passed through untouched by
+        MemoryCore.remember() (python/starling/_memory_core.py) to this
+        worker. NOTE (verified, not just assumed): MemoryCore.remember()
+        runs belief extraction (the call whose dict this worker reads) and
+        a SEPARATE general-fact `_core.memory_remember` call whose own
+        extraction_failed is discarded (never merged into the returned
+        dict) — so this signal reflects the belief pipeline only, not
+        general-fact. Documented as a residual gap, not fixed here (fixing
+        it would touch the core aggregation in _memory_core.py, out of this
+        fix wave's bindings-only scope).
+
+        A chunk with extraction_failed=False is success REGARDLESS of
+        statement count (an all-chitchat job legitimately produces zero
+        statements and is NOT an error). extraction_failed=True on any
+        chunk, or ANY raised exception (bad job/transcript data,
+        WriteGateRejected, LLMNotConfigured, network errors, a same-
+        connection race, …), is a retryable failure: no more keyword-
+        guessing about which errors are "transient" — every failure gets
+        the same bounded number of chances (_ingest_max_attempts, tracked
+        via an `attempts` counter persisted on the job JSON). Below the
+        cap it is left back in the spool for a later poll; at or above it,
+        the job is dead-lettered to failed/ with a `.error` sidecar
+        recording the last error.
         """
         sp = self._ingest_spool
         jobs = sorted(sp.glob("*.json")) if sp.exists() else []
         if not jobs:
-            return False
+            return "empty"
         job_path = jobs[0]
         claimed = job_path.with_suffix(".json.processing")
         try:
-            job_path.rename(claimed)              # 原子 claim
+            job_path.rename(claimed)               # 原子 claim
         except OSError:
-            return True                            # 被别的消费者抢走,下轮继续
+            return "deferred"                       # 被别的消费者抢走(单 worker 下罕见/防御性),下轮再试
         try:
             job = json.loads(claimed.read_text())
+        except Exception:                           # noqa: BLE001 — 损坏的 job 文件按空 job 处理,下方统一走有界重试
+            job = {}
+        try:
             tp = Path(job["transcript_path"])
             lines = tp.read_text(errors="replace").splitlines()
             project = os.path.basename((job.get("cwd") or "").rstrip("/")) or "unknown"
             chunks = chunk_dialogue(clean_turns(lines))
-            total_statements = 0
+            extraction_failed = False
             for chunk in chunks:
                 t0 = time.monotonic()
-                with self._lock:                   # 仅测锁等待,不含 remember(见上方 docstring)
-                    self._ingest_lock_wait_ms_total += int((time.monotonic() - t0) * 1000)
-                out = self._core.remember(chunk, holder="self",
-                                          interlocutor=f"claude-code:{project}", now=None)
-                total_statements += len(out.get("statement_ids") or [])
-            if chunks and total_statements == 0:
-                # memory_remember() never raises on an extraction failure
-                # (LLM ok=False / invalid JSON): Extractor swallows it into
-                # a FAILED run and commits (verified against
-                # src/extractor/extractor.cpp — retries kMaxRetries times,
-                # then commits with status=FAILED; no exception). The C++
-                # RememberOutcome.extraction_failed flag captures this, but
-                # is NOT surfaced by the memory_remember Python binding —
-                # only engram_ref/statement_ids/outcome are bound (verified
-                # against bindings/python/bind_13_memory_ops.cpp; confirmed
-                # empirically too: an ok=False FakeLLM returns
-                # {"outcome": "accepted", "statement_ids": []}, no
-                # exception, no extraction_failed key). So "an
-                # accepted/idempotent write with zero statements across
-                # every chunk of a job" is the only Python-observable
-                # signal of a systemic extraction failure; synthesize a
-                # permanent error (below) instead of silently marking a
-                # job "done" with nothing to show for it. A job with SOME
-                # empty chunks and at least one real statement is still a
-                # success — small-talk chunks legitimately yield nothing.
+                out = self.remember(chunk, holder="self",
+                                    interlocutor=f"claude-code:{project}", now=None)
+                self._ingest_remember_ms_total += int((time.monotonic() - t0) * 1000)
+                if out.get("extraction_failed"):
+                    extraction_failed = True
+            if extraction_failed:
                 raise RuntimeError(
-                    f"extraction_failed: no statements extracted from "
-                    f"{len(chunks)} chunk(s)")
+                    f"extraction_failed: extraction LLM failed on one or "
+                    f"more of {len(chunks)} chunk(s)")
             (sp / "done").mkdir(exist_ok=True)
             claimed.rename(sp / "done" / job_path.name)
-        except Exception as exc:                   # noqa: BLE001 — classify + route, never crash the worker
-            # Transient (leave the job in the spool root; next poll
-            # retries): network/timeout-shaped errors, a closed write gate
-            # (DRAINING/UNREADY — reopens once healthy again), an
-            # as-yet-unconfigured LLM role (an admin may bind one later via
-            # the config UI), or a same-connection transaction race (see
-            # this method's docstring). Permanent (dead-letter to failed/):
-            # anything else — bad job/transcript data, or a systemic
-            # extraction failure — so a poison job doesn't spin forever.
-            transient = (
-                isinstance(exc, _core.WriteGateRejected)
-                or isinstance(exc, LLMNotConfigured)
-                or any(k in str(exc).lower() for k in
-                       ("timeout", "transport", "ssl", "connect", "temporarily",
-                        "transaction", "locked", "busy"))
-            )
-            if transient:
-                claimed.rename(job_path)            # 留 spool,下轮重扫自动重试
-            else:
-                (sp / "failed").mkdir(exist_ok=True)
-                claimed.rename(sp / "failed" / job_path.name)
-                (sp / "failed" / (job_path.name + ".error")).write_text(str(exc)[:1000])
-        return True
+            return "done"
+        except Exception as exc:                    # noqa: BLE001 — classify + route, never crash the worker
+            attempts = int(job.get("attempts") or 0) + 1
+            if attempts < self._ingest_max_attempts:
+                job["attempts"] = attempts
+                claimed.write_text(json.dumps(job))
+                claimed.rename(job_path)            # 留 spool,下轮重扫自动重试(本次不 hot-reclaim)
+                return "deferred"
+            (sp / "failed").mkdir(exist_ok=True)
+            claimed.rename(sp / "failed" / job_path.name)
+            (sp / "failed" / (job_path.name + ".error")).write_text(str(exc)[:1000])
+            return "done"
 
     def start_ingest_worker(self, poll_interval_s: float = 2.0) -> None:
         """Background poller (mirrors start_background_tick's thread
-        template, engine.py:549): drains the spool every poll_interval_s,
-        looping tightly while jobs remain so a burst doesn't wait a full
-        interval between jobs. daemon thread; a network/parse exception
-        from one job never kills the loop (caught + logged, next poll
-        continues)."""
+        template, engine.py:559): first reaps any crash-stranded
+        `.processing` claim (see _ingest_reap_stale_processing), then drains
+        the spool every poll_interval_s. The inner loop keeps going ONLY
+        while jobs keep completing ("done") so a burst doesn't wait a full
+        poll interval between jobs — throttled by `_ingest_throttle_s`
+        between each, since "done" means this worker just held `self._lock`
+        across a remember() call and an unthrottled hot loop could pin the
+        rest of the dashboard behind a large backlog. A "deferred"/"empty"
+        result falls straight through to the normal poll_interval_s sleep —
+        no busy-spin on a persistently-retryable job. daemon thread; an
+        exception from one job never kills the loop (caught + logged, next
+        poll continues)."""
         if self._ingest_thread is not None:
             return
+        self._ingest_reap_stale_processing()
         stop = threading.Event()
 
         def _loop() -> None:
             while not stop.wait(poll_interval_s):
                 try:
-                    while self._ingest_drain_once():
-                        if stop.is_set():
+                    while self._ingest_drain_once() == "done":
+                        if stop.wait(self._ingest_throttle_s):
                             break
                 except Exception:  # noqa: BLE001 — 保活:单个 job 失败不终结调度
                     logger.exception("ingest worker failed")

@@ -170,8 +170,9 @@ def build_inspect_router(require_token) -> APIRouter:
 
     @router.get("/ingest_status")
     async def ingest_status(request: Request):
-        # dogfood 子项 A(Task 3):spool 队列深度 —— 引擎内存态(锁等待计数器),
-        # 无引擎则无可读(同 runtime_health 的能力探测模式)。
+        # dogfood 子项 A(Task 3):spool 队列深度 —— 引擎内存态(remember 累计
+        # 耗时计数器 ingest_remember_ms_total),无引擎则无可读(同
+        # runtime_health 的能力探测模式)。
         eng = _engine_or_none(request)
         if eng is None:
             raise HTTPException(status_code=503, detail="engine not initialized")

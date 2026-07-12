@@ -99,6 +99,13 @@ class RememberResult:
     engram_ref: str
     statement_ids: list = field(default_factory=list)
     outcome: str = ""
+    # opus review fix wave (2026-07-12, dashboard ingest worker Task 3): the
+    # memory_remember binding now surfaces RememberOutcome.extraction_failed
+    # (src/memory/memory_ops.cpp:78) so callers can distinguish a genuine
+    # extraction-LLM failure from a legitimate zero-statement extraction —
+    # add the field here too so this facade's RememberResult(**dict) forward
+    # doesn't reject the new key (same landmine as TickStats/TickOutcome).
+    extraction_failed: bool = False
 
 
 @dataclass
