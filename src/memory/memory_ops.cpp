@@ -21,11 +21,8 @@
 
 namespace starling::memoryops {
 
-RememberOutcome remember(persistence::SqliteAdapter& adapter,
-                         extractor::LLMAdapter& llm,
-                         std::string_view prompt_template,
-                         const RememberParams& p,
-                         const extractor::ValidationPolicy& policy) {
+RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
+                                  const RememberParams& p) {
     governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
     evidence::EngramInput in;
     in.tenant_id              = p.tenant_id;
@@ -50,40 +47,74 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
     bus::Bus bus(adapter);
     const auto out = bus.append_evidence(in, std::nullopt);
 
-    RememberOutcome r;
+    RememberPrepared prep;
+    prep.created_at_iso8601 = p.created_at_iso8601;   // #6:权威时戳快照
     if (const auto* acc = std::get_if<bus::AppendEvidenceAccepted>(&out)) {
-        r.outcome    = "accepted";
-        r.engram_ref = acc->ref.id;
+        prep.outcome = "accepted";   prep.engram_ref = acc->ref.id;  prep.should_extract = true;
     } else if (const auto* idem = std::get_if<bus::AppendEvidenceIdempotent>(&out)) {
-        r.outcome    = "idempotent";
-        r.engram_ref = idem->ref.id;
+        prep.outcome = "idempotent"; prep.engram_ref = idem->ref.id; prep.should_extract = true;
     } else if (std::holds_alternative<bus::AppendEvidenceNoStore>(out)) {
-        r.outcome = "no_store";
-        return r;   // 未入库即不抽取
+        prep.outcome = "no_store";
     } else {
-        r.outcome = "rejected";
-        return r;
+        prep.outcome = "rejected";
     }
+    return prep;
+}
 
-    // Pass the adapter (Phase 2 Task 2.2) so the belief subject surface resolves
-    // to its canonical first-seen cognizer name (CognizerHub) before the write,
-    // grounding name drift to one entity. Best-effort + inside the run's txn.
-    extractor::Extractor ex(adapter.connection(), llm, adapter, std::string(prompt_template), policy);
-    const auto run = ex.run(r.engram_ref, p.payload, p.holder_id, p.tenant_id,
-                            /*existing_ref_map=*/{}, p.interlocutor);
-    r.statement_ids = run.accepted_statement_ids;
-    // 抽取 LLM 失败时 Extractor 吞失败、置 FAILED 并 commit(不抛异常),证据已
-    // 入库但未蒸馏出语句。记录下来,让 converse 区分「抽取失败」与「抽取空」,
-    // 否则 remember 永远报成功,decision-A 的可观测性形同虚设。
+extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter& adapter,
+                                           extractor::LLMAdapter& llm,
+                                           std::string_view prompt_template,
+                                           const RememberParams& p,
+                                           const extractor::ValidationPolicy& policy) {
+    // store_adapter ctor 保留(persist 段做 cognizer 名归一);extract_llm 段不碰 DB。
+    extractor::Extractor ex(adapter.connection(), llm, adapter,
+                            std::string(prompt_template), policy);
+    return ex.extract_llm(p.payload, p.holder_id, /*existing_ref_map=*/{});
+}
+
+RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
+                                extractor::LLMAdapter& llm,
+                                const RememberParams& p,
+                                const RememberPrepared& prepared,
+                                const extractor::ExtractionLlmResult& llm_result,
+                                const extractor::ValidationPolicy& policy) {
+    RememberOutcome r;
+    r.outcome    = prepared.outcome;
+    r.engram_ref = prepared.engram_ref;
+    if (!prepared.should_extract) {
+        return r;   // no_store/rejected:未入库即不抽取、不泵(与单体早退等价)
+    }
+    governance::require_write_admission(adapter);   // 捕锁外 extract 期间转 DRAINING
+
+    extractor::Extractor ex(adapter.connection(), llm, adapter,
+                            /*prompt_template=*/"", policy);
+    const auto run = ex.persist(prepared.engram_ref, p.holder_id, p.tenant_id,
+                                p.interlocutor, llm_result);
+    r.statement_ids     = run.accepted_statement_ids;
     r.extraction_failed = (run.status == extractor::ExtractionRunResult::Status::FAILED);
 
-    // 写后泵的生产宿主(P2.o):生产语句写经 StatementWriter 不经 Bus::write,
-    // 泵若只挂在 Bus::write 尾部则投影/信念/再巩固/在线回放在 remember 路径
-    // 永不运行。每次 remember(含重忆 noop——订阅者按 checkpoint 空转,便宜)
-    // 泵一次;now 用调用方时间,保持与本次写入一致且测试可控。
+    // 写后泵(P2.o):生产语句写经 StatementWriter 不经 Bus::write,泵挂此处。
+    // #6:用 prepared 的权威时戳(而非 params 另传的 created_at)——防 prepare/commit 漂移。
     bus::SubscriberPump::run_post_write(adapter, adapter.connection(),
-                                        p.created_at_iso8601);
+                                        prepared.created_at_iso8601);
     return r;
+}
+
+RememberOutcome remember(persistence::SqliteAdapter& adapter,
+                         extractor::LLMAdapter& llm,
+                         std::string_view prompt_template,
+                         const RememberParams& p,
+                         const extractor::ValidationPolicy& policy) {
+    // 单体 = 三相内联(单一语义源;host 分相调用与此逐字段 parity)。
+    const RememberPrepared prepared = remember_prepare(adapter, p);
+    if (!prepared.should_extract) {
+        RememberOutcome r;
+        r.outcome    = prepared.outcome;
+        r.engram_ref = prepared.engram_ref;
+        return r;
+    }
+    const auto llm_result = extract_llm(adapter, llm, prompt_template, p, policy);
+    return remember_commit(adapter, llm, p, prepared, llm_result, policy);
 }
 
 std::string neutralize_recall_fence(std::string_view context_pack) {

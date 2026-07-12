@@ -145,6 +145,7 @@ add_executable(starling_tests
     test_working_set.cpp
     test_memory_ops.cpp
     test_converse_phases.cpp
+    test_remember_phases.cpp
     test_affect_reranker.cpp
     test_abstention_gate.cpp
     test_context_pack.cpp

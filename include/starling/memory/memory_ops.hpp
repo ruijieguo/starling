@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "starling/embedding/embedding_worker.hpp"
+#include "starling/extractor/extractor.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/governance/stage_timer.hpp"
@@ -41,6 +42,43 @@ struct RememberOutcome {
                                               // 吞失败返回 FAILED 而非抛异常)——供
                                               // converse 区分「抽取失败」与「抽取空」。
 };
+
+// 方案2 三相拆分(2026-07-12,remember extraction 出锁):prepare(engram 写)/
+// extract_llm(纯 LLM,锁外无事务)/ commit(persist txn 写 + 写后泵)。host 在
+// prepare/commit 段持引擎锁、extract 段释放——写事务不再跨 extraction 网络。
+// remember() 本身内联三相(单一语义源:分调用与单体逐字段 parity,见
+// test_remember_phases.cpp)。C++ 原语是单次 extraction;belief/episodic/gf 的
+// 三管线编排在 host MemoryCore(option B:本 slice 只让 belief+gf 出锁)。
+struct RememberPrepared {
+    std::string engram_ref;         // 空 = 未入库(no_store/rejected)
+    std::string outcome;            // accepted/idempotent/no_store/rejected
+    bool        should_extract = false;  // accepted||idempotent → 继续 extract+commit
+    // #6(review 加固):prepare 时刻快照;commit 以它为权威(而非另传 created_at),
+    // 镜像 ConversePrepared.created_at_iso8601——即使 C++/绑定直呼者对 prepare/commit
+    // 各传不同 now,落库时戳也不分叉。Python bundle 亦从此读(不再自持 created_iso)。
+    std::string created_at_iso8601;
+};
+
+// 相位 1(锁内短):require_write_admission fail-fast + append_evidence(engram 写)。
+RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
+                                  const RememberParams& params);
+
+// 相位 2(锁外无事务):构 Extractor → extract_llm(纯 LLM + parse,零 DB)。
+extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter& adapter,
+                                           extractor::LLMAdapter& llm,
+                                           std::string_view prompt_template,
+                                           const RememberParams& params,
+                                           const extractor::ValidationPolicy& policy = {});
+
+// 相位 3(锁内短):require_write_admission(捕中途转 DRAINING)+ Extractor::persist
+// (txn 写 statements/attempt/events)+ 写后泵。should_extract=false 时直接回
+// prepared 的 outcome/engram_ref(no_store/rejected 短路,不 persist、不泵)。
+RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
+                                extractor::LLMAdapter& llm,
+                                const RememberParams& params,
+                                const RememberPrepared& prepared,
+                                const extractor::ExtractionLlmResult& llm_result,
+                                const extractor::ValidationPolicy& policy = {});
 
 // 标准写管线:内容确定性幂等键 → Bus::append_evidence(证据入库)→
 // 仅 accepted/idempotent 时 Extractor::run(LLM 抽取)→ 写后泵一次
