@@ -60,6 +60,7 @@ add_executable(starling_tests
     test_conflict_key.cpp
     test_bus_statement_write.cpp
     test_extractor_orchestrator.cpp
+    test_extractor_phases.cpp
     test_conflict_probe_indices.cpp
     test_conflict_probe_scan.cpp
     test_bus_write_conflict.cpp
