@@ -270,6 +270,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
                        &starling::memoryops::RememberPrepared::created_at_iso8601);
 
     // 纯句柄:extract→commit 之间传递,无成员导出。
+    // NOLINTNEXTLINE(bugprone-unused-raii) -- pybind 类型注册是有意的副作用,无需命名对象
     py::class_<starling::extractor::ExtractionLlmResult>(m, "ExtractionLlmResult");
 
     m.def("memory_remember_prepare",
@@ -305,7 +306,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
              starling::extractor::LLMAdapter& llm,
              const std::string& prompt_template, const std::string& holder_id,
              const py::bytes& payload,
-             starling::extractor::ValidationPolicy policy) {
+             const starling::extractor::ValidationPolicy& policy) {
               starling::memoryops::RememberParams params;
               params.holder_id = holder_id;
               {
@@ -333,7 +334,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& interlocutor,
              const starling::memoryops::RememberPrepared& prepared,
              const starling::extractor::ExtractionLlmResult& llm_result,
-             starling::extractor::ValidationPolicy policy) {
+             const starling::extractor::ValidationPolicy& policy) {
               starling::memoryops::RememberParams params;
               params.tenant_id    = tenant_id;
               params.holder_id    = holder_id;
