@@ -12,7 +12,7 @@
 
 - **架构边界(硬)**:核心语义(算法/事务边界/状态机/管线编排)在 C++ 内核;Python 只做适配转发/签名归一。`extract_llm`/`persist`/三相原语都是 C++;`MemoryCore` 的 belief/episodic/gf 编排是既有 host 层(不外扩)。
 - **单写者 SQLite**:`extract_llm` 段**既不持引擎锁、也不在 DB 事务内**(只释放锁而不移事务 = BEGIN 套 BEGIN 隐患)。prepare/commit 短段持 `_lock`。episodic 单体仍在 commit 锁内(残留,option B)。
-- **行为逐字节不变**:`Extractor::run` 与 `memoryops::remember` 单体保留并内联三相;既有全部 extractor / memory_ops / converse / facade 测试不改照跑 = 首道回归网。落库终态(statements/attempt/pipeline_run/bus_events)、幂等、FAILED 语义、statement_ids 顺序(belief+episodic+gf)全不变。
+- **行为等价(带一处已知时戳位移)**:`Extractor::run` 与 `memoryops::remember` 单体保留并内联三相;既有全部 extractor / memory_ops / converse / facade 测试不改照跑 = 首道回归网。落库**行内容/status/statements/latency_ms**、幂等、FAILED 语义、statement_ids 顺序(belief+episodic+gf)全不变。**唯一例外(#8,已裁定接受+文档化):** DB 写**时戳列**(`pipeline_run.started_at`、`extraction_attempt.created_at`、events)从「与 LLM 交错」位移到「persist 时刻聚簇」——因所有 DB 写现在都跟在 extract_llm 之后。已核实**无消费方**依赖这些时戳的铺开(`governance_pipeline_run` 是另表;dashboard 抽取时间派生自 `extraction_attempt.created_at`,B 的 latency 端点用 `latency_ms`=真 LLM 往返,extract_llm 里测得、persist 原样落)。故 parity 测试的时戳列不入等值比较键。
 - **写门**:`remember_prepare` 首行 `require_write_admission`(fail-fast);`remember_commit` persist 前再校验一次(捕锁外 extract 期间转 DRAINING 的中途翻转)。
 - **provider 局部解析**:`engine.remember` 拆锁后不得换全局 adapter slot(并发轮会读到错模型);解析为局部引用传入 extract/commit(照 `_resolve_chat`)。
 - **构建/测试**:canonical `python scripts/configure_build.py --build --test`;改 C++/绑定后必须 `--python-editable` 重装 `_core`;pytest 一律 `.venv/bin/python -m pytest tests/python`;PATH 需 `export PATH="$PWD/.venv/bin:$PATH"`,build 目录 `build-macos`。clang-tidy CI-only(本地跑不了,新 C++ 按 by-construction 干净写)。
@@ -88,6 +88,25 @@ int row_count(persistence::Connection& conn, const std::string& table,
 
 LLMResponse ok_json() { return LLMResponse{.raw_xml = kSuccessJson, .ok = true}; }
 
+// #7(review 加固):比行值不只比行数——转录 bug 可能保留计数却改坏值。
+// 返回按稳定序排的 "col|col|..." 行串,供两库逐行等值比较。
+std::vector<std::string> dump_rows(persistence::Connection& conn, const std::string& sql) {
+    std::vector<std::string> out;
+    sqlite3_stmt* raw = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(conn.raw(), sql.c_str(), -1, &raw, nullptr), SQLITE_OK);
+    persistence::StmtHandle h(raw);
+    while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        std::string row;
+        for (int c = 0; c < sqlite3_column_count(h.get()); ++c) {
+            if (c) row.push_back('|');
+            const unsigned char* t = sqlite3_column_text(h.get(), c);
+            row += t ? reinterpret_cast<const char*>(t) : "<null>";
+        }
+        out.push_back(row);
+    }
+    return out;
+}
+
 }  // namespace
 
 TEST(ExtractorPhases, PhasedEqualsMonolithSuccess) {
@@ -115,6 +134,21 @@ TEST(ExtractorPhases, PhasedEqualsMonolithSuccess) {
               row_count(pa->connection(), "pipeline_run", "status='finished'"));
     EXPECT_EQ(row_count(ma->connection(), "bus_events", "event_type='statement.written'"),
               row_count(pa->connection(), "bus_events", "event_type='statement.written'"));
+    // #7:行级值 parity——语句内容 + attempt 行(status/error/tokens)逐行等值,
+    // 而非仅计数。时戳列(created_at/started_at)不入比较键(#8:聚簇到 persist 时刻,
+    // 两库各自的 wall-clock 本就不同)。
+    EXPECT_EQ(dump_rows(ma->connection(),
+                  "SELECT subject_id,predicate,canonical_object_hash,holder_id "
+                  "FROM statements ORDER BY predicate,canonical_object_hash"),
+              dump_rows(pa->connection(),
+                  "SELECT subject_id,predicate,canonical_object_hash,holder_id "
+                  "FROM statements ORDER BY predicate,canonical_object_hash"));
+    EXPECT_EQ(dump_rows(ma->connection(),
+                  "SELECT attempt_number,status,error,total_tokens "
+                  "FROM extraction_attempt ORDER BY extraction_span_key,attempt_number"),
+              dump_rows(pa->connection(),
+                  "SELECT attempt_number,status,error,total_tokens "
+                  "FROM extraction_attempt ORDER BY extraction_span_key,attempt_number"));
 }
 
 TEST(ExtractorPhases, PhasedEqualsMonolithAllFail) {
@@ -137,6 +171,13 @@ TEST(ExtractorPhases, PhasedEqualsMonolithAllFail) {
               row_count(pa->connection(), "extraction_attempt", "status='failed'"));
     EXPECT_EQ(row_count(ma->connection(), "bus_events", "event_type='extraction.failed'"),
               row_count(pa->connection(), "bus_events", "event_type='extraction.failed'"));
+    // #7:失败 attempt 的 (number,status,error) 逐行等值(转录 bug 可能改坏 error 文本却保计数)。
+    EXPECT_EQ(dump_rows(ma->connection(),
+                  "SELECT attempt_number,status,error FROM extraction_attempt "
+                  "ORDER BY attempt_number"),
+              dump_rows(pa->connection(),
+                  "SELECT attempt_number,status,error FROM extraction_attempt "
+                  "ORDER BY attempt_number"));
 }
 
 TEST(ExtractorPhases, NoopShortCircuitOnReRun) {
@@ -481,7 +522,7 @@ Expected: `ExtractorPhases`(3 新)+ `ExtractorOrchestrator`(既有,run 内联后
 ```bash
 ctest --test-dir build-macos --output-on-failure 2>&1 | tail -15
 ```
-Expected: 全绿(既有 extractor/memory_ops/converse 测试驱动 run() → 内联三相,行为不变)。
+Expected: 全绿。**#7 关键**:`test_extractor_orchestrator`(既有)对具体老行为下了绝对断言(如「3 条 failed attempt」「1 条 statement」「pipeline_run finished 计数」「特定 event 计数」)——**它才是老行为的权威回归网**(新 phases 测试的 run-vs-phased 因 run 内联 extract_llm→persist 而近乎恒真,只额外验 no-DB/autocommit + 行级值 parity)。orchestrator 测试必须保持绿,任何 persist 转录错误会在那里现形。
 
 - [ ] **Step 8: 提交**
 
@@ -514,7 +555,7 @@ EOF
 **Interfaces:**
 - Consumes: Task 1 的 `Extractor::extract_llm`/`persist`/`ExtractionLlmResult`;现存 `RememberParams`/`RememberOutcome`。
 - Produces:
-  - `struct RememberPrepared { std::string engram_ref; std::string outcome; bool should_extract = false; };`
+  - `struct RememberPrepared { std::string engram_ref; std::string outcome; bool should_extract = false; std::string created_at_iso8601; };`(#6:created_at 权威时戳)
   - `RememberPrepared remember_prepare(persistence::SqliteAdapter&, const RememberParams&);`
   - `extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter&, extractor::LLMAdapter&, std::string_view prompt_template, const RememberParams&, const extractor::ValidationPolicy& = {});`
   - `RememberOutcome remember_commit(persistence::SqliteAdapter&, extractor::LLMAdapter&, const RememberParams&, const RememberPrepared&, const extractor::ExtractionLlmResult&, const extractor::ValidationPolicy& = {});`
@@ -674,6 +715,10 @@ struct RememberPrepared {
     std::string engram_ref;         // 空 = 未入库(no_store/rejected)
     std::string outcome;            // accepted/idempotent/no_store/rejected
     bool        should_extract = false;  // accepted||idempotent → 继续 extract+commit
+    // #6(review 加固):prepare 时刻快照;commit 以它为权威(而非另传 created_at),
+    // 镜像 ConversePrepared.created_at_iso8601——即使 C++/绑定直呼者对 prepare/commit
+    // 各传不同 now,落库时戳也不分叉。Python bundle 亦从此读(不再自持 created_iso)。
+    std::string created_at_iso8601;
 };
 
 // 相位 1(锁内短):require_write_admission fail-fast + append_evidence(engram 写)。
@@ -728,6 +773,7 @@ RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
     const auto out = bus.append_evidence(in, std::nullopt);
 
     RememberPrepared prep;
+    prep.created_at_iso8601 = p.created_at_iso8601;   // #6:权威时戳快照
     if (const auto* acc = std::get_if<bus::AppendEvidenceAccepted>(&out)) {
         prep.outcome = "accepted";   prep.engram_ref = acc->ref.id;  prep.should_extract = true;
     } else if (const auto* idem = std::get_if<bus::AppendEvidenceIdempotent>(&out)) {
@@ -773,8 +819,9 @@ RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
     r.extraction_failed = (run.status == extractor::ExtractionRunResult::Status::FAILED);
 
     // 写后泵(P2.o):生产语句写经 StatementWriter 不经 Bus::write,泵挂此处。
+    // #6:用 prepared 的权威时戳(而非 params 另传的 created_at)——防 prepare/commit 漂移。
     bus::SubscriberPump::run_post_write(adapter, adapter.connection(),
-                                        p.created_at_iso8601);
+                                        prepared.created_at_iso8601);
     return r;
 }
 
@@ -852,7 +899,9 @@ EOF
     py::class_<starling::memoryops::RememberPrepared>(m, "RememberPrepared")
         .def_readonly("engram_ref",     &starling::memoryops::RememberPrepared::engram_ref)
         .def_readonly("outcome",        &starling::memoryops::RememberPrepared::outcome)
-        .def_readonly("should_extract", &starling::memoryops::RememberPrepared::should_extract);
+        .def_readonly("should_extract", &starling::memoryops::RememberPrepared::should_extract)
+        .def_readonly("created_at_iso8601",   // #6:Python(episodic)从此读,不再自持 created_iso
+                       &starling::memoryops::RememberPrepared::created_at_iso8601);
 
     // 纯句柄:extract→commit 之间传递,无成员导出。
     py::class_<starling::extractor::ExtractionLlmResult>(m, "ExtractionLlmResult");
@@ -910,18 +959,20 @@ EOF
           py::arg("policy") = starling::extractor::ValidationPolicy{});
 
     m.def("memory_remember_commit",
+          // #6:不收 created_at_iso8601——commit 以 prepared.created_at_iso8601 为权威
+          // (防 prepare/commit 时戳漂移,镜像 converse_commit)。
           [](starling::persistence::SqliteAdapter& adapter,
              starling::extractor::LLMAdapter& llm,
              const std::string& tenant_id, const std::string& holder_id,
-             const std::string& interlocutor, const std::string& created_at_iso8601,
+             const std::string& interlocutor,
              const starling::memoryops::RememberPrepared& prepared,
              const starling::extractor::ExtractionLlmResult& llm_result,
              starling::extractor::ValidationPolicy policy) {
               starling::memoryops::RememberParams p;
-              p.tenant_id          = tenant_id;
-              p.holder_id          = holder_id;
-              p.interlocutor       = interlocutor;
-              p.created_at_iso8601 = created_at_iso8601;
+              p.tenant_id    = tenant_id;
+              p.holder_id    = holder_id;
+              p.interlocutor = interlocutor;
+              // p.created_at_iso8601 留空:commit 用 prepared 的权威时戳。
               starling::memoryops::RememberOutcome r;
               {
                   py::gil_scoped_release release;   // 内含 persist txn 写 + 写后泵
@@ -934,7 +985,7 @@ EOF
                               "extraction_failed"_a = r.extraction_failed);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"), py::arg("holder_id"),
-          py::arg("interlocutor"), py::arg("created_at_iso8601"),
+          py::arg("interlocutor"),
           py::arg("prepared"), py::arg("llm_result"),
           py::arg("policy") = starling::extractor::ValidationPolicy{});
 ```
@@ -978,6 +1029,7 @@ EOF
 **Files:**
 - Modify: `python/starling/_memory_core.py`(加 `remember_prepare`/`remember_extract`/`remember_commit`;`remember` 改内联三相,belief/episodic/gf 编排移入)
 - Modify: `python/starling/dashboard/engine.py`(`remember` 改三段落锁 + `_resolve_extraction`;移除已不再被用的 `_role_override`)
+- Modify: `python/starling/dashboard/routes/commands.py`(#2:remember 路由 catch `_core.WriteGateRejected`→503)
 - Create: `tests/python/test_remember_phases_binding.py`
 - Create: `tests/python/test_remember_lock_release.py`
 
@@ -1042,16 +1094,39 @@ def test_no_store_re_remember_is_idempotent(tmp_path):
     extracted = core.remember_extract(bundle)
     second = core.remember_commit(bundle, extracted)
     assert second["outcome"] == "idempotent"
+
+
+def test_engine_split_matches_core_inline(tmp_path):
+    """#5(review 加固):三管线 host 编排 parity。engine.remember(真三相 split,
+    带锁编排 + provider 局部解析 + bundle/llm 线程化)与 MemoryCore.remember(单体
+    内联)在同一输入、独立库下产出相同 statement_ids 数量 + outcome——证 belief+
+    episodic+gf 三条在 split 路径不丢不乱。非恒真:split 走 engine 分相调用,inline
+    走 MemoryCore 顺序内联,二者编排代码不同。"""
+    cfg_a = DashboardConfig(db_path=str(tmp_path / "split.db"), token="")
+    eng_a = DashboardEngine(cfg_a)
+    fa = _core.FakeLLMAdapter(); fa.set_default_response(_STUB_JSON, True, "")
+    eng_a.llm = fa
+    cfg_b = DashboardConfig(db_path=str(tmp_path / "inline.db"), token="")
+    eng_b = DashboardEngine(cfg_b)
+    fb = _core.FakeLLMAdapter(); fb.set_default_response(_STUB_JSON, True, "")
+    eng_b.llm = fb
+
+    text = "Bob owns auth and went to Paris"
+    split = eng_a.remember(text, holder="cog-self")            # 三相 split(engine)
+    inline = eng_b._core.remember(text, holder="cog-self")     # 单体内联(MemoryCore)
+    assert split["outcome"] == inline["outcome"] == "accepted"
+    assert len(split["statement_ids"]) == len(inline["statement_ids"])
+    assert len(split["statement_ids"]) >= 1                     # belief(+gf)至少 1 条
 ```
 
 - [ ] **Step 2: 写失败测试 `tests/python/test_remember_lock_release.py`**
 
 ```python
 """锁纪律:remember 的 belief+gf extraction 段不得持有 DashboardEngine._lock。
-instrument remember_extract:在其执行(engine 三相中的锁外段)期间,另一线程
-必须能拿到 engine._lock——拆锁前该线程会阻塞(engine.remember 持锁跨 extract)。
-夹具抄 tests/python/test_converse_lock_release.py。"""
+计时法(照 test_converse_lock_release.py):extraction adapter set_delay_ms 拉长
+extract 段;并发 tick 必须在 extract 段拿到锁(<0.4s),拆锁前必阻塞 ≥0.7s。"""
 import threading
+import time
 
 from starling import _core
 from starling.dashboard import DashboardConfig
@@ -1069,27 +1144,26 @@ def _engine(tmp_path):
     eng = DashboardEngine(cfg)
     extraction = _core.FakeLLMAdapter()
     extraction.set_default_response(_STUB_JSON, True, "")
+    extraction.set_delay_ms(700)     # #4:extract 段 = C++ 内睡 700ms(belief+gf 各一次,锁外)
     eng.llm = extraction
     return eng
 
 
-def test_lock_released_during_extract(tmp_path):
+def test_tick_interleaves_during_extract(tmp_path):
+    """#4:照 test_converse_lock_release 的计时法(非 instrumentation——那会假通过:
+    若全程持锁,被起线程会在 remember 返回后拿锁并在断言前 set event)。
+    belief extraction 睡 700ms(锁外);并发 tick 必须在 extract 段 <0.4s 拿到锁;
+    拆锁前 remember 全程持锁 → tick 阻塞 ≥0.7s。"""
     eng = _engine(tmp_path)
-    acquired_during_extract = threading.Event()
-    orig_extract = eng._core.remember_extract
-
-    def instrumented(bundle, llm=None):
-        # 本函数被 engine.remember 在锁外调用;另一线程此刻应能拿到 engine._lock。
-        t = threading.Thread(target=lambda: (
-            eng._lock.acquire(), acquired_during_extract.set(), eng._lock.release()))
-        t.start()
-        t.join(timeout=2.0)
-        return orig_extract(bundle, llm=llm)
-
-    eng._core.remember_extract = instrumented
-    out = eng.remember("hello bob", holder="cog-self")
-    assert out["engram_ref"]
-    assert acquired_during_extract.is_set(), "extract 段仍持 engine._lock —— 未拆锁"
+    turn = threading.Thread(
+        target=lambda: eng.remember("hello bob", holder="cog-self"))
+    turn.start()
+    time.sleep(0.15)                       # prepare 毫秒级 → 已进 belief extract(锁外)
+    start = time.monotonic()
+    eng.tick("2026-07-12T00:00:00Z")       # 拆锁后:extract 段中锁可得(tick 不用抽取 adapter)
+    elapsed = time.monotonic() - start
+    turn.join(timeout=10)
+    assert elapsed < 0.4, f"tick 等锁 {elapsed:.2f}s —— extract 段仍持锁,未拆"
 
 
 def test_resolve_extraction_local_reference(tmp_path):
@@ -1117,6 +1191,10 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         """单体 = 三相内联(单一语义源)。facade 直接走本单体;DashboardEngine
         分相调用以在锁外跑 belief+gf extraction。belief/episodic/gf 顺序不变。"""
+        if self.llm is None:   # #1:fail-fast(prepare 会写 engram,故在写前查;facade 路径的兜底)
+            raise LLMNotConfigured(
+                "remember requires an llm adapter "
+                "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
         bundle = self.remember_prepare(text, holder=holder,
                                        interlocutor=interlocutor, now=now)
         extracted = self.remember_extract(bundle)
@@ -1124,12 +1202,10 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
 
     def remember_prepare(self, text: str, *, holder=None, interlocutor=None,
                          now=None) -> dict:
-        """三相之一(锁内短):写门 fail-fast + engram 写(belief+gf 共用同一
-        idempotent engram)。返回 bundle 携带 prepared 句柄 + 下游标量。"""
-        if self.llm is None:
-            raise LLMNotConfigured(
-                "remember requires an llm adapter "
-                "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
+        """三相之一(锁内短):engram 写(belief+gf 共用同一 idempotent engram)。
+        #1:不查 self.llm——prepare 不用 llm;llm 缺失的 fail-fast 由调用方在写前做
+        (facade monolith remember() 已查;engine.remember 经 _resolve_extraction 查)。
+        #6:created_iso 不入 bundle——commit/episodic 从 prepared.created_at_iso8601 读。"""
         created_iso = parse_now(now).astimezone(timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         holder_id = holder or self.agent
@@ -1138,9 +1214,8 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
             interlocutor=interlocutor or "", adapter_name=self.adapter_name,
             source_prefix=self.source_prefix, created_at_iso8601=created_iso,
             payload=text.encode("utf-8"))
-        return {"prepared": prepared, "created_iso": created_iso,
-                "holder_id": holder_id, "interlocutor": interlocutor or "",
-                "text": text}
+        return {"prepared": prepared, "holder_id": holder_id,
+                "interlocutor": interlocutor or "", "text": text}
 
     def remember_extract(self, bundle: dict, llm=None) -> dict:
         """三相之二(锁外无事务):belief + general-fact 两条 LLM 抽取(纯网络)。
@@ -1150,6 +1225,8 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
         if not prepared.should_extract:
             return {"belief": None, "gf": None}
         extraction_llm = llm or self.llm
+        if extraction_llm is None:   # #1:extract 真正用 llm 处兜底(直呼 extract 时)
+            raise LLMNotConfigured("remember requires an llm adapter")
         holder_id = bundle["holder_id"]
         payload = bundle["text"].encode("utf-8")
         policy = _build_policy(self._extraction)
@@ -1172,18 +1249,17 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
             return {"engram_ref": prepared.engram_ref, "statement_ids": [],
                     "outcome": prepared.outcome, "extraction_failed": False}
         extraction_llm = llm or self.llm
-        created_iso = bundle["created_iso"]
+        created_iso = prepared.created_at_iso8601   # #6:权威时戳从 prepared 读(不再自持)
         holder_id = bundle["holder_id"]
         interlocutor = bundle["interlocutor"]
         text = bundle["text"]
         policy = _build_policy(self._extraction)
 
-        # 第一条:belief persist。
+        # 第一条:belief persist(#6:不传 created_at,C++ 用 prepared 的权威时戳)。
         out = _core.memory_remember_commit(
             self.rt.adapter, extraction_llm, tenant_id=self.tenant,
             holder_id=holder_id, interlocutor=interlocutor,
-            created_at_iso8601=created_iso, prepared=prepared,
-            llm_result=extracted["belief"], policy=policy)
+            prepared=prepared, llm_result=extracted["belief"], policy=policy)
 
         # 第二条:episodic(叙事事件)。单体,LLM+DB 仍在此锁内(option B 残留)。
         engram_ref = out.get("engram_ref") or ""
@@ -1202,12 +1278,11 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
                 except Exception:  # noqa: BLE001 — perception 是 best-effort;绝不失败 remember
                     pass
 
-        # 第三条:general-fact persist(复用同 idempotent engram)。
+        # 第三条:general-fact persist(复用同 idempotent engram;#6:不传 created_at)。
         gf_out = _core.memory_remember_commit(
             self.rt.adapter, extraction_llm, tenant_id=self.tenant,
             holder_id=holder_id, interlocutor=interlocutor,
-            created_at_iso8601=created_iso, prepared=prepared,
-            llm_result=extracted["gf"], policy=policy)
+            prepared=prepared, llm_result=extracted["gf"], policy=policy)
         gf_ids = gf_out.get("statement_ids", []) if gf_out else []
         if gf_ids:
             out["statement_ids"] = list(out.get("statement_ids", [])) + list(gf_ids)
@@ -1239,12 +1314,43 @@ Expected: FAIL(`MemoryCore` 无 `remember_prepare`/`remember_extract`/`remember_
         now = now or datetime.now(timezone.utc)
         with self._lock:                                    # ① 短:写门 + engram
             extraction = self._resolve_extraction(provider)
+            if extraction is None:   # #1:fail-fast 在写 engram 前(provider 未给且抽取角色未绑)
+                raise _LLMNotConfigured(
+                    "remember requires an llm adapter (bind the extraction role "
+                    "or pass a configured provider)")
             bundle = self._core.remember_prepare(
                 text, holder=holder, interlocutor=interlocutor, now=now)
         extracted = self._core.remember_extract(bundle, llm=extraction)  # ② 锁外 LLM
         with self._lock:                                    # ③ persist + episodic + 写
             return self._core.remember_commit(bundle, extracted, llm=extraction)
 ```
+
+- [ ] **Step 5b(#2): `commands.py` remember 路由 catch `WriteGateRejected`→503**
+
+三相锁外 extract 期间健康转 DRAINING → `remember_commit` 抛 `WriteGateRejected`;路由现只 catch `_LLMNotConfigured`,故它会冒泡成 500。加一个 except 回 503(`_core.WriteGateRejected` 已注册 bind_14:42,无需绑定改动;503 范式见 inspect.py:196)。改 `python/starling/dashboard/routes/commands.py:92-103`:
+
+```python
+    @router.post("/remember")
+    async def remember(body: RememberBody, request: Request):
+        from starling.dashboard.engine import _LLMNotConfigured
+        from starling import _core
+        eng = _engine(request)
+        try:
+            r = await to_thread.run_sync(partial(
+                eng.remember, body.text, holder=body.holder,
+                interlocutor=body.interlocutor, now=body.now, provider=body.provider))
+        except _LLMNotConfigured:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="llm_not_configured")
+        except _core.WriteGateRejected:
+            # #2:三相锁外 extract 期间健康转 DRAINING → commit 抛;回 503 而非 500。
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="draining")
+        await _broadcast(request, "statement_added", {"statement_ids": r["statement_ids"]})
+        return r
+```
+
+测试断点(加进 `test_remember_lock_release.py` 或 `test_dashboard_drain.py` 风格):用 `eng._rt` 或 adapter 的 `set_write_admit([]{return False})` 关门后 POST `/api/remember` → 断言 503(非 500)。若 route 层难驱动,退而在 engine 级断言 `engine.remember` 关门时抛 `_core.WriteGateRejected`(commit 门),route 的 except 覆盖它。
 
 - [ ] **Step 6: 确认 `_role_override` 已无调用方后删净**
 
@@ -1257,7 +1363,7 @@ Expected: 除了刚删除的定义无其它命中。若上一步已删定义、`
 
 ```bash
 export PATH="$PWD/.venv/bin:$PATH"
-.venv/bin/python -m pytest tests/python/test_remember_phases_binding.py tests/python/test_remember_lock_release.py tests/python/test_memory_facade.py tests/python/test_dashboard_engine.py tests/python/test_dashboard_ingest_worker.py tests/python/test_dashboard_converse.py -q 2>&1 | tail -25
+.venv/bin/python -m pytest tests/python/test_remember_phases_binding.py tests/python/test_remember_lock_release.py tests/python/test_memory_facade.py tests/python/test_dashboard_engine.py tests/python/test_dashboard_ingest_worker.py tests/python/test_dashboard_converse.py tests/python/test_dashboard_drain.py tests/python/test_write_gate_memory_ops.py -q 2>&1 | tail -25
 ```
 Expected: 全 PASS(facade Memory.remember 走单体内联三相不变;dashboard remember 三相释放锁;摄入 worker 用 engine.remember 不变)。
 
@@ -1271,7 +1377,7 @@ Expected: 全绿。
 - [ ] **Step 9: 提交**
 
 ```bash
-git add python/starling/_memory_core.py python/starling/dashboard/engine.py tests/python/test_remember_phases_binding.py tests/python/test_remember_lock_release.py
+git add python/starling/_memory_core.py python/starling/dashboard/engine.py python/starling/dashboard/routes/commands.py tests/python/test_remember_phases_binding.py tests/python/test_remember_lock_release.py
 git commit -m "$(cat <<'EOF'
 feat(dashboard): remember three-phase host wiring — belief+gf extraction lock-free
 
@@ -1331,6 +1437,12 @@ Expected: 有 extraction attempt 分桶数据(belief+gf 仍抽取,落 extraction
 
 ---
 
+## 评审 follow-up(plan-eng-review 记录,不在本 slice)
+
+- **#3 belief/gf 跨管线非原子**(codex 抓):`remember_commit` 顺序跑 belief persist → episodic → gf persist,每个 C++ commit 重查门;若 drain 恰落在 belief 与 gf commit 之间,会 belief/episodic 已写、gf 前抛 = 部分写入 + 异常。**属既存**(单体 belief→gf 两次 memory_remember 也非原子,`begin_drain` 不持引擎锁),非本计划回归 → follow-up(让 commit 段门检查一次而非每 C++ commit 重查,或 begin_drain 与在途多管线写协调)。**已裁定不在本 slice 动**(保持只聚焦 belief+gf 出锁)。
+- **`EpisodicExtractor` 三相化**:episodic LLM 仍在 commit 锁内(~15s 残留)——measure-first follow-up(option B 核心)。
+- **已在本 PR 收**:#1 provider 回归、#2 路由 503、#4 锁测计时法、#5 三管线 parity、#6 created_at 权威、#7 行级值断言、#8 时戳位移接受+文档化。
+
 ## Self-Review
 
 **1. Spec coverage(逐节对 spec):**
@@ -1351,4 +1463,40 @@ Expected: 有 extraction attempt 分桶数据(belief+gf 仍抽取,落 extraction
 - `memory_remember_prepare`/`memory_extract_llm`/`memory_remember_commit` 绑定 arg 名(Task 3)与 Task 4 关键字调用一致。✓
 - `_resolve_extraction`(Task 4 engine)/ `remember_extract(bundle, llm=)`/`remember_commit(bundle, extracted, llm=)`(Task 4 MemoryCore)相互一致。✓
 
-**下一步:** self-review 通过 → 走 /plan-eng-review(codex 外部视角:核心+单写者+锁纪律+shared-caller 签名面)→ subagent-driven-development 执行。
+**下一步:** plan-eng-review 已过(加固折进)→ subagent-driven-development 执行。
+
+## Failure modes(新 codepath;每条:有无测试 / 有无错误处理 / 用户可见性)
+
+| codepath | 失败场景 | 测试 | 错误处理 | 用户可见 |
+|---|---|---|---|---|
+| `extract_llm`(锁外 LLM) | LLM transport error / parse fail | `PhasedEqualsMonolithAllFail` + `FailedExtractionStillPersistsAttemptRows` | 重试循环 → 收集 failed attempt → persist 写 failed 行 + FAILED 状态 | `extraction_failed=true`(摄入经 spool 重试;converse 显 remember_error)—— 非静默 |
+| `persist`(txn 写) | DB error | 既有 extractor 测试 | `TransactionGuard` rollback + 抛 | 异常冒泡 —— 非静默 |
+| `remember_commit` 门中途关 | 锁外 extract 期间转 DRAINING | `CommitThrowsWhenGateClosesMidTurn`(C++)+ 路由 503 断点 | `require_write_admission` 抛 `WriteGateRejected` → 路由 503(#2) | 503 draining —— 非静默(**修好**:原为 500) |
+| `engine.remember` provider 未绑 | provider 未给且抽取角色未绑 | `test_resolve_extraction_local_reference` | `_resolve_extraction`/入口 `extraction is None` 抛 `_LLMNotConfigured` → 409 | 409 —— 非静默(**修好** #1 回归) |
+| belief/gf 跨管线(#3) | drain 恰落 belief 与 gf commit 之间 | (既存行为,follow-up) | gf commit 前抛 → 部分写入 + 503 | 部分沉淀 + 503;幂等重试自愈 —— **既存非本计划回归**,follow-up |
+
+**无 critical gap**(无「既无测试又无错误处理又静默」的路径)。
+
+## Worktree parallelization
+
+**Sequential implementation, no parallelization opportunity.** 5 任务是严格依赖链:Task 2(memoryops)消费 Task 1(`Extractor::extract_llm`/`persist`);Task 3(绑定)消费 Task 2;Task 4(host)消费 Task 3;Task 5(真机)在最后。同碰 extractor/memory_ops 核心,无独立可并行 lane。
+
+## Implementation Tasks
+
+评审全部发现已**折进任务**(非另立 backlog):#1/#4/#5/#6/#7 加固进 Task 1-4 的代码与测试;#2 路由 503 = Task 4 Step 5b;#8 = Global Constraints/spec 文档化。**无新增独立 task**——按 Task 1→5 顺序执行即含全部加固。deferred follow-up(不在本 slice):`EpisodicExtractor` 三相化、belief/gf 跨管线原子性(#3),记于 spec Out of Scope + 「评审 follow-up」节。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | 8 findings, all adjudicated (5 folded + 1 accepted + 1 folded + 1 deferred) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | 2 self-findings (both ⊆ codex); scope accepted as-is (option B) |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — (backend/host only, no UI) |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **CODEX:** 8 findings — cleared the single-writer concern (span-key read correctly stays in persist); surfaced #1 provider regression, #4 lock-test false-pass, #5 three-pipeline parity gap, #6 created_at authority, #7 count-only parity, #8 started_at timing shift, #2 route 500, #3 pre-existing non-atomicity. #1/#4/#5/#6/#7 folded into plan; #2 route-503 folded; #8 accepted+documented; #3 deferred (pre-existing, not a regression).
+- **CROSS-MODEL:** No tension. Codex agreed with + extended both self-findings (#5 parity gap = my Tests finding; #6 = my bundle/created_at finding). No disagreement to adjudicate.
+- **VERDICT:** ENG CLEARED — plan hardened, ready to implement (option B scope accepted; subagent-driven next).
+
+NO UNRESOLVED DECISIONS

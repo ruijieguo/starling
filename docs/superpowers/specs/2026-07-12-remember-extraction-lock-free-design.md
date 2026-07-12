@@ -16,7 +16,7 @@
 
 ## Goal / Non-Goals
 
-**Goal:** remember 的 extraction LLM 调用**既不持引擎锁、也不在 DB 事务内**;摄入/对话/tick 期间 dashboard 保持可用。行为(落库终态、幂等、attempt 行、失败语义)字节级不变。
+**Goal:** remember 的 belief+gf extraction LLM 调用**既不持引擎锁、也不在 DB 事务内**;摄入/对话/tick 期间 dashboard 保持可用。行为等价:落库**行内容/status/statements/latency_ms**、幂等、attempt 行、失败语义、statement_ids 顺序不变。**一处已知例外(plan-eng-review #8 裁定接受+文档化):** DB 写**时戳列**(pipeline_run.started_at、extraction_attempt.created_at、events)从「与 LLM 交错」位移到「persist 时刻聚簇」(所有 DB 写现跟在 LLM 后)——已核实无消费方依赖时戳铺开,latency_ms(真 LLM 往返)保留。
 
 **Non-Goals:**
 - embedding 出锁 / query-embed cache —— 仍 gated。
@@ -86,4 +86,8 @@
 
 ## Out of Scope
 
-**`EpisodicExtractor` 三相化(episodic LLM 出锁)= measure-first follow-up**:本 slice 只拆 `Extractor`(belief+gf);episodic 单体的 LLM 仍在 commit 锁内(~15s 残留)。先跑起来看 B 的 latency 端点里 episodic 残留是否还痛,再决定拆。其余:embedding 出锁 / query-embed cache;converse_commit 内 remember 的 extraction(非摄入热路径,gated);多 remember 真并发。
+**`EpisodicExtractor` 三相化(episodic LLM 出锁)= measure-first follow-up**:本 slice 只拆 `Extractor`(belief+gf);episodic 单体的 LLM 仍在 commit 锁内(~15s 残留)。先跑起来看 B 的 latency 端点里 episodic 残留是否还痛,再决定拆。
+
+**belief/gf 跨管线原子性(plan-eng-review #3 记 follow-up)**:`remember_commit` 顺序跑 belief→episodic→gf,每 C++ commit 重查门;drain 落在 belief 与 gf 之间会部分写入+抛。**属既存**(单体 belief→gf 也非原子),非本计划回归;follow-up = commit 段门检查一次而非每 commit 重查。本 slice 不动。
+
+其余:embedding 出锁 / query-embed cache;converse_commit 内 remember 的 extraction(非摄入热路径,gated);多 remember 真并发。
