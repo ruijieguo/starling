@@ -22,33 +22,34 @@
 namespace starling::memoryops {
 
 RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
-                                  const RememberParams& p) {
+                                  const RememberParams& params) {
     governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
-    evidence::EngramInput in;
-    in.tenant_id              = p.tenant_id;
-    in.source.adapter_name    = p.adapter_name;
-    in.source.adapter_version = "1";
+    evidence::EngramInput engram_input;
+    engram_input.tenant_id              = params.tenant_id;
+    engram_input.source.adapter_name    = params.adapter_name;
+    engram_input.source.adapter_version = "1";
     // 内容确定性幂等键:sha256(payload) 前 16 hex。绝不能用进程内随机化的
     // hash()(历史 bug:跨进程同文本不去重/碰撞静默丢记忆)。
-    in.source.source_item_id = p.source_prefix + crypto::sha256_hex(std::string_view(
-        reinterpret_cast<const char*>(p.payload.data()), p.payload.size())).substr(0, 16);
-    in.source.source_version = "1";
-    in.source.chunk_index    = 0;
-    in.source_kind     = schema::SourceKind::USER_INPUT;
-    in.ingest_mode     = schema::IngestMode::WHOLE_RECORD;
-    in.privacy_class   = schema::PrivacyClass::INTERNAL;
-    in.retention_mode  = schema::EngramRetentionMode::AUDIT_RETAIN;
-    in.declared_transformations = {};
-    in.byte_preserving = true;
-    in.payload_bytes   = p.payload;
-    in.redacted_content = std::nullopt;
-    in.created_at_iso8601 = p.created_at_iso8601;
+    engram_input.source.source_item_id = params.source_prefix + crypto::sha256_hex(std::string_view(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<const char*>(params.payload.data()), params.payload.size())).substr(0, 16);
+    engram_input.source.source_version = "1";
+    engram_input.source.chunk_index    = 0;
+    engram_input.source_kind     = schema::SourceKind::USER_INPUT;
+    engram_input.ingest_mode     = schema::IngestMode::WHOLE_RECORD;
+    engram_input.privacy_class   = schema::PrivacyClass::INTERNAL;
+    engram_input.retention_mode  = schema::EngramRetentionMode::AUDIT_RETAIN;
+    engram_input.declared_transformations = {};
+    engram_input.byte_preserving = true;
+    engram_input.payload_bytes   = params.payload;
+    engram_input.redacted_content = std::nullopt;
+    engram_input.created_at_iso8601 = params.created_at_iso8601;
 
     bus::Bus bus(adapter);
-    const auto out = bus.append_evidence(in, std::nullopt);
+    const auto out = bus.append_evidence(engram_input, std::nullopt);
 
     RememberPrepared prep;
-    prep.created_at_iso8601 = p.created_at_iso8601;   // #6:权威时戳快照
+    prep.created_at_iso8601 = params.created_at_iso8601;   // #6:权威时戳快照
     if (const auto* acc = std::get_if<bus::AppendEvidenceAccepted>(&out)) {
         prep.outcome = "accepted";   prep.engram_ref = acc->ref.id;  prep.should_extract = true;
     } else if (const auto* idem = std::get_if<bus::AppendEvidenceIdempotent>(&out)) {
@@ -64,57 +65,57 @@ RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
 extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter& adapter,
                                            extractor::LLMAdapter& llm,
                                            std::string_view prompt_template,
-                                           const RememberParams& p,
+                                           const RememberParams& params,
                                            const extractor::ValidationPolicy& policy) {
     // store_adapter ctor 保留(persist 段做 cognizer 名归一);extract_llm 段不碰 DB。
-    extractor::Extractor ex(adapter.connection(), llm, adapter,
-                            std::string(prompt_template), policy);
-    return ex.extract_llm(p.payload, p.holder_id, /*existing_ref_map=*/{});
+    extractor::Extractor extr(adapter.connection(), llm, adapter,
+                              std::string(prompt_template), policy);
+    return extr.extract_llm(params.payload, params.holder_id, /*existing_ref_map=*/{});
 }
 
 RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
                                 extractor::LLMAdapter& llm,
-                                const RememberParams& p,
+                                const RememberParams& params,
                                 const RememberPrepared& prepared,
                                 const extractor::ExtractionLlmResult& llm_result,
                                 const extractor::ValidationPolicy& policy) {
-    RememberOutcome r;
-    r.outcome    = prepared.outcome;
-    r.engram_ref = prepared.engram_ref;
+    RememberOutcome result;
+    result.outcome    = prepared.outcome;
+    result.engram_ref = prepared.engram_ref;
     if (!prepared.should_extract) {
-        return r;   // no_store/rejected:未入库即不抽取、不泵(与单体早退等价)
+        return result;   // no_store/rejected:未入库即不抽取、不泵(与单体早退等价)
     }
     governance::require_write_admission(adapter);   // 捕锁外 extract 期间转 DRAINING
 
-    extractor::Extractor ex(adapter.connection(), llm, adapter,
-                            /*prompt_template=*/"", policy);
-    const auto run = ex.persist(prepared.engram_ref, p.holder_id, p.tenant_id,
-                                p.interlocutor, llm_result);
-    r.statement_ids     = run.accepted_statement_ids;
-    r.extraction_failed = (run.status == extractor::ExtractionRunResult::Status::FAILED);
+    extractor::Extractor extr(adapter.connection(), llm, adapter,
+                              /*prompt_template=*/"", policy);
+    const auto run = extr.persist(prepared.engram_ref, params.holder_id, params.tenant_id,
+                                  params.interlocutor, llm_result);
+    result.statement_ids     = run.accepted_statement_ids;
+    result.extraction_failed = (run.status == extractor::ExtractionRunResult::Status::FAILED);
 
     // 写后泵(P2.o):生产语句写经 StatementWriter 不经 Bus::write,泵挂此处。
     // #6:用 prepared 的权威时戳(而非 params 另传的 created_at)——防 prepare/commit 漂移。
     bus::SubscriberPump::run_post_write(adapter, adapter.connection(),
                                         prepared.created_at_iso8601);
-    return r;
+    return result;
 }
 
 RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          extractor::LLMAdapter& llm,
                          std::string_view prompt_template,
-                         const RememberParams& p,
+                         const RememberParams& params,
                          const extractor::ValidationPolicy& policy) {
     // 单体 = 三相内联(单一语义源;host 分相调用与此逐字段 parity)。
-    const RememberPrepared prepared = remember_prepare(adapter, p);
+    const RememberPrepared prepared = remember_prepare(adapter, params);
     if (!prepared.should_extract) {
-        RememberOutcome r;
-        r.outcome    = prepared.outcome;
-        r.engram_ref = prepared.engram_ref;
-        return r;
+        RememberOutcome result;
+        result.outcome    = prepared.outcome;
+        result.engram_ref = prepared.engram_ref;
+        return result;
     }
-    const auto llm_result = extract_llm(adapter, llm, prompt_template, p, policy);
-    return remember_commit(adapter, llm, p, prepared, llm_result, policy);
+    const auto llm_result = extract_llm(adapter, llm, prompt_template, params, policy);
+    return remember_commit(adapter, llm, params, prepared, llm_result, policy);
 }
 
 std::string neutralize_recall_fence(std::string_view context_pack) {
