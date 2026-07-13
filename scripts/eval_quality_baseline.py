@@ -72,7 +72,7 @@ def has_regression(findings: list[dict]) -> bool:
 def exit_code(findings: list[dict]) -> int:
     if has_regression(findings):
         return 1
-    if any(f["verdict"] in ("ERRORED", "INCOMPLETE", "MISSING") for f in findings):
+    if any(f["verdict"] in ("ERRORED", "MISSING") for f in findings):
         return 2
     return 0
 
@@ -84,7 +84,7 @@ def _dim_all_near_zero(current: dict, eval_id: str) -> bool:
 
 def render_report(findings: list[dict], meta: dict, current: dict) -> str:
     mark = {"OK": "✅ OK", "REGRESSION": "⚠ REGRESSION", "BELOW_THRESHOLD": "✗ BELOW_THRESHOLD",
-            "ERRORED": "⁇ ERRORED", "INCOMPLETE": "⁇ INCOMPLETE", "MISSING": "· MISSING"}
+            "ERRORED": "⁇ ERRORED", "MISSING": "· MISSING"}
     lines = ["# 质量回归基线报告",
              f"model={meta.get('model')} rounds={meta.get('rounds')} max_items={meta.get('max_items')}",
              "", "| eval | metric | baseline | current | threshold | verdict |",
@@ -176,7 +176,7 @@ def _score_dim(rounds: int, min_ok: int, call) -> dict[str, float] | None:
         for k, v in out.items():
             per_metric.setdefault(k, []).append(float(v))
     if ok < min_ok:
-        print(f"    只有 {ok}/{rounds} 成功轮 < min_ok={min_ok} → INCOMPLETE", file=sys.stderr)
+        print(f"    只有 {ok}/{rounds} 成功轮 < min_ok={min_ok} → ERRORED(成功轮不足 min_ok)", file=sys.stderr)
         return None
     return {k: median(vs) for k, vs in per_metric.items()}
 
@@ -191,15 +191,11 @@ def collect_scores(corpora: dict[str, tuple[list[dict], str]], rounds: int, min_
     current: dict[str, dict[str, float] | None] = {}
     current["extract"] = _score_dim(rounds, min_ok,
         call=lambda: eval_p1_extractor.run_one_round(extract_recs, base_url, api_key, model))
-    current["tom"] = _tom_wrap(_score_dim(rounds, min_ok,
+    current["tom"] = _score_dim(rounds, min_ok,
         call=lambda: {"accuracy": eval_tom_bench.run_one_round(
             tom_recs, fixture_mode=False, base_url=base_url, api_key=api_key,
-            model=model, abilities=eval_tom_bench.FIRST_ORDER_ABILITIES)}))
+            model=model, abilities=eval_tom_bench.FIRST_ORDER_ABILITIES)})
     return current
-
-
-def _tom_wrap(scores):   # _score_dim 已把 float 包成 {"accuracy":...};透传 None
-    return scores
 
 
 def main(argv: list[str] | None = None) -> int:
