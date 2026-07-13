@@ -13,7 +13,9 @@ Starling 有一套**成熟的 benchmark eval**(`scripts/eval_*.py` + `tests/data
 
 ## Goal / Non-Goals
 
-**Goal:** 一个 orchestrator,**复用**既有 3 个 harness 的打分函数,在**小固定 corpus 子集**上真 LLM 跑、取 N 轮中位数,写/diff 一个 git-committed 基线 JSON,判回归。让质量退化在改动前后一跑就现形。
+**Goal:** 一个 orchestrator,**复用**既有 harness 的打分函数,在**全量小 corpus** 上真 LLM 跑、取 N 轮中位数,写/diff 一个 git-committed 基线 JSON,判回归。让质量退化在改动前后一跑就现形。
+
+**范围裁定(plan-eng-review codex 12 findings 后收窄):首 slice = 2 维(extract F1 + ToM accuracy)。** recall(longmemeval)拿掉作 follow-up——codex 核实其 real-mode 基本坏:chat `max_tokens=512` 用 reasoning 模型会截断崩(#7)、env 处理不安全(#8)、且计划把「每 subset >0.55」塌成加权 overall 毁了验收规则(#2),加上从未真跑过 + 每 record 建整条重 pipeline。先做 extract+ToM(都是干净 base_url HTTP + 可工作 run_one_round);recall 等 longmemeval real-mode 修好再加。
 
 **Non-Goals:**
 - 新写 eval 逻辑 —— 复用既有 `run_one_round`/aggregate,不重造。
@@ -38,14 +40,14 @@ Starling 有一套**成熟的 benchmark eval**(`scripts/eval_*.py` + `tests/data
 
 ### ② 三维 + 复用的 harness 函数 + corpus 子集(都在仓库)
 
-| eval_id | harness(import,不重写) | corpus(取 first-N 确定子集) | 指标 |
+| eval_id | harness(import,不重写) | corpus(**全量**,非 first-N) | 指标 |
 |---|---|---|---|
-| `extract_f1` | `eval_p1_extractor.run_one_round(corpus, base_url, api_key, model)` + `P1_THRESHOLDS`/`f1_score` | `tests/data/eval_p1_corpus.jsonl`(50) | f1(+ precision/recall) |
-| `recall_accuracy` | `eval_longmemeval.run_one_round(corpus, subsets, fixture_mode=False)` + `ACCURACY_THRESHOLD`/`SUBSETS` | `tests/data/eval_longmemeval/sessions.jsonl`(24) | 多选准确率 |
-| `tom_accuracy` | `eval_tom_bench.run_one_round(...)` + `ACCURACY_THRESHOLD`(=0.55)——与另两维同 `run_one_round` 形态、最干净(`eval_tom2_starling` 是 per-case、`eval_tombench_full` 是 run+aggregate,均不如它齐整) | `tests/data/eval_tom_bench/first_order.jsonl`(24) | 准确率 |
+| `extract` | `eval_p1_extractor.run_one_round(corpus, base_url, api_key, model)` + `P1_THRESHOLDS` | `tests/data/eval_p1_corpus.jsonl`(50 全量) | 5 个 per-field F1 |
+| `tom` | `eval_tom_bench.run_one_round(corpus, *, fixture_mode, base_url, api_key, model, abilities)` + `ACCURACY_THRESHOLD`=0.55 | `tests/data/eval_tom_bench/first_order.jsonl`(24 全量,4 ability 各 6) | accuracy |
+| ~~recall~~ | ~~eval_longmemeval~~ | follow-up(见范围裁定) | — |
 
-- **小固定子集**:各取前 `--max-items`(默认 15)条(确定性:同一 corpus 前 N 条,每次同样本→可比)。corpus 本就小(24-50),15 条把每维 LLM 调用 = 15×rounds 控住(三维×3 轮×15 ≈ 135 次/`--check`,~10-20 min,含 Clash 抖动可接受)。
-- 三个 harness 的真实 import 名/签名以实现时核对为准(fixture 自测已 import 过它们,签名可查);orchestrator 只调其 `run_one_round`、读回它已算好的指标 dict,不碰内部。
+- **用全量小 corpus,不用 first-N 子集**(codex #3:`corpus[:15]` 漏掉整个 ability、偏 subset,非代表)。corpus 本就小(extract 50 / ToM 24 balanced),全量跑 = 每维 corpus×rounds(2 维×3 轮 ≈ (50+24)×3=222 次/`--check`,~15-30 min 手动可接受)。可选 `--max-items` 默认 None=全量;若限量,基线元数据记 corpus 内容 hash 供 `--check` 比对(#10)。
+- orchestrator 只调 `run_one_round`、读回指标 dict,不碰内部;签名已核实(extract→dict[field,f1]、tom→float)。
 
 ### ③ 基线 JSON(git-committed)
 
@@ -67,14 +69,16 @@ Starling 有一套**成熟的 benchmark eval**(`scripts/eval_*.py` + `tests/data
 
 对每个 eval_id,`--check` 判:
 - **回归** ⟺ `current_median < baseline.median - tolerance`(相对退化,容差吸收噪声)**或** `current_median < baseline.threshold`(跌破绝对地板)。
-- 报告(文本/markdown):逐维列 `baseline.median → current_median`、阈值、判定(`OK` / `⚠ REGRESSION: 相对退化 X` / `✗ BELOW THRESHOLD`);末尾总判定。
-- 退出码:任一维回归 → 非零(便于 `--check` 当门用,虽非 CI)。基线文件缺失时 `--check` 提示先 `--update`。
+- 报告(文本/markdown):逐维列 `baseline.median → current_median`、阈值、判定(`OK`/`REGRESSION`/`BELOW_THRESHOLD`/`ERRORED`/`INCOMPLETE`/`MISSING`)+ 近 0 附注(见 ⑤);末尾总判定。
+- **基线完整性(codex #1/#12)**:`--update` 要求**所有配置维**(extract+tom)都成功采到分才写基线——任一维 None/INCOMPLETE 则**拒绝写、保留旧基线**、退出 2(不静默漏维)。`--check` 若基线缺某配置维 → 该维 `MISSING` verdict(而非静默 exit 0)。
+- **配置可比性(codex #10)**:基线元数据记 model + rounds + max_items + 每维 corpus 内容 hash;`--check` 比对当前 args/corpus hash 与基线——model 或 corpus 内容不匹配 → 拒绝 diff(不可比)、提示 `--update`、退出 2。
+- 退出码:全 OK=0;真回归(REGRESSION/BELOW_THRESHOLD)=1;无回归但有 ERRORED/INCOMPLETE/MISSING/配置不匹配=2(需重跑/重建)。基线缺失时 `--check` 提示先 `--update`。
 
 ### ⑤ LLM 噪声处理
 
-- 每维 `--rounds`(默认 3)次,每指标取**中位数**(非均值,抗离群)。`eval_longmemeval`/`eval_fantom` 本就多轮,范式一致。
-- 容差带(默认 5 分)吸收残余轮间抖动;真正的持续下滑(超容差或破阈值)才判回归。
-- Clash TUN 黑洞([[clash-tun-owns-all-network-flakiness]])导致某轮整轮超时 → 该轮分数异常低会被中位数稀释;若多轮皆黑洞则 orchestrator 应能识别「疑似网络非质量」(如整轮 0 分/大量 transport_error)并提示重跑,而非误报质量回归。
+- 每维 `--rounds`(默认 3)次,每指标取**中位数**(非均值,抗离群)。容差带(默认 5 分)吸收残余轮间抖动;超容差或破阈值才判回归。
+- **min 成功轮数(codex #6)**:某维成功轮 < `--min-ok`(默认 2)→ 该维记 `INCOMPLETE`(不从 1 样本出判定)。
+- **网络故障 vs 质量崩:诚实报不隐藏(codex #4/#5)**。根因:`eval_p1_extractor`/`eval_tom_bench` 的 `run_one_round` **内部吞** per-record 网络异常当答错(→低分,轮不抛),故 orchestrator 无法在分数层区分「网络全崩→0」与「质量全崩→0」。**不再用 `_flag_network` 把近 0 分藏成 ERRORED**(那会对真回归假阴性)——0/低分照实报 `BELOW_THRESHOLD`(退出 1),但当某维全指标近 0 时报告**附注**「⚠ 疑似网络黑洞,查 stderr 的 transport WARN;非质量则换时刻重跑」。人看报告 + stderr 判网络 vs 质量。抓回归优先,附注给提示。
 
 ## Testing
 
@@ -88,4 +92,5 @@ Starling 有一套**成熟的 benchmark eval**(`scripts/eval_*.py` + `tests/data
 
 ## Out of Scope(重申)
 
-新 eval 逻辑;dashboard 端点;真实摄入数据 / 端到端有用性 eval;CI 集成(真 LLM 不可靠);FANToM(无 corpus);commitment/perception 等第 4+ 维。
+- **recall(longmemeval)维 = follow-up**:先修 longmemeval real-mode(codex #7 chat 512→32768、#8 env 异常安全 + DASHSCOPE 校验、#2 per-subset 阈值不塌 overall),再作为第 3 维加进基线。本 slice 只 extract+ToM。
+- 新 eval 逻辑;dashboard 端点;真实摄入数据 / 端到端有用性 eval;CI 集成(真 LLM 不可靠);FANToM(无 corpus);commitment/perception 等第 4+ 维。
