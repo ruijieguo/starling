@@ -12,16 +12,20 @@ task brief), updated by the opus review fix wave (2026-07-12):
     (a JSON array like ["claude-code:foo","self"]; migrations/0022), not an
     `interlocutor_id` column.
   - The worker calls `self.remember(...)` (DashboardEngine's lock-wrapped
-    method), NOT `self._core.remember(...)`. remember() holds `self._lock`
-    across the whole extraction LLM call — the same discipline every other
-    engine writer (tick/forget/approve_review/converse_commit) follows — so
-    the worker's writes correctly serialize against concurrent tick/HTTP
-    engine calls instead of racing the single sqlite3 writer connection
-    (see _ingest_drain_once's docstring in engine.py for the full
-    single-writer-violation analysis this fix addresses). The cost (ingest
-    serialized with the rest of the dashboard during extraction) is offset
-    by a heavy throttle (_ingest_throttle_s) between processed jobs so a
-    backlog doesn't pin the dashboard.
+    method), NOT `self._core.remember(...)`, so it never races the single
+    sqlite3 writer connection (see _ingest_drain_once's docstring in
+    engine.py for the full single-writer-violation analysis this fix
+    addresses). UPDATE (Task 4, remember extraction 出锁/方案2,
+    2026-07-13): remember() itself no longer holds `self._lock` across the
+    whole extraction LLM call — it three-phase-locks like _converse_phased
+    (prepare 持锁 → belief+gf extraction 锁外 → commit 持锁; episodic still
+    runs inside commit, option B residual), because the C++ core now
+    guarantees no write transaction spans the extraction network call. The
+    worker inherits this for free (see
+    test_worker_remember_releases_lock_during_extract below) — it is no
+    longer serialized with the rest of the dashboard for the full extraction
+    duration, only for the short prepare/commit sub-phases (still mitigated
+    by `_ingest_throttle_s` between processed jobs).
   - `RememberOutcome.extraction_failed` (src/memory/memory_ops.cpp:78) is
     now surfaced through the `memory_remember` binding (bindings/python/
     bind_13_memory_ops.cpp) and forwarded untouched by MemoryCore.remember()
@@ -98,29 +102,41 @@ def test_worker_consumes_job_into_statements_with_interlocutor(tmp_path):
     assert eng._ingest_drain_once() == "empty"
 
 
-def test_worker_uses_locked_remember(tmp_path):
-    """Fix 1 (opus review Hazard 1): the worker MUST serialize its remember()
-    call through self._lock like every other engine writer. This is the
-    opposite assertion of the deleted test_worker_does_not_hold_lock_across_
-    remember, which was a false victory — it passed only because the worker
-    bypassed the single-writer lock entirely. Here, a concurrent thread
-    trying to acquire self._lock while the worker is mid-remember() must
-    WAIT at least the stub delay, proving the lock is actually held across
-    the call (not released early)."""
+def test_worker_remember_releases_lock_during_extract(tmp_path):
+    """Update (Task 4, remember extraction 出锁/方案2 — supersedes Fix 1's
+    test_worker_uses_locked_remember, same way THAT test's own docstring
+    records it superseding the older test_worker_does_not_hold_lock_across_
+    remember): the worker still calls self.remember(...) — the SAME engine-
+    wrapped method every other writer uses (tick/forget/approve_review/
+    converse_commit) — so it automatically inherits whatever lock discipline
+    remember() implements; nothing in the worker itself changed here.
+
+    What changed is remember() itself: it no longer holds self._lock across
+    the whole call. engine.remember() now three-phase-locks like
+    _converse_phased (prepare 持锁 → belief+gf extraction 锁外 → commit 持锁,
+    见 engine.py + test_remember_lock_release.py), because the C++ core
+    (memoryops::remember_prepare/commit) guarantees no write transaction
+    spans the extraction network call — the single-sqlite3-writer hazard
+    Fix 1 guarded against (a concurrent BEGIN while remember's transaction
+    was still open) is now structurally impossible during that window, so
+    holding the host lock there too was pure unnecessary serialization.
+    A concurrent thread probing self._lock while the worker is mid-extract
+    must therefore acquire it QUICKLY (<0.4s), not block for the stub delay —
+    the mirror image of the old assertion, and the same interleaving
+    test_tick_interleaves_during_extract pins for any other remember() caller."""
     spool = tmp_path / "spool"
-    eng = _engine(tmp_path, spool, delay_ms=700)  # remember 内睡 700ms(×3 抽取通道)
+    eng = _engine(tmp_path, spool, delay_ms=700)  # 700ms/抽取通道(belief+gf 锁外,episodic 锁内)
     _job(spool, _transcript(tmp_path))
     t = threading.Thread(target=eng._ingest_drain_once)
     t.start()
-    time.sleep(0.15)                              # worker 已进 remember()
+    time.sleep(0.15)                              # prepare 已过 → 已进 belief/gf extract(锁外)
     start = time.monotonic()
-    with eng._lock:                                # 并发拿锁:worker 应该整段占着
+    with eng._lock:                                # 拆锁后:extract 段中锁可得
         pass
     waited = time.monotonic() - start
-    t.join(timeout=5)
-    assert waited >= 0.4, (
-        f"等锁仅 {waited:.2f}s —— worker 没有把 remember 圈进 self._lock,"
-        f"single-writer 保证已失效")
+    t.join(timeout=10)
+    assert waited < 0.4, (
+        f"等锁 {waited:.2f}s —— extract 段仍持锁,worker 未受益于三相拆锁")
 
 
 def test_empty_extraction_is_success_not_failed(tmp_path):

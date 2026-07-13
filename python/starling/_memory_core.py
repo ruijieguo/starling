@@ -132,67 +132,101 @@ class MemoryCore:
         self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
-        """标准写管线在 C++ `memoryops::remember`(2026-06-11 边界归位):
-        幂等键派生(sha256)、入库策略默认值、「先 engram 后抽取、仅
-        accepted/idempotent 才抽取」的顺序规则都在核心层,且 LLM 网络期间
-        释放 GIL。这里只剩前置校验与 datetime→ISO 签名归一。
-
-        sub-project A phase 5:remember 跑 TWO 条独立抽取管线——belief/会话
-        (memory_remember 内的 Extractor)与 episodic(EpisodicExtractor:叙事
-        → OCCURRED 事件 + episodic_events 行)。两条互不影响,任一空集都正常。
-        episodic 是 best-effort 第二条,复用第一条已(幂等)入库的 engram_ref;
-        只有 engram 真入库(accepted/idempotent → engram_ref 非空)时才跑——
-        no_store/rejected 时无 engram 可挂证据,跳过。"""
-        if self.llm is None:
+        """单体 = 三相内联(单一语义源)。facade 直接走本单体;DashboardEngine
+        分相调用以在锁外跑 belief+gf extraction。belief/episodic/gf 顺序不变。"""
+        if self.llm is None:   # #1:fail-fast(prepare 会写 engram,故在写前查;facade 路径的兜底)
             raise LLMNotConfigured(
                 "remember requires an llm adapter "
                 "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
-        created_iso = parse_now(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        holder_id = holder or self.agent
-        out = _core.memory_remember(
-            self.rt.adapter, self.llm, self._extraction.belief_prompt,
-            tenant_id=self.tenant, holder_id=holder_id,
-            interlocutor=interlocutor or "",
-            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
-            created_at_iso8601=created_iso, payload=text.encode("utf-8"),
-            policy=_build_policy(self._extraction))
+        bundle = self.remember_prepare(text, holder=holder,
+                                       interlocutor=interlocutor, now=now)
+        extracted = self.remember_extract(bundle)
+        return self.remember_commit(bundle, extracted)
 
-        # 第二条:episodic 抽取(叙事事件)。挂在第一条返回的同一 engram 上。
+    def remember_prepare(self, text: str, *, holder=None, interlocutor=None,
+                         now=None) -> dict:
+        """三相之一(锁内短):engram 写(belief+gf 共用同一 idempotent engram)。
+        #1:不查 self.llm——prepare 不用 llm;llm 缺失的 fail-fast 由调用方在写前做
+        (facade monolith remember() 已查;engine.remember 经 _resolve_extraction 查)。
+        #6:created_iso 不入 bundle——commit/episodic 从 prepared.created_at_iso8601 读。"""
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        holder_id = holder or self.agent
+        prepared = _core.memory_remember_prepare(
+            self.rt.adapter, tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "", adapter_name=self.adapter_name,
+            source_prefix=self.source_prefix, created_at_iso8601=created_iso,
+            payload=text.encode("utf-8"))
+        return {"prepared": prepared, "holder_id": holder_id,
+                "interlocutor": interlocutor or "", "text": text}
+
+    def remember_extract(self, bundle: dict, llm=None) -> dict:
+        """三相之二(锁外无事务):belief + general-fact 两条 LLM 抽取(纯网络)。
+        should_extract=False(no_store/rejected)→ 空。llm 缺省 self.llm;
+        DashboardEngine 传本轮解析出的局部 adapter(避拆锁后全局 slot 竞态)。"""
+        prepared = bundle["prepared"]
+        if not prepared.should_extract:
+            return {"belief": None, "gf": None}
+        extraction_llm = llm or self.llm
+        if extraction_llm is None:   # #1:extract 真正用 llm 处兜底(直呼 extract 时)
+            raise LLMNotConfigured("remember requires an llm adapter")
+        holder_id = bundle["holder_id"]
+        payload = bundle["text"].encode("utf-8")
+        policy = _build_policy(self._extraction)
+        belief = _core.memory_extract_llm(
+            self.rt.adapter, extraction_llm, self._extraction.belief_prompt,
+            holder_id=holder_id, payload=payload, policy=policy)
+        # {self} 由 holder_id 填充,使事实 holder=self → 默认 recall 命中。
+        gf_prompt = self._extraction.general_fact_prompt.replace("{self}", holder_id)
+        gf = _core.memory_extract_llm(
+            self.rt.adapter, extraction_llm, gf_prompt,
+            holder_id=holder_id, payload=payload, policy=policy)
+        return {"belief": belief, "gf": gf}
+
+    def remember_commit(self, bundle: dict, extracted: dict, llm=None) -> dict:
+        """三相之三(锁内短):belief persist → episodic 单体(option B 残留:
+        其 LLM 仍在锁内)→ gf persist(复用同 engram)。statement_ids 顺序
+        belief+episodic+gf 与单体一致。"""
+        prepared = bundle["prepared"]
+        if not prepared.should_extract:
+            return {"engram_ref": prepared.engram_ref, "statement_ids": [],
+                    "outcome": prepared.outcome, "extraction_failed": False}
+        extraction_llm = llm or self.llm
+        created_iso = prepared.created_at_iso8601   # #6:权威时戳从 prepared 读(不再自持)
+        holder_id = bundle["holder_id"]
+        interlocutor = bundle["interlocutor"]
+        text = bundle["text"]
+        policy = _build_policy(self._extraction)
+
+        # 第一条:belief persist(#6:不传 created_at,C++ 用 prepared 的权威时戳)。
+        out = _core.memory_remember_commit(
+            self.rt.adapter, extraction_llm, tenant_id=self.tenant,
+            holder_id=holder_id, interlocutor=interlocutor,
+            prepared=prepared, llm_result=extracted["belief"], policy=policy)
+
+        # 第二条:episodic(叙事事件)。单体,LLM+DB 仍在此锁内(option B 残留)。
         engram_ref = out.get("engram_ref") or ""
         if engram_ref:
-            # Pass the adapter (Phase 2 Task 2.2) so the actor + each participant
-            # surface resolves to its canonical first-seen cognizer name, grounding
-            # name drift ("Xiao Hong"/"XiaoHong") to one entity.
             episodic = _core.EpisodicExtractor(
-                self.conn, self.llm, self.rt.adapter, self._extraction.episodic_prompt)
+                self.conn, extraction_llm, self.rt.adapter,
+                self._extraction.episodic_prompt)
             event_ids = episodic.extract(
                 passage=text, engram_ref=engram_ref, tenant=self.tenant,
                 agent_self=holder_id, now=created_iso)
             if event_ids:
-                # 合并两条管线本次新写的语句 id(belief + episodic 事件)。
                 out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
-                # sub-project B: rebuild per-cognizer perception from the events (best-effort).
-                # Pass the adapter (Task 5.1) so witnessed-event engrams also land in the
-                # KnowledgeFrontier presence_log, making does_X_know() event-aware.
                 try:
                     _core.PerceptionReconstructor(
                         self.conn, self.rt.adapter).reconstruct(tenant=self.tenant)
-                except Exception:  # noqa: BLE001 — perception is best-effort; never fail remember
+                except Exception:  # noqa: BLE001 — perception 是 best-effort;绝不失败 remember
                     pass
 
-        # 第三条:general-fact 抽取(陈述性世界事实)。复用 belief Extractor:
-        # 同一(idempotent)engram 上再跑一次 memory_remember,用 general prompt。
-        # {self} 由 holder_id(=self.agent)填充,使事实 holder=self.agent → 默认
-        # recall(holder=self) 命中。best-effort 第三条,空集正常。
-        gf_prompt = self._extraction.general_fact_prompt.replace("{self}", holder_id)
-        gf = _core.memory_remember(
-            self.rt.adapter, self.llm, gf_prompt,
-            tenant_id=self.tenant, holder_id=holder_id,
-            interlocutor=interlocutor or "",
-            adapter_name=self.adapter_name, source_prefix=self.source_prefix,
-            created_at_iso8601=created_iso, payload=text.encode("utf-8"),
-            policy=_build_policy(self._extraction))
-        gf_ids = gf.get("statement_ids", []) if gf else []
+        # 第三条:general-fact persist(复用同 idempotent engram;#6:不传 created_at)。
+        gf_out = _core.memory_remember_commit(
+            self.rt.adapter, extraction_llm, tenant_id=self.tenant,
+            holder_id=holder_id, interlocutor=interlocutor,
+            prepared=prepared, llm_result=extracted["gf"], policy=policy)
+        gf_ids = gf_out.get("statement_ids", []) if gf_out else []
         if gf_ids:
             out["statement_ids"] = list(out.get("statement_ids", [])) + list(gf_ids)
         return out

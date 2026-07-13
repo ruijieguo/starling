@@ -182,28 +182,50 @@ std::string Extractor::build_prompt(
     return out;
 }
 
-ExtractionRunResult Extractor::run(
-        std::string_view                  engram_ref_id,
+ExtractionLlmResult Extractor::extract_llm(
         const std::vector<std::uint8_t>&  payload_bytes,
         std::string_view                  holder_id,
+        const ExistingRefMap&             existing_ref_map) {
+    ExtractionLlmResult out;
+    out.prompt_body       = build_prompt(holder_id, payload_bytes, existing_ref_map);
+    out.prompt_input_hash = compute_prompt_input_hash(out.prompt_body);
+
+    // 重试循环只做 LLM + parse(零 DB)。retry 决策与单体 run 完全一致:
+    // !resp.ok 或 parse 有错 → 收录并 continue;parse 成功 → terminal 并 break。
+    for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+        ExtractionLlmAttempt rec;
+        rec.attempt = attempt;
+        rec.resp    = adapter_.extract(out.prompt_body, out.prompt_input_hash);
+        if (!rec.resp.ok) {
+            out.attempts.push_back(std::move(rec));
+            continue;
+        }
+        rec.parse  = parse_extractor_json(rec.resp.raw_xml, existing_ref_map);
+        rec.parsed = true;
+        if (!rec.parse.errors.empty()) {
+            out.attempts.push_back(std::move(rec));
+            continue;
+        }
+        rec.terminal = true;
+        out.attempts.push_back(std::move(rec));
+        break;
+    }
+    return out;
+}
+
+ExtractionRunResult Extractor::persist(
+        std::string_view                  engram_ref_id,
+        std::string_view                  holder_id,
         std::string_view                  holder_tenant_id,
-        const ExistingRefMap&             existing_ref_map,
-        std::string_view                  interlocutor) {
+        std::string_view                  interlocutor,
+        const ExtractionLlmResult&        llm_result) {
 
     ExtractionRunResult result;
 
-    // The orchestrator uses a single transaction per run. The retry loop
-    // re-prepares the LLM call but stays inside the same transaction; on
-    // FAILED outcome we still COMMIT (so attempt rows + events persist),
-    // just with terminal status='failed'. On exception we ROLLBACK
-    // (TransactionGuard does it).
+    // 单事务(移自原 run):FAILED 仍 COMMIT(attempt 行 + events 持久化),
+    // 异常 ROLLBACK(TransactionGuard)。所有 DB 写集中在 LLM 之后。
     starling::persistence::TransactionGuard tx(conn_);
 
-    // Phase 2 (Task 2.2): when a store adapter was provided, resolve each
-    // statement's subject_id (a cognizer surface) to its canonical first-seen
-    // name so name-surface drift grounds to one entity. The Hub's register-on-miss
-    // writes join this run's open transaction. Best-effort: the resolver returns
-    // the raw surface on any error.
     std::optional<starling::cognizer::CognizerHub> cog_hub;
     if (store_adapter_ != nullptr) cog_hub.emplace(*store_adapter_);
 
@@ -217,17 +239,14 @@ ExtractionRunResult Extractor::run(
     const std::string chunk_span_key = compute_extraction_span_key(
         engram_ref_id, chunk_index, "__chunk__", "__chunk__");
 
-    bool any_accepted  = false;
-    bool all_failed    = true;
+    bool any_accepted   = false;
+    bool all_failed     = true;
     bool result_partial = false;
 
-    const std::string prompt_body = build_prompt(
-        holder_id, payload_bytes, existing_ref_map);
-    const std::string prompt_input_hash = compute_prompt_input_hash(prompt_body);
-
-    for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+    for (const auto& rec : llm_result.attempts) {
+        const int attempt = rec.attempt;
         const std::string attempt_suffix = "attempt=" + std::to_string(attempt);
-        const LLMResponse resp = adapter_.extract(prompt_body, prompt_input_hash);
+        // cost 归属:每 attempt 只算一次,落到本轮写的第一行(移自原 run)。
         // One extract() call per iteration, but the success path records one
         // ledger row PER statement-span. Attribute this call's cost to exactly
         // the FIRST row written this iteration; take_cost() returns it once then
@@ -241,14 +260,14 @@ ExtractionRunResult Extractor::run(
                 return {};
             }
             attempt_cost_used = true;
-            return {resp.prompt_tokens, resp.completion_tokens,
-                    resp.total_tokens, resp.latency_ms};
+            return {rec.resp.prompt_tokens, rec.resp.completion_tokens,
+                    rec.resp.total_tokens, rec.resp.latency_ms};
         };
-        if (!resp.ok) {
+        if (!rec.resp.ok) {
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::Failed,
                                   /*raw_output=*/{},
-                                  resp.error,
+                                  rec.resp.error,
                                   take_cost());
             emit_extraction_event(conn_, "extraction.failed",
                                   holder_tenant_id, run_id, chunk_span_key,
@@ -261,12 +280,11 @@ ExtractionRunResult Extractor::run(
             continue;
         }
 
-        ParseResult parsed = parse_extractor_json(resp.raw_xml, existing_ref_map);
-        if (!parsed.errors.empty()) {
+        if (!rec.parse.errors.empty()) {
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::Failed,
-                                  resp.raw_xml,
-                                  parsed.errors.front().kind,
+                                  rec.resp.raw_xml,
+                                  rec.parse.errors.front().kind,
                                   take_cost());
             emit_extraction_event(conn_, "extraction.failed",
                                   holder_tenant_id, run_id, chunk_span_key,
@@ -279,15 +297,12 @@ ExtractionRunResult Extractor::run(
             continue;
         }
 
-        // Parse succeeded. Validate and write each statement.
+        // Parse 成功。逐语句校验 + 写(移自原 run:283-421,parsed 用本 attempt 的拷贝)。
+        ParseResult parsed = rec.parse;   // 可变拷贝:下面会改 statements
         StatementWriter writer(conn_);
-        bool any_rejected_this_attempt = false;
+        bool any_rejected_this_attempt   = false;
         bool wrote_anything_this_attempt = false;
-        bool noop_short_circuited = false;
-        // Routes intra-run duplicates: a span written earlier in THIS loop goes
-        // to StatementWriter (ChunkDuplicate path) instead of the cross-run
-        // noop branch. The (run, span, attempt) ledger dedup itself lives
-        // inside PipelineLedger::record_attempt (INSERT OR IGNORE).
+        bool noop_short_circuited        = false;
         std::set<std::string> written_span_keys;
         for (auto& stmt : parsed.statements) {
             stmt.holder_tenant_id = std::string(holder_tenant_id);
@@ -295,9 +310,6 @@ ExtractionRunResult Extractor::run(
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
             }
-            // Resolve the cognizer subject surface to its canonical first-seen
-            // name FIRST (before holder attribution below, which may read it).
-            // No-op when no store adapter was wired, or for non-cognizer subjects.
             if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
                 stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
                     *cog_hub, holder_tenant_id, stmt.subject_id);
@@ -324,7 +336,6 @@ ExtractionRunResult Extractor::run(
                 stmt.holder_id = std::string(holder_id);
             }
             if (!interlocutor.empty()) {
-                // 对话语境：grounding 参与方 + 可见性都含 self+interlocutor（#2 前提 perceived_by⊇parties）。
                 std::vector<std::string> pair{std::string(holder_id), std::string(interlocutor)};
                 std::sort(pair.begin(), pair.end());
                 stmt.scope_parties = pair;
@@ -350,12 +361,6 @@ ExtractionRunResult Extractor::run(
             // constraint on the attempt row.
             if (written_span_keys.find(span_key) == written_span_keys.end()
                     && extraction_span_key_already_succeeded(conn_, span_key)) {
-                // One parse can yield two statements sharing a span_key (same
-                // predicate+object, different subject/polarity); on a
-                // re-remember BOTH reach this branch. record_attempt dedupes
-                // (run, span, attempt) internally — the second call returns
-                // nullopt, and the extraction.noop event is gated on the same
-                // outcome so it fires exactly once per span per run.
                 if (ledger.record_attempt(run_id, span_key, attempt,
                                           ExtractionStatus::Noop,
                                           /*raw_output=*/{},
@@ -373,11 +378,6 @@ ExtractionRunResult Extractor::run(
             if (std::holds_alternative<StatementWriteAccepted>(outcome)) {
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteAccepted>(outcome).stmt_id);
-                // Record per-statement success so future runs can noop-short-circuit.
-                // Two same-span Accepted statements in one parse (same
-                // predicate+object, different subject/polarity, neither approved
-                // → no ChunkDuplicate) yield ONE Success row: the dedup lives in
-                // record_attempt (INSERT OR IGNORE), the duplicate returns nullopt.
                 written_span_keys.insert(span_key);
                 ledger.record_attempt(run_id, span_key, attempt,
                                       ExtractionStatus::Success,
@@ -385,40 +385,30 @@ ExtractionRunResult Extractor::run(
                                       /*error=*/{},
                                       take_cost());
             } else {
-                // StatementWriteChunkDuplicate: statement written (review_requested);
-                // the span's Success row already exists from the first duplicate —
-                // nothing worth recording (the ledger would drop it anyway).
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteChunkDuplicate>(outcome).stmt_id);
             }
             wrote_anything_this_attempt = true;
         }
 
-        // Emit a chunk-level aggregate attempt row for cases not covered by
-        // per-statement rows:
-        // - Nothing written and nothing noop'd: all-rejected or empty parse.
-        // - Something written but some were also rejected: partial_success.
         if (!wrote_anything_this_attempt && !noop_short_circuited) {
             const auto attempt_status =
                 any_rejected_this_attempt ? ExtractionStatus::Failed
                                           : ExtractionStatus::Success;
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   attempt_status,
-                                  resp.raw_xml, /*error=*/{},
+                                  rec.resp.raw_xml, /*error=*/{},
                                   take_cost());
         } else if (wrote_anything_this_attempt && any_rejected_this_attempt) {
-            // Partial success: at least one statement written, at least one rejected.
             ledger.record_attempt(run_id, chunk_span_key, attempt,
                                   ExtractionStatus::PartialSuccess,
-                                  resp.raw_xml, /*error=*/{},
+                                  rec.resp.raw_xml, /*error=*/{},
                                   take_cost());
             result_partial = true;
         }
         if (wrote_anything_this_attempt) any_accepted = true;
-        // Parse succeeded: this attempt is not a failure regardless of validate
-        // outcome. all_failed tracks adapter/parse failures only.
         all_failed = false;
-        break;  // parse succeeded; no retry regardless of validate outcome
+        break;
     }
 
     if (any_accepted) {
@@ -434,9 +424,6 @@ ExtractionRunResult Extractor::run(
         emit_pipeline_event(conn_, "pipeline.run_failed",
                             holder_tenant_id, run_id, run_started_event_id);
     } else {
-        // Either every statement noop-short-circuited, or the validator
-        // rejected every candidate. Either way, no transient error: terminal
-        // state is finished.
         result.status = ExtractionRunResult::Status::SUCCESS;
         ledger.finish_run(run_id, PipelineStatus::Finished);
         emit_pipeline_event(conn_, "pipeline.run_completed",
@@ -445,6 +432,18 @@ ExtractionRunResult Extractor::run(
 
     tx.commit();
     return result;
+}
+
+ExtractionRunResult Extractor::run(
+        std::string_view                  engram_ref_id,
+        const std::vector<std::uint8_t>&  payload_bytes,
+        std::string_view                  holder_id,
+        std::string_view                  holder_tenant_id,
+        const ExistingRefMap&             existing_ref_map,
+        std::string_view                  interlocutor) {
+    // 单体 = 三相内联(单一语义源;host 分相调用与此逐字段等价,见 test_extractor_phases）。
+    const ExtractionLlmResult llm = extract_llm(payload_bytes, holder_id, existing_ref_map);
+    return persist(engram_ref_id, holder_id, holder_tenant_id, interlocutor, llm);
 }
 
 }  // namespace starling::extractor

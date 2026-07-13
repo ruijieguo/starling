@@ -411,36 +411,35 @@ class DashboardEngine:
     def llm_configured(self) -> bool:
         return self._core.llm is not None
 
-    @contextmanager
-    def _role_override(self, attr: str, provider: str | None):
-        """Per-turn model selection: temporarily point a core adapter slot
-        (`attr` = 'chat_llm' for converse, 'llm' for remember's extraction) at a
-        registry provider's adapter, then restore. The caller holds self._lock, so
-        the swap is never visible to a concurrent engine call or the background tick.
-        Empty/None provider → no-op (use the role-bound adapter).
-
-        Boundary: this is adapter *selection* (dashboard config policy) — the C++
-        converse/remember take the adapter as a parameter, unchanged. No core
-        orchestration or shared MemoryCore signature is touched."""
-        if not provider:
-            yield
-            return
-        cfg = self._cfg.resolve_provider(provider)
-        if not cfg or not cfg.get("api_key"):
-            raise LLMNotConfigured(f"selected provider '{provider}' is not configured")
-        saved = getattr(self._core, attr)
-        setattr(self._core, attr, _build_chat_adapter(cfg))
-        try:
-            yield
-        finally:
-            setattr(self._core, attr, saved)
+    def _resolve_extraction(self, provider: str | None):
+        """锁内调用:解析本轮抽取 adapter 为局部引用(锁外 extract 段使用)。
+        取代旧 _role_override('llm', …) 的全局 slot 换入换出——拆锁后换全局
+        slot 会被并发轮/后台 tick 读到错误模型(同 _resolve_chat)。"""
+        if provider:
+            cfg = self._cfg.resolve_provider(provider)
+            if not cfg or not cfg.get("api_key"):
+                raise _LLMNotConfigured(
+                    f"selected provider '{provider}' is not configured")
+            return _build_chat_adapter(cfg)
+        return self._core.llm
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
                  provider: str | None = None) -> dict:
-        # provider (optional) overrides the bound extraction role for this turn.
-        with self._lock, self._role_override("llm", provider):
-            return self._core.remember(text, holder=holder,
-                                       interlocutor=interlocutor, now=now)
+        """三相落锁(方案2):belief+gf extraction 段在锁外,prepare/commit 持锁。
+        episodic 单体仍在 commit 锁内(option B 残留)。provider 解析为局部
+        adapter 传入 extract/commit(避拆锁后全局 slot 竞态,同 _converse_phased)。"""
+        now = now or datetime.now(timezone.utc)
+        with self._lock:                                    # ① 短:写门 + engram
+            extraction = self._resolve_extraction(provider)
+            if extraction is None:   # #1:fail-fast 在写 engram 前(provider 未给且抽取角色未绑)
+                raise _LLMNotConfigured(
+                    "remember requires an llm adapter (bind the extraction role "
+                    "or pass a configured provider)")
+            bundle = self._core.remember_prepare(
+                text, holder=holder, interlocutor=interlocutor, now=now)
+        extracted = self._core.remember_extract(bundle, llm=extraction)  # ② 锁外 LLM
+        with self._lock:                                    # ③ persist + episodic + 写
+            return self._core.remember_commit(bundle, extracted, llm=extraction)
 
     def _resolve_chat(self, provider: str | None):
         """锁内调用:解析本轮 chat 适配器为局部引用(锁外使用)。取代旧

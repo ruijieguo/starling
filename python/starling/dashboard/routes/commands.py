@@ -91,6 +91,7 @@ def build_commands_router(require_token) -> APIRouter:
     @router.post("/remember")
     async def remember(body: RememberBody, request: Request):
         from starling.dashboard.engine import _LLMNotConfigured
+        from starling import _core
         eng = _engine(request)
         try:
             r = await to_thread.run_sync(partial(
@@ -99,6 +100,10 @@ def build_commands_router(require_token) -> APIRouter:
         except _LLMNotConfigured:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="llm_not_configured")
+        except _core.WriteGateRejected:
+            # #2:三相锁外 extract 期间健康转 DRAINING → commit 抛;回 503 而非 500。
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="draining")
         await _broadcast(request, "statement_added", {"statement_ids": r["statement_ids"]})
         return r
 

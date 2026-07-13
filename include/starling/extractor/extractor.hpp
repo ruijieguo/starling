@@ -1,6 +1,7 @@
 #pragma once
 
 #include "starling/extractor/existing_ref_map.hpp"
+#include "starling/extractor/json_parser.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/persistence/connection.hpp"
@@ -19,6 +20,24 @@ struct ExtractionRunResult {
     std::vector<std::string>                accepted_statement_ids;
     std::vector<std::string>                rejected_fragments;   // serialized JSON
     std::string                             run_id;               // pipeline_run.id
+};
+
+// extract_llm 产出的逐 attempt 记录(LLM + parse 段);persist() 重放它们写
+// ledger/attempt/statement 行。此处无任何 DB 状态——重试决策(!resp.ok 或
+// parse 有错才重试、parse 成功即止)纯由 LLM 响应决定,故 attempt 序列可无 DB
+// 完整确定,persist 忠实重放。
+struct ExtractionLlmAttempt {
+    int         attempt = 0;       // 1-based
+    LLMResponse resp;              // 该 attempt 的原始 LLM 响应
+    bool        parsed = false;    // resp.ok 且跑过 parser
+    ParseResult parse;             // 仅 parsed==true 有效
+    bool        terminal = false;  // parse 成功 → 该 attempt 结束重试循环
+};
+
+struct ExtractionLlmResult {
+    std::string                       prompt_body;
+    std::string                       prompt_input_hash;
+    std::vector<ExtractionLlmAttempt> attempts;
 };
 
 // Extractor orchestrates the pipeline: open PipelineRun -> for each chunk
@@ -53,6 +72,23 @@ public:
         std::string_view                        holder_tenant_id,
         const ExistingRefMap&                   existing_ref_map,
         std::string_view                        interlocutor = "");
+
+    // 方案2 拆分:run() = extract_llm() → persist()(单一语义源内联)。
+    // extract_llm:跑重试循环只做 adapter_.extract + parse_extractor_json,零 DB、
+    // 无 TransactionGuard——LLM 只吃 payload + existing_ref_map,不需 engram 在库。
+    ExtractionLlmResult extract_llm(
+        const std::vector<std::uint8_t>&        payload_bytes,
+        std::string_view                        holder_id,
+        const ExistingRefMap&                   existing_ref_map);
+
+    // persist:开 TransactionGuard,重放 llm_result.attempts 写 ledger/attempt/
+    // events + terminal attempt 的 statements。FAILED 仍 COMMIT attempt 行。
+    ExtractionRunResult persist(
+        std::string_view                        engram_ref_id,
+        std::string_view                        holder_id,
+        std::string_view                        holder_tenant_id,
+        std::string_view                        interlocutor,
+        const ExtractionLlmResult&              llm_result);
 
     // Public so tests can use the same hash as the adapter's keying.
     static std::string compute_prompt_input_hash(std::string_view prompt_body);
