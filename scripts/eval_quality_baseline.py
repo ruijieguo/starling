@@ -224,15 +224,15 @@ def main(argv: list[str] | None = None) -> int:
 
     corpora = load_corpora(args.max_items)
     cur_hashes = {e: corpora[e][1] for e in EVAL_IDS}
-    print(f"跑 {len(EVAL_IDS)} 维(rounds={args.rounds} min_ok={args.min_ok} "
-          f"max_items={args.max_items} model={args.model})...", file=sys.stderr)
-    current = collect_scores(corpora, args.rounds, args.min_ok, args.model, base_url, api_key)
     meta = {"model": args.model,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rounds": args.rounds, "max_items": args.max_items, "tolerance": args.tolerance,
             "corpus_hash": cur_hashes}
 
     if args.update:
+        print(f"跑 {len(EVAL_IDS)} 维(rounds={args.rounds} min_ok={args.min_ok} "
+              f"max_items={args.max_items} model={args.model})...", file=sys.stderr)
+        current = collect_scores(corpora, args.rounds, args.min_ok, args.model, base_url, api_key)
         try:
             save_baseline(args.baseline, current, meta)
         except ValueError as exc:  # 任一维 None → 拒写保旧基线(codex #1/#12)
@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"基线已写 {args.baseline}", file=sys.stderr)
         return 0
 
+    # --check:先判基线存在 + 配置可比(零 LLM),不可比 early-return,避免白烧一整跑真 LLM
     baseline = load_baseline(args.baseline)
     if baseline is None:
         print(f"ERROR: 基线不存在 {args.baseline} —— 先 --update 建基线", file=sys.stderr)
@@ -249,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     if mism:  # 配置不可比 → 拒 diff(codex #10)
         print("ERROR: 配置与基线不可比,先 --update 重建基线:\n  " + "\n  ".join(mism), file=sys.stderr)
         return 2
+    print(f"跑 {len(EVAL_IDS)} 维(rounds={args.rounds} min_ok={args.min_ok} "
+          f"max_items={args.max_items} model={args.model})...", file=sys.stderr)
+    current = collect_scores(corpora, args.rounds, args.min_ok, args.model, base_url, api_key)
     findings = diff_against_baseline(current, baseline["evals"], args.tolerance)
     report = render_report(findings, meta, current)
     print(report)

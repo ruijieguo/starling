@@ -149,7 +149,7 @@ def test_collect_scores_wires_both_dims(monkeypatch):
         seen["extract"] = (len(corpus), base_url, api_key, model)
         return {"predicate": 0.80, "object": 0.70}
     def fake_tom(corpus, *, fixture_mode, base_url, api_key, model, abilities):
-        seen["tom"] = (len(corpus), fixture_mode, model)
+        seen["tom"] = (len(corpus), fixture_mode, base_url, api_key, model, abilities)
         return 0.66
     monkeypatch.setattr(eqb.eval_p1_extractor, "run_one_round", fake_extract)
     monkeypatch.setattr(eqb.eval_tom_bench, "run_one_round", fake_tom)
@@ -159,4 +159,24 @@ def test_collect_scores_wires_both_dims(monkeypatch):
     assert cur["extract"] == {"predicate": 0.80, "object": 0.70}
     assert cur["tom"] == {"accuracy": 0.66}
     assert seen["extract"][1:] == ("U", "K", "M")     # 签名传对
-    assert seen["tom"][2] == "M" and seen["tom"][1] is False   # fixture_mode=False
+    assert seen["tom"][1] is False   # fixture_mode=False
+    assert seen["tom"][2:5] == ("U", "K", "M")        # base_url/api_key/model 传对(与 extract 维对称)
+    assert seen["tom"][5] == eqb.eval_tom_bench.FIRST_ORDER_ABILITIES   # abilities 传对
+
+
+def test_check_config_mismatch_short_circuits_before_collect_scores(monkeypatch):
+    # Important #1 回归钉:main() 的 --check 路径必须先判基线存在 + config_mismatch
+    # (零 LLM 输入:cur_hashes 来自零-LLM 的 load_corpora、baseline["meta"] 只读
+    # JSON),不可比就 early-return——不能先跑 collect_scores(真 LLM,15-30min)才
+    # 发现不可比、白烧一整跑。用假基线(model 与当前不符)逼 config_mismatch 非空,
+    # 断言 collect_scores 全程未被调用。
+    calls = []
+    monkeypatch.setattr(eqb, "collect_scores", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(eqb, "load_baseline", lambda path: {
+        "meta": {"model": "some-other-model", "corpus_hash": {"extract": "stale", "tom": "stale"}},
+        "evals": {},
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
+    rc = eqb.main(["--check"])
+    assert rc == 2
+    assert calls == []   # 配置不可比时 collect_scores 未被调用(未烧真 LLM)
