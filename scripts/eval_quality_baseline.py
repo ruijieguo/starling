@@ -133,3 +133,130 @@ def save_baseline(path: Path, current: dict[str, dict[str, float] | None], meta:
 
 def load_baseline(path: Path) -> dict | None:
     return json.loads(Path(path).read_text()) if Path(path).exists() else None
+
+
+import os, time  # noqa: E402
+
+import eval_p1_extractor  # noqa: E402
+import eval_tom_bench     # noqa: E402
+
+_CORPUS_PATH = {
+    "extract": Path(__file__).resolve().parents[1] / "tests/data/eval_p1_corpus.jsonl",
+    "tom":     Path(__file__).resolve().parents[1] / "tests/data/eval_tom_bench/first_order.jsonl",
+}
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+def load_corpora(max_items: int | None) -> dict[str, tuple[list[dict], str]]:
+    """全量小 corpus(codex #3:不 first-N 偏样本);--max-items 若给则截前 N(记 hash 供可比)。"""
+    out = {}
+    for eval_id, path in _CORPUS_PATH.items():
+        recs = _load_jsonl(path)
+        if max_items is not None:
+            recs = recs[:max_items]
+        out[eval_id] = (recs, corpus_hash(recs))
+    return out
+
+
+def _score_dim(rounds: int, min_ok: int, call) -> dict[str, float] | None:
+    """跑零参 thunk `call`(返回 dict[metric,float])rounds 次;成功轮 < min_ok → None
+    (INCOMPLETE,codex #6);否则每 metric 取中位数。call 抛=该轮失败(跳过)。"""
+    per_metric: dict[str, list[float]] = {}
+    ok = 0
+    for r in range(rounds):
+        try:
+            out = call()
+        except Exception as exc:  # noqa: BLE001 — 该轮失败,跳过
+            print(f"    round {r+1}/{rounds} ERRORED: {exc}", file=sys.stderr)
+            continue
+        ok += 1
+        for k, v in out.items():
+            per_metric.setdefault(k, []).append(float(v))
+    if ok < min_ok:
+        print(f"    只有 {ok}/{rounds} 成功轮 < min_ok={min_ok} → INCOMPLETE", file=sys.stderr)
+        return None
+    return {k: median(vs) for k, vs in per_metric.items()}
+
+
+def collect_scores(corpora: dict[str, tuple[list[dict], str]], rounds: int, min_ok: int,
+                   model: str, base_url: str, api_key: str) -> dict[str, dict[str, float] | None]:
+    """真 LLM 段:2 维各自适配器调 run_one_round。注:harness 内部吞 per-record 网络异常
+    当答错(→低分不抛),故网络崩表现为低分非异常——不在此隐藏,交给 diff/report 诚实报
+    (codex #4/#5)。某维彻底崩(全轮抛)→ None。"""
+    extract_recs = corpora["extract"][0]
+    tom_recs = corpora["tom"][0]
+    current: dict[str, dict[str, float] | None] = {}
+    current["extract"] = _score_dim(rounds, min_ok,
+        call=lambda: eval_p1_extractor.run_one_round(extract_recs, base_url, api_key, model))
+    current["tom"] = _tom_wrap(_score_dim(rounds, min_ok,
+        call=lambda: {"accuracy": eval_tom_bench.run_one_round(
+            tom_recs, fixture_mode=False, base_url=base_url, api_key=api_key,
+            model=model, abilities=eval_tom_bench.FIRST_ORDER_ABILITIES)}))
+    return current
+
+
+def _tom_wrap(scores):   # _score_dim 已把 float 包成 {"accuracy":...};透传 None
+    return scores
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="质量回归基线 orchestrator(非 CI,真 LLM)")
+    m = p.add_mutually_exclusive_group()
+    m.add_argument("--check", action="store_true", help="重跑 diff 判回归(默认)")
+    m.add_argument("--update", action="store_true", help="跑一遍覆写基线(有意质量变更后)")
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--min-ok", type=int, default=2)
+    p.add_argument("--tolerance", type=float, default=0.05)
+    p.add_argument("--max-items", type=int, default=None, help="每维截前 N(默认全量)")
+    p.add_argument("--model", default="deepseek-v4-pro")
+    p.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
+    p.add_argument("--report", type=Path, default=None)
+    args = p.parse_args(argv)
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    if not api_key:
+        print("ERROR: OPENAI_API_KEY not set(不打印 key)", file=sys.stderr)
+        return 2
+
+    corpora = load_corpora(args.max_items)
+    cur_hashes = {e: corpora[e][1] for e in EVAL_IDS}
+    print(f"跑 {len(EVAL_IDS)} 维(rounds={args.rounds} min_ok={args.min_ok} "
+          f"max_items={args.max_items} model={args.model})...", file=sys.stderr)
+    current = collect_scores(corpora, args.rounds, args.min_ok, args.model, base_url, api_key)
+    meta = {"model": args.model,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "rounds": args.rounds, "max_items": args.max_items, "tolerance": args.tolerance,
+            "corpus_hash": cur_hashes}
+
+    if args.update:
+        try:
+            save_baseline(args.baseline, current, meta)
+        except ValueError as exc:  # 任一维 None → 拒写保旧基线(codex #1/#12)
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"基线已写 {args.baseline}", file=sys.stderr)
+        return 0
+
+    baseline = load_baseline(args.baseline)
+    if baseline is None:
+        print(f"ERROR: 基线不存在 {args.baseline} —— 先 --update 建基线", file=sys.stderr)
+        return 2
+    mism = config_mismatch(baseline["meta"], args.model, cur_hashes)
+    if mism:  # 配置不可比 → 拒 diff(codex #10)
+        print("ERROR: 配置与基线不可比,先 --update 重建基线:\n  " + "\n  ".join(mism), file=sys.stderr)
+        return 2
+    findings = diff_against_baseline(current, baseline["evals"], args.tolerance)
+    report = render_report(findings, meta, current)
+    print(report)
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(report)
+    return exit_code(findings)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

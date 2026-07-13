@@ -114,3 +114,49 @@ def test_baseline_roundtrip(tmp_path):
     assert loaded["evals"]["extract"]["predicate"]["threshold"] == EVAL_THRESHOLDS["extract"]["predicate"]
     assert loaded["evals"]["tom"]["accuracy"]["threshold"] == 0.55
     assert load_baseline(tmp_path / "nope.json") is None
+
+
+def test_score_dim_medians_over_rounds():
+    outs = iter([{"predicate": 0.70}, {"predicate": 0.80}, {"predicate": 0.90}])
+    got = eqb._score_dim(rounds=3, min_ok=2, call=lambda: next(outs))
+    assert got == {"predicate": 0.80}
+
+
+def test_score_dim_incomplete_when_too_few_ok():
+    # 3 轮里 2 轮抛(仅 1 成功)< min_ok=2 → None(INCOMPLETE,不从 1 样本判定)codex #6
+    seq = iter([{"predicate": 0.80}, RuntimeError("x"), RuntimeError("y")])
+    def maybe():
+        v = next(seq)
+        if isinstance(v, Exception): raise v
+        return v
+    assert eqb._score_dim(rounds=3, min_ok=2, call=maybe) is None
+
+
+def test_score_dim_uses_good_rounds_when_min_met():
+    seq = iter([{"predicate": 0.80}, RuntimeError("x"), {"predicate": 0.60}])
+    def maybe():
+        v = next(seq)
+        if isinstance(v, Exception): raise v
+        return v
+    assert eqb._score_dim(rounds=3, min_ok=2, call=maybe) == {"predicate": 0.70}
+
+
+def test_collect_scores_wires_both_dims(monkeypatch):
+    # codex #11:monkeypatch 2 个真 run_one_round,验 collect_scores 用正确签名调 +
+    # 组装 extract(dict)/tom(float→{"accuracy":...})两维,零真 LLM。
+    seen = {}
+    def fake_extract(corpus, base_url, api_key, model):
+        seen["extract"] = (len(corpus), base_url, api_key, model)
+        return {"predicate": 0.80, "object": 0.70}
+    def fake_tom(corpus, *, fixture_mode, base_url, api_key, model, abilities):
+        seen["tom"] = (len(corpus), fixture_mode, model)
+        return 0.66
+    monkeypatch.setattr(eqb.eval_p1_extractor, "run_one_round", fake_extract)
+    monkeypatch.setattr(eqb.eval_tom_bench, "run_one_round", fake_tom)
+    corpora = {"extract": ([{"a": 1}], "he"), "tom": ([{"b": 2}], "ht")}
+    cur = eqb.collect_scores(corpora, rounds=1, min_ok=1, model="M",
+                             base_url="U", api_key="K")
+    assert cur["extract"] == {"predicate": 0.80, "object": 0.70}
+    assert cur["tom"] == {"accuracy": 0.66}
+    assert seen["extract"][1:] == ("U", "K", "M")     # 签名传对
+    assert seen["tom"][2] == "M" and seen["tom"][1] is False   # fixture_mode=False
