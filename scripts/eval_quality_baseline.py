@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-ok", type=int, default=2)
     p.add_argument("--tolerance", type=float, default=0.05)
     p.add_argument("--max-items", type=int, default=None, help="每维截前 N(默认全量)")
-    p.add_argument("--model", default="deepseek-v4-pro")
+    p.add_argument("--model", default="gpt-5.5")   # tokenkey.dev 网关服务 gpt-5.x(deepseek-v4-pro 不可用);gpt-5.5 = eval 脚本原默认
     p.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     p.add_argument("--report", type=Path, default=None)
     args = p.parse_args(argv)
