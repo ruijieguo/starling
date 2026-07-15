@@ -321,8 +321,8 @@ void bind_06_extractor(pybind11::module_& m) {
                  // DB 写期间释放 GIL(对齐 belief memory_remember_commit / .extract 范式:
                  // 让无关只读 Python 线程在这几 ms 内不被阻塞;persist 短、无并发 conn 访问)。
                  py::gil_scoped_release release;
-                 const auto r = self.persist(engram_ref, tenant, agent_self, now, llm_result);
-                 return r.event_statement_ids;
+                 const auto result = self.persist(engram_ref, tenant, agent_self, now, llm_result);
+                 return result.event_statement_ids;
              },
              py::arg("engram_ref"), py::arg("tenant"), py::arg("agent_self"),
              py::arg("now"), py::arg("llm_result"));

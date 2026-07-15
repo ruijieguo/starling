@@ -44,7 +44,7 @@ struct ParsedEpisodicEvent {
 // (决定 persist 是否开事务:与单体一致——非空合法数组即使全 incomplete 也开事务)。
 struct EpisodicLlmResult {
     bool ok = false;
-    std::vector<ParsedEpisodicEvent> events;
+    std::vector<ParsedEpisodicEvent> events{};
 };
 
 class EpisodicExtractor {
