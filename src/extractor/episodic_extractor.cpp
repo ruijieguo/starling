@@ -80,17 +80,23 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
     const std::string prompt_body = build_prompt(passage);
     const std::string prompt_input_hash = crypto::sha256_hex(prompt_body);
     const LLMResponse resp = adapter_.extract(prompt_body, prompt_input_hash);
-    if (!resp.ok) return out;  // best-effort：适配器失败即 ok=false、零事件。
+    if (!resp.ok) {
+        return out;  // best-effort：适配器失败即 ok=false、零事件。
+    }
 
     const std::string_view arr_text = extract_array(resp.raw_xml);
-    if (arr_text.empty()) return out;
+    if (arr_text.empty()) {
+        return out;
+    }
     nlohmann::json arr;
     try {
         arr = nlohmann::json::parse(arr_text);
     } catch (const std::exception&) {
         return out;  // 解析失败。
     }
-    if (!arr.is_array() || arr.empty()) return out;
+    if (!arr.is_array() || arr.empty()) {
+        return out;
+    }
 
     out.ok = true;  // 非空合法数组:persist 将开事务(即使下面全 incomplete)。
 
@@ -113,9 +119,9 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         event.actor  = actor;   // raw surface —— resolve_name 在 persist(要写库)。
         event.action = action;
         event.object_value = schema::normalize_theme(theme);  // M8: entity-kind theme
-        const schema::CanonicalResult cr =
+        const schema::CanonicalResult canon =
             schema::canonicalize_object(schema::CanonicalInput{event.object_value});
-        event.canonical_object_hash = cr.sha256_hex;
+        event.canonical_object_hash = canon.sha256_hex;
         if (el.contains("location") && el["location"].is_string()) {
             event.location = el["location"].get<std::string>();
         }
@@ -124,7 +130,9 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         }
         if (el.contains("participants") && el["participants"].is_array()) {
             for (const auto& part : el["participants"]) {
-                if (part.is_string()) event.participants.push_back(part.get<std::string>());  // raw
+                if (part.is_string()) {
+                    event.participants.push_back(part.get<std::string>());  // raw
+                }
             }
         }
         out.events.push_back(std::move(event));
@@ -144,14 +152,18 @@ EpisodicExtractionResult EpisodicExtractor::persist(
         return result;  // 镜像单体 early-return:无合法数组 → 不开事务、零写。
     }
 
-    persistence::TransactionGuard tx(conn_);
+    persistence::TransactionGuard guard(conn_);
     StatementWriter writer(conn_);
     store::EpisodicEventStore ep_store(conn_);
 
     std::optional<cognizer::CognizerHub> hub;
-    if (store_adapter_ != nullptr) hub.emplace(*store_adapter_);
+    if (store_adapter_ != nullptr) {
+        hub.emplace(*store_adapter_);
+    }
     const auto resolve_name = [&](const std::string& surface) -> std::string {
-        if (!hub) return surface;
+        if (!hub) {
+            return surface;
+        }
         return cognizer::resolve_or_register_cognizer(*hub, tenant, surface);
     };
 
@@ -160,7 +172,9 @@ EpisodicExtractionResult EpisodicExtractor::persist(
         const std::string actor = resolve_name(event.actor);
         std::vector<std::string> participants;
         participants.reserve(event.participants.size());
-        for (const auto& part : event.participants) participants.push_back(resolve_name(part));
+        for (const auto& part : event.participants) {
+            participants.push_back(resolve_name(part));
+        }
 
         ExtractedStatement stmt;
         stmt.holder_id          = std::string(agent_self);
@@ -176,7 +190,9 @@ EpisodicExtractionResult EpisodicExtractor::persist(
         stmt.polarity    = schema::Polarity::POS;
         stmt.confidence  = 0.9;  // 用户输入的直接事件叙述,过 validator 的 [0.3,1.0]。
         stmt.observed_at = std::string(now);
-        if (!event.event_time.empty()) stmt.event_time_start = event.event_time;
+        if (!event.event_time.empty()) {
+            stmt.event_time_start = event.event_time;
+        }
         stmt.provenance    = schema::StatementProvenance::USER_INPUT;
         stmt.review_status = schema::ReviewStatus::APPROVED;
         // chunk_index = seq:让每个事件的 extraction_span_key 互不相同。
@@ -212,7 +228,7 @@ EpisodicExtractionResult EpisodicExtractor::persist(
         }
     }
 
-    tx.commit();
+    guard.commit();
     return result;
 }
 

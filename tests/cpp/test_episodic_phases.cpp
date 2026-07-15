@@ -122,9 +122,11 @@ TEST(EpisodicPhases, LlmFailNoTxNoWrite) {
 
 TEST(EpisodicPhases, LlmEmptyEventsOkOpensEmptyTx) {
     // 加固(codex P2):非空合法数组、但每个元素 incomplete(缺 actor/action/theme)
-    // → extract_llm 置 ok=true、events 空。persist 镜像单体:仍开 TransactionGuard、
-    // 提交空事务、零写。钉死 ok 语义开关(防未来给 persist 加 `if events.empty(): return`
-    // 绕过空 tx)。行为无可观测差异,但 ok 是本次拆分唯一新增语义,一个钉测锁死它。
+    // → extract_llm 对此输入置 ok=true、events 空(相①语义)。persist 在此输入下
+    // 零写、且不留悬挂事务(autocommit==1)。本测试**不**区分「persist 内部开了个空
+    // tx 再 commit」与「persist 直接跳过不开 tx」——空事务本身不留可观测痕迹,两种
+    // 实现在这里的所有断言下结果相同;这属实现细节,交由 code review 而非本测试守卫。
+    // 有判别力的核心断言是下面两条 EXPECT_TRUE(ok=true / events 空)。
     auto pa = make_adapter(); seed_engram(pa->connection());
     FakeLLMAdapter pllm;
     // 合法 JSON 数组,元素缺 action/theme → 完整性过滤全 skip → events 空但 ok=true。
