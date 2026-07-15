@@ -31,6 +31,7 @@
 | `bindings/python/bind_06_extractor.cpp` | pybind | 加 `EpisodicLlmResult` opaque handle + `extract_llm`/`persist` 方法绑定 |
 | `python/starling/_memory_core.py` | host 三相编排 | `remember_extract` 加 episodic `extract_llm`(锁外);`remember_commit` episodic 改 `.persist`(锁内) |
 | `tests/python/test_remember_lock_release.py` | 锁纪律测试 | 加回归守卫:高频探测 tick 全程无锁内 LLM 窗口 |
+| `tests/python/test_extraction_config_wiring.py` | prompt/policy wiring spy | **必修(外部视角 P1)**:`FakeEpisodic` spy 加 `extract_llm`/`persist`(host 不再调 `.extract`),否则 5 个 wiring 测试经 `remember()` → `FakeEpisodic.extract_llm` → AttributeError |
 
 依赖序线性:Task 1(C++)→ Task 2(绑定,依赖 Task 1 的结构/方法)→ Task 3(host,依赖 Task 2 的绑定)。
 
@@ -178,6 +179,28 @@ TEST(EpisodicPhases, LlmFailNoTxNoWrite) {
     EXPECT_TRUE(phased.event_statement_ids.empty());
     EXPECT_EQ(sqlite3_get_autocommit(pa->connection().raw()), 1);   // persist 未开事务
     EXPECT_EQ(row_count(pa->connection(), "statements"), 0);
+}
+
+TEST(EpisodicPhases, LlmEmptyEventsOkOpensEmptyTx) {
+    // 加固(codex P2):非空合法数组、但每个元素 incomplete(缺 actor/action/theme)
+    // → extract_llm 置 ok=true、events 空。persist 镜像单体:仍开 TransactionGuard、
+    // 提交空事务、零写。钉死 ok 语义开关(防未来给 persist 加 `if events.empty(): return`
+    // 绕过空 tx)。行为无可观测差异,但 ok 是本次拆分唯一新增语义,一个钉测锁死它。
+    auto pa = make_adapter(); seed_engram(pa->connection());
+    FakeLLMAdapter pllm;
+    // 合法 JSON 数组,元素缺 action/theme → 完整性过滤全 skip → events 空但 ok=true。
+    pllm.set_default_response(LLMResponse{
+        .raw_xml = R"JSON([{"actor":"Sally"}])JSON", .ok = true});
+    EpisodicExtractor pex(pa->connection(), pllm);
+    const auto llm = pex.extract_llm("passage");
+    EXPECT_TRUE(llm.ok);                            // 非空合法数组 → ok=true
+    EXPECT_TRUE(llm.events.empty());                // 全 incomplete → 零事件
+    const auto phased = pex.persist("engram-1", "default", "cog-self",
+                                    "2026-05-23T10:00:00Z", llm);
+    EXPECT_TRUE(phased.event_statement_ids.empty());
+    EXPECT_EQ(sqlite3_get_autocommit(pa->connection().raw()), 1);   // 空 tx 已 commit(不悬开)
+    EXPECT_EQ(row_count(pa->connection(), "statements"), 0);        // 零写
+    EXPECT_EQ(row_count(pa->connection(), "episodic_events"), 0);
 }
 
 }  // namespace starling::extractor
@@ -464,6 +487,9 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
                 const std::string& agent_self, const std::string& now,
                 const starling::extractor::EpisodicLlmResult& llm_result) {
                  // 相②:纯 DB(快),返回本次写入的 OCCURRED 语句 id 列表。
+                 // DB 写期间释放 GIL(对齐 belief memory_remember_commit / .extract 范式:
+                 // 让无关只读 Python 线程在这几 ms 内不被阻塞;persist 短、无并发 conn 访问)。
+                 py::gil_scoped_release release;
                  const auto r = self.persist(engram_ref, tenant, agent_self, now, llm_result);
                  return r.event_statement_ids;
              },
@@ -523,6 +549,28 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Consumes: Task 2 的 `_core.EpisodicExtractor(...).extract_llm(text)` / `.persist(engram_ref=…, tenant=…, agent_self=…, now=…, llm_result=…)`;既有 `self.conn`、`self.rt.adapter`、`self._extraction.episodic_prompt`、`self.tenant`。
 - Produces: `remember_extract` 返回 dict 增 `"episodic_llm"` 键;`remember_commit` 用 `.persist` 落 episodic(纯 DB)。`MemoryCore.remember`(单体)与 `Memory.remember` 复用二者,自动覆盖。
 
+- [ ] **Step 0: 更新 `test_extraction_config_wiring.py` 的 `FakeEpisodic` spy(P1 必修——否则 Step 6 必 RED)**
+
+`tests/python/test_extraction_config_wiring.py` 的 `FakeEpisodic` spy(现 30-35 行)只实现 `.extract`;Task 3 把 host 改成调 `.extract_llm`/`.persist` 后,5 个经 `mem._core.remember("hi")` 的测试会撞 `AttributeError`(host 调 `FakeEpisodic(...).extract_llm(...)`)。先把 spy 的 `.extract` 换成新两相方法,并更新 docstring 那句「EpisodicExtractor spy unchanged」。
+
+把 `class FakeEpisodic` 块(现 30-35 行)替换为:
+
+```python
+    class FakeEpisodic:
+        def __init__(self, conn, llm, adapter, prompt):
+            captured["episodic"] = prompt
+
+        def extract_llm(self, passage):
+            return object()   # opaque placeholder; only re-forwarded to persist below
+
+        def persist(self, **kw):
+            return []
+```
+
+并把 `_install_spies` docstring 末句 `EpisodicExtractor spy unchanged.` 改为 `EpisodicExtractor spy now exposes extract_llm/persist (option B: episodic LLM out of lock).`
+
+排序说明:spy 删掉 `.extract`、换成 `.extract_llm`/`.persist`,与 Step 3/4 的 host 改动是**同一逻辑单元**(旧 host 调 `.extract`、新 host 调新两相——两者不能中间态共存),故同一提交落、wiring 测试并进 Step 6 全量 pytest 一起验绿。本 Step 只是先把 spy 编辑做掉,不单独跑。
+
 - [ ] **Step 1: 写锁纪律回归守卫(先失败)**
 
 在 `tests/python/test_remember_lock_release.py` 末尾追加(顶部已 `import threading, time`):
@@ -553,6 +601,14 @@ def test_tick_never_blocks_during_remember(tmp_path):
     assert max_block < 0.4, (
         f"某次 tick 阻塞 {max_block:.2f}s —— 仍有锁内 LLM 窗口(episodic 未出锁)")
 ```
+
+> **测法余量说明(eng-review P3):** `max_block` 括住整个 `eng.tick()`(取锁 +
+> tick 自身 embed/pump/reconstruct 工作),非纯等锁计时。判别信号是 0.4s 阈值 vs
+> 拆锁前 0.7s(`set_delay_ms(700)`)锁内窗口 → 0.3s 余量;拆锁后 tick 自身在此
+> FakeLLM/stub-embedder 路径远 <0.4s。照既有 `test_tick_interleaves_during_extract`
+> 同范式同阈值(稳定)。若重载 CI 出现假 RED(tick 自身某次 >0.4s),把
+> `set_delay_ms(700)` 调到 `1500` 并阈值调到 `0.6` 拉大余量——信号(拆锁前锁内睡
+> 满 delay)与阈值同比放大,判别力不变。
 
 - [ ] **Step 2: 跑测试 → 确认失败(旧 host 仍锁内跑 episodic LLM)**
 
@@ -639,7 +695,7 @@ Expected: 全绿(remember 端到端 belief+episodic+gf 逐字段不变;statement
 - [ ] **Step 7: Commit**
 
 ```bash
-git add python/starling/_memory_core.py tests/python/test_remember_lock_release.py
+git add python/starling/_memory_core.py tests/python/test_remember_lock_release.py tests/python/test_extraction_config_wiring.py
 git commit -m "feat(episodic): move episodic LLM out of the commit write-lock (option B done)
 
 remember_extract 加 episodic extract_llm(锁外);remember_commit episodic 改
@@ -669,4 +725,31 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - `extract_llm(passage)` 单参一致(hpp / cpp / 绑定 / host `episodic.extract_llm(bundle["text"])`)。✓
 - host `remember_extract` 返回三键 `{belief, gf, episodic_llm}`;`remember_commit` 读 `extracted["episodic_llm"]`——键名一致;`should_extract=False` 分支也回三键(shape 一致)。✓
 
+**4. Eng-review 加固(外部视角 4 项,全折进):**
+- [P1 必修] `test_extraction_config_wiring.py` 的 `FakeEpisodic` spy 只有 `.extract`,Task 3 改用 `.extract_llm`/`.persist` 后 5 个测试必 AttributeError → Task 3 Step 0b 更新 spy(加 `extract_llm`/`persist`、更新 docstring),同提交落、并进 Step 6 全量 pytest;File Structure 表 + Step 7 git add 已含该文件。✓
+- [P2] 缺「非空数组、全 incomplete → ok=true、events 空、persist 开+提交空 tx」钉测 → Task 1 加 `LlmEmptyEventsOkOpensEmptyTx`(锁死 `ok` 语义,防未来给 persist 加 `if events.empty(): return` 绕过空 tx)。✓
+- [P3] persist 绑定原未释 GIL,与 belief `memory_remember_commit` / `.extract` 范式不一致 → Task 2 Step 2 persist lambda 加 `py::gil_scoped_release`(DB 写期间不白占 GIL)。✓
+- [P3] 锁测 `max_block` 括整个 tick 非纯等锁、0.4s 对 0.7s 仅 0.3s 余量 → Task 3 Step 1 加测法余量说明 + CI 假 RED 的放大调法(delay 700→1500、阈值 0.4→0.6)。✓
+
 无遗漏。
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_found | 4 issues (1 P1 + 1 P2 + 2 P3), 0 critical gaps, all folded |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**Step 0 scope:** accepted as-is(7 文件、0 新类,方案2 忠实镜像;低于 8 文件/2 类阈值)。
+**Architecture:** 无 issue(拆分范式镜像已发布 PR #54 的 `Extractor::extract_llm`/`persist`;锁内次序 belief→episodic→reconstruct→gf 保证 reconstruct 读 episodic_events 在其落库后)。
+**Code Quality / Tests / Performance:** 外部视角(codex 超时→Claude 子代理亲读实现验)4 findings,全折进:P1 FakeEpisodic spy 漏更新(必 RED)、P2 空-tx 钉测、P3 persist GIL、P3 锁测余量。
+
+**CODEX:** codex exec 5min 超时零输出(Clash TUN 掐 API 网络),照 skill 回退 Claude 子代理外部视角(fresh context、repo 读权,逐条亲验 parity)。
+**VERDICT:** ENG CLEARED — ready to implement(4 findings 全折进计划,0 未决)。
+
+NO UNRESOLVED DECISIONS
