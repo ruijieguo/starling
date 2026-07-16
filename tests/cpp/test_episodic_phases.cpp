@@ -120,7 +120,7 @@ TEST(EpisodicPhases, LlmFailNoTxNoWrite) {
     EXPECT_EQ(row_count(pa->connection(), "statements"), 0);
 }
 
-TEST(EpisodicPhases, LlmEmptyEventsOkOpensEmptyTx) {
+TEST(EpisodicPhases, LlmEmptyEventsOkNoWrite) {
     // 加固(codex P2):非空合法数组、但每个元素 incomplete(缺 actor/action/theme)
     // → extract_llm 对此输入置 ok=true、events 空(相①语义)。persist 在此输入下
     // 零写、且不留悬挂事务(autocommit==1)。本测试**不**区分「persist 内部开了个空
@@ -142,6 +142,38 @@ TEST(EpisodicPhases, LlmEmptyEventsOkOpensEmptyTx) {
     EXPECT_EQ(sqlite3_get_autocommit(pa->connection().raw()), 1);   // 空 tx 已 commit(不悬开)
     EXPECT_EQ(row_count(pa->connection(), "statements"), 0);        // 零写
     EXPECT_EQ(row_count(pa->connection(), "episodic_events"), 0);
+}
+
+TEST(EpisodicPhases, PhasedEqualsMonolithWithCognizerResolution) {
+    // 4-arg(store adapter)ctor:actor + participants 走 CognizerHub resolve-or-register。
+    // 钉:拆分后(纯计算移锁外 extract_llm、resolve_name 留锁内 persist)cognizers 表的
+    // register-on-miss 写序与 id 分配与单体逐行等值 —— 这是拆分唯一有写序副作用的点。
+    auto ma = make_adapter(); seed_engram(ma->connection());
+    FakeLLMAdapter mllm; mllm.set_default_response(LLMResponse{.raw_xml = kEpisodicJson, .ok = true});
+    EpisodicExtractor mex(ma->connection(), mllm, *ma, "");   // 4-arg:store adapter = *ma
+    const auto mono = mex.extract("passage", "engram-1", "default", "cog-self",
+                                  "2026-05-23T10:00:00Z");
+
+    auto pa = make_adapter(); seed_engram(pa->connection());
+    FakeLLMAdapter pllm; pllm.set_default_response(LLMResponse{.raw_xml = kEpisodicJson, .ok = true});
+    EpisodicExtractor pex(pa->connection(), pllm, *pa, "");
+    const auto llm = pex.extract_llm("passage");
+    const auto phased = pex.persist("engram-1", "default", "cog-self",
+                                    "2026-05-23T10:00:00Z", llm);
+
+    EXPECT_EQ(mono.event_statement_ids.size(), phased.event_statement_ids.size());
+    // cognizers 表逐行值等价:register-on-miss 写序 + id 分配不变(拆分最微妙点)。
+    EXPECT_EQ(dump_rows(ma->connection(),
+                  "SELECT id,canonical_name FROM cognizers ORDER BY id"),
+              dump_rows(pa->connection(),
+                  "SELECT id,canonical_name FROM cognizers ORDER BY id"));
+    // statements 的 subject_id(= resolve 后的 canonical name)也逐行等值。
+    EXPECT_EQ(dump_rows(ma->connection(),
+                  "SELECT subject_id,predicate,canonical_object_hash FROM statements "
+                  "ORDER BY predicate,canonical_object_hash"),
+              dump_rows(pa->connection(),
+                  "SELECT subject_id,predicate,canonical_object_hash FROM statements "
+                  "ORDER BY predicate,canonical_object_hash"));
 }
 
 }  // namespace starling::extractor
