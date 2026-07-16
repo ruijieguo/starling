@@ -161,12 +161,12 @@ class MemoryCore:
                 "interlocutor": interlocutor or "", "text": text}
 
     def remember_extract(self, bundle: dict, llm=None) -> dict:
-        """三相之二(锁外无事务):belief + general-fact 两条 LLM 抽取(纯网络)。
-        should_extract=False(no_store/rejected)→ 空。llm 缺省 self.llm;
-        DashboardEngine 传本轮解析出的局部 adapter(避拆锁后全局 slot 竞态)。"""
+        """三相之二(锁外无事务):belief + general-fact + episodic 三条 LLM 抽取(纯网络)。
+        should_extract=False(no_store/rejected)→ 空。llm 缺省 self.llm;DashboardEngine
+        传本轮解析出的局部 adapter(避拆锁后全局 slot 竞态)。episodic LLM 就此出锁。"""
         prepared = bundle["prepared"]
         if not prepared.should_extract:
-            return {"belief": None, "gf": None}
+            return {"belief": None, "gf": None, "episodic_llm": None}
         extraction_llm = llm or self.llm
         if extraction_llm is None:   # #1:extract 真正用 llm 处兜底(直呼 extract 时)
             raise LLMNotConfigured("remember requires an llm adapter")
@@ -181,12 +181,17 @@ class MemoryCore:
         gf = _core.memory_extract_llm(
             self.rt.adapter, extraction_llm, gf_prompt,
             holder_id=holder_id, payload=payload, policy=policy)
-        return {"belief": belief, "gf": gf}
+        # episodic 相①(锁外,option B 收尾):~20-50s LLM 出锁,与 belief+gf 并列。
+        episodic = _core.EpisodicExtractor(
+            self.conn, extraction_llm, self.rt.adapter,
+            self._extraction.episodic_prompt)
+        episodic_llm = episodic.extract_llm(bundle["text"])
+        return {"belief": belief, "gf": gf, "episodic_llm": episodic_llm}
 
     def remember_commit(self, bundle: dict, extracted: dict, llm=None) -> dict:
-        """三相之三(锁内短):belief persist → episodic 单体(option B 残留:
-        其 LLM 仍在锁内)→ gf persist(复用同 engram)。statement_ids 顺序
-        belief+episodic+gf 与单体一致。"""
+        """三相之三(锁内短):belief persist → episodic persist(option B 收尾:
+        LLM 已锁外跑完,此处纯 DB)→ gf persist(复用同 engram)。statement_ids
+        顺序 belief+episodic+gf 与单体一致。"""
         prepared = bundle["prepared"]
         if not prepared.should_extract:
             return {"engram_ref": prepared.engram_ref, "statement_ids": [],
@@ -204,15 +209,18 @@ class MemoryCore:
             holder_id=holder_id, interlocutor=interlocutor,
             prepared=prepared, llm_result=extracted["belief"], policy=policy)
 
-        # 第二条:episodic(叙事事件)。单体,LLM+DB 仍在此锁内(option B 残留)。
+        # 第二条:episodic(叙事事件)。相② persist:LLM 已在锁外 extract_llm 跑完,
+        # 此处纯 DB 落库(option B 收尾:episodic LLM 出锁)。次序 belief→episodic→
+        # reconstruct→gf 不变;reconstruct 读 episodic_events 故须在 persist 之后。
         engram_ref = out.get("engram_ref") or ""
         if engram_ref:
             episodic = _core.EpisodicExtractor(
                 self.conn, extraction_llm, self.rt.adapter,
                 self._extraction.episodic_prompt)
-            event_ids = episodic.extract(
-                passage=text, engram_ref=engram_ref, tenant=self.tenant,
-                agent_self=holder_id, now=created_iso)
+            event_ids = episodic.persist(
+                engram_ref=engram_ref, tenant=self.tenant,
+                agent_self=holder_id, now=created_iso,
+                llm_result=extracted["episodic_llm"])
             if event_ids:
                 out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
                 try:
