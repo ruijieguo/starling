@@ -263,6 +263,12 @@ void bind_06_extractor(pybind11::module_& m) {
              py::arg("existing_ref_map"),
              py::arg("interlocutor") = "");
 
+    // ----- option B 收尾:EpisodicLlmResult(相① extract_llm 产物,opaque handle) -----
+    // 无方法 opaque py::class_(Python 只持有、原样回传给 persist)→ 触 bugprone-unused-raii,
+    // 照 belief ExtractionLlmResult 加 NOLINT。
+    // NOLINTNEXTLINE(bugprone-unused-raii)
+    py::class_<starling::extractor::EpisodicLlmResult>(m, "EpisodicLlmResult");
+
     // ----- sub-project A phase 5: EpisodicExtractor (second extraction pass) -----
     // 镜像 Extractor 绑定:ctor(connection, adapter, prompt_template),extract()
     // 在 LLM 网络调用期间释放 GIL。返回本次写入的 OCCURRED 语句 id 列表。
@@ -298,7 +304,28 @@ void bind_06_extractor(pybind11::module_& m) {
                  return r.event_statement_ids;
              },
              py::arg("passage"), py::arg("engram_ref"), py::arg("tenant"),
-             py::arg("agent_self"), py::arg("now"));
+             py::arg("agent_self"), py::arg("now"))
+        .def("extract_llm",
+             [](starling::extractor::EpisodicExtractor& self, const std::string& passage) {
+                 // 相①:LLM 网络调用期间释放 GIL(照 .extract / Extractor.run)。
+                 py::gil_scoped_release release;
+                 return self.extract_llm(passage);
+             },
+             py::arg("passage"))
+        .def("persist",
+             [](starling::extractor::EpisodicExtractor& self,
+                const std::string& engram_ref, const std::string& tenant,
+                const std::string& agent_self, const std::string& now,
+                const starling::extractor::EpisodicLlmResult& llm_result) {
+                 // 相②:纯 DB(快),返回本次写入的 OCCURRED 语句 id 列表。
+                 // DB 写期间释放 GIL(对齐 belief memory_remember_commit / .extract 范式:
+                 // 让无关只读 Python 线程在这几 ms 内不被阻塞;persist 短、无并发 conn 访问)。
+                 py::gil_scoped_release release;
+                 const auto result = self.persist(engram_ref, tenant, agent_self, now, llm_result);
+                 return result.event_statement_ids;
+             },
+             py::arg("engram_ref"), py::arg("tenant"), py::arg("agent_self"),
+             py::arg("now"), py::arg("llm_result"));
 
     // ----- sub-project B phase 1: PerceptionReconstructor (post-pass) -----
     // 镜像 EpisodicExtractor 绑定:ctor 持 Connection&(keep_alive),reconstruct()

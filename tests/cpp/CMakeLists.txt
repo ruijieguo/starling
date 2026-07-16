@@ -157,6 +157,7 @@ add_executable(starling_tests
     test_occurred_modality.cpp
     test_episodic_event_store.cpp
     test_episodic_extractor.cpp
+    test_episodic_phases.cpp
     test_reasoning_trace.cpp
     test_perception_state_store.cpp
     test_perception_reconstructor.cpp

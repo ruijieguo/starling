@@ -425,9 +425,10 @@ class DashboardEngine:
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
                  provider: str | None = None) -> dict:
-        """三相落锁(方案2):belief+gf extraction 段在锁外,prepare/commit 持锁。
-        episodic 单体仍在 commit 锁内(option B 残留)。provider 解析为局部
-        adapter 传入 extract/commit(避拆锁后全局 slot 竞态,同 _converse_phased)。"""
+        """三相落锁(方案2 + option B 收尾):belief+gf+episodic extraction 段全在
+        锁外,prepare/commit 持锁。episodic LLM 已出锁(commit 内 episodic 只做纯
+        DB persist)。provider 解析为局部 adapter 传入 extract/commit(避拆锁后全局
+        slot 竞态,同 _converse_phased)。"""
         now = now or datetime.now(timezone.utc)
         with self._lock:                                    # ① 短:写门 + engram
             extraction = self._resolve_extraction(provider)

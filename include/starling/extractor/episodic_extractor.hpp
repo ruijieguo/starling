@@ -27,6 +27,26 @@ struct EpisodicExtractionResult {
     std::vector<std::string> event_statement_ids;
 };
 
+// 相①(extract_llm)产物:解析好、待落库的单个事件。actor/participants 仍是 raw
+// surface —— cognizer 名解析(resolve_name)会写库,留到 persist(锁内)。
+struct ParsedEpisodicEvent {
+    long long seq = 0;                       // 1-based,密集于完整事件
+    std::string actor;                       // raw surface(persist 里 resolve_name)
+    std::string action;
+    std::string object_value;                // normalize_theme(theme)(M8 entity-kind)
+    std::string canonical_object_hash;       // canonicalize_object(object_value)
+    std::string location;                    // "" → episodic_events NULL
+    std::string event_time;                  // "" → NULL
+    std::vector<std::string> participants;   // raw surfaces(persist 里逐个 resolve_name)
+};
+
+// 相① LLM+parse 输出容器,零 DB。ok = 适配器 ok 且解析出非空合法数组
+// (决定 persist 是否开事务:与单体一致——非空合法数组即使全 incomplete 也开事务)。
+struct EpisodicLlmResult {
+    bool ok = false;
+    std::vector<ParsedEpisodicEvent> events{};
+};
+
 class EpisodicExtractor {
 public:
     EpisodicExtractor(persistence::Connection& conn, LLMAdapter& adapter,
@@ -58,6 +78,21 @@ public:
         std::string_view tenant,
         std::string_view agent_self,
         std::string_view now);
+
+    // 相①(锁外,零 DB 无 TransactionGuard):build_prompt + LLM + 解析数组 + 逐事件
+    // 抽 raw 字段 + 完整性过滤 + 密集 seq + 纯计算 normalize_theme/canonicalize_object。
+    // resp 失败 / 无数组 / 空数组 → ok=false、events 空。
+    EpisodicLlmResult extract_llm(std::string_view passage);
+
+    // 相②(锁内):!llm_result.ok → 零写返回(不开事务,镜像单体 early-return)。否则开
+    // TransactionGuard,逐事件 resolve_name(actor+participants) → writer.write →
+    // ep_store.upsert(best-effort),commit。返回 event_statement_ids(seq 升序)。
+    EpisodicExtractionResult persist(
+        std::string_view engram_ref,
+        std::string_view tenant,
+        std::string_view agent_self,
+        std::string_view now,
+        const EpisodicLlmResult& llm_result);
 
     // {passage} 字面替换(无占位符则在末尾追加 passage)。镜像
     // Extractor::build_prompt 的 {convo} 处理。prompt_template_ 为空时(单测路径)

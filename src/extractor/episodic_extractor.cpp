@@ -74,51 +74,31 @@ std::string EpisodicExtractor::build_prompt(std::string_view passage) const {
     return out;
 }
 
-EpisodicExtractionResult EpisodicExtractor::extract(
-        std::string_view passage,
-        std::string_view engram_ref,
-        std::string_view tenant,
-        std::string_view agent_self,
-        std::string_view now) {
-
-    EpisodicExtractionResult result;
+EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
+    EpisodicLlmResult out;
 
     const std::string prompt_body = build_prompt(passage);
     const std::string prompt_input_hash = crypto::sha256_hex(prompt_body);
     const LLMResponse resp = adapter_.extract(prompt_body, prompt_input_hash);
     if (!resp.ok) {
-        return result;  // best-effort：适配器失败即零事件。
+        return out;  // best-effort：适配器失败即 ok=false、零事件。
     }
 
     const std::string_view arr_text = extract_array(resp.raw_xml);
     if (arr_text.empty()) {
-        return result;  // 无数组。
+        return out;
     }
     nlohmann::json arr;
     try {
         arr = nlohmann::json::parse(arr_text);
     } catch (const std::exception&) {
-        return result;  // 解析失败。
+        return out;  // 解析失败。
     }
     if (!arr.is_array() || arr.empty()) {
-        return result;
+        return out;
     }
 
-    persistence::TransactionGuard tx(conn_);
-    StatementWriter writer(conn_);
-    store::EpisodicEventStore ep_store(conn_);
-
-    // Phase 2 (Task 2.2): when a store adapter was provided, resolve cognizer
-    // surfaces (actor + each participant) to their canonical first-seen name so
-    // surface drift grounds to one entity. The Hub's register-on-miss writes join
-    // this open transaction (it manages none of its own). Best-effort: the
-    // resolver returns the raw surface on any error, so it never breaks remember.
-    std::optional<cognizer::CognizerHub> hub;
-    if (store_adapter_ != nullptr) hub.emplace(*store_adapter_);
-    const auto resolve_name = [&](const std::string& surface) -> std::string {
-        if (!hub) return surface;
-        return cognizer::resolve_or_register_cognizer(*hub, tenant, surface);
-    };
+    out.ok = true;  // 非空合法数组:persist 将开事务(即使下面全 incomplete)。
 
     long long seq = 0;
     for (const auto& el : arr) {
@@ -130,31 +110,70 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         std::string theme;
         if (el.contains("theme") && el["theme"].is_string()) theme = el["theme"].get<std::string>();
         if (actor.empty() || action.empty() || theme.empty()) {
-            continue;  // lenient: skip incomplete event (keeps seq dense over writes).
+            continue;  // lenient: skip incomplete event(保持 seq 密集于写入)。
         }
         ++seq;
 
-        // Resolve the actor surface to its canonical first-seen name (no-op when
-        // no store adapter was wired). The participant cast is resolved below.
-        actor = resolve_name(actor);
-
-        // location/time 可空:JSON null 或缺省 → "" (= episodic_events SQL NULL)。
-        std::string location;
+        ParsedEpisodicEvent event;
+        event.seq    = seq;
+        event.actor  = actor;   // raw surface —— resolve_name 在 persist(要写库)。
+        event.action = action;
+        event.object_value = schema::normalize_theme(theme);  // M8: entity-kind theme
+        const schema::CanonicalResult canon =
+            schema::canonicalize_object(schema::CanonicalInput{event.object_value});
+        event.canonical_object_hash = canon.sha256_hex;
         if (el.contains("location") && el["location"].is_string()) {
-            location = el["location"].get<std::string>();
+            event.location = el["location"].get<std::string>();
         }
-        std::string event_time;
         if (el.contains("time") && el["time"].is_string()) {
-            event_time = el["time"].get<std::string>();
+            event.event_time = el["time"].get<std::string>();
         }
-        // Resolve EVERY participant (not just the actor): B's PerceptionReconstructor
-        // builds its presence cast from actor + participants, so mixing canonical
-        // and raw names would silently split presence.
-        std::vector<std::string> participants;
         if (el.contains("participants") && el["participants"].is_array()) {
-            for (const auto& p : el["participants"]) {
-                if (p.is_string()) participants.push_back(resolve_name(p.get<std::string>()));
+            for (const auto& part : el["participants"]) {
+                if (part.is_string()) {
+                    event.participants.push_back(part.get<std::string>());  // raw
+                }
             }
+        }
+        out.events.push_back(std::move(event));
+    }
+    return out;
+}
+
+EpisodicExtractionResult EpisodicExtractor::persist(
+        std::string_view engram_ref,
+        std::string_view tenant,
+        std::string_view agent_self,
+        std::string_view now,
+        const EpisodicLlmResult& llm_result) {
+
+    EpisodicExtractionResult result;
+    if (!llm_result.ok) {
+        return result;  // 镜像单体 early-return:无合法数组 → 不开事务、零写。
+    }
+
+    persistence::TransactionGuard guard(conn_);
+    StatementWriter writer(conn_);
+    store::EpisodicEventStore ep_store(conn_);
+
+    std::optional<cognizer::CognizerHub> hub;
+    if (store_adapter_ != nullptr) {
+        hub.emplace(*store_adapter_);
+    }
+    const auto resolve_name = [&](const std::string& surface) -> std::string {
+        if (!hub) {
+            return surface;
+        }
+        return cognizer::resolve_or_register_cognizer(*hub, tenant, surface);
+    };
+
+    for (const auto& event : llm_result.events) {
+        // resolve actor + 每个 participant(CognizerHub register-on-miss 写本事务)。
+        const std::string actor = resolve_name(event.actor);
+        std::vector<std::string> participants;
+        participants.reserve(event.participants.size());
+        for (const auto& part : event.participants) {
+            participants.push_back(resolve_name(part));
         }
 
         ExtractedStatement stmt;
@@ -163,24 +182,22 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         stmt.holder_perspective = schema::Perspective::FIRST_PERSON;
         stmt.subject_kind       = "cognizer";
         stmt.subject_id         = actor;
-        stmt.predicate          = action;
+        stmt.predicate          = event.action;
         stmt.object_kind        = "entity";
-        stmt.object_value       = schema::normalize_theme(theme);  // M8: entity-kind theme
-        const schema::CanonicalResult cr =
-            schema::canonicalize_object(schema::CanonicalInput{stmt.object_value});
-        stmt.canonical_object_hash = cr.sha256_hex;
+        stmt.object_value       = event.object_value;            // 相①已 normalize
+        stmt.canonical_object_hash = event.canonical_object_hash; // 相①已算
         stmt.modality    = schema::Modality::OCCURRED;
         stmt.polarity    = schema::Polarity::POS;
         stmt.confidence  = 0.9;  // 用户输入的直接事件叙述,过 validator 的 [0.3,1.0]。
         stmt.observed_at = std::string(now);
-        if (!event_time.empty()) stmt.event_time_start = event_time;
+        if (!event.event_time.empty()) {
+            stmt.event_time_start = event.event_time;
+        }
         stmt.provenance    = schema::StatementProvenance::USER_INPUT;
         stmt.review_status = schema::ReviewStatus::APPROVED;
-        // chunk_index = seq:让每个事件的 extraction_span_key 互不相同,
-        // 否则同 theme/predicate 的事件会被 StatementWriter 当 chunk-duplicate
-        // 折叠成 review_requested。perceived_by 默认 self(事件由 self 观察)。
-        stmt.chunk_index = static_cast<std::int32_t>(seq);
-        stmt.source_hash = "episodic-" + std::to_string(seq);
+        // chunk_index = seq:让每个事件的 extraction_span_key 互不相同。
+        stmt.chunk_index = static_cast<std::int32_t>(event.seq);
+        stmt.source_hash = "episodic-" + std::to_string(event.seq);
         stmt.perceived_by = {std::string(agent_self)};
 
         const std::string span_key = compute_extraction_span_key(
@@ -198,21 +215,31 @@ EpisodicExtractionResult EpisodicExtractor::extract(
         // Best-effort episodic_events 扩展行:写在同一事务内,失败不回滚语句。
         try {
             store::EpisodicEventRow row;
-            row.statement_id     = stmt_id;
-            row.tenant_id        = std::string(tenant);
-            row.seq              = seq;
-            row.event_time       = event_time;   // "" → NULL
-            row.location         = location;      // "" → NULL
+            row.statement_id      = stmt_id;
+            row.tenant_id         = std::string(tenant);
+            row.seq               = event.seq;
+            row.event_time        = event.event_time;   // "" → NULL
+            row.location          = event.location;      // "" → NULL
             row.participants_json = participants_json(participants);
-            row.action_raw       = action;
+            row.action_raw        = event.action;
             ep_store.upsert(row);
         } catch (const std::exception&) {
             // 扩展行失败容忍:语句已写入本事务,不应因扩展失败而整体回滚。
         }
     }
 
-    tx.commit();
+    guard.commit();
     return result;
+}
+
+EpisodicExtractionResult EpisodicExtractor::extract(
+        std::string_view passage,
+        std::string_view engram_ref,
+        std::string_view tenant,
+        std::string_view agent_self,
+        std::string_view now) {
+    // 单体 = 两相内联(单一语义源;host 分相调用与此逐字段等价,见 test_episodic_phases）。
+    return persist(engram_ref, tenant, agent_self, now, extract_llm(passage));
 }
 
 }  // namespace starling::extractor

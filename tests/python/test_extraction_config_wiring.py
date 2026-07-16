@@ -16,7 +16,8 @@ def _install_spies(monkeypatch, captured):
     itself can construct, so it is faked too — echoing back prepared's REAL
     engram_ref/outcome (remember_prepare is deliberately left un-mocked and
     runs for real: it does no LLM work, just the engram write, so faking it
-    would only lose coverage). EpisodicExtractor spy unchanged."""
+    would only lose coverage). EpisodicExtractor spy now exposes
+    extract_llm/persist (option B: episodic LLM out of lock)."""
     def fake_extract_llm(adapter, llm, prompt, *, holder_id, payload, policy=None):
         captured.setdefault("prompts", []).append(prompt)
         captured["policy"] = policy
@@ -31,7 +32,10 @@ def _install_spies(monkeypatch, captured):
         def __init__(self, conn, llm, adapter, prompt):
             captured["episodic"] = prompt
 
-        def extract(self, **kw):
+        def extract_llm(self, passage):
+            return object()   # opaque placeholder; only re-forwarded to persist below
+
+        def persist(self, **kw):
             return []
 
     monkeypatch.setattr(mc._core, "memory_extract_llm", fake_extract_llm)

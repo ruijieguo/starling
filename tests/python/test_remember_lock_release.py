@@ -71,3 +71,29 @@ def test_remember_route_returns_503_when_draining(tmp_path):
     assert eng._rt.health() == _core.RuntimeHealth.DRAINING
     r = client.post("/api/remember", json={"text": "Bob owns auth"})
     assert r.status_code == 503 and r.json()["detail"] == "draining"
+
+
+def test_tick_never_blocks_during_remember(tmp_path):
+    """option B 收尾回归守卫:episodic LLM 出锁后,remember 全程无锁内 LLM 窗口。
+    高频探测并发 tick,最大阻塞必 <0.4s。拆锁前 episodic 的 ~D LLM 在 commit 锁内 →
+    某次 tick 会阻塞 ≈D(此测在旧 host 上 RED)。"""
+    eng = _engine(tmp_path)                       # FakeLLM set_delay_ms(700)
+    done = threading.Event()
+
+    def run():
+        eng.remember("Sally put the ball in the basket", holder="cog-self")
+        done.set()
+
+    turn = threading.Thread(target=run)
+    turn.start()
+    time.sleep(0.05)                              # 让 remember 进入 extract 段
+    max_block = 0.0
+    now_iso = "2026-07-14T00:00:00Z"
+    while not done.is_set():
+        b0 = time.monotonic()
+        eng.tick(now_iso)                         # 取同一 self._lock
+        max_block = max(max_block, time.monotonic() - b0)
+        time.sleep(0.01)
+    turn.join(timeout=30)
+    assert max_block < 0.4, (
+        f"某次 tick 阻塞 {max_block:.2f}s —— 仍有锁内 LLM 窗口(episodic 未出锁)")
