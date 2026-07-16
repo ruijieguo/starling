@@ -133,7 +133,7 @@ class MemoryCore:
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         """单体 = 三相内联(单一语义源)。facade 直接走本单体;DashboardEngine
-        分相调用以在锁外跑 belief+gf extraction。belief/episodic/gf 顺序不变。"""
+        分相调用以在锁外跑 belief+gf+episodic extraction。belief/episodic/gf 顺序不变。"""
         if self.llm is None:   # #1:fail-fast(prepare 会写 engram,故在写前查;facade 路径的兜底)
             raise LLMNotConfigured(
                 "remember requires an llm adapter "
