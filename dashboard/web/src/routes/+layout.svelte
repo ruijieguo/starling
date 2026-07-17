@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
+	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -9,6 +10,7 @@
 	import { wsConn, llmConfigured, embedderConfigured, lastWsEvent } from '$lib/health';
 	import { type Config, roleConfigured } from '$lib/models';
 	import { ALL_NAV_ITEMS, NAV_GROUPS } from '$lib/nav';
+	import { density, applyDensity, type Density } from '$lib/ui/density';
 	import NavIcon from '$lib/components/NavIcon.svelte';
 	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
 
@@ -100,6 +102,22 @@
 	);
 	let connLabel = $derived($wsConn === 'open' ? 'Live' : $wsConn === 'connecting' ? '连接中' : '断开');
 	const cfgTone = (v: boolean | null) => (v === true ? 'ok' : v === false ? 'warn' : 'unknown');
+
+	// 密度切换(宽松/紧凑):跟 ThemeToggle 同款分段簇 + 持久化,见 lib/ui/density.ts。
+	let curDensity = $state<Density>('comfortable');
+	const unsubDensity = density.subscribe((d) => (curDensity = d));
+	onMount(() => {
+		applyDensity(curDensity);
+		return unsubDensity;
+	});
+	const DENSITY_MODES: { value: Density; label: string }[] = [
+		{ value: 'comfortable', label: '宽松' },
+		{ value: 'compact', label: '紧凑' }
+	];
+	function pickDensity(d: Density) {
+		density.set(d);
+		applyDensity(d);
+	}
 </script>
 
 <svelte:head><link rel="icon" href={favicon} /></svelte:head>
@@ -243,6 +261,27 @@
 					label={$embedderConfigured === false ? 'Embedder 未配' : 'Embedder'}
 				/>
 				<ThemeToggle />
+				<div
+					class="flex items-center gap-0.5 rounded-full border border-border bg-surface p-0.5"
+					role="group"
+					aria-label="密度"
+				>
+					{#each DENSITY_MODES as m}
+						<button
+							type="button"
+							aria-label={`密度：${m.label}`}
+							title={m.label}
+							aria-pressed={curDensity === m.value}
+							onclick={() => pickDensity(m.value)}
+							class="rounded-full px-2 py-1 text-xs font-medium transition focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand {curDensity ===
+							m.value
+								? 'bg-brand-tint-strong text-brand'
+								: 'text-subtle hover:text-fg'}"
+						>
+							{m.label}
+						</button>
+					{/each}
+				</div>
 			</div>
 		</header>
 
