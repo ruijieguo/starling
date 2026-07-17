@@ -83,6 +83,10 @@ export type RecallReceipt = {
 	evidence_erased_count: number;
 	projection_lag_events: number;
 	degraded_paths: { path: string; reason: string; fallback: string }[];
+	// 顺序契约:score_breakdown[i] 对应 results[i]——两者由后端 retrieval_planner
+	// 同序构建(rerank 成对推入 + resize 同步截断到同一 k)。results 不带 statement_id,
+	// 前端只能靠位置索引配对。若后端将来改动排序/截断而破坏同序,前端会静默错位显示
+	// 错误评分。改动 plan_query 返回形状时务必保持这个不变式(或补 statement_id 显式配对)。
 	score_breakdown: {
 		statement_id: string;
 		base: number;
