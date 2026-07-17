@@ -15,6 +15,14 @@ export const NAV_GROUPS: NavGroup[] = [
 		]
 	},
 	{
+		// T0a — 原始数据·证据(engram):记忆流最上游的不可变原文来源,排在
+		// 「总览」之后、「对话」之前(先于海马快记忆/新皮层慢记忆)。NavIcon 不
+		// 支持 'database',借用已支持的 'file-text'(原文本证据的语义近似;
+		// nav.ts 中图标本就有跨组复用先例,如 'zap' 用于冲突与运行时健康两组)。
+		title: '原始数据 · 证据',
+		items: [{ href: '/engrams', label: '原始数据', icon: 'file-text' }]
+	},
+	{
 		title: '对话',
 		items: [
 			{ href: '/converse', label: '对话', icon: 'message' },

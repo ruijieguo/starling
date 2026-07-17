@@ -636,6 +636,104 @@ def cascade_preview(db_path: str, tenant: str, statement_id: str,
                 "affected_count": len(affected), "truncated": capped or deeper}
 
 
+_ENGRAM_LIST_COLS = (
+    "id, source_kind, privacy_class, retention_mode, refcount, created_at, "
+    "erased_at, source_item_id, chunk_index, adapter_name"
+)
+_ENGRAM_DETAIL_COLS = (
+    "id, tenant_id, content_hash, source_kind, ingest_policy, ingest_mode, "
+    "privacy_class, retention_mode, refcount, payload_uri, created_at, erased_at, "
+    "adapter_name, adapter_version, source_item_id, source_version, chunk_index, "
+    "declared_transformations_json, byte_preserving, redacted_content, key_ref, "
+    "audit_trail_json"
+)
+
+
+def engrams_list(db_path: str, tenant: str, *, source_kind: str = "",
+                 privacy_class: str = "", erased: str = "", q: str = "",
+                 limit: int = 100, offset: int = 0) -> dict:
+    """T0a — 原始数据·证据浏览:engram(不可变原文证据)列表(只读派生查询,
+    tenant-scoped)。engram 是记忆流最上游源头(先于海马/新皮层),此前无专属
+    端点/页面,只能从某条 statement 反向溯源(provenance._engrams_for)时顺带
+    瞥见。本函数只列展示列,**不带 payload_inline**(源文预览是单条详情
+    engram_detail 的 privacy-gated 特权,列表页不泄露)。"""
+    where = ["tenant_id = ?"]
+    params: list = [tenant]
+    if source_kind:
+        where.append("source_kind = ?")
+        params.append(source_kind)
+    if privacy_class:
+        where.append("privacy_class = ?")
+        params.append(privacy_class)
+    if erased == "yes":
+        where.append("erased_at IS NOT NULL")
+    elif erased == "no":
+        where.append("erased_at IS NULL")
+    if q:
+        where.append("(content_hash LIKE ? OR source_item_id LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
+    clause = " AND ".join(where)
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            f"SELECT {_ENGRAM_LIST_COLS} FROM engrams WHERE {clause} "
+            f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM engrams WHERE {clause}", tuple(params)
+        ).fetchone()[0]
+        return {"rows": rows, "total": total}
+
+
+def engram_detail(db_path: str, tenant: str, engram_id: str) -> dict | None:
+    """T0a — 单条 engram 详情(只读派生查询,tenant-scoped)。payload 预览**复用
+    _engrams_for/provenance 的同款隐私抑制规则**(_PROV_PREVIEW_CHARS +
+    _PREVIEW_SUPPRESS_PRIVACY):只对 inline、未抹除、非受限 privacy_class 的
+    engram 给前 280 字符预览,否则 preview=None 且带诚实的抑制理由(而非静默
+    空白)。同时反查引用它的 statements(evidence_json LIKE 该 id,best-effort、
+    有界 limit 50)——让 refcount 可展开成「哪些 statement 引用了它」。
+    跨租户/不存在 → None(路由转 404)。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            f"SELECT {_ENGRAM_DETAIL_COLS}, payload_inline FROM engrams "
+            f"WHERE tenant_id=? AND id=?",
+            (tenant, engram_id),
+        )
+        if not rows:
+            return None
+        g = rows[0]
+        blob = g.pop("payload_inline")
+        erased = g["erased_at"] is not None
+        privacy = (g["privacy_class"] or "").lower()
+        preview = None
+        reason = None
+        if erased:
+            reason = "该证据已被合规擦除(erased_at 非空)"
+        elif blob is None:
+            reason = "该证据仅存 URI(非 inline),不支持源文预览"
+        elif privacy in _PREVIEW_SUPPRESS_PRIVACY:
+            reason = f"该证据隐私分级为 {privacy},预览已抑制"
+        else:
+            try:
+                text = (blob.decode("utf-8", "replace")
+                        if isinstance(blob, (bytes, bytearray)) else str(blob))
+                preview = text[:_PROV_PREVIEW_CHARS]
+            except Exception:
+                reason = "预览解码失败"
+        referencing, _ = _rows_or_empty(
+            conn,
+            "SELECT id, subject_id, predicate FROM statements "
+            "WHERE tenant_id=? AND evidence_json LIKE ? LIMIT 50",
+            (tenant, f"%{engram_id}%"),
+        )
+        return {"engram": g, "preview": preview,
+                "preview_suppressed_reason": reason,
+                "referencing_statements": referencing}
+
+
 def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> dict:
     """透视镜取镜:按文本找语句(只读 LIKE over subject/predicate/object_value,
     tenant-scoped,有界 LIMIT)。副作用自由(open_ro)——故意不用语义召回,绕开

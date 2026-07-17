@@ -5,9 +5,10 @@ import { NAV_GROUPS } from './nav';
 describe('NAV_GROUPS — 类脑 IA', () => {
 	const allHrefs = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.href));
 
-	it('has 10 groups in memory-flow order, 透视镜 landed between 回放 and 脑干', () => {
+	it('has 11 groups in memory-flow order, 原始数据·证据 landed between 总览 and 对话', () => {
 		expect(NAV_GROUPS.map((g) => g.title)).toEqual([
 			'总览',
+			'原始数据 · 证据',
 			'对话',
 			'短期记忆 · 海马',
 			'长期记忆 · 新皮层',
@@ -28,11 +29,15 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		expect(allHrefs).toContain('/lens');
 	});
 
+	it('surfaces /engrams (T0a — 原始数据·证据, un-dormanted)', () => {
+		expect(allHrefs).toContain('/engrams');
+	});
+
 	it('orphans no existing route in the reorg', () => {
 		for (const href of [
 			'/', '/converse', '/interact', '/working-set', '/statements', '/cognizers',
 			'/commitments', '/reminders', '/replay', '/lifecycle', '/forecast', '/conflicts',
-			'/vitals', '/queues', '/eval', '/settings'
+			'/vitals', '/queues', '/eval', '/settings', '/engrams'
 		]) {
 			expect(allHrefs).toContain(href);
 		}

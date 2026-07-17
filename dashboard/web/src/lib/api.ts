@@ -255,6 +255,53 @@ export type LifecycleResponse = {
 	events: Record<string, number>; // statement.* 事件 → 累计计数(事件派生)
 };
 
+// T0a — 原始数据·证据(engram)浏览/搜索(GET /api/engrams、GET /api/engram/{id})。
+// engram 是不可变的 verbatim 原始证据,记忆流最上游源头,先于海马/新皮层。
+export type EngramRow = {
+	id: string;
+	source_kind: string;
+	privacy_class: string;
+	retention_mode: string;
+	refcount: number;
+	created_at: string;
+	erased_at: string | null;
+	source_item_id: string;
+	chunk_index: number;
+	adapter_name: string;
+};
+export type EngramListResp = { rows: EngramRow[]; total: number };
+
+export type EngramReferencingStatement = { id: string; subject_id: string; predicate: string };
+export type EngramDetail = {
+	engram: {
+		id: string;
+		tenant_id: string;
+		content_hash: string;
+		source_kind: string;
+		ingest_policy: string;
+		ingest_mode: string;
+		privacy_class: string;
+		retention_mode: string;
+		refcount: number;
+		payload_uri: string | null;
+		created_at: string;
+		erased_at: string | null;
+		adapter_name: string;
+		adapter_version: string;
+		source_item_id: string;
+		source_version: string;
+		chunk_index: number;
+		declared_transformations_json: string;
+		byte_preserving: number;
+		redacted_content: string | null;
+		key_ref: string | null;
+		audit_trail_json: string;
+	};
+	preview: string | null; // 仅 inline + 未抹除 + 非受限 privacy 才显,前 280 字符
+	preview_suppressed_reason: string | null; // 有 → 显示抑制理由而非空白
+	referencing_statements: EngramReferencingStatement[]; // 引用它的 statement(best-effort,limit 50)
+};
+
 // Phase 3 片 5 — 衰减预报(GET /api/forecast):C++ forgetting_curve 只读投影,排「最快被遗忘」。
 export type ForecastRow = {
 	id: string;
