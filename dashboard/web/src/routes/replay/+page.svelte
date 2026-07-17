@@ -6,6 +6,7 @@
 	import { Card, EmptyState, Skeleton, Badge, Button } from '$lib/components/ui';
 	import { toast } from '$lib/ui/toast';
 	import { modeLabel, opsSummary, type LedgerRow } from '$lib/dream';
+	import { labelFor, orderedEntries } from '$lib/labels';
 
 	type ReplayData = {
 		scheduler: Record<string, unknown>;
@@ -36,15 +37,10 @@
 		}
 	}
 
-	const LABELS: Record<string, string> = {
-		online_trigger_counter: '在线触发计数',
-		last_online_run_at: '上次在线回放',
-		last_idle_run_at: '上次空闲回放',
-		last_sleep_run_at: '上次睡眠回放',
-		last_updated_at: '更新于'
-	};
 	let sched = $derived(q.data?.scheduler ?? {});
-	let schedEntries = $derived(Object.entries(sched).filter(([k]) => k !== 'id'));
+	let schedEntries = $derived(
+		orderedEntries(sched as Record<string, unknown>).filter(([k]) => k !== 'id')
+	);
 	const fmt = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 
 	let ledger = $derived(q.data?.ledger ?? []);
@@ -67,7 +63,7 @@
 				<dl class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
 					{#each schedEntries as [k, v]}
 						<div>
-							<dt class="text-xs text-subtle">{LABELS[k] ?? k}</dt>
+							<dt class="text-xs text-subtle">{labelFor(k)}</dt>
 							<dd class="mt-0.5 text-sm font-medium text-fg">{fmt(v)}</dd>
 						</div>
 					{/each}

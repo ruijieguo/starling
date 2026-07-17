@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import { Card, Skeleton, EmptyState, Badge } from '$lib/components/ui';
@@ -51,19 +52,23 @@
 {:else if q.data}
 	<div class="space-y-5">
 		<div class="grid grid-cols-2 gap-3 md:grid-cols-5">
-			{#each Object.entries(q.data.counts) as [k, v]}<StatCard label={k} value={v} />{/each}
+			{#each orderedEntries(q.data.counts) as [k, v]}
+				<StatCard label={labelFor(k)} value={v} hint={glossFor(k)} />
+			{/each}
 		</div>
 		<div class="grid gap-5 lg:grid-cols-2">
 			<Card title="承诺分态" description="六态机当前分布。">
 				<div class="grid grid-cols-3 gap-3">
-					{#each Object.entries(q.data.commitments_by_state) as [k, v]}
-						<StatCard label={k} value={v} tone={laneTone(k)} />
+					{#each orderedEntries(q.data.commitments_by_state) as [k, v]}
+						<StatCard label={labelFor(k)} value={v} tone={laneTone(k)} hint={glossFor(k)} />
 					{/each}
 				</div>
 			</Card>
 			<Card title="队列状态" description="outbox 派发与向量嵌入。">
 				<div class="grid grid-cols-2 gap-3">
-					{#each Object.entries(q.data.queue_by_status) as [k, v]}<StatCard label={k} value={v} />{/each}
+					{#each orderedEntries(q.data.queue_by_status) as [k, v]}
+						<StatCard label={labelFor(k)} value={v} hint={glossFor(k)} />
+					{/each}
 				</div>
 			</Card>
 		</div>
