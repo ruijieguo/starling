@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type LifecycleResponse } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, Badge, EmptyState, Skeleton } from '$lib/components/ui';
 	import {
@@ -12,6 +13,12 @@
 	} from '$lib/lifecycle';
 
 	const q = createQuery(() => api.get<LifecycleResponse>('/api/lifecycle'));
+	// T8 — 生命周期占用/迁移由后台 tick 推进(固化/归档/遗忘),写入也改变占用分布。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (e && (e.type === 'tick' || e.type === 'statement_added' || e.type === 'statement_forgotten'))
+			q.refetch();
+	});
 	$effect(() => {
 		q.refetch();
 	});

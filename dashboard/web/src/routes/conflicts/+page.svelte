@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Drawer, Button, ConfirmDialog } from '$lib/components/ui';
@@ -25,6 +26,11 @@
 	const q = createQuery(() => api.get<ConflictData>('/api/conflicts'));
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 — 新语句可能引入冲突,遗忘一侧则就地解决冲突:两类写事件都要重取。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (e && (e.type === 'statement_added' || e.type === 'statement_forgotten')) q.refetch();
 	});
 
 	// 一侧已遗忘 = 冲突已就地解决 → 不再列出(遗忘一侧后重取即消失,使工作台动作可见生效)。

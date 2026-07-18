@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -16,6 +17,11 @@
 	const q = createQuery(() => api.get<QueueData>('/api/queues'));
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 — 队列深度由后台 tick 推进(派发 outbox / 消费嵌入积压),tick 事件即重取。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (e && e.type === 'tick') q.refetch();
 	});
 
 	let ticking = $state(false);

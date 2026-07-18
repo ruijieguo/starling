@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import { toast } from '$lib/ui/toast';
 	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -89,6 +90,12 @@
 		beliefOrder; // dep:T0e ② 服务端过滤即重取
 		subjectKind; // dep:T0e ① 服务端过滤即重取
 		q.refetch();
+	});
+	// T8 — 写事件即重取(新语句落库 / 审批 / 遗忘)。单独一个 effect:混进上面的过滤
+	// effect 会让 WS 事件被当成过滤变更,也会让过滤依赖被 WS 触发时重复读。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (e && (e.type === 'statement_added' || e.type === 'statement_forgotten')) q.refetch();
 	});
 
 	let allRows = $derived(q.data?.rows ?? []);

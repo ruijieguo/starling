@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type Gist, type GistData, type GistMember } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Drawer } from '$lib/components/ui';
@@ -9,6 +10,11 @@
 	const q = createQuery(() => api.get<GistData>('/api/gists'));
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 — gist 由后台 replay/consolidation 产出(手动 replay_trigger 也广播 tick)。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (e && e.type === 'tick') q.refetch();
 	});
 
 	let gists = $derived(q.data?.gists ?? []);

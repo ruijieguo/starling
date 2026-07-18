@@ -2,6 +2,7 @@
 	import { api, ApiError } from '$lib/api';
 	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
 	import { toast } from '$lib/ui/toast';
 	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -27,6 +28,16 @@
 	);
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 — 六态看板对写事件敏感:手动流转(transition)、到期触发(fired)直接改泳道,
+	// 后台 tick 也会自动 fire/break/auto-withdraw。三类都重取。
+	$effect(() => {
+		const e = $lastWsEvent;
+		if (
+			e &&
+			(e.type === 'commitment_transition' || e.type === 'commitment_fired' || e.type === 'tick')
+		)
+			q.refetch();
 	});
 
 	let filter = $state('');
