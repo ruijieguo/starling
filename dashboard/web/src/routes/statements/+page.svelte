@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
@@ -8,9 +9,23 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, EmptyState, Input, Select, Drawer, ConfirmDialog } from '$lib/components/ui';
 
+	// consolidation_state 六态(值域以 C++ ConsolidationState 枚举为准,见
+	// include/starling/schema/statement_enums.hpp;本页只传参,不硬编码语义)。
+	const CONSOLIDATION_STATES = [
+		{ value: '', label: '全部' },
+		{ value: 'volatile', label: '易逝(海马)' },
+		{ value: 'replaying_consolidating', label: '固化回放中' },
+		{ value: 'replaying_reconsolidating', label: '再固化回放中' },
+		{ value: 'consolidated', label: '已固化(新皮层)' },
+		{ value: 'archived', label: '已归档' },
+		{ value: 'forgotten', label: '已遗忘' }
+	];
+
 	let predicate = $state('');
 	let perspective = $state('');
 	let reviewStatus = $state(''); // 服务端过滤(片 6:='review_requested' 即审批队列)
+	// T0b — 从 URL 深链初始化(nav 海马组短期视角深链带 ?consolidation_state=多值)。
+	let consolidationState = $state(page.url.searchParams.get('consolidation_state') ?? '');
 	let modality = $state('');
 	let polarity = $state('');
 
@@ -19,11 +34,13 @@
 		if (predicate) p.set('predicate', predicate);
 		if (perspective) p.set('perspective', perspective);
 		if (reviewStatus) p.set('review_status', reviewStatus);
+		if (consolidationState) p.set('consolidation_state', consolidationState);
 		return `/api/statements?${p}`;
 	}
 	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>(url()));
 	$effect(() => {
 		reviewStatus; // dep:改服务端审批过滤即重取(predicate/perspective 仍走「筛选」按钮)
+		consolidationState; // dep:T0b 服务端过滤即重取
 		q.refetch();
 	});
 
@@ -130,6 +147,15 @@
 				{ value: 'pending_review', label: '待复核' },
 				{ value: 'rejected', label: '已拒绝' }
 			]}
+		/>
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">consolidation_state</span>
+		<Select
+			bind:value={consolidationState}
+			class="w-40"
+			aria-label="consolidation_state"
+			options={CONSOLIDATION_STATES}
 		/>
 	</label>
 	<label class="block">

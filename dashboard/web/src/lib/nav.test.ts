@@ -39,8 +39,30 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 			'/commitments', '/reminders', '/replay', '/lifecycle', '/forecast', '/conflicts',
 			'/vitals', '/queues', '/eval', '/settings', '/engrams'
 		]) {
-			expect(allHrefs).toContain(href);
+			expect(allHrefs.some((h) => h === href || h.startsWith(`${href}?`))).toBe(true);
 		}
+	});
+
+	it('T0c — working-set moved into 对话 group', () => {
+		const converseGroup = NAV_GROUPS.find((g) => g.title === '对话');
+		expect(converseGroup).toBeDefined();
+		expect(converseGroup!.items.map((i) => i.href)).toEqual([
+			'/converse',
+			'/interact',
+			'/working-set'
+		]);
+	});
+
+	it('T0b — 短期记忆 · 海马 group is filled by a statements deep-link (not empty)', () => {
+		const hippocampusGroup = NAV_GROUPS.find((g) => g.title === '短期记忆 · 海马');
+		expect(hippocampusGroup).toBeDefined();
+		expect(hippocampusGroup!.items).toHaveLength(1);
+		const item = hippocampusGroup!.items[0];
+		expect(item.href).toBe(
+			'/statements?consolidation_state=volatile,replaying_consolidating,replaying_reconsolidating'
+		);
+		expect(item.label).toBeTruthy();
+		expect(item.icon).toBeTruthy();
 	});
 
 	it('includes /runtime-health in 生命体征 · 脑干 group', () => {

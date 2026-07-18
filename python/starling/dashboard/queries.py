@@ -68,8 +68,8 @@ def overview(db_path: str, tenant: str) -> dict:
 
 
 def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str = "",
-               predicate: str = "", review_status: str = "", limit: int = 100,
-               offset: int = 0) -> dict:
+               predicate: str = "", review_status: str = "", consolidation_state: str = "",
+               limit: int = 100, offset: int = 0) -> dict:
     where = ["tenant_id = ?"]
     params: list = [tenant]
     # review_status 过滤(片 6 审批队列复用本查询:筛 review_requested)。
@@ -78,6 +78,15 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
         if val:
             where.append(f"{col} = ?")
             params.append(val)
+    # T0b — consolidation_state 过滤:支持逗号分隔多值(海马三态一次筛),
+    # 值域以 C++ ConsolidationState 枚举为准(见 statement_enums.hpp),本函数
+    # 不硬编码语义、纯参数化传值(无注入面)。
+    if consolidation_state:
+        states = [s.strip() for s in consolidation_state.split(",") if s.strip()]
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            where.append(f"consolidation_state IN ({placeholders})")
+            params.extend(states)
     clause = " AND ".join(where)
     with open_ro(db_path) as conn:
         rows = _rows(

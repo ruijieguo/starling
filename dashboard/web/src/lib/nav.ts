@@ -26,12 +26,26 @@ export const NAV_GROUPS: NavGroup[] = [
 		title: '对话',
 		items: [
 			{ href: '/converse', label: '对话', icon: 'message' },
-			{ href: '/interact', label: '交互', icon: 'terminal' }
+			{ href: '/interact', label: '交互', icon: 'terminal' },
+			// T0c — working-set 从「短期记忆 · 海马」组归位到这里(它是对话侧的
+			// 上下文预算视角,不是海马生理状态视角;海马组现由 T0b 的短期记忆
+			// 快捷视角深链填充,见下方)。
+			{ href: '/working-set', label: '工作集', icon: 'layers' }
 		]
 	},
 	{
+		// T0b — 海马组不再指向 working-set(那是对话侧视角,已迁移到「对话」组),
+		// 换成 statements 页的 consolidation_state 深链:VOLATILE + 两个
+		// REPLAYING_* 态一次筛(海马快记忆三态,值域以 C++ ConsolidationState
+		// 枚举为准)。若不填充此项,空组按 subtraction default 不渲染,组会消失。
 		title: '短期记忆 · 海马',
-		items: [{ href: '/working-set', label: '工作集', icon: 'layers' }]
+		items: [
+			{
+				href: '/statements?consolidation_state=volatile,replaying_consolidating,replaying_reconsolidating',
+				label: '短期记忆',
+				icon: 'layers'
+			}
+		]
 	},
 	{
 		title: '长期记忆 · 新皮层',
