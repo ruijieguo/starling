@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, ApiError } from '$lib/api';
+	import { api } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Input, Badge, CopyButton, EmptyState } from '$lib/components/ui';
@@ -13,6 +13,9 @@
 		truncated: string[];
 	} | null>(null);
 	let busy = $state(false);
+	// 持久错误面(T12):只弹 toast 的话,渲染失败会静默退回「尚未渲染」空态,
+	// 看着像用户还没点按钮。错误优先于内容,对齐 createQuery 的载入/空/错阶梯。
+	let loadErr = $state('');
 
 	async function load() {
 		busy = true;
@@ -20,8 +23,11 @@
 			const q = new URLSearchParams({ interlocutor, token_budget: String(budget) });
 			if (goal) q.set('goal', goal);
 			ws = await api.get(`/api/working_set?${q}`, { timeoutMs: 60_000 }); // 内含 recall(网络 embed)
+			loadErr = '';
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			ws = null;
+			loadErr = e instanceof Error ? e.message : String(e);
+			toast.error(loadErr);
 		} finally {
 			busy = false;
 		}
@@ -46,7 +52,11 @@
 	<Input type="number" bind:value={budget} placeholder="token budget" class="max-w-32" />
 	<Button variant="soft" loading={busy} onclick={load}>渲染</Button>
 </div>
-{#if ws}
+{#if loadErr}
+	<EmptyState title="渲染失败" description={loadErr}>
+		<Button variant="soft" loading={busy} onclick={load}>重试</Button>
+	</EmptyState>
+{:else if ws}
 	<div class="space-y-3">
 		<div class="flex flex-wrap items-center gap-2">
 			<span class="text-xs text-muted">{totalTokens} / {budget} tokens</span>

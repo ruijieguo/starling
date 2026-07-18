@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, ApiError, type PlannedRecallResponse } from '$lib/api';
+	import { api, type PlannedRecallResponse } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Textarea, Input, Badge, Card, Chip, EmptyState, Select } from '$lib/components/ui';
@@ -20,6 +20,10 @@
 	let recalled = $state(false);
 	let busyR = $state(false);
 	let busyQ = $state(false);
+	// 持久错误面(T12):toast 转瞬即逝,失败后页面上不留痕。两条命令各留一块错误面,
+	// 且错误优先于上一次的结果 —— 否则失败后旧结果仍在,像是本次的答案。
+	let rememberErr = $state('');
+	let recallErr = $state('');
 
 	// Per-turn model selection (#35): pick a registry provider for remember's
 	// extraction, or '' to use the bound extraction role. (Recall uses the embedder,
@@ -68,9 +72,11 @@
 			});
 			remembered = r.statement_ids;
 			outcome = r.outcome;
+			rememberErr = '';
 			toast.success(`outcome: ${r.outcome} · ${r.statement_ids.length} statements`);
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			rememberErr = e instanceof Error ? e.message : String(e);
+			toast.error(rememberErr);
 		} finally {
 			busyR = false;
 		}
@@ -96,8 +102,10 @@
 				results = r.results;
 			}
 			recalled = true;
+			recallErr = '';
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			recallErr = e instanceof Error ? e.message : String(e);
+			toast.error(recallErr);
 		} finally {
 			busyQ = false;
 		}
@@ -119,11 +127,17 @@
 			</div>
 			<div class="flex items-center gap-3">
 				<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
-				{#if remembered.length || outcome}
+				{#if !rememberErr && (remembered.length || outcome)}
 					<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>
 				{/if}
 			</div>
-			{#if remembered.length}
+			{#if rememberErr}
+				<EmptyState title="写入失败" description={rememberErr}>
+					<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>
+						重试
+					</Button>
+				</EmptyState>
+			{:else if remembered.length}
 				<div class="flex flex-wrap gap-1">
 					{#each remembered as id}
 						<a href="/statements" title={id}><Badge tone="brand">{id.slice(0, 8)}…</Badge></a>
@@ -144,7 +158,13 @@
 					检索
 				</Button>
 			</div>
-			{#if recalled}
+			{#if recallErr}
+				<EmptyState title="检索失败" description={recallErr}>
+					<Button variant="soft" loading={busyQ} disabled={!query.trim()} onclick={recall}>
+						重试
+					</Button>
+				</EmptyState>
+			{:else if recalled}
 				{#if planned?.abstained}
 					<EmptyState
 						title="主动拒答:{planned.abstention_reason}"

@@ -142,7 +142,13 @@
 {#if loading}
 	<Skeleton class="mt-4 h-64 w-full" />
 {:else if loadErr}
-	<div class="mt-4"><EmptyState title="无法取证" description={loadErr} /></div>
+	<div class="mt-4">
+		<!-- 重试须直呼 load:上面的 effect 有 sid !== currentId 守卫,而 currentId 已是这条失败的 id,
+		     所以点同一条语句不会重新取数(只能整页刷新)。 -->
+		<EmptyState title="无法取证" description={loadErr}>
+			<Button variant="soft" onclick={() => void load(currentId)}>重试</Button>
+		</EmptyState>
+	</div>
 {:else if tree}
 	{@const root = tree}
 	{@const ex = root.origin?.extraction}
