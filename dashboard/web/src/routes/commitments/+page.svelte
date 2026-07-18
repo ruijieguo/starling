@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
-	import { byDeadline, deriveFired } from '$lib/commitments';
+	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -16,7 +16,7 @@
 		deadline?: string | null;
 		updated_at: string;
 	};
-	type Trigger = { commitment_stmt_id: string; status: string };
+	type Trigger = { commitment_stmt_id: string; kind?: string; status: string; spec_json?: string };
 
 	const STATES = ['created', 'ACTIVE', 'FULFILLED', 'BROKEN', 'RENEGOTIATED', 'WITHDRAWN'];
 
@@ -154,6 +154,30 @@
 				</div>
 			{/each}
 		</dl>
+		{#if detail.broken_count >= 3}
+			<p class="mt-3 rounded-control border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+				违约累计 {detail.broken_count} 次(≥3):此承诺可能已被后台 auto-withdraw 自动撤回。
+			</p>
+		{/if}
+		{#key detail.stmt_id}
+			{@const trigs = triggersFor(q.data?.triggers, detail.stmt_id)}
+			{#if trigs.length}
+				<div class="mt-4 border-t border-border pt-3">
+					<p class="mb-1.5 text-xs uppercase tracking-wide text-subtle">触发器({trigs.length})</p>
+					<ul class="space-y-1.5">
+						{#each trigs as t}
+							<li class="flex items-start gap-2 text-xs">
+								<Badge tone={t.status === 'fired' ? 'warn' : t.status === 'cleared' ? 'neutral' : 'brand'}>
+									{triggerKindLabel(t.kind)}
+								</Badge>
+								<span class="flex-1 text-muted">{describeTrigger(t)}</span>
+								<span class="shrink-0 text-subtle">{t.status}</span>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+		{/key}
 		{#if detail.state === 'ACTIVE'}
 			<div class="mt-4 flex gap-2 border-t border-border pt-4">
 				<Button variant="soft" disabled={busy} onclick={() => transition(detail!.stmt_id, 'fulfill')}>

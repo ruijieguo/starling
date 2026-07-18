@@ -180,7 +180,7 @@ def commitments(db_path: str, tenant: str) -> dict:
         )
         triggers = _rows(
             conn,
-            "SELECT commitment_stmt_id, kind, status FROM commitment_triggers "
+            "SELECT commitment_stmt_id, kind, status, spec_json FROM commitment_triggers "
             "WHERE tenant_id=? LIMIT 1000",
             (tenant,),
         )
