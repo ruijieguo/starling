@@ -201,7 +201,10 @@
 	}
 </script>
 
-<PageHeader title="模型 / Models" subtitle="多 provider 注册表 + 按任务角色绑定(抽取 / 嵌入 / 对话)。" />
+<PageHeader
+	title="设置"
+	subtitle="模型 provider 注册表与任务角色绑定(抽取 / 嵌入 / 对话),以及访问令牌。"
+/>
 <div class="max-w-2xl space-y-5">
 	<Card title="角色绑定" description="把每个任务绑定到一个已配 provider。">
 		<div class="grid gap-3 sm:grid-cols-3">
