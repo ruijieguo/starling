@@ -65,13 +65,16 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		expect(item.icon).toBeTruthy();
 	});
 
-	it('T0d-1 — 长期记忆 · 新皮层 group has 全部/语义/规范 三条深链', () => {
+	it('T0d-1/T0d-2 — 长期记忆 · 新皮层 group has 全部/语义/规范 + 程序/画像/共识 六条', () => {
 		const neocortexGroup = NAV_GROUPS.find((g) => g.title === '长期记忆 · 新皮层');
 		expect(neocortexGroup).toBeDefined();
 		expect(neocortexGroup!.items.map((i) => i.href)).toEqual([
 			'/statements',
 			'/statements?modality=believes,knows',
-			'/statements?modality=norm_ought,norm_forbid'
+			'/statements?modality=norm_ought,norm_forbid',
+			'/procedural',
+			'/personae',
+			'/common-ground'
 		]);
 		for (const item of neocortexGroup!.items) {
 			expect(item.label).toBeTruthy();

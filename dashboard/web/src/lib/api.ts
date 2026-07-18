@@ -327,3 +327,33 @@ export type ForecastResponse = {
 	now: string;
 	candidate_limit: number; // 候选有界上限
 };
+
+// T0d-2 — 新皮层·画像(Persona)只读检视(GET /api/personae)。数据源 containers
+// WHERE kind='persona'。scope_descriptor 是 canonical JSON 串(原样带出,前端只读)。
+export type PersonaRow = {
+	id: string;
+	holder_id: string;
+	scope_descriptor: string; // canonical JSON 串
+	created_at: string;
+	updated_at: string;
+	version: number;
+};
+export type PersonaeResponse = { rows: PersonaRow[] };
+
+// T0d-2 — 新皮层·共识(CommonGround)只读检视(GET /api/common_ground)。数据源
+// common_ground 表,五态 status;LEFT JOIN statements 带出被共识语句文本(遗忘/缺失→NULL)。
+export type CommonGroundRow = {
+	id: string;
+	statement_id: string;
+	status: string; // asserted_unack|grounded|suspected_diverge|expired|recanted
+	parties_json: string; // 参与方 JSON 串
+	grounded_at: string | null;
+	last_confirmed_at: string | null;
+	subject_id: string | null; // LEFT JOIN 命中才有;语句缺失→null
+	predicate: string | null;
+	object_value: string | null;
+};
+export type CommonGroundResponse = {
+	rows: CommonGroundRow[];
+	by_status: Record<string, number>; // 五态计数(概览)
+};

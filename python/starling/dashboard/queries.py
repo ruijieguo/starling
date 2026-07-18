@@ -752,6 +752,48 @@ def engram_detail(db_path: str, tenant: str, engram_id: str) -> dict | None:
                 "referencing_statements": referencing}
 
 
+def personae(db_path: str, tenant: str) -> dict:
+    """T0d-2 — 新皮层·画像(Persona):某租户的 persona 容器(只读派生查询,
+    tenant-scoped)。数据源 containers WHERE kind='persona'(migrations/0001)。
+    scope_descriptor 是 canonical JSON(此处原样带出,前端只读展示,绝不复算)。
+    容器的内容/合并语义在 C++ 内核,dashboard 只列元数据快照。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT id, holder_id, scope_descriptor, created_at, updated_at, version "
+            "FROM containers WHERE tenant_id=? AND kind='persona' "
+            "ORDER BY updated_at DESC",
+            (tenant,),
+        )
+        return {"rows": rows}
+
+
+def common_ground(db_path: str, tenant: str) -> dict:
+    """T0d-2 — 新皮层·共识(CommonGround):某租户的 common_ground 行(只读派生查询,
+    tenant-scoped)。数据源 common_ground 表(migrations/0010),五态 status。LEFT JOIN
+    statements 带出被共识语句的 subject/predicate/object(JOIN 也带 tenant_id 约束,
+    跨租户语句永不泄露;语句被遗忘/缺失 → 三列为 NULL,不崩)。by_status 给五态计数,
+    供前端按状态分组概览。共识的推进/状态机在 C++,dashboard 只读快照。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT cg.id, cg.statement_id, cg.status, cg.parties_json, "
+            "cg.grounded_at, cg.last_confirmed_at, "
+            "s.subject_id, s.predicate, s.object_value "
+            "FROM common_ground cg "
+            "LEFT JOIN statements s ON s.id=cg.statement_id AND s.tenant_id=cg.tenant_id "
+            "WHERE cg.tenant_id=? ORDER BY cg.created_at DESC",
+            (tenant,),
+        )
+        by_status = _rows(
+            conn,
+            "SELECT status, COUNT(*) AS n FROM common_ground WHERE tenant_id=? "
+            "GROUP BY status",
+            (tenant,),
+        )
+        return {"rows": rows, "by_status": {r["status"]: r["n"] for r in by_status}}
+
+
 def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> dict:
     """透视镜取镜:按文本找语句(只读 LIKE over subject/predicate/object_value,
     tenant-scoped,有界 LIMIT)。副作用自由(open_ro)——故意不用语义召回,绕开

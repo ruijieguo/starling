@@ -90,6 +90,19 @@ def build_inspect_router(require_token) -> APIRouter:
             raise HTTPException(status_code=404, detail="engram not found")
         return r
 
+    @router.get("/personae")
+    async def personae(request: Request):
+        # T0d-2 — 新皮层·画像(Persona):containers WHERE kind='persona'(只读派生查询)。
+        c = _cfg(request)
+        return queries.personae(c.db_path, c.tenant)
+
+    @router.get("/common_ground")
+    async def common_ground(request: Request):
+        # T0d-2 — 新皮层·共识(CommonGround):common_ground 五态,LEFT JOIN 带语句文本
+        #(只读派生查询)。
+        c = _cfg(request)
+        return queries.common_ground(c.db_path, c.tenant)
+
     @router.get("/cognizers")
     async def cognizers(request: Request):
         c = _cfg(request)

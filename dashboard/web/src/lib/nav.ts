@@ -51,6 +51,11 @@ export const NAV_GROUPS: NavGroup[] = [
 		// T0d-1 — 新皮层组从裸 /statements 扩为三条深链:保留「全部语句」,
 		// 加 Semantic(modality=believes,knows)与 Norms(modality=norm_ought,
 		// norm_forbid)两个已确证子区(照 T0b 的 consolidation_state 深链范式)。
+		// T0d-2 — 再补三条:程序(Skill)、画像(Persona)、共识(CommonGround)。
+		// 后两条是 containers/common_ground 只读派生页;程序页 /procedural 是诚实空态
+		// ——ConsolidationOp 无 forge_skill、modality 无 SKILL 值,Skill 巩固尚未实装,
+		// 故不做任何过滤(会得空结果或误含 norm gist),只显一张说明卡片。三条皆裸 href
+		// 无 query,直接受 matchesHref 支持,无需改 +layout.svelte。
 		title: '长期记忆 · 新皮层',
 		items: [
 			{ href: '/statements', label: '全部语句', icon: 'file-text' },
@@ -63,7 +68,10 @@ export const NAV_GROUPS: NavGroup[] = [
 				href: '/statements?modality=norm_ought,norm_forbid',
 				label: '规范',
 				icon: 'file-text'
-			}
+			},
+			{ href: '/procedural', label: '程序 · Skill', icon: 'file-text' },
+			{ href: '/personae', label: '画像 · Persona', icon: 'users' },
+			{ href: '/common-ground', label: '共识 · CommonGround', icon: 'clipboard-check' }
 		]
 	},
 	{
