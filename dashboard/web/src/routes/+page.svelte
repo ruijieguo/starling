@@ -3,6 +3,7 @@
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
 	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
+	import { describeEvent, type FeedEventView } from '$lib/feed';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import { Card, Skeleton, EmptyState, Badge } from '$lib/components/ui';
@@ -22,7 +23,9 @@
 		if (e && (e.type === 'tick' || e.type === 'statement_added')) q.refetch();
 	});
 
-	type FeedEntry = { t: string; msg: string };
+	// T7 — feed 存结构化视图(describeEvent 按事件类型渲染成人话 + 语义色),
+	// 不再是 JSON.stringify(payload).slice(0,80) 的腰斩 JSON。
+	type FeedEntry = { t: string; view: FeedEventView };
 	let feed = $state<FeedEntry[]>([]);
 
 	$effect(() => {
@@ -30,7 +33,7 @@
 		if (e) {
 			const entry: FeedEntry = {
 				t: new Date().toLocaleTimeString(),
-				msg: e.type + (e.payload ? ' · ' + JSON.stringify(e.payload).slice(0, 80) : '')
+				view: describeEvent(e.type, e.payload)
 			};
 			feed = [entry, ...feed].slice(0, 12);
 		}
@@ -79,8 +82,8 @@
 				<ul class="space-y-1.5">
 					{#each feed as entry}
 						<li class="flex items-baseline gap-2 text-xs">
-							<Badge tone="brand">{entry.msg.split(' · ')[0]}</Badge>
-							<span class="flex-1 truncate text-muted">{entry.msg.split(' · ').slice(1).join(' · ')}</span>
+							<Badge tone={entry.view.tone}>{entry.view.label}</Badge>
+							<span class="flex-1 truncate text-muted">{entry.view.detail}</span>
 							<span class="shrink-0 font-mono text-subtle">{entry.t}</span>
 						</li>
 					{/each}
