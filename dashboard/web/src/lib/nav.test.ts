@@ -82,6 +82,19 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		}
 	});
 
+	it('T0e ② — 他者心智 · 心智化 group has 认知体 + 二阶信念视角 deep link', () => {
+		const tomGroup = NAV_GROUPS.find((g) => g.title === '他者心智 · 心智化');
+		expect(tomGroup).toBeDefined();
+		expect(tomGroup!.items.map((i) => i.href)).toEqual([
+			'/cognizers',
+			'/statements?belief_order=higher'
+		]);
+		for (const item of tomGroup!.items) {
+			expect(item.label).toBeTruthy();
+			expect(item.icon).toBeTruthy();
+		}
+	});
+
 	it('includes /runtime-health in 生命体征 · 脑干 group', () => {
 		expect(allHrefs).toContain('/runtime-health');
 		const brainStemGroup = NAV_GROUPS.find((g) => g.title === '生命体征 · 脑干');

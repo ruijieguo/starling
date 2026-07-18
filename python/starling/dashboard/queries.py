@@ -69,7 +69,8 @@ def overview(db_path: str, tenant: str) -> dict:
 
 def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str = "",
                predicate: str = "", review_status: str = "", consolidation_state: str = "",
-               modality: str = "", limit: int = 100, offset: int = 0) -> dict:
+               modality: str = "", belief_order: str = "", subject_kind: str = "",
+               limit: int = 100, offset: int = 0) -> dict:
     where = ["tenant_id = ?"]
     params: list = [tenant]
     # review_status 过滤(片 6 审批队列复用本查询:筛 review_requested)。
@@ -96,6 +97,19 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
             placeholders = ",".join("?" for _ in modalities)
             where.append(f"modality IN ({placeholders})")
             params.extend(modalities)
+    # T0e ② — 信念阶层过滤:nesting_depth 是 INTEGER,语义是比较而非多值 IN。
+    # belief_order 空=不筛;"first"=一阶(nesting_depth = 0);"higher"=二阶及以上
+    # (nesting_depth >= 1)。本函数只翻译这两个固定取值,不接受任意 SQL/比较符,
+    # 前端也不硬编码 WHERE 语义。
+    if belief_order == "first":
+        where.append("nesting_depth = 0")
+    elif belief_order == "higher":
+        where.append("nesting_depth >= 1")
+    # T0e ① — subject_kind 过滤:精确匹配(DB CHECK 值域 cognizer/entity,见 0001),
+    # 本函数不硬编码语义、纯参数化传值。
+    if subject_kind:
+        where.append("subject_kind = ?")
+        params.append(subject_kind)
     clause = " AND ".join(where)
     with open_ro(db_path) as conn:
         rows = _rows(

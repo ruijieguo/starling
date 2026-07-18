@@ -75,8 +75,13 @@ export const NAV_GROUPS: NavGroup[] = [
 		]
 	},
 	{
+		// T0e ② — 加一条 belief_order=higher 深链(二阶及以上信念视角:我以为你信 X),
+		// 照 T0b 海马组深链范式。裸 /cognizers 保留。
 		title: '他者心智 · 心智化',
-		items: [{ href: '/cognizers', label: '认知体', icon: 'users' }]
+		items: [
+			{ href: '/cognizers', label: '认知体', icon: 'users' },
+			{ href: '/statements?belief_order=higher', label: '二阶信念视角', icon: 'file-text' }
+		]
 	},
 	{
 		title: '意图与承诺 · 前额叶',

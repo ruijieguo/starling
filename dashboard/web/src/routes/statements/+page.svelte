@@ -31,6 +31,22 @@
 		{ value: 'norm_forbid', label: 'norm_forbid' }
 	];
 
+	// T0e ② — 信念阶层快捷视角:空=不筛;"first"=一阶(我信 X,nesting_depth=0);
+	// "higher"=二阶及以上(我以为你信 X,展平存储,nesting_depth>=1)。后端只翻译
+	// 这两个固定取值,本页不硬编码 WHERE 语义。
+	const BELIEF_ORDERS = [
+		{ value: '', label: '全部' },
+		{ value: 'first', label: '一阶(我信 X)' },
+		{ value: 'higher', label: '二阶及以上(我以为你信 X)' }
+	];
+
+	// T0e ① — subject_kind 过滤(DB CHECK 值域 cognizer/entity,见 migrations/0001)。
+	const SUBJECT_KINDS = [
+		{ value: '', label: '全部' },
+		{ value: 'cognizer', label: 'cognizer(认知体)' },
+		{ value: 'entity', label: 'entity(实体)' }
+	];
+
 	let predicate = $state('');
 	let perspective = $state('');
 	let reviewStatus = $state(''); // 服务端过滤(片 6:='review_requested' 即审批队列)
@@ -38,6 +54,10 @@
 	let consolidationState = $state(page.url.searchParams.get('consolidation_state') ?? '');
 	// T0d-1 — 从 URL 深链初始化(nav 新皮层组 Semantic/Norms 深链带 ?modality=多值)。
 	let modality = $state(page.url.searchParams.get('modality') ?? '');
+	// T0e ② — 从 URL 深链初始化(nav 他者心智组 belief_order 深链)。
+	let beliefOrder = $state(page.url.searchParams.get('belief_order') ?? '');
+	// T0e ① — 从 URL 深链初始化。
+	let subjectKind = $state(page.url.searchParams.get('subject_kind') ?? '');
 	let polarity = $state('');
 
 	function url() {
@@ -47,6 +67,8 @@
 		if (reviewStatus) p.set('review_status', reviewStatus);
 		if (consolidationState) p.set('consolidation_state', consolidationState);
 		if (modality) p.set('modality', modality);
+		if (beliefOrder) p.set('belief_order', beliefOrder);
+		if (subjectKind) p.set('subject_kind', subjectKind);
 		return `/api/statements?${p}`;
 	}
 	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>(url()));
@@ -54,6 +76,8 @@
 		reviewStatus; // dep:改服务端审批过滤即重取(predicate/perspective 仍走「筛选」按钮)
 		consolidationState; // dep:T0b 服务端过滤即重取
 		modality; // dep:T0d-1 服务端过滤即重取
+		beliefOrder; // dep:T0e ② 服务端过滤即重取
+		subjectKind; // dep:T0e ① 服务端过滤即重取
 		q.refetch();
 	});
 
@@ -171,6 +195,24 @@
 			class="w-32"
 			aria-label="modality"
 			options={MODALITIES}
+		/>
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">信念阶层</span>
+		<Select
+			bind:value={beliefOrder}
+			class="w-44"
+			aria-label="belief_order"
+			options={BELIEF_ORDERS}
+		/>
+	</label>
+	<label class="block">
+		<span class="mb-1 block text-xs text-muted">subject_kind</span>
+		<Select
+			bind:value={subjectKind}
+			class="w-36"
+			aria-label="subject_kind"
+			options={SUBJECT_KINDS}
 		/>
 	</label>
 	<label class="block">
