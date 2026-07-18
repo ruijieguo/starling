@@ -50,12 +50,16 @@ const LABELS: Record<string, LabelEntry> = {
 	// derived_depth 目前不在该 SELECT 里,先备好标签:后端补列即自动归位到对应分区。
 	// 注意 `id` 是通用列名,这里按「语句」语义命名——目前唯一另一个会把 `id` 喂给
 	// labelFor 的消费者是 replay 页,而它显式 filter 掉了 `id`,故无误标风险。
+	// order 对本批键是装饰性的:drawer 分区顺序由 sectionize 的 zone.keys 声明序决定,
+	// 不读 order(order 只服务 orderedEntries 的消费者:overview/queues/replay 网格)。
 	id: { label: '语句 ID', order: 50, gloss: '语句主键;批准 / 遗忘 / 透视等干预动作以它为准' },
 	holder_id: { label: '持有者', order: 51, gloss: '持有这条判断的认知体;self 即记忆体自身' },
 	holder_perspective: {
 		label: '持有视角',
 		order: 52,
-		gloss: 'first_person = 我信 X;二 / 三人称 = 我以为他信 X'
+		// 取信途径(非人称):first_person 亲身持有,其余三值是转手得来的信息。
+		// 「我以为他信 X」是 nesting_depth ≥ 1 的语义,与本字段正交,勿混。
+		gloss: 'first_person = 记忆体亲身持有;quoted / inferred / hearsay = 引述 / 推断 / 传闻得来'
 	},
 	subject_kind: { label: '主语类型', order: 53, gloss: 'cognizer(认知体)或 entity(实体)' },
 	subject_id: { label: '主语', order: 54 },
@@ -65,9 +69,11 @@ const LABELS: Record<string, LabelEntry> = {
 	modality: {
 		label: '模态',
 		order: 58,
-		gloss: 'believes / knows 为信念类;norm_ought / norm_forbid 为规范类'
+		// 12 值分四类(believes/knows/assumes/doubts 信念;desires/intends/commits/prefers
+		// 意图;norm_ought/norm_forbid 规范;occurred 事件;recanted 已撤回)。
+		gloss: '信念(believes/knows/assumes/doubts)· 意图(desires/intends/commits/prefers)· 规范(norm_ought/norm_forbid)· 事件(occurred)· 撤回(recanted)'
 	},
-	polarity: { label: '极性', order: 59, gloss: '这条命题被肯定还是被否定' },
+	polarity: { label: '极性', order: 59, gloss: 'pos 肯定 / neg 否定 / unknown 未定' },
 	confidence: { label: '置信度', order: 60, gloss: '记忆体对这条判断的确信程度' },
 	salience: { label: '显著度', order: 61, gloss: '影响检索排序与衰减速度' },
 	consolidation_state: {

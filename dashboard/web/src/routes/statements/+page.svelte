@@ -340,7 +340,7 @@
 							<div>
 								<dt class="text-xs text-muted" title={glossFor(k)}>{labelFor(k)}</dt>
 								{#if v !== null && typeof v === 'object'}
-									<CodeBlock content={JSON.stringify(v)} language="json" />
+									<dd><CodeBlock content={JSON.stringify(v)} language="json" /></dd>
 								{:else if v == null || v === ''}
 									<dd class="text-subtle">—</dd>
 								{:else if BADGE_FIELDS.includes(k)}

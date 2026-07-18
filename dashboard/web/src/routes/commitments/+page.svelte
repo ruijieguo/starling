@@ -66,7 +66,7 @@
 	const COMMITMENT_CORE = ['stmt_id', 'state', 'subject_id', 'predicate', 'object_value'];
 	const COMMITMENT_META = ['broken_count', 'fired', 'deadline', 'created_at', 'updated_at'];
 	let sections = $derived(
-		sectionize(detail as Record<string, unknown> | null, [
+		sectionize(detail, [
 			{ title: '核心', keys: COMMITMENT_CORE },
 			{ title: '元数据与时间', keys: COMMITMENT_META }
 		])
