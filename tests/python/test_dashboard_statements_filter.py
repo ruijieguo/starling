@@ -1,4 +1,5 @@
 """T0b — /api/statements consolidation_state 过滤(支持逗号分隔多值 IN)。
+T0d-1 — /api/statements modality 过滤(同款范式,新皮层 Semantic/Norms 子区)。
 
 镜像 test_dashboard_inspect.py 的 seed-then-TestClient 范式。播种 4 条不同
 consolidation_state 的语句(其中 1 条属另一租户),断言:
@@ -7,6 +8,9 @@ consolidation_state 的语句(其中 1 条属另一租户),断言:
   - 多值(逗号分隔)→ IN 并集,顺序/空白容错。
   - 跨租户语句永不出现,即便其 consolidation_state 匹配过滤值。
   - 端点层(TestClient 走 HTTP query string)与 queries 层行为一致。
+
+modality 测试额外播种 4 条覆盖 believes/knows/norm_ought/norm_forbid(其中 1 条
+属另一租户),断言同款单值/多值 IN/空不过滤/跨租户不泄漏/端点层行为。
 """
 import sqlite3
 from pathlib import Path
@@ -60,6 +64,45 @@ def db(tmp_path):
 @pytest.fixture
 def client(db):
     cfg = DashboardConfig(db_path=db, token="")
+    return TestClient(create_app(cfg))
+
+
+# ── T0d-1: modality 过滤(Semantic/Norms 子区)────────────────────────────
+
+def _stmt_modality(conn, sid, tenant, modality):
+    conn.execute(
+        f"INSERT INTO statements ({_STMT_COLS}) VALUES ({','.join('?' * 23)})",
+        (sid, tenant, "self", "first_person", "cognizer", "Bob", "responsible_for",
+         "str", "auth", f"h{sid}", "v1", modality, "POS", 0.9, "2026-04-10T10:00:00Z",
+         0.5, "{}", 0.0, "2026-04-10T10:00:00Z", "test", "2026-04-10T10:00:00Z",
+         "2026-04-10T10:00:00Z", "consolidated"),
+    )
+
+
+def _seed_modality(db_path: str):
+    from starling import runtime as rt
+    r = rt._build_local_store_sqlite_runtime(Path(db_path))
+    r.start()
+    del r
+    conn = sqlite3.connect(db_path)
+    _stmt_modality(conn, "s_believes", "default", "believes")
+    _stmt_modality(conn, "s_knows", "default", "knows")
+    _stmt_modality(conn, "s_norm_ought", "default", "norm_ought")
+    _stmt_modality(conn, "s_other_believes", "other", "believes")  # other tenant — must never surface
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def db_modality(tmp_path):
+    p = str(tmp_path / "dash_modality.db")
+    _seed_modality(p)
+    return p
+
+
+@pytest.fixture
+def client_modality(db_modality):
+    cfg = DashboardConfig(db_path=db_modality, token="")
     return TestClient(create_app(cfg))
 
 
@@ -147,3 +190,79 @@ def test_endpoint_multi_value_all_three_hippocampal_states(client):
     ids = {row["id"] for row in r.json()["rows"]}
     # replaying_reconsolidating not seeded, so union is just vol+rc.
     assert ids == {"s_vol", "s_rc"}
+
+
+# ── T0d-1: modality 过滤 — queries 层 ────────────────────────────────────
+
+def test_query_modality_empty_filter_returns_all_tenant_rows(db_modality):
+    out = queries.statements(db_modality, "default", modality="")
+    ids = {r["id"] for r in out["rows"]}
+    assert ids == {"s_believes", "s_knows", "s_norm_ought"}
+
+
+def test_query_modality_single_value_exact_match(db_modality):
+    out = queries.statements(db_modality, "default", modality="believes")
+    ids = {r["id"] for r in out["rows"]}
+    assert ids == {"s_believes"}
+
+
+def test_query_modality_multi_value_in_union(db_modality):
+    # Semantic 子区深链场景:believes + knows 一次筛。
+    out = queries.statements(db_modality, "default", modality="believes,knows")
+    ids = {r["id"] for r in out["rows"]}
+    assert ids == {"s_believes", "s_knows"}
+
+
+def test_query_modality_multi_value_tolerates_whitespace_and_blanks(db_modality):
+    out = queries.statements(
+        db_modality, "default",
+        modality=" believes , ,knows,",
+    )
+    ids = {r["id"] for r in out["rows"]}
+    assert ids == {"s_believes", "s_knows"}
+
+
+def test_query_modality_cross_tenant_never_leaks(db_modality):
+    # "other" tenant also has a believes row — filtering "default" for believes
+    # must not surface it.
+    out = queries.statements(db_modality, "default", modality="believes")
+    ids = {r["id"] for r in out["rows"]}
+    assert "s_other_believes" not in ids
+
+    out_other = queries.statements(db_modality, "other", modality="believes")
+    ids_other = {r["id"] for r in out_other["rows"]}
+    assert ids_other == {"s_other_believes"}
+
+
+# ── T0d-1: modality 过滤 — 端点层(HTTP query string)───────────────────────
+
+def test_endpoint_modality_no_param_returns_all(client_modality):
+    r = client_modality.get("/api/statements")
+    assert r.status_code == 200
+    ids = {row["id"] for row in r.json()["rows"]}
+    assert ids == {"s_believes", "s_knows", "s_norm_ought"}
+
+
+def test_endpoint_modality_single_value(client_modality):
+    r = client_modality.get("/api/statements", params={"modality": "norm_ought"})
+    assert r.status_code == 200
+    ids = {row["id"] for row in r.json()["rows"]}
+    assert ids == {"s_norm_ought"}
+
+
+def test_endpoint_modality_multi_value_semantic_subregion(client_modality):
+    # Semantic 子区深链:believes + knows。
+    r = client_modality.get("/api/statements", params={"modality": "believes,knows"})
+    assert r.status_code == 200
+    ids = {row["id"] for row in r.json()["rows"]}
+    assert ids == {"s_believes", "s_knows"}
+
+
+def test_endpoint_modality_multi_value_norms_subregion(client_modality):
+    # Norms 子区深链:norm_ought + norm_forbid(norm_forbid 未播种,验证并集不误报)。
+    r = client_modality.get(
+        "/api/statements", params={"modality": "norm_ought,norm_forbid"}
+    )
+    assert r.status_code == 200
+    ids = {row["id"] for row in r.json()["rows"]}
+    assert ids == {"s_norm_ought"}

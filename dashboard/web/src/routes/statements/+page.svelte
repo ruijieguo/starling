@@ -21,12 +21,23 @@
 		{ value: 'forgotten', label: '已遗忘' }
 	];
 
+	// T0d-1 — modality 服务端过滤(值域小写,与 nav 深链的 Semantic/Norms 子区
+	// 一致;本页只传参,不硬编码语义)。空值 = 不过滤。
+	const MODALITIES = [
+		{ value: '', label: '全部' },
+		{ value: 'believes', label: 'believes' },
+		{ value: 'knows', label: 'knows' },
+		{ value: 'norm_ought', label: 'norm_ought' },
+		{ value: 'norm_forbid', label: 'norm_forbid' }
+	];
+
 	let predicate = $state('');
 	let perspective = $state('');
 	let reviewStatus = $state(''); // 服务端过滤(片 6:='review_requested' 即审批队列)
 	// T0b — 从 URL 深链初始化(nav 海马组短期视角深链带 ?consolidation_state=多值)。
 	let consolidationState = $state(page.url.searchParams.get('consolidation_state') ?? '');
-	let modality = $state('');
+	// T0d-1 — 从 URL 深链初始化(nav 新皮层组 Semantic/Norms 深链带 ?modality=多值)。
+	let modality = $state(page.url.searchParams.get('modality') ?? '');
 	let polarity = $state('');
 
 	function url() {
@@ -35,29 +46,24 @@
 		if (perspective) p.set('perspective', perspective);
 		if (reviewStatus) p.set('review_status', reviewStatus);
 		if (consolidationState) p.set('consolidation_state', consolidationState);
+		if (modality) p.set('modality', modality);
 		return `/api/statements?${p}`;
 	}
 	const q = createQuery(() => api.get<{ rows: Record<string, unknown>[] }>(url()));
 	$effect(() => {
 		reviewStatus; // dep:改服务端审批过滤即重取(predicate/perspective 仍走「筛选」按钮)
 		consolidationState; // dep:T0b 服务端过滤即重取
+		modality; // dep:T0d-1 服务端过滤即重取
 		q.refetch();
 	});
 
 	let allRows = $derived(q.data?.rows ?? []);
-	let modalities = $derived([
-		'',
-		...[...new Set(allRows.map((r) => String(r.modality ?? '')).filter(Boolean))].sort()
-	]);
 	let polarities = $derived([
 		'',
 		...[...new Set(allRows.map((r) => String(r.polarity ?? '')).filter(Boolean))].sort()
 	]);
-	let rows = $derived(
-		allRows.filter(
-			(r) => (!modality || r.modality === modality) && (!polarity || r.polarity === polarity)
-		)
-	);
+	// modality 已改服务端过滤(见 url()/$effect),这里只保留客户端 polarity 过滤。
+	let rows = $derived(allRows.filter((r) => !polarity || r.polarity === polarity));
 
 	let detailOpen = $state(false);
 	let detail = $state<Record<string, unknown> | null>(null);
@@ -164,7 +170,7 @@
 			bind:value={modality}
 			class="w-32"
 			aria-label="modality"
-			options={modalities.map((m) => ({ value: m, label: m || '全部' }))}
+			options={MODALITIES}
 		/>
 	</label>
 	<label class="block">

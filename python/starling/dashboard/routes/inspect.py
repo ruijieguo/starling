@@ -61,13 +61,14 @@ def build_inspect_router(require_token) -> APIRouter:
     @router.get("/statements")
     async def statements(request: Request, holder: str = "", perspective: str = "",
                          predicate: str = "", review_status: str = "",
-                         consolidation_state: str = "",
+                         consolidation_state: str = "", modality: str = "",
                          limit: int = 100, offset: int = 0):
         c = _cfg(request)
         return queries.statements(c.db_path, c.tenant, holder=holder,
                                   perspective=perspective, predicate=predicate,
                                   review_status=review_status,
                                   consolidation_state=consolidation_state,
+                                  modality=modality,
                                   limit=limit, offset=offset)
 
     @router.get("/engrams")

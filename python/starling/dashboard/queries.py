@@ -69,7 +69,7 @@ def overview(db_path: str, tenant: str) -> dict:
 
 def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str = "",
                predicate: str = "", review_status: str = "", consolidation_state: str = "",
-               limit: int = 100, offset: int = 0) -> dict:
+               modality: str = "", limit: int = 100, offset: int = 0) -> dict:
     where = ["tenant_id = ?"]
     params: list = [tenant]
     # review_status 过滤(片 6 审批队列复用本查询:筛 review_requested)。
@@ -87,6 +87,15 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
             placeholders = ",".join("?" for _ in states)
             where.append(f"consolidation_state IN ({placeholders})")
             params.extend(states)
+    # T0d-1 — modality 过滤:同款逗号分隔多值范式(新皮层 Semantic/Norms 子区深链
+    # 一次筛多个 modality),值域以 C++ modality 枚举为准,本函数不硬编码语义、
+    # 纯参数化传值(无注入面)。
+    if modality:
+        modalities = [m.strip() for m in modality.split(",") if m.strip()]
+        if modalities:
+            placeholders = ",".join("?" for _ in modalities)
+            where.append(f"modality IN ({placeholders})")
+            params.extend(modalities)
     clause = " AND ".join(where)
     with open_ro(db_path) as conn:
         rows = _rows(

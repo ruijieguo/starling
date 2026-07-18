@@ -48,8 +48,23 @@ export const NAV_GROUPS: NavGroup[] = [
 		]
 	},
 	{
+		// T0d-1 — 新皮层组从裸 /statements 扩为三条深链:保留「全部语句」,
+		// 加 Semantic(modality=believes,knows)与 Norms(modality=norm_ought,
+		// norm_forbid)两个已确证子区(照 T0b 的 consolidation_state 深链范式)。
 		title: '长期记忆 · 新皮层',
-		items: [{ href: '/statements', label: '语句', icon: 'file-text' }]
+		items: [
+			{ href: '/statements', label: '全部语句', icon: 'file-text' },
+			{
+				href: '/statements?modality=believes,knows',
+				label: '语义',
+				icon: 'file-text'
+			},
+			{
+				href: '/statements?modality=norm_ought,norm_forbid',
+				label: '规范',
+				icon: 'file-text'
+			}
+		]
 	},
 	{
 		title: '他者心智 · 心智化',
