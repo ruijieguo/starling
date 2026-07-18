@@ -9,7 +9,7 @@
 	import { connectWs } from '$lib/ws';
 	import { wsConn, llmConfigured, embedderConfigured, lastWsEvent } from '$lib/health';
 	import { type Config, roleConfigured } from '$lib/models';
-	import { ALL_NAV_ITEMS, NAV_GROUPS } from '$lib/nav';
+	import { ALL_NAV_ITEMS, NAV_GROUPS, matchesHref, activeNavItem } from '$lib/nav';
 	import { density, applyDensity, type Density } from '$lib/ui/density';
 	import NavIcon from '$lib/components/NavIcon.svelte';
 	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
@@ -29,9 +29,12 @@
 		if (browser) localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
 	}
 
-	const isActive = (href: string) => page.url.pathname === href;
-	// 面包屑:Starling › 组 › 页(当前页品牌色)。
-	let crumb = $derived(ALL_ITEMS.find((i) => i.href === page.url.pathname));
+	// nav 深链 item 的 href 带 query(如海马 /statements?consolidation_state=…);
+	// 精确 href===pathname 会让这类项永不高亮、面包屑消失(T0b+T0c 引入,后续
+	// 深链任务复现)。active 高亮与面包屑共用 nav.ts 的 matchesHref/activeNavItem
+	// 单一逻辑(pathname 相等 + href 的 query 参数都在当前 URL 命中),已在 nav.test 覆盖。
+	const isActive = (href: string) => matchesHref(href, page.url);
+	let crumb = $derived(activeNavItem(page.url));
 
 	// 全局搜索(⌘K):按面板名过滤,Enter/点击跳转。
 	let search = $state('');

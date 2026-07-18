@@ -96,3 +96,29 @@ export type NavItemWithGroup = NavItem & { group: string };
 export const ALL_NAV_ITEMS: NavItemWithGroup[] = NAV_GROUPS.flatMap((g) =>
 	g.items.map((i) => ({ ...i, group: g.title }))
 );
+
+// nav item href 是否匹配当前 URL(active 高亮 + 面包屑用)。深链 item 的 href 带
+// query(如 /statements?consolidation_state=volatile,...);裸 pathname 精确比较会
+// 让深链永不高亮、面包屑消失(T0b+T0c 引入,T0d/T0e/T0f 会复现)。规则:pathname
+// 必须相等;href 带的每个 query 参数都要在当前 URL 出现且值相等(当前 URL 可多带别的
+// 参数)。href 无 query 时退化为纯 pathname 匹配。壳与 nav.test 共用此单一逻辑。
+export function matchesHref(href: string, current: URL): boolean {
+	const q = href.indexOf('?');
+	const hrefPath = q === -1 ? href : href.slice(0, q);
+	if (hrefPath !== current.pathname) return false;
+	if (q === -1) return true;
+	const hrefParams = new URLSearchParams(href.slice(q + 1));
+	for (const [k, v] of hrefParams) {
+		if (current.searchParams.get(k) !== v) return false;
+	}
+	return true;
+}
+
+// 当前 URL 对应的 nav 条目(面包屑用)。多个 item 同 pathname 时(裸 /statements 与
+// 带 query 的深链),优先返回 query 也匹配的那个,让面包屑指向更具体的深链视角。
+export function activeNavItem(current: URL): NavItemWithGroup | undefined {
+	const matches = ALL_NAV_ITEMS.filter((i) => matchesHref(i.href, current));
+	if (matches.length <= 1) return matches[0];
+	// 有 query 的候选更具体,优先。
+	return matches.find((i) => i.href.includes('?')) ?? matches[0];
+}

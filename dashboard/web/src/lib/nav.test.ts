@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NAV_GROUPS } from './nav';
+import { NAV_GROUPS, matchesHref, activeNavItem } from './nav';
 
 // Phase 3 片 1 — 类脑 IA 重组(经 plan-design-review 定稿)。
 describe('NAV_GROUPS — 类脑 IA', () => {
@@ -82,5 +82,63 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 				expect(i.icon).toBeTruthy();
 			}
 		}
+	});
+});
+
+// T0b+T0c fix — nav 深链高亮:matchesHref / activeNavItem 支持带 query 的 href。
+describe('matchesHref — 深链 active 匹配', () => {
+	const hippoHref =
+		'/statements?consolidation_state=volatile,replaying_consolidating,replaying_reconsolidating';
+
+	it('bare href matches当 pathname 相等(忽略 URL 上多余 query)', () => {
+		expect(matchesHref('/statements', new URL('http://x/statements'))).toBe(true);
+		expect(matchesHref('/statements', new URL('http://x/statements?foo=bar'))).toBe(true);
+	});
+
+	it('bare href 不匹配 pathname 不同', () => {
+		expect(matchesHref('/statements', new URL('http://x/cognizers'))).toBe(false);
+	});
+
+	it('深链 href 仅在 query 参数命中时匹配', () => {
+		expect(matchesHref(hippoHref, new URL('http://x' + hippoHref))).toBe(true);
+	});
+
+	it('深链 href 不匹配裸 /statements(query 缺失)', () => {
+		expect(matchesHref(hippoHref, new URL('http://x/statements'))).toBe(false);
+	});
+
+	it('深链 href 不匹配不同 query 值', () => {
+		expect(
+			matchesHref(hippoHref, new URL('http://x/statements?consolidation_state=consolidated'))
+		).toBe(false);
+	});
+
+	it('pathname 不同则 query 再全也不匹配', () => {
+		expect(
+			matchesHref(
+				'/statements?consolidation_state=volatile',
+				new URL('http://x/lens?consolidation_state=volatile')
+			)
+		).toBe(false);
+	});
+});
+
+describe('activeNavItem — 面包屑/高亮选取', () => {
+	it('裸 /statements URL → 匹配到长期记忆组的 /statements(无 query 项)', () => {
+		const item = activeNavItem(new URL('http://x/statements'));
+		expect(item?.href).toBe('/statements');
+	});
+
+	it('海马深链 URL → 优先匹配带 query 的深链项(而非裸 /statements)', () => {
+		const url = new URL(
+			'http://x/statements?consolidation_state=volatile,replaying_consolidating,replaying_reconsolidating'
+		);
+		const item = activeNavItem(url);
+		expect(item?.href).toContain('consolidation_state=');
+		expect(item?.group).toBe('短期记忆 · 海马');
+	});
+
+	it('无匹配 pathname → undefined', () => {
+		expect(activeNavItem(new URL('http://x/nonexistent'))).toBeUndefined();
 	});
 });
