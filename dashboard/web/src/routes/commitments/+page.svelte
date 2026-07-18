@@ -3,6 +3,7 @@
 	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { toast } from '$lib/ui/toast';
+	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Input, Drawer, Button, ConfirmDialog } from '$lib/components/ui';
 
@@ -14,6 +15,7 @@
 		object_value: string;
 		broken_count: number;
 		deadline?: string | null;
+		created_at: string; // /api/commitments 一直返回它,补齐类型(此前 drawer 靠 Object.entries 才看得到)
 		updated_at: string;
 	};
 	type Trigger = { commitment_stmt_id: string; kind?: string; status: string; spec_json?: string };
@@ -56,6 +58,31 @@
 		detailOpen = true;
 	}
 	const fmtv = (v: unknown) => (v == null || v === '' ? '—' : String(v));
+
+	// ── T6 detail drawer 策展 ────────────────────────────────────────────────
+	// 原先是裸 Object.entries dump。承诺字段少,分两区:核心(承诺本体:谁承诺了什么)
+	// 与 元数据 / 时间(履约进度与时点)。没被收编的 key 由 sectionize 落进「其它」
+	// 兜底区 —— 不丢字段。触发器区块与 ACTIVE 操作区在下方原样保留。
+	const COMMITMENT_CORE = ['stmt_id', 'state', 'subject_id', 'predicate', 'object_value'];
+	const COMMITMENT_META = ['broken_count', 'fired', 'deadline', 'created_at', 'updated_at'];
+	let sections = $derived(
+		sectionize(detail as Record<string, unknown> | null, [
+			{ title: '核心', keys: COMMITMENT_CORE },
+			{ title: '元数据与时间', keys: COMMITMENT_META }
+		])
+	);
+
+	// 六态机的语义色:与总览看板一致 —— BROKEN 红、ACTIVE 品牌色,其余克制。
+	// 状态值保持后端原样(与看板泳道标题一一对应),只有 label 是中文。
+	type Tone = 'neutral' | 'brand' | 'success' | 'warn' | 'danger' | 'info';
+	const STATE_TONES: Record<string, Tone> = {
+		created: 'neutral',
+		ACTIVE: 'brand',
+		FULFILLED: 'success',
+		BROKEN: 'danger',
+		RENEGOTIATED: 'warn',
+		WITHDRAWN: 'neutral'
+	};
 
 	// #39 片6 手动流转(仅对 ACTIVE 有效):fulfill=标记完成;withdraw=撤回(释放保护,需确认)。
 	// 核心 ACTIVE 守卫,非 ACTIVE → 路由 409 → 提示并刷新(可能已被后台 tick 改状态)。
@@ -146,14 +173,31 @@
 
 <Drawer bind:open={detailOpen} title="承诺详情">
 	{#if detail}
-		<dl class="space-y-2 text-sm">
-			{#each Object.entries(detail) as [k, v]}
-				<div>
-					<dt class="text-xs uppercase tracking-wide text-subtle">{k}</dt>
-					<dd class="break-words text-fg">{fmtv(v)}</dd>
+		<div class="space-y-3">
+			{#each sections as section}
+				<div class="border-t border-border pt-3 first:border-t-0 first:pt-0">
+					<p class="mb-1.5 text-xs uppercase tracking-wide text-subtle">{section.title}</p>
+					<dl class="space-y-2 text-sm">
+						{#each section.entries as [k, v]}
+							<div>
+								<dt class="text-xs text-muted" title={glossFor(k)}>{labelFor(k)}</dt>
+								{#if k === 'state'}
+									<dd><Badge tone={STATE_TONES[String(v)] ?? 'neutral'}>{String(v)}</Badge></dd>
+								{:else if k === 'fired'}
+									<dd>
+										{#if v}<Badge tone="warn">⚠ DUE</Badge>{:else}<span class="text-subtle">否</span>{/if}
+									</dd>
+								{:else if k === 'broken_count' && Number(v) > 0}
+									<dd><Badge tone="danger">×{String(v)}</Badge></dd>
+								{:else}
+									<dd class="break-words text-fg">{fmtv(v)}</dd>
+								{/if}
+							</div>
+						{/each}
+					</dl>
 				</div>
 			{/each}
-		</dl>
+		</div>
 		{#if detail.broken_count >= 3}
 			<p class="mt-3 rounded-control border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
 				违约累计 {detail.broken_count} 次(≥3):此承诺可能已被后台 auto-withdraw 自动撤回。

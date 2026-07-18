@@ -4,10 +4,20 @@
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { toast } from '$lib/ui/toast';
+	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import CodeBlock from '$lib/components/CodeBlock.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { Button, EmptyState, Input, Select, Drawer, ConfirmDialog } from '$lib/components/ui';
+	import {
+		Badge,
+		Button,
+		Chip,
+		EmptyState,
+		Input,
+		Select,
+		Drawer,
+		ConfirmDialog
+	} from '$lib/components/ui';
 
 	// consolidation_state 六态(值域以 C++ ConsolidationState 枚举为准,见
 	// include/starling/schema/statement_enums.hpp;本页只传参,不硬编码语义)。
@@ -96,6 +106,68 @@
 		detailOpen = true;
 	}
 	const fmtv = (v: unknown) => (v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+
+	// ── T6 detail drawer 策展 ────────────────────────────────────────────────
+	// 原先是裸 Object.entries dump(DB 列名当标签、无层次)。改为三个语义分区:
+	// 核心命题(谁以何样态对什么持有判断)/ 元数据(记忆体对它的加工状态)/ 时间。
+	// 时间区按 `_at` 后缀动态收编,后端新增时间列自动归位;所有分区都没收编的 key
+	// 由 sectionize 落进「其它」兜底区 —— 不丢字段,用户仍看得到全部原始数据。
+	// subject_kind / provenance / derived_depth 目前不在 /api/statements 的 SELECT 里,
+	// 先声明好归属:后端补列即自动落到对应分区而非兜底区。
+	const STATEMENT_CORE = [
+		'id',
+		'holder_id',
+		'holder_perspective',
+		'subject_kind',
+		'subject_id',
+		'predicate',
+		'object_kind',
+		'object_value',
+		'modality',
+		'polarity'
+	];
+	const STATEMENT_META = [
+		'confidence',
+		'salience',
+		'consolidation_state',
+		'review_status',
+		'nesting_depth',
+		'provenance',
+		'derived_depth'
+	];
+	let sections = $derived(
+		sectionize(detail, [
+			{ title: '核心命题', keys: STATEMENT_CORE },
+			{ title: '元数据', keys: STATEMENT_META },
+			{
+				title: '时间',
+				keys: ['observed_at', ...Object.keys(detail ?? {}).filter((k) => k.endsWith('_at'))]
+			}
+		])
+	);
+
+	// 枚举值呈现:只有真正带健康含义的字段上语义色(固化态 / 审批状态),
+	// modality / polarity 这类纯分类走中性 Chip —— 不滥用颜色。值保持后端原样
+	// (与表格列、筛选下拉的取值一一对应,便于回查),只有 label 是中文。
+	type Tone = 'neutral' | 'brand' | 'success' | 'warn' | 'danger' | 'info';
+	const BADGE_FIELDS = ['consolidation_state', 'review_status'];
+	const CHIP_FIELDS = ['modality', 'polarity', 'subject_kind', 'object_kind'];
+	const VALUE_TONES: Record<string, Record<string, Tone>> = {
+		consolidation_state: {
+			volatile: 'warn',
+			replaying_consolidating: 'info',
+			replaying_reconsolidating: 'info',
+			consolidated: 'success',
+			archived: 'neutral',
+			forgotten: 'neutral'
+		},
+		review_status: {
+			review_requested: 'warn',
+			pending_review: 'info',
+			approved: 'success',
+			rejected: 'danger'
+		}
+	};
 
 	// ── 片 6 干预动作(全经唯一写者漏斗;成功后关抽屉 + 重取) ─────────────
 	let busy = $state(false);
@@ -259,18 +331,31 @@
 				<Button variant="ghost" disabled={busy} onclick={() => askForget(sid, false)}>遗忘</Button>
 			</div>
 		{/if}
-		<dl class="space-y-2 text-sm">
-			{#each Object.entries(detail) as [k, v]}
-				<div>
-					<dt class="text-xs uppercase tracking-wide text-subtle">{k}</dt>
-					{#if v !== null && typeof v === 'object'}
-						<CodeBlock content={JSON.stringify(v)} language="json" />
-					{:else}
-						<dd class="break-words text-fg">{fmtv(v)}</dd>
-					{/if}
+		<div class="space-y-3">
+			{#each sections as section}
+				<div class="border-t border-border pt-3 first:border-t-0 first:pt-0">
+					<p class="mb-1.5 text-xs uppercase tracking-wide text-subtle">{section.title}</p>
+					<dl class="space-y-2 text-sm">
+						{#each section.entries as [k, v]}
+							<div>
+								<dt class="text-xs text-muted" title={glossFor(k)}>{labelFor(k)}</dt>
+								{#if v !== null && typeof v === 'object'}
+									<CodeBlock content={JSON.stringify(v)} language="json" />
+								{:else if v == null || v === ''}
+									<dd class="text-subtle">—</dd>
+								{:else if BADGE_FIELDS.includes(k)}
+									<dd><Badge tone={VALUE_TONES[k]?.[String(v)] ?? 'neutral'}>{String(v)}</Badge></dd>
+								{:else if CHIP_FIELDS.includes(k)}
+									<dd><Chip>{String(v)}</Chip></dd>
+								{:else}
+									<dd class="break-words text-fg">{fmtv(v)}</dd>
+								{/if}
+							</div>
+						{/each}
+					</dl>
 				</div>
 			{/each}
-		</dl>
+		</div>
 	{/if}
 </Drawer>
 
