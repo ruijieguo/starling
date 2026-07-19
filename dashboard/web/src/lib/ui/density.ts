@@ -17,6 +17,3 @@ export function applyDensity(d: Density): void {
 	if (typeof document !== 'undefined') document.documentElement.dataset.density = d;
 	if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, d);
 }
-
-/** comfortable → compact → comfortable. */
-export const cycleDensity = (d: Density): Density => (d === 'comfortable' ? 'compact' : 'comfortable');

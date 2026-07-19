@@ -672,12 +672,17 @@ _ENGRAM_LIST_COLS = (
     "id, source_kind, privacy_class, retention_mode, refcount, created_at, "
     "erased_at, source_item_id, chunk_index, adapter_name"
 )
+# 刻意不含 redacted_content / key_ref / audit_trail_json:这三列绕过下面的隐私门。
+# payload_inline 是取出来再按 erased/privacy_class 判定后才决定给不给预览的,而它们若
+# 列在这里就会「无条件」随详情返回——包括已合规擦除(erased_at 非空)的 engram,以及
+# regulated/sensitive/personal 分级的 engram。redacted_content 正是「脱敏后但仍敏感」
+# 的正文。今天前端只渲染 payload_uri,危害是潜伏的:一旦有人照 api.ts 的契约把抽屉接上,
+# 默认就泄露了。真要暴露审计轨迹,应当各自过一道与 preview 同款的门,而不是搭便车。
 _ENGRAM_DETAIL_COLS = (
     "id, tenant_id, content_hash, source_kind, ingest_policy, ingest_mode, "
     "privacy_class, retention_mode, refcount, payload_uri, created_at, erased_at, "
     "adapter_name, adapter_version, source_item_id, source_version, chunk_index, "
-    "declared_transformations_json, byte_preserving, redacted_content, key_ref, "
-    "audit_trail_json"
+    "declared_transformations_json, byte_preserving"
 )
 
 

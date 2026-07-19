@@ -1,16 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { pageSizeFor, cycleDensity, applyDensity } from './density';
+import { pageSizeFor, applyDensity } from './density';
 
 describe('pageSizeFor', () => {
 	it('compact is denser than comfortable', () => {
 		expect(pageSizeFor('compact')).toBeGreaterThan(pageSizeFor('comfortable'));
-	});
-});
-
-describe('cycleDensity', () => {
-	it('toggles comfortable ↔ compact', () => {
-		expect(cycleDensity('comfortable')).toBe('compact');
-		expect(cycleDensity('compact')).toBe('comfortable');
 	});
 });
 

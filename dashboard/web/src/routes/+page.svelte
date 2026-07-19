@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
 	import { describeEvent, type FeedEventView } from '$lib/feed';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -19,8 +20,7 @@
 		q.refetch();
 	});
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (e && (e.type === 'tick' || e.type === 'statement_added')) q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	// T7 — feed 存结构化视图(describeEvent 按事件类型渲染成人话 + 语义色),
@@ -39,9 +39,12 @@
 		}
 	});
 
-	// 承诺状态的语义色:醒目但不滥用——只有 BROKEN 红、ACTIVE 品牌色。
+	// 承诺状态的语义色:醒目但不滥用——BROKEN 红、ACTIVE 品牌色、FULFILLED 绿,其余中性。
+	// whole-branch review Minor(a) — 补 FULFILLED:承诺状态机页的 STATE_TONES 给的是
+	// success,这里却是 default,而那边的注释写着「与总览看板一致」。两处同一概念必须同色,
+	// 否则同一条承诺在两个页面上是两种颜色。
 	const laneTone = (k: string) =>
-		k === 'BROKEN' ? 'danger' : k === 'ACTIVE' ? 'brand' : 'default';
+		k === 'BROKEN' ? 'danger' : k === 'ACTIVE' ? 'brand' : k === 'FULFILLED' ? 'success' : 'default';
 </script>
 
 <PageHeader title="总览" subtitle="记忆体状态、关键计数与实时活动。" />

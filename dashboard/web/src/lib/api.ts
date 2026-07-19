@@ -297,9 +297,9 @@ export type EngramDetail = {
 		chunk_index: number;
 		declared_transformations_json: string;
 		byte_preserving: number;
-		redacted_content: string | null;
-		key_ref: string | null;
-		audit_trail_json: string;
+		// redacted_content / key_ref / audit_trail_json 已从端点移除:它们绕过隐私门
+		// (见 queries.py 的 _ENGRAM_DETAIL_COLS 注释)。契约里也不留声明——留着就是
+		// 邀请下一个人把它们接进抽屉。
 	};
 	preview: string | null; // 仅 inline + 未抹除 + 非受限 privacy 才显,前 280 字符
 	preview_suppressed_reason: string | null; // 有 → 显示抑制理由而非空白

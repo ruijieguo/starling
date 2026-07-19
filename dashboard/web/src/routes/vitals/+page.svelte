@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { allHealthy, lagTone, type VitalsResponse } from '$lib/vitals';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
@@ -14,8 +15,7 @@
 		q.refetch();
 	});
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (e && (e.type === 'tick' || e.type === 'statement_added')) q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	const healthy = $derived(q.data != null && allHealthy(q.data));

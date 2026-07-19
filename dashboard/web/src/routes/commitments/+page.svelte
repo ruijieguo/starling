@@ -207,9 +207,16 @@
 				</div>
 			{/each}
 		</div>
-		{#if detail.broken_count >= 3}
+		<!-- whole-branch review Minor(b) — 原先是 `broken_count >= 3` 且不看 state,两处错:
+		     (1) 硬编码的 3 是 C++ 的 kMaxBrokenCount(commitment_engine.hpp:10),把内核的
+		         策略阈值抄进了前端 —— dashboard 只做只读检视,不复刻策略;
+		     (2) C++ 要 state=="ACTIVE" 且 broken_count>=阈值 才自动撤回
+		         (commitment_engine.cpp:315-318),不看 state 的话,一条 FULFILLED 的承诺会在
+		         同一个抽屉里同时显示「已完成」和「可能已被自动撤回」,自相矛盾。
+		     改为只对已是 WITHDRAWN 的行做「解释」而非「预测」:不再需要任何阈值。 -->
+		{#if detail.state === 'WITHDRAWN' && detail.broken_count > 0}
 			<p class="mt-3 rounded-control border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
-				违约累计 {detail.broken_count} 次(≥3):此承诺可能已被后台 auto-withdraw 自动撤回。
+				违约累计 {detail.broken_count} 次:此承诺可能是被后台 auto-withdraw 自动撤回的,而非手动撤回。
 			</p>
 		{/if}
 		{#key detail.stmt_id}
