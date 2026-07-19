@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { api, ApiError, type PlannedRecallResponse } from '$lib/api';
+	import { api, type PlannedRecallResponse } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Textarea, Input, Badge, Card, Chip, EmptyState, Select } from '$lib/components/ui';
+	import ScoreBreakdown from '$lib/components/ScoreBreakdown.svelte';
 
 	let text = $state('');
 	let holder = $state('');
@@ -19,6 +20,10 @@
 	let recalled = $state(false);
 	let busyR = $state(false);
 	let busyQ = $state(false);
+	// 持久错误面(T12):toast 转瞬即逝,失败后页面上不留痕。两条命令各留一块错误面,
+	// 且错误优先于上一次的结果 —— 否则失败后旧结果仍在,像是本次的答案。
+	let rememberErr = $state('');
+	let recallErr = $state('');
 
 	// Per-turn model selection (#35): pick a registry provider for remember's
 	// extraction, or '' to use the bound extraction role. (Recall uses the embedder,
@@ -67,9 +72,11 @@
 			});
 			remembered = r.statement_ids;
 			outcome = r.outcome;
+			rememberErr = '';
 			toast.success(`outcome: ${r.outcome} · ${r.statement_ids.length} statements`);
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			rememberErr = e instanceof Error ? e.message : String(e);
+			toast.error(rememberErr);
 		} finally {
 			busyR = false;
 		}
@@ -95,8 +102,10 @@
 				results = r.results;
 			}
 			recalled = true;
+			recallErr = '';
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			recallErr = e instanceof Error ? e.message : String(e);
+			toast.error(recallErr);
 		} finally {
 			busyQ = false;
 		}
@@ -118,11 +127,17 @@
 			</div>
 			<div class="flex items-center gap-3">
 				<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
-				{#if remembered.length || outcome}
+				{#if !rememberErr && (remembered.length || outcome)}
 					<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>
 				{/if}
 			</div>
-			{#if remembered.length}
+			{#if rememberErr}
+				<EmptyState title="写入失败" description={rememberErr}>
+					<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>
+						重试
+					</Button>
+				</EmptyState>
+			{:else if remembered.length}
 				<div class="flex flex-wrap gap-1">
 					{#each remembered as id}
 						<a href="/statements" title={id}><Badge tone="brand">{id.slice(0, 8)}…</Badge></a>
@@ -143,7 +158,13 @@
 					检索
 				</Button>
 			</div>
-			{#if recalled}
+			{#if recallErr}
+				<EmptyState title="检索失败" description={recallErr}>
+					<Button variant="soft" loading={busyQ} disabled={!query.trim()} onclick={recall}>
+						重试
+					</Button>
+				</EmptyState>
+			{:else if recalled}
 				{#if planned?.abstained}
 					<EmptyState
 						title="主动拒答:{planned.abstention_reason}"
@@ -152,8 +173,52 @@
 				{:else if results.length === 0}
 					<p class="text-sm text-muted">无召回结果</p>
 				{:else}
+					{#if planned?.receipt}
+						{@const cc = planned.receipt.candidate_counts}
+						<div
+							class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-border bg-surface px-3 py-2 text-xs text-muted"
+						>
+							<span class="font-medium text-fg">检索健康</span>
+							<span
+								>本轮取回 <span class="font-mono tabular-nums text-fg">{cc.fetched}</span> → 返回
+								<span class="font-mono tabular-nums text-fg">{cc.returned}</span></span
+							>
+							{#if cc.dropped_by_review}
+								<span
+									>· review 丢弃 <span class="font-mono tabular-nums text-warn"
+										>{cc.dropped_by_review}</span
+									></span
+								>
+							{/if}
+							{#if cc.dropped_by_state}
+								<span
+									>· state 丢弃 <span class="font-mono tabular-nums text-warn"
+										>{cc.dropped_by_state}</span
+									></span
+								>
+							{/if}
+							{#if cc.dropped_by_time_anchor}
+								<span
+									>· time 丢弃 <span class="font-mono tabular-nums text-warn"
+										>{cc.dropped_by_time_anchor}</span
+									></span
+								>
+							{/if}
+							{#if cc.dropped_by_evidence_erasure}
+								<span
+									>· evidence 丢弃 <span class="font-mono tabular-nums text-warn"
+										>{cc.dropped_by_evidence_erasure}</span
+									></span
+								>
+							{/if}
+							{#if planned.receipt.degraded_paths.length}
+								<span class="text-warn">· 降级 {planned.receipt.degraded_paths.length}</span>
+							{/if}
+						</div>
+					{/if}
 					<ul class="space-y-2">
-						{#each results as r}
+						{#each results as r, i}
+							{@const scoreRow = planned?.receipt?.score_breakdown?.[i]}
 							<li class="rounded-control border border-border bg-surface px-3 py-2">
 								<div class="flex items-center justify-between gap-2">
 									<span class="flex min-w-0 items-center gap-2 text-sm text-fg">
@@ -167,6 +232,16 @@
 								<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-bg">
 									<div class="h-full rounded-full bg-brand" style="width: {pct(r.score)}%"></div>
 								</div>
+								{#if scoreRow}
+									<details class="mt-2">
+										<summary class="cursor-pointer select-none text-xs text-subtle"
+											>归因分解</summary
+										>
+										<div class="mt-1.5">
+											<ScoreBreakdown row={scoreRow} />
+										</div>
+									</details>
+								{/if}
 							</li>
 						{/each}
 					</ul>
@@ -198,33 +273,6 @@
 								{#if rc.degraded_paths.length}
 									<div class="text-warn">
 										降级:{rc.degraded_paths.map((d) => `${d.path}→${d.fallback}(${d.reason})`).join('; ')}
-									</div>
-								{/if}
-								{#if rc.score_breakdown.length}
-									<div class="overflow-x-auto">
-										<table class="w-full font-mono text-[11px]">
-											<thead class="text-subtle">
-												<tr>
-													<th class="pr-2 text-left">stmt</th><th class="px-1">base</th>
-													<th class="px-1">recency</th><th class="px-1">sal</th><th class="px-1">act</th>
-													<th class="px-1">affect</th><th class="px-1">tpen</th><th class="px-1">final</th>
-												</tr>
-											</thead>
-											<tbody>
-												{#each rc.score_breakdown as s}
-													<tr>
-														<td class="pr-2">{s.statement_id.slice(0, 8)}…</td>
-														<td class="px-1 text-right">{s.base.toFixed(2)}</td>
-														<td class="px-1 text-right">{s.recency.toFixed(2)}</td>
-														<td class="px-1 text-right">{s.salience.toFixed(2)}</td>
-														<td class="px-1 text-right">{s.activation.toFixed(2)}</td>
-														<td class="px-1 text-right">{s.affect_consistency.toFixed(2)}</td>
-														<td class="px-1 text-right">{s.temporal_penalty.toFixed(2)}</td>
-														<td class="px-1 text-right text-fg">{s.final_score.toFixed(3)}</td>
-													</tr>
-												{/each}
-											</tbody>
-										</table>
 									</div>
 								{/if}
 							</div>

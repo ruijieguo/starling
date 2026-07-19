@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
+	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Card, Badge, Button, Skeleton, EmptyState } from '$lib/components/ui';
@@ -15,6 +18,13 @@
 	const q = createQuery(() => api.get<QueueData>('/api/queues'));
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 review I1 — 原先只订 tick 是错的:这页读的三样里有两样被「写入」直接改。
+	//   dispatch          = bus_events 按 dispatch_status 计数,任何业务事件 append 都进这表。
+	//   embedding_backlog = statements 里没有向量的行 —— 而 post-write pump 没有 embed 阶段
+	//                       (嵌入只在 tick 跑),故新语句落库「瞬间」积压 +1,只订 tick 要等 30s。
+	$effect(() => {
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	let ticking = $state(false);
@@ -68,12 +78,16 @@
 		</Card>
 		<Card title="Outbox dispatch" description="outbox 事件按派发状态计数。">
 			<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-				{#each Object.entries(q.data.dispatch) as [k, v]}<StatCard label={k} value={v} />{/each}
+				{#each orderedEntries(q.data.dispatch) as [k, v]}
+					<StatCard label={labelFor(k)} value={v} hint={glossFor(k)} />
+				{/each}
 			</div>
 		</Card>
 		<Card title="向量状态" description="嵌入向量按状态计数。">
 			<div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-				{#each Object.entries(q.data.vectors_by_status) as [k, v]}<StatCard label={k} value={v} />{/each}
+				{#each orderedEntries(q.data.vectors_by_status) as [k, v]}
+					<StatCard label={labelFor(k)} value={v} hint={glossFor(k)} />
+				{/each}
 			</div>
 		</Card>
 	</div>

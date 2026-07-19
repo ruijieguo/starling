@@ -14,8 +14,19 @@
 		q.refetch();
 	});
 
-	let gnodes = $derived((q.data?.nodes ?? []).map((n) => ({ id: n.id, label: n.canonical_name })));
-	let gedges = $derived((q.data?.relations ?? []).map((r) => ({ a: r.a_id, b: r.b_id })));
+	// T0e ① — kind 传给 Graph 做节点分类着色(表格已有 kind 列,保留)。
+	let gnodes = $derived(
+		(q.data?.nodes ?? []).map((n) => ({ id: n.id, label: n.canonical_name, kind: n.kind }))
+	);
+	// T3 — affinity/power_asymmetry 随边一起传给 Graph 做粗细/方向映射。
+	let gedges = $derived(
+		(q.data?.relations ?? []).map((r) => ({
+			a: r.a_id,
+			b: r.b_id,
+			affinity: r.affinity,
+			power_asymmetry: r.power_asymmetry
+		}))
+	);
 
 	let drawerOpen = $state(false);
 	let selected = $state<Cognizer | null>(null);

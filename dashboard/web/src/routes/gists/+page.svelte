@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api, type Gist, type GistData, type GistMember } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
+	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Drawer } from '$lib/components/ui';
@@ -9,6 +11,12 @@
 	const q = createQuery(() => api.get<GistData>('/api/gists'));
 	$effect(() => {
 		q.refetch();
+	});
+	// T8 — gist 由后台 replay/consolidation 产出(手动 replay_trigger 也广播 tick)。
+	// review M1 — 但页面还渲染 review_status 与 consolidation_state,而审批走 /review
+	// (广播 statement_added)、遗忘走 statement_forgotten,只订 tick 会漏掉这两类。
+	$effect(() => {
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	let gists = $derived(q.data?.gists ?? []);

@@ -61,11 +61,50 @@ def build_inspect_router(require_token) -> APIRouter:
     @router.get("/statements")
     async def statements(request: Request, holder: str = "", perspective: str = "",
                          predicate: str = "", review_status: str = "",
+                         consolidation_state: str = "", modality: str = "",
+                         belief_order: str = "", subject_kind: str = "",
                          limit: int = 100, offset: int = 0):
         c = _cfg(request)
         return queries.statements(c.db_path, c.tenant, holder=holder,
                                   perspective=perspective, predicate=predicate,
-                                  review_status=review_status, limit=limit, offset=offset)
+                                  review_status=review_status,
+                                  consolidation_state=consolidation_state,
+                                  modality=modality,
+                                  belief_order=belief_order,
+                                  subject_kind=subject_kind,
+                                  limit=limit, offset=offset)
+
+    @router.get("/engrams")
+    async def engrams(request: Request, source_kind: str = "", privacy_class: str = "",
+                      erased: str = "", q: str = "", limit: int = 100, offset: int = 0):
+        # T0a — 原始数据·证据浏览:engram(不可变原文证据)列表(只读派生查询)。
+        c = _cfg(request)
+        return queries.engrams_list(c.db_path, c.tenant, source_kind=source_kind,
+                                    privacy_class=privacy_class, erased=erased, q=q,
+                                    limit=limit, offset=offset)
+
+    @router.get("/engram/{engram_id}")
+    async def engram(request: Request, engram_id: str):
+        # T0a — 单条 engram 详情:privacy-gated 预览(复用 provenance 同款抑制规则)+
+        # 引用它的 statements 反查。
+        c = _cfg(request)
+        r = queries.engram_detail(c.db_path, c.tenant, engram_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="engram not found")
+        return r
+
+    @router.get("/personae")
+    async def personae(request: Request):
+        # T0d-2 — 新皮层·画像(Persona):containers WHERE kind='persona'(只读派生查询)。
+        c = _cfg(request)
+        return queries.personae(c.db_path, c.tenant)
+
+    @router.get("/common_ground")
+    async def common_ground(request: Request):
+        # T0d-2 — 新皮层·共识(CommonGround):common_ground 五态,LEFT JOIN 带语句文本
+        #(只读派生查询)。
+        c = _cfg(request)
+        return queries.common_ground(c.db_path, c.tenant)
 
     @router.get("/cognizers")
     async def cognizers(request: Request):

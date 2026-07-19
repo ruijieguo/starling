@@ -83,6 +83,10 @@ export type RecallReceipt = {
 	evidence_erased_count: number;
 	projection_lag_events: number;
 	degraded_paths: { path: string; reason: string; fallback: string }[];
+	// 顺序契约:score_breakdown[i] 对应 results[i]——两者由后端 retrieval_planner
+	// 同序构建(rerank 成对推入 + resize 同步截断到同一 k)。results 不带 statement_id,
+	// 前端只能靠位置索引配对。若后端将来改动排序/截断而破坏同序,前端会静默错位显示
+	// 错误评分。改动 plan_query 返回形状时务必保持这个不变式(或补 statement_id 显式配对)。
 	score_breakdown: {
 		statement_id: string;
 		base: number;
@@ -255,6 +259,53 @@ export type LifecycleResponse = {
 	events: Record<string, number>; // statement.* 事件 → 累计计数(事件派生)
 };
 
+// T0a — 原始数据·证据(engram)浏览/搜索(GET /api/engrams、GET /api/engram/{id})。
+// engram 是不可变的 verbatim 原始证据,记忆流最上游源头,先于海马/新皮层。
+export type EngramRow = {
+	id: string;
+	source_kind: string;
+	privacy_class: string;
+	retention_mode: string;
+	refcount: number;
+	created_at: string;
+	erased_at: string | null;
+	source_item_id: string;
+	chunk_index: number;
+	adapter_name: string;
+};
+export type EngramListResp = { rows: EngramRow[]; total: number };
+
+export type EngramReferencingStatement = { id: string; subject_id: string; predicate: string };
+export type EngramDetail = {
+	engram: {
+		id: string;
+		tenant_id: string;
+		content_hash: string;
+		source_kind: string;
+		ingest_policy: string;
+		ingest_mode: string;
+		privacy_class: string;
+		retention_mode: string;
+		refcount: number;
+		payload_uri: string | null;
+		created_at: string;
+		erased_at: string | null;
+		adapter_name: string;
+		adapter_version: string;
+		source_item_id: string;
+		source_version: string;
+		chunk_index: number;
+		declared_transformations_json: string;
+		byte_preserving: number;
+		// redacted_content / key_ref / audit_trail_json 已从端点移除:它们绕过隐私门
+		// (见 queries.py 的 _ENGRAM_DETAIL_COLS 注释)。契约里也不留声明——留着就是
+		// 邀请下一个人把它们接进抽屉。
+	};
+	preview: string | null; // 仅 inline + 未抹除 + 非受限 privacy 才显,前 280 字符
+	preview_suppressed_reason: string | null; // 有 → 显示抑制理由而非空白
+	referencing_statements: EngramReferencingStatement[]; // 引用它的 statement(best-effort,limit 50)
+};
+
 // Phase 3 片 5 — 衰减预报(GET /api/forecast):C++ forgetting_curve 只读投影,排「最快被遗忘」。
 export type ForecastRow = {
 	id: string;
@@ -275,4 +326,34 @@ export type ForecastResponse = {
 	threshold: number; // 归档阈值(0.05,同 op_decay)
 	now: string;
 	candidate_limit: number; // 候选有界上限
+};
+
+// T0d-2 — 新皮层·画像(Persona)只读检视(GET /api/personae)。数据源 containers
+// WHERE kind='persona'。scope_descriptor 是 canonical JSON 串(原样带出,前端只读)。
+export type PersonaRow = {
+	id: string;
+	holder_id: string;
+	scope_descriptor: string; // canonical JSON 串
+	created_at: string;
+	updated_at: string;
+	version: number;
+};
+export type PersonaeResponse = { rows: PersonaRow[] };
+
+// T0d-2 — 新皮层·共识(CommonGround)只读检视(GET /api/common_ground)。数据源
+// common_ground 表,五态 status;LEFT JOIN statements 带出被共识语句文本(遗忘/缺失→NULL)。
+export type CommonGroundRow = {
+	id: string;
+	statement_id: string;
+	status: string; // asserted_unack|grounded|suspected_diverge|expired|recanted
+	parties_json: string; // 参与方 JSON 串
+	grounded_at: string | null;
+	last_confirmed_at: string | null;
+	subject_id: string | null; // LEFT JOIN 命中才有;语句缺失→null
+	predicate: string | null;
+	object_value: string | null;
+};
+export type CommonGroundResponse = {
+	rows: CommonGroundRow[];
+	by_status: Record<string, number>; // 五态计数(概览)
 };

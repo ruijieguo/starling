@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { connectWs, streamConverse } from './ws';
+import { connectWs, streamConverse, mutatesMemory, WS_EVENT_TYPES } from './ws';
 import { wsConn } from './health';
 import * as tok from './token';
 
@@ -132,5 +132,31 @@ describe('streamConverse', () => {
 		ws.onopen!();
 		ws.close(); // closed before any done/error
 		expect(count).toBe(1);
+	});
+});
+
+describe('mutatesMemory', () => {
+	// 这是全部六个只读页做增量刷新的唯一判据(T8 review I1/I2/I3/M1 之后统一)。
+	// 钉住它:漏掉一种事件 = 那页显示陈旧数据,而且没有任何门会报错。
+	it('接纳全部会改变记忆库的事件', () => {
+		for (const type of WS_EVENT_TYPES.filter((t) => t !== 'recall')) {
+			expect(mutatesMemory({ type, payload: {} }), type).toBe(true);
+		}
+	});
+
+	it('排除 recall —— planned_recall 不写库,广播只为总览 feed 记一笔', () => {
+		expect(mutatesMemory({ type: 'recall', payload: { n: 3 } })).toBe(false);
+	});
+
+	it('词表里恰好只有 recall 是纯读', () => {
+		// 若日后后端新增事件,加进 WS_EVENT_TYPES 后这条会强制作者判断它是读还是写。
+		expect(WS_EVENT_TYPES.filter((t) => !mutatesMemory({ type: t, payload: {} }))).toEqual([
+			'recall'
+		]);
+	});
+
+	it('无事件(尚未收到任何帧)不触发刷新', () => {
+		expect(mutatesMemory(null)).toBe(false);
+		expect(mutatesMemory(undefined)).toBe(false);
 	});
 });

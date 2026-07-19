@@ -11,6 +11,13 @@
 				var d = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
 				document.documentElement.dataset.theme = d ? 'dark' : 'light';
 			} catch (e) {}
+			// Pre-paint density: set <html data-density> from the saved choice
+			// before first render so a saved "compact" choice doesn't flash a
+			// row-height jump on load (mirrors the theme pre-paint above).
+			try {
+				var den = localStorage.getItem('starling_density');
+				if (den === 'compact') document.documentElement.dataset.density = 'compact';
+			} catch (e) {}
 		</script>
 %sveltekit.head%
 	</head>

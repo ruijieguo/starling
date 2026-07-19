@@ -68,8 +68,9 @@ def overview(db_path: str, tenant: str) -> dict:
 
 
 def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str = "",
-               predicate: str = "", review_status: str = "", limit: int = 100,
-               offset: int = 0) -> dict:
+               predicate: str = "", review_status: str = "", consolidation_state: str = "",
+               modality: str = "", belief_order: str = "", subject_kind: str = "",
+               limit: int = 100, offset: int = 0) -> dict:
     where = ["tenant_id = ?"]
     params: list = [tenant]
     # review_status 过滤(片 6 审批队列复用本查询:筛 review_requested)。
@@ -78,6 +79,37 @@ def statements(db_path: str, tenant: str, *, holder: str = "", perspective: str 
         if val:
             where.append(f"{col} = ?")
             params.append(val)
+    # T0b — consolidation_state 过滤:支持逗号分隔多值(海马三态一次筛),
+    # 值域以 C++ ConsolidationState 枚举为准(见 statement_enums.hpp),本函数
+    # 不硬编码语义、纯参数化传值(无注入面)。
+    if consolidation_state:
+        states = [s.strip() for s in consolidation_state.split(",") if s.strip()]
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            where.append(f"consolidation_state IN ({placeholders})")
+            params.extend(states)
+    # T0d-1 — modality 过滤:同款逗号分隔多值范式(新皮层 Semantic/Norms 子区深链
+    # 一次筛多个 modality),值域以 C++ modality 枚举为准,本函数不硬编码语义、
+    # 纯参数化传值(无注入面)。
+    if modality:
+        modalities = [m.strip() for m in modality.split(",") if m.strip()]
+        if modalities:
+            placeholders = ",".join("?" for _ in modalities)
+            where.append(f"modality IN ({placeholders})")
+            params.extend(modalities)
+    # T0e ② — 信念阶层过滤:nesting_depth 是 INTEGER,语义是比较而非多值 IN。
+    # belief_order 空=不筛;"first"=一阶(nesting_depth = 0);"higher"=二阶及以上
+    # (nesting_depth >= 1)。本函数只翻译这两个固定取值,不接受任意 SQL/比较符,
+    # 前端也不硬编码 WHERE 语义。
+    if belief_order == "first":
+        where.append("nesting_depth = 0")
+    elif belief_order == "higher":
+        where.append("nesting_depth >= 1")
+    # T0e ① — subject_kind 过滤:精确匹配(DB CHECK 值域 cognizer/entity,见 0001),
+    # 本函数不硬编码语义、纯参数化传值。
+    if subject_kind:
+        where.append("subject_kind = ?")
+        params.append(subject_kind)
     clause = " AND ".join(where)
     with open_ro(db_path) as conn:
         rows = _rows(
@@ -148,7 +180,7 @@ def commitments(db_path: str, tenant: str) -> dict:
         )
         triggers = _rows(
             conn,
-            "SELECT commitment_stmt_id, kind, status FROM commitment_triggers "
+            "SELECT commitment_stmt_id, kind, status, spec_json FROM commitment_triggers "
             "WHERE tenant_id=? LIMIT 1000",
             (tenant,),
         )
@@ -634,6 +666,151 @@ def cascade_preview(db_path: str, tenant: str, statement_id: str,
                      for child_id in children.get(parent_id, []))
         return {"stmt_id": str(statement_id), "affected": affected,
                 "affected_count": len(affected), "truncated": capped or deeper}
+
+
+_ENGRAM_LIST_COLS = (
+    "id, source_kind, privacy_class, retention_mode, refcount, created_at, "
+    "erased_at, source_item_id, chunk_index, adapter_name"
+)
+# 刻意不含 redacted_content / key_ref / audit_trail_json:这三列绕过下面的隐私门。
+# payload_inline 是取出来再按 erased/privacy_class 判定后才决定给不给预览的,而它们若
+# 列在这里就会「无条件」随详情返回——包括已合规擦除(erased_at 非空)的 engram,以及
+# regulated/sensitive/personal 分级的 engram。redacted_content 正是「脱敏后但仍敏感」
+# 的正文。今天前端只渲染 payload_uri,危害是潜伏的:一旦有人照 api.ts 的契约把抽屉接上,
+# 默认就泄露了。真要暴露审计轨迹,应当各自过一道与 preview 同款的门,而不是搭便车。
+_ENGRAM_DETAIL_COLS = (
+    "id, tenant_id, content_hash, source_kind, ingest_policy, ingest_mode, "
+    "privacy_class, retention_mode, refcount, payload_uri, created_at, erased_at, "
+    "adapter_name, adapter_version, source_item_id, source_version, chunk_index, "
+    "declared_transformations_json, byte_preserving"
+)
+
+
+def engrams_list(db_path: str, tenant: str, *, source_kind: str = "",
+                 privacy_class: str = "", erased: str = "", q: str = "",
+                 limit: int = 100, offset: int = 0) -> dict:
+    """T0a — 原始数据·证据浏览:engram(不可变原文证据)列表(只读派生查询,
+    tenant-scoped)。engram 是记忆流最上游源头(先于海马/新皮层),此前无专属
+    端点/页面,只能从某条 statement 反向溯源(provenance._engrams_for)时顺带
+    瞥见。本函数只列展示列,**不带 payload_inline**(源文预览是单条详情
+    engram_detail 的 privacy-gated 特权,列表页不泄露)。"""
+    where = ["tenant_id = ?"]
+    params: list = [tenant]
+    if source_kind:
+        where.append("source_kind = ?")
+        params.append(source_kind)
+    if privacy_class:
+        where.append("privacy_class = ?")
+        params.append(privacy_class)
+    if erased == "yes":
+        where.append("erased_at IS NOT NULL")
+    elif erased == "no":
+        where.append("erased_at IS NULL")
+    if q:
+        where.append("(content_hash LIKE ? OR source_item_id LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
+    clause = " AND ".join(where)
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            f"SELECT {_ENGRAM_LIST_COLS} FROM engrams WHERE {clause} "
+            f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM engrams WHERE {clause}", tuple(params)
+        ).fetchone()[0]
+        return {"rows": rows, "total": total}
+
+
+def engram_detail(db_path: str, tenant: str, engram_id: str) -> dict | None:
+    """T0a — 单条 engram 详情(只读派生查询,tenant-scoped)。payload 预览**复用
+    _engrams_for/provenance 的同款隐私抑制规则**(_PROV_PREVIEW_CHARS +
+    _PREVIEW_SUPPRESS_PRIVACY):只对 inline、未抹除、非受限 privacy_class 的
+    engram 给前 280 字符预览,否则 preview=None 且带诚实的抑制理由(而非静默
+    空白)。同时反查引用它的 statements(evidence_json LIKE 该 id,best-effort、
+    有界 limit 50)——让 refcount 可展开成「哪些 statement 引用了它」。
+    跨租户/不存在 → None(路由转 404)。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            f"SELECT {_ENGRAM_DETAIL_COLS}, payload_inline FROM engrams "
+            f"WHERE tenant_id=? AND id=?",
+            (tenant, engram_id),
+        )
+        if not rows:
+            return None
+        g = rows[0]
+        blob = g.pop("payload_inline")
+        erased = g["erased_at"] is not None
+        privacy = (g["privacy_class"] or "").lower()
+        preview = None
+        reason = None
+        if erased:
+            reason = "该证据已被合规擦除(erased_at 非空)"
+        elif blob is None:
+            reason = "该证据仅存 URI(非 inline),不支持源文预览"
+        elif privacy in _PREVIEW_SUPPRESS_PRIVACY:
+            reason = f"该证据隐私分级为 {privacy},预览已抑制"
+        else:
+            try:
+                text = (blob.decode("utf-8", "replace")
+                        if isinstance(blob, (bytes, bytearray)) else str(blob))
+                preview = text[:_PROV_PREVIEW_CHARS]
+            except Exception:
+                reason = "预览解码失败"
+        referencing, _ = _rows_or_empty(
+            conn,
+            "SELECT id, subject_id, predicate FROM statements "
+            "WHERE tenant_id=? AND evidence_json LIKE ? LIMIT 50",
+            (tenant, f"%{engram_id}%"),
+        )
+        return {"engram": g, "preview": preview,
+                "preview_suppressed_reason": reason,
+                "referencing_statements": referencing}
+
+
+def personae(db_path: str, tenant: str) -> dict:
+    """T0d-2 — 新皮层·画像(Persona):某租户的 persona 容器(只读派生查询,
+    tenant-scoped)。数据源 containers WHERE kind='persona'(migrations/0001)。
+    scope_descriptor 是 canonical JSON(此处原样带出,前端只读展示,绝不复算)。
+    容器的内容/合并语义在 C++ 内核,dashboard 只列元数据快照。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT id, holder_id, scope_descriptor, created_at, updated_at, version "
+            "FROM containers WHERE tenant_id=? AND kind='persona' "
+            "ORDER BY updated_at DESC",
+            (tenant,),
+        )
+        return {"rows": rows}
+
+
+def common_ground(db_path: str, tenant: str) -> dict:
+    """T0d-2 — 新皮层·共识(CommonGround):某租户的 common_ground 行(只读派生查询,
+    tenant-scoped)。数据源 common_ground 表(migrations/0010),五态 status。LEFT JOIN
+    statements 带出被共识语句的 subject/predicate/object(JOIN 也带 tenant_id 约束,
+    跨租户语句永不泄露;语句被遗忘/缺失 → 三列为 NULL,不崩)。by_status 给五态计数,
+    供前端按状态分组概览。共识的推进/状态机在 C++,dashboard 只读快照。"""
+    with open_ro(db_path) as conn:
+        rows = _rows(
+            conn,
+            "SELECT cg.id, cg.statement_id, cg.status, cg.parties_json, "
+            "cg.grounded_at, cg.last_confirmed_at, "
+            "s.subject_id, s.predicate, s.object_value "
+            "FROM common_ground cg "
+            "LEFT JOIN statements s ON s.id=cg.statement_id AND s.tenant_id=cg.tenant_id "
+            "WHERE cg.tenant_id=? ORDER BY cg.created_at DESC",
+            (tenant,),
+        )
+        by_status = _rows(
+            conn,
+            "SELECT status, COUNT(*) AS n FROM common_ground WHERE tenant_id=? "
+            "GROUP BY status",
+            (tenant,),
+        )
+        return {"rows": rows, "by_status": {r["status"]: r["n"] for r in by_status}}
 
 
 def search_statements(db_path: str, tenant: str, q: str, *, limit: int = 20) -> dict:

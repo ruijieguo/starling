@@ -2,13 +2,16 @@
 	import EmptyState from './ui/EmptyState.svelte';
 	import Skeleton from './ui/Skeleton.svelte';
 	import Input from './ui/Input.svelte';
+	// 相对路径(非 $lib):vitest.config.ts 未过 SvelteKit 插件,$lib alias 在 vitest
+	// 下无法解析,值级 $lib 导入会让本组件的 .test.ts 整个 suite 挂掉。勿改回 $lib。
+	import { density, pageSizeFor } from '../ui/density';
 
 	let {
 		rows = [],
 		columns,
 		loading = false,
 		emptyText = '无数据',
-		pageSize = 12,
+		pageSize,
 		filterable = true,
 		onRowClick
 	}: {
@@ -20,6 +23,9 @@
 		filterable?: boolean;
 		onRowClick?: (row: Record<string, unknown>) => void;
 	} = $props();
+
+	// 未显式传 pageSize 时,跟随全局密度(宽松/紧凑),见 lib/ui/density.ts。
+	let effectivePageSize = $derived(pageSize ?? pageSizeFor($density));
 
 	let sortCol = $state('');
 	let sortDir = $state<1 | -1>(1);
@@ -56,12 +62,16 @@
 				)
 			: filtered
 	);
-	let pageCount = $derived(Math.max(1, Math.ceil(sorted.length / pageSize)));
-	let pageRows = $derived(sorted.slice(page * pageSize, page * pageSize + pageSize));
+	let pageCount = $derived(Math.max(1, Math.ceil(sorted.length / effectivePageSize)));
+	let pageRows = $derived(
+		sorted.slice(page * effectivePageSize, page * effectivePageSize + effectivePageSize)
+	);
 
-	// 外部数据(rows 引用)变化时回到第 1 页,避免停在越界空页。
+	// 外部数据(rows 引用)或每页行数(密度切换 → effectivePageSize)变化时回到第 1 页,
+	// 避免停在越界空页(如停第 4 页时切紧凑使总页数变 2,page=3 会 slice 出空数组)。
 	$effect(() => {
 		void rows;
+		void effectivePageSize;
 		page = 0;
 	});
 </script>
