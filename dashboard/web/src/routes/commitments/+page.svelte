@@ -3,6 +3,7 @@
 	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -29,15 +30,12 @@
 	$effect(() => {
 		q.refetch();
 	});
-	// T8 — 六态看板对写事件敏感:手动流转(transition)、到期触发(fired)直接改泳道,
-	// 后台 tick 也会自动 fire/break/auto-withdraw。三类都重取。
+	// T8 review I2 — 六态看板不止被 commitment_* 与 tick 改:承诺的「创建」走的是写入路径。
+	// run_post_write 每次写入都跑 policy_engine(subscriber_pump.cpp 第 6 项)→
+	// create_from_statement → upsert_active_commitment,故新许下的承诺是随 statement_added 落库的。
+	// 原先只订 commitment_* + tick,新承诺要等下一次 tick(最多 30s)才出现在泳道上。
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (
-			e &&
-			(e.type === 'commitment_transition' || e.type === 'commitment_fired' || e.type === 'tick')
-		)
-			q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	let filter = $state('');

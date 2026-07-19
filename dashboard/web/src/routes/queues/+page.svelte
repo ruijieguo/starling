@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { labelFor, glossFor, orderedEntries } from '$lib/labels';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -18,10 +19,12 @@
 	$effect(() => {
 		q.refetch();
 	});
-	// T8 — 队列深度由后台 tick 推进(派发 outbox / 消费嵌入积压),tick 事件即重取。
+	// T8 review I1 — 原先只订 tick 是错的:这页读的三样里有两样被「写入」直接改。
+	//   dispatch          = bus_events 按 dispatch_status 计数,任何业务事件 append 都进这表。
+	//   embedding_backlog = statements 里没有向量的行 —— 而 post-write pump 没有 embed 阶段
+	//                       (嵌入只在 tick 跑),故新语句落库「瞬间」积压 +1,只订 tick 要等 30s。
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (e && e.type === 'tick') q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	let ticking = $state(false);

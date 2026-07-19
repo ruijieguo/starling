@@ -4,6 +4,7 @@
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import { labelFor, glossFor, sectionize } from '$lib/labels';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -91,11 +92,12 @@
 		subjectKind; // dep:T0e ① 服务端过滤即重取
 		q.refetch();
 	});
-	// T8 — 写事件即重取(新语句落库 / 审批 / 遗忘)。单独一个 effect:混进上面的过滤
-	// effect 会让 WS 事件被当成过滤变更,也会让过滤依赖被 WS 触发时重复读。
+	// T8 — 单独一个 effect:若混进上面的过滤 effect,$lastWsEvent 会成为它的依赖,
+	// 于是「任意」WS 事件都触发那句无条件 q.refetch()(effect 内无从区分是哪个依赖变的)。
+	// review I3 — 原先只订写事件,漏了后台 tick:表格有 consolidation_state 一列,
+	// 而固化/归档/衰减都由 tick 推进,只订写事件会让状态徽章陈旧。
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (e && (e.type === 'statement_added' || e.type === 'statement_forgotten')) q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	let allRows = $derived(q.data?.rows ?? []);

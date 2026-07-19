@@ -2,6 +2,7 @@
 	import { api, type CascadePreview } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
+	import { mutatesMemory } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Badge, Card, EmptyState, Skeleton, Drawer, Button, ConfirmDialog } from '$lib/components/ui';
@@ -27,10 +28,12 @@
 	$effect(() => {
 		q.refetch();
 	});
-	// T8 — 新语句可能引入冲突,遗忘一侧则就地解决冲突:两类写事件都要重取。
+	// T8 review I3 — 新语句可能引入冲突、遗忘一侧则就地解决,但漏了后台 tick:这页拿
+	// src_state/dst_state 既过滤行(:39 滤掉 forgotten)又决定按钮显隐(:204/:225 只对
+	// consolidated 给「再固化」),而这两个 state 正是被后台 tick 推进的 —— 只订写事件的话,
+	// 已解决的冲突仍挂在列表上、动作按钮显隐错位。
 	$effect(() => {
-		const e = $lastWsEvent;
-		if (e && (e.type === 'statement_added' || e.type === 'statement_forgotten')) q.refetch();
+		if (mutatesMemory($lastWsEvent)) q.refetch();
 	});
 
 	// 一侧已遗忘 = 冲突已就地解决 → 不再列出(遗忘一侧后重取即消失,使工作台动作可见生效)。
