@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, ApiError } from '$lib/api';
+	import { api } from '$lib/api';
 	import { llmConfigured, embedderConfigured } from '$lib/health';
 	import { getToken, setToken } from '$lib/token';
 	import { toast } from '$lib/ui/toast';
@@ -7,7 +7,8 @@
 	import { type Config, type Prov, roleConfigured } from '$lib/models';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import {
-		Button, Input, Field, Card, CopyButton, ConfirmDialog, SecretInput, Select, StatusDot, Badge
+		Button, Input, Field, Card, CopyButton, ConfirmDialog, SecretInput, Select, StatusDot,
+		Badge, EmptyState, Skeleton
 	} from '$lib/components/ui';
 
 	type TestResult = { ok: boolean; detail: string; ms: number };
@@ -68,14 +69,37 @@
 		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
 	}
 
+	// ── 配置加载门 ────────────────────────────────────────────────────────────
+	// 此前加载失败只弹一个转瞬即逝的 toast,页面照常渲染成「什么都没配」的样子。
+	// 用户此时点保存,提交的是「从未加载过的初值」,而后端对三个字段的语义并不相同:
+	//   providers  {}                                → upsert 循环不执行,安全(no-op)
+	//   roles      {extraction:'',embedding:'',chat:''} → cfg.roles[role]=name 是赋值,
+	//              三个角色全部解绑,随即热切换 set_llm({}) / rebuild_embedder({}),
+	//              抽取与嵌入当场停摆
+	//   gist_thresholds 全 null → 送 {} → 后端 `is not None` 成立 → 重置为默认
+	// 末了 cfg.save() 持久化进 starling.json:系统安静地不再工作,直到有人发现。
+	// 触发条件并不罕见 —— /api/config 要 token,token 失效或网络抖动就走这条路。
+	// 三重防护:(1) 顶部持久错误面 + 重试,明说「下面为空是没读到配置,不是真没配」;
+	// (2) 保存按钮 disabled;(3) doSave 里的函数级守卫。没有整体隐藏配置区 —— 那样要么
+	// 重排上百行缩进、把真实改动淹没在空白 diff 里,要么让人以为页面坏了;既然写入只能
+	// 经由保存,把写入这一条路堵死即可,空态由上方错误面解释。
+	let loaded = $state(false);
+	let loadErr = $state('');
+
+	async function loadConfig() {
+		try {
+			const c = await api.get<Config>('/api/config');
+			applyConfig(c);
+			embBaseline = embKey();
+			loaded = true;
+			loadErr = '';
+		} catch (e) {
+			// 不清 loaded:重试失败时保留上一次已加载的配置,总比退回空态安全。
+			loadErr = e instanceof Error ? e.message : String(e);
+		}
+	}
 	$effect(() => {
-		api
-			.get<Config>('/api/config')
-			.then((c) => {
-				applyConfig(c);
-				embBaseline = embKey();
-			})
-			.catch((e) => toast.error(String((e as ApiError).message)));
+		void loadConfig();
 	});
 
 	// Keep the embedding-bound provider's dim defined — the dim <Input> has a ''
@@ -109,7 +133,7 @@
 			embedderConfigured.set(roleConfigured(c, 'embedding'));
 			toast.success(`已删除 ${name}`);
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			toast.error(e instanceof Error ? e.message : String(e));
 		}
 	}
 
@@ -133,7 +157,7 @@
 			);
 			tests[name] = { ok: r.ok, detail: r.detail, ms: r.latency_ms };
 		} catch (e) {
-			tests[name] = { ok: false, detail: String((e as ApiError).message), ms: 0 };
+			tests[name] = { ok: false, detail: e instanceof Error ? e.message : String(e), ms: 0 };
 		} finally {
 			testing[name] = false;
 		}
@@ -145,6 +169,10 @@
 	}
 
 	async function doSave() {
+		// 函数级守卫,不只靠按钮的 disabled:提交从未加载过的初值会解绑全部角色并重置
+		// gist 阈值,且持久化进 starling.json(详见 loadConfig 上方注释)。按钮之外若
+		// 日后再多一条调用路径,这道守卫仍在。
+		if (!loaded) return;
 		saving = true;
 		try {
 			const payload = {
@@ -189,7 +217,7 @@
 			// the save succeeded, but surface them so embeddings aren't silently broken.
 			for (const w of c.warnings ?? []) toast.error(w);
 		} catch (e) {
-			toast.error(String((e as ApiError).message));
+			toast.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			saving = false;
 		}
@@ -206,6 +234,17 @@
 	subtitle="模型 provider 注册表与任务角色绑定(抽取 / 嵌入 / 对话)、gist 固化阈值,以及访问令牌。"
 />
 <div class="max-w-2xl space-y-5">
+	<!-- 加载失败时给持久错误面而非转瞬即逝的 toast:下面各卡片会是空的,若不解释,
+	     用户会把「加载失败」读成「什么都没配」——正是那个误读会让人去点保存。
+	     Access 卡片不受影响(它纯客户端),这是有意的:加载失败的高概率原因就是 token
+	     不对,那张卡是唯一的自救途径,连它一起藏会把人锁死在外面。 -->
+	{#if loadErr && !loaded}
+		<EmptyState title="配置加载失败" description="{loadErr}(下方各项为空是因为没读到配置,不是真的没配;保存已禁用)">
+			<Button variant="soft" onclick={() => void loadConfig()}>重试</Button>
+		</EmptyState>
+	{:else if !loaded}
+		<Skeleton class="h-24 w-full" />
+	{/if}
 	<Card title="角色绑定" description="把每个任务绑定到一个已配 provider。">
 		<div class="grid gap-3 sm:grid-cols-3">
 			<Field label="extraction(抽取)" for="role-ex" hint="remember 抽取记忆用">
@@ -325,7 +364,7 @@
 		</div>
 	</Card>
 
-	<Button loading={saving} onclick={onSaveClick}>保存</Button>
+	<Button loading={saving} disabled={!loaded} onclick={onSaveClick}>保存</Button>
 
 	<Card title="Access">
 		<div class="space-y-3">
