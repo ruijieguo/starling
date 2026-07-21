@@ -28,7 +28,7 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -342,9 +342,16 @@ class DashboardEngine:
         did_work 门控——backlog/embedded 是绝对状态快照,空闲/卡死轮也要采,
         否则恰好在「backlog 卡住/增长」这个要回答的场景丢样本)。异常吞掉记
         log,绝不杀 tick(保活)。"""
+        # closing() 而非裸 `with sqlite3.connect(...) as c`:Connection.__exit__ 只
+        # 提交/回滚事务,**不 close 连接** —— fd 一直挂着。本方法每轮 tick 无条件跑,
+        # 于是每 tick 泄漏 3 个 fd(db + wal + 偶尔 shm),约 3 小时撑满 launchd 的 256
+        # fd 上限 → accept() 得 EMFILE → 新连接被内核 RST,而事件循环照常轮询(表面
+        # 是「进程活着、端口在听,却 Connection reset」)。观测器实测 66 次真实卡死、
+        # fd 峰值 255 坐实此因。同仓库 queries.open_ro 与本文件 _reembed 都是 close 的,
+        # 唯独此处漏了。
         try:
             # 只读 dashboard.db 算 backlog(未 embed 的 statement 数)+ embedded 数
-            with sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True) as ro:
+            with closing(sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)) as ro:
                 backlog = ro.execute(
                     "SELECT COUNT(*) FROM statements s LEFT JOIN statement_vectors v "
                     "ON v.stmt_id=s.id WHERE s.tenant_id=? AND v.stmt_id IS NULL",
@@ -352,7 +359,7 @@ class DashboardEngine:
                 embedded = ro.execute(
                     "SELECT COUNT(*) FROM statement_vectors WHERE tenant_id=? AND status='embedded'",
                     (self._core.tenant,)).fetchone()[0]
-            with sqlite3.connect(str(self._metrics_db_path)) as conn:
+            with closing(sqlite3.connect(str(self._metrics_db_path))) as conn:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS embed_depth_samples ("
                     " ts TEXT NOT NULL, backlog INTEGER NOT NULL, embedded INTEGER NOT NULL)")
