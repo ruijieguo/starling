@@ -32,6 +32,9 @@ struct EpisodicExtractionResult {
 struct ParsedEpisodicEvent {
     long long seq = 0;                       // 1-based,密集于完整事件
     std::string actor;                       // raw surface(persist 里 resolve_name)
+    std::string actor_kind;                  // "cognizer" | "entity";空=缺省(视作 cognizer)。
+                                             // entity actor("the script ran")不注册 cognizer,
+                                             // 且其 OCCURRED 语句 subject_kind 跟此值(D5)。
     std::string action;
     std::string object_value;                // normalize_theme(theme)(M8 entity-kind)
     std::string canonical_object_hash;       // canonicalize_object(object_value)

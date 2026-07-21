@@ -23,6 +23,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <variant>
 #include <vector>
@@ -117,6 +119,14 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         ParsedEpisodicEvent event;
         event.seq    = seq;
         event.actor  = actor;   // raw surface —— resolve_name 在 persist(要写库)。
+        // actor_kind:cognizer|entity;非法/缺失 → 空(persist 里视作 cognizer 缺省)。
+        // 安全侧与 belief 一致:此处不因值域外而拒事件,只把非 "entity" 归为缺省认知体。
+        if (el.contains("actor_kind") && el["actor_kind"].is_string()) {
+            std::string ak = el["actor_kind"].get<std::string>();
+            std::transform(ak.begin(), ak.end(), ak.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ak == "entity" || ak == "cognizer") event.actor_kind = ak;
+        }
         event.action = action;
         event.object_value = schema::normalize_theme(theme);  // M8: entity-kind theme
         const schema::CanonicalResult canon =
@@ -160,27 +170,31 @@ EpisodicExtractionResult EpisodicExtractor::persist(
     if (store_adapter_ != nullptr) {
         hub.emplace(*store_adapter_);
     }
-    const auto resolve_name = [&](const std::string& surface) -> std::string {
-        if (!hub) {
-            return surface;
+    // actor 解析:仅当 actor 是认知体(actor_kind != "entity")时 register-on-miss;
+    // entity actor(如 "the script ran")保留表面串、不注册。
+    const auto resolve_actor = [&](const std::string& surface,
+                                   const std::string& actor_kind) -> std::string {
+        if (!hub || actor_kind == "entity") {
+            return surface;  // entity actor:不注册,subject_id = 表面串
         }
         return cognizer::resolve_or_register_cognizer(*hub, tenant, surface);
     };
 
     for (const auto& event : llm_result.events) {
-        // resolve actor + 每个 participant(CognizerHub register-on-miss 写本事务)。
-        const std::string actor = resolve_name(event.actor);
-        std::vector<std::string> participants;
-        participants.reserve(event.participants.size());
-        for (const auto& part : event.participants) {
-            participants.push_back(resolve_name(part));
-        }
+        const bool actor_is_entity = (event.actor_kind == "entity");
+        const std::string actor = resolve_actor(event.actor, event.actor_kind);
+        // D3:participants 本轮停止自动注册(prompt 字面不能当安全边界;participants
+        // 是社会图边的信号源,连同注册归缺陷 B 统一做)。此处只把表面串带入
+        // perceived_by(既有 JSON),不 resolve_or_register 任何 cognizer。
+        std::vector<std::string> participants(event.participants);
 
         ExtractedStatement stmt;
         stmt.holder_id          = std::string(agent_self);
         stmt.holder_tenant_id   = std::string(tenant);
         stmt.holder_perspective = schema::Perspective::FIRST_PERSON;
-        stmt.subject_kind       = "cognizer";
+        // D5:subject_kind 必须跟 actor_kind 走 —— 不再硬编码 "cognizer"。否则
+        // entity actor 的 OCCURRED 语句声称 cognizer 却无注册,ToM 读路径误当认知体。
+        stmt.subject_kind       = actor_is_entity ? "entity" : "cognizer";
         stmt.subject_id         = actor;
         stmt.predicate          = event.action;
         stmt.object_kind        = "entity";

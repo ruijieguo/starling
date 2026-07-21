@@ -211,4 +211,60 @@ TEST(EpisodicExtractor, EmptyArrayWritesNothing) {
     EXPECT_EQ(row_count(conn, "episodic_events"), 0);
 }
 
+// D5(P1 正确性):entity actor("the script ran")→ 不建 cognizer,且落库的
+// OCCURRED 语句 subject_kind == "entity"(不再恒 cognizer)。cog_hub 启用
+// (store_adapter ctor)才能验证注册与否。
+TEST(EpisodicExtractor, NonCognizerActorNotRegisteredAndSubjectKindEntity) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn);
+
+    FakeLLMAdapter llm;
+    // 一个 entity actor(脚本)+ 一个 cognizer actor(Alice)对照。
+    constexpr const char* kJson = R"JSON([
+      {"actor":"the script","actor_kind":"entity","action":"run","theme":"build","location":null,"participants":[],"time":null},
+      {"actor":"Alice","actor_kind":"cognizer","action":"fix","theme":"bug","location":null,"participants":["Alice"],"time":null}
+    ])JSON";
+    llm.set_default_response(LLMResponse{.raw_xml = kJson, .ok = true});
+
+    EpisodicExtractor ex(conn, llm, *a, /*prompt=*/"{passage}");
+    const auto result = ex.extract("the script ran; Alice fixed a bug", "engram-1",
+                                   "default", "cog-self", "2026-06-16T10:00:00Z");
+    EXPECT_EQ(result.event_statement_ids.size(), 2u);
+
+    // D5:entity actor 的 OCCURRED 语句 subject_kind='entity';cognizer actor 为 'cognizer'。
+    EXPECT_EQ(row_count(conn, "statements",
+        "modality='occurred' AND subject_id='the script' AND subject_kind='entity'"), 1);
+    EXPECT_EQ(row_count(conn, "statements",
+        "modality='occurred' AND subject_id='Alice' AND subject_kind='cognizer'"), 1);
+
+    // entity actor 未注册;cognizer actor 已注册。
+    EXPECT_EQ(row_count(conn, "cognizers", "canonical_name='the script'"), 0);
+    EXPECT_EQ(row_count(conn, "cognizers", "canonical_name='Alice'"), 1);
+}
+
+// D3:participants 本轮停止自动注册 —— participant 名不新建 cognizers 行,
+// 但仍进该事件的 perceived_by JSON。此处 actor=Alice(注册),participant
+// 里额外的 Bob 不应建 cognizer 行。
+TEST(EpisodicExtractor, ParticipantsNotRegisteredThisRound) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn);
+
+    FakeLLMAdapter llm;
+    constexpr const char* kJson = R"JSON([
+      {"actor":"Alice","actor_kind":"cognizer","action":"tell","theme":"plan","location":null,"participants":["Alice","Bob"],"time":null}
+    ])JSON";
+    llm.set_default_response(LLMResponse{.raw_xml = kJson, .ok = true});
+
+    EpisodicExtractor ex(conn, llm, *a, /*prompt=*/"{passage}");
+    const auto result = ex.extract("Alice told Bob the plan", "engram-1",
+                                   "default", "cog-self", "2026-06-16T10:00:00Z");
+    ASSERT_EQ(result.event_statement_ids.size(), 1u);
+
+    // actor Alice 注册;participant Bob 本轮不注册(D3:归缺陷 B)。
+    EXPECT_EQ(row_count(conn, "cognizers", "canonical_name='Alice'"), 1);
+    EXPECT_EQ(row_count(conn, "cognizers", "canonical_name='Bob'"), 0);
+}
+
 }  // namespace starling::extractor
