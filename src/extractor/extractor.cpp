@@ -311,8 +311,21 @@ ExtractionRunResult Extractor::persist(
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
             }
             if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
-                stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
-                    *cog_hub, holder_tenant_id, stmt.subject_id);
+                // cognizer_kind 已由 json_parser 校验:要么在值域内,要么空。
+                // self 特判(eng-review D6′):subject 指向 agent 自己(「我」/「me」)
+                // 不新建认知体,而是解析到本次 run 的 holder_id —— 既表征 self 是
+                // 一等认知主体,又堵死「我/me/myself」碎片化成一堆孤立认知体。
+                if (stmt.llm_cognizer_kind == "self") {
+                    stmt.subject_id = std::string(holder_id);
+                } else {
+                    // 空 → 默认 Human;合法非空串 → from_string(值域外已被 parser 置空,
+                    // 故不会抛)。
+                    const cognizer::CognizerKind k = stmt.llm_cognizer_kind.empty()
+                        ? cognizer::CognizerKind::Human
+                        : cognizer::cognizer_kind_from_string(stmt.llm_cognizer_kind);
+                    stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
+                        *cog_hub, holder_tenant_id, stmt.subject_id, k);
+                }
             }
             // Holder attribution. Default (and historical) behaviour: the agent
             // (the run arg) holds every extracted attitude. OPT-IN
