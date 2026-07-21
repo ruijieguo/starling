@@ -50,7 +50,12 @@
 {:else}
 	<div class="space-y-4">
 		<Card>
-			<Graph nodes={gnodes} edges={gedges} onNodeClick={openNode} />
+			<Graph
+				nodes={gnodes}
+				edges={gedges}
+				onNodeClick={openNode}
+				selectedId={selected?.id ?? null}
+			/>
 		</Card>
 		<DataTable
 			rows={q.data?.nodes ?? []}
