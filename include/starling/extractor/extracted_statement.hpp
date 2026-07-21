@@ -59,6 +59,13 @@ struct ExtractedStatement {
     // this advisory copy is the only signal of the model's first/second-order
     // intent. Default 0 (flat / first-order).
     std::int32_t                 llm_nesting_depth = 0;
+    // The LLM's cognizer_kind ("human"|"agent"|"group"|"role"|"self"|"external"),
+    // read from the JSON only when subject_kind=="cognizer". Validated to the
+    // enum value set at parse time (json_parser); an out-of-range or missing
+    // value becomes "" so the registration gate falls back to Human rather than
+    // passing an illegal string to cognizer_kind_from_string (which throws).
+    // Empty for entity subjects and for cognizers the model didn't kind-tag.
+    std::string                  llm_cognizer_kind;
 };
 
 }  // namespace starling::extractor

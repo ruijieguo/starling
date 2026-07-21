@@ -10,6 +10,7 @@
 #include <cctype>
 #include <chrono>
 #include <ctime>
+#include <set>
 #include <string>
 
 namespace starling::extractor {
@@ -100,7 +101,22 @@ ParseResult parse_extractor_json(
             s.llm_nesting_depth = el.value("nesting_depth", 0);
             s.holder_perspective = schema::perspective_from_string(
                 to_lower(el.value("holder_perspective", std::string("inferred"))));
-            s.subject_kind = "cognizer";
+            // subject_kind 从 LLM 读,安全侧默认 entity:漏字段/非法值宁可不注册
+            // (过度注册是病,漏注册无害)。parser 本就 lenient(见头注释),缺失走默认。
+            {
+                const std::string sk = to_lower(el.value("subject_kind", std::string()));
+                s.subject_kind = (sk == "cognizer" || sk == "entity") ? sk : "entity";
+            }
+            // cognizer 时读 advisory kind,并【在此校验值域】:cognizer_kind_from_string
+            // 对未知串 throw(cognizer.hpp),故非法/缺失一律置空,让下游默认 human,
+            // 绝不把非法串传下去。entity 时忽略 kind。
+            {
+                static const std::set<std::string> kValidKinds =
+                    {"self", "human", "agent", "group", "role", "external"};
+                const std::string ck = (s.subject_kind == "cognizer")
+                    ? to_lower(el.value("cognizer_kind", std::string())) : std::string();
+                s.llm_cognizer_kind = kValidKinds.count(ck) ? ck : std::string();
+            }
             s.subject_id   = el.value("subject", std::string());
             s.predicate    = el.value("predicate", std::string());
             s.object_value = el.value("object", std::string());
