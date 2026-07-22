@@ -17,7 +17,8 @@ GENERAL_FACT_EXTRACTION_PROMPT = """You are a general-fact extractor for a State
 
 Given a passage, extract ALL standalone DECLARATIVE FACTS about the world — definitions, properties, quantities, and relationships stated as true. Output ONLY a JSON array.
 
-Each Statement: {"holder": str, "holder_perspective": "FIRST_PERSON", "subject": str, "predicate": str, "object": str, "modality": "BELIEVES", "polarity": "POS"|"NEG", "nesting_depth": 0}
+Each Statement: {"holder": str, "holder_perspective": "FIRST_PERSON", "subject": str, "subject_kind": "cognizer"|"entity", "cognizer_kind": "self"|"human"|"agent"|"group"|"role"|"external", "predicate": str, "object": str, "modality": "BELIEVES", "polarity": "POS"|"NEG", "nesting_depth": 0}
+(cognizer_kind is REQUIRED only when subject_kind="cognizer"; omit it for entities.)
 
 For EVERY fact: holder is "{self}" (the memory's own agent, which records the fact), holder_perspective is "FIRST_PERSON", modality is "BELIEVES", nesting_depth is 0.
 
@@ -33,6 +34,11 @@ predicate must be one of: is_a, instance_of, has_property, has_value, part_of, r
 
 subject = the entity the fact is about (canonical short noun). object = the value/type/target (canonical short noun, or a number/string for quantities). Drop hedges and modifiers ("the", "service", "system").
 
+SUBJECT_KIND (CRITICAL): for EVERY fact, classify the subject.
+- entity: technical things, products, libraries, devices, models, metrics, quantities, abstract concepts — anything that CANNOT hold a belief. MOST general facts are about entities. Examples: "Postgres", "H800 memory", "deploy budget", "FLA kernel", "TE 2.14.1", "ToMBench run time" are ALL entity.
+- cognizer: a person (human), AI agent (group), team/org (group), role, or the narrator itself (self) — only when the fact is about a belief-bearing subject, e.g. "Alice reports_to Bob" (both people) or "Alice member_of platform team".
+When in doubt, choose entity — a general-fact subject is far more often a thing than a person. Only give cognizer_kind when subject_kind="cognizer".
+
 DO NOT extract (output nothing for these — other passes own them):
 - A person's voiced opinion / belief / commitment / preference / promise in conversation ("I think...", "I'll do X", "Alice prefers Python"). Those are mental-state claims, NOT general facts.
 - A physical event or action ("Sally put the ball in the basket", "Tom left the room"). Those are events, NOT general facts.
@@ -43,9 +49,9 @@ Passage:
   Postgres is a relational database. The deploy budget is $40k. Alice reports to Bob.
 JSON array:
 [
-  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"Postgres","predicate":"is_a","object":"relational database","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"deploy budget","predicate":"has_value","object":"$40k","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"reports_to","object":"Bob","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"Postgres","subject_kind":"entity","predicate":"is_a","object":"relational database","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"deploy budget","subject_kind":"entity","predicate":"has_value","object":"$40k","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"{self}","holder_perspective":"FIRST_PERSON","subject":"Alice","subject_kind":"cognizer","cognizer_kind":"human","predicate":"reports_to","object":"Bob","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 
 WORKED EXAMPLE 2 (no general facts):
