@@ -104,8 +104,11 @@ ParseResult parse_extractor_json(
             // subject_kind 从 LLM 读,安全侧默认 entity:漏字段/非法值宁可不注册
             // (过度注册是病,漏注册无害)。parser 本就 lenient(见头注释),缺失走默认。
             {
-                const std::string sk = to_lower(el.value("subject_kind", std::string()));
-                s.subject_kind = (sk == "cognizer" || sk == "entity") ? sk : "entity";
+                const std::string subject_kind_raw =
+                    to_lower(el.value("subject_kind", std::string()));
+                s.subject_kind =
+                    (subject_kind_raw == "cognizer" || subject_kind_raw == "entity")
+                        ? subject_kind_raw : "entity";
             }
             // cognizer 时读 advisory kind,并【在此校验值域】:cognizer_kind_from_string
             // 对未知串 throw(cognizer.hpp),故非法/缺失一律置空,让下游默认 human,
@@ -113,9 +116,10 @@ ParseResult parse_extractor_json(
             {
                 static const std::set<std::string> kValidKinds =
                     {"self", "human", "agent", "group", "role", "external"};
-                const std::string ck = (s.subject_kind == "cognizer")
+                const std::string cognizer_kind_raw = (s.subject_kind == "cognizer")
                     ? to_lower(el.value("cognizer_kind", std::string())) : std::string();
-                s.llm_cognizer_kind = kValidKinds.count(ck) ? ck : std::string();
+                s.llm_cognizer_kind =
+                    kValidKinds.contains(cognizer_kind_raw) ? cognizer_kind_raw : std::string();
             }
             s.subject_id   = el.value("subject", std::string());
             s.predicate    = el.value("predicate", std::string());

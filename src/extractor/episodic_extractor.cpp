@@ -122,10 +122,12 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         // actor_kind:cognizer|entity;非法/缺失 → 空(persist 里视作 cognizer 缺省)。
         // 安全侧与 belief 一致:此处不因值域外而拒事件,只把非 "entity" 归为缺省认知体。
         if (el.contains("actor_kind") && el["actor_kind"].is_string()) {
-            std::string ak = el["actor_kind"].get<std::string>();
-            std::transform(ak.begin(), ak.end(), ak.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (ak == "entity" || ak == "cognizer") event.actor_kind = ak;
+            std::string actor_kind_raw = el["actor_kind"].get<std::string>();
+            std::transform(actor_kind_raw.begin(), actor_kind_raw.end(), actor_kind_raw.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (actor_kind_raw == "entity" || actor_kind_raw == "cognizer") {
+                event.actor_kind = actor_kind_raw;
+            }
         }
         event.action = action;
         event.object_value = schema::normalize_theme(theme);  // M8: entity-kind theme

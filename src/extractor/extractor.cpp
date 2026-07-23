@@ -320,11 +320,12 @@ ExtractionRunResult Extractor::persist(
                 } else {
                     // 空 → 默认 Human;合法非空串 → from_string(值域外已被 parser 置空,
                     // 故不会抛)。
-                    const cognizer::CognizerKind k = stmt.llm_cognizer_kind.empty()
+                    const cognizer::CognizerKind resolved_kind =
+                        stmt.llm_cognizer_kind.empty()
                         ? cognizer::CognizerKind::Human
                         : cognizer::cognizer_kind_from_string(stmt.llm_cognizer_kind);
                     stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
-                        *cog_hub, holder_tenant_id, stmt.subject_id, k);
+                        *cog_hub, holder_tenant_id, stmt.subject_id, resolved_kind);
                 }
             }
             // Holder attribution. Default (and historical) behaviour: the agent
