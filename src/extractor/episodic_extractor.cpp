@@ -124,7 +124,7 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         if (el.contains("actor_kind") && el["actor_kind"].is_string()) {
             std::string actor_kind_raw = el["actor_kind"].get<std::string>();
             std::transform(actor_kind_raw.begin(), actor_kind_raw.end(), actor_kind_raw.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                           [](unsigned char chr) { return static_cast<char>(std::tolower(chr)); });
             if (actor_kind_raw == "entity" || actor_kind_raw == "cognizer") {
                 event.actor_kind = actor_kind_raw;
             }
