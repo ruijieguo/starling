@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 using starling::cognizer::CognizerHub;
+using starling::cognizer::CognizerKind;
 using starling::cognizer::fold_internal_spaces;
 using starling::cognizer::resolve_cognizer;
 using starling::cognizer::resolve_or_register_cognizer;
@@ -59,4 +60,30 @@ TEST(NameResolver, EmptySurfacePassthrough) {
     CognizerHub hub(*adapter);
     EXPECT_EQ(resolve_or_register_cognizer(hub, "default", ""), "");
     EXPECT_EQ(resolve_cognizer(hub, "default", ""), "");
+}
+
+TEST(NameResolver, RegistersWithGivenKind) {
+    // 调用方传入 kind → 落库该 kind(不再焊死 Human)。Claude = agent。
+    auto adapter = SqliteAdapter::open(":memory:");
+    CognizerHub hub(*adapter);
+    const char* T = "default";
+    resolve_or_register_cognizer(hub, T, "Claude", CognizerKind::Agent);
+    auto id = hub.lookup_by_alias(T, "Claude");
+    ASSERT_TRUE(id.has_value());
+    auto cog = hub.get(*id, T);
+    ASSERT_TRUE(cog.has_value());
+    EXPECT_EQ(cog->kind, CognizerKind::Agent);
+}
+
+TEST(NameResolver, DefaultsToHumanWhenKindOmitted) {
+    // 不传 kind → 缺省 Human(保持既有调用点行为)。
+    auto adapter = SqliteAdapter::open(":memory:");
+    CognizerHub hub(*adapter);
+    const char* T = "default";
+    resolve_or_register_cognizer(hub, T, "Alice");
+    auto id = hub.lookup_by_alias(T, "Alice");
+    ASSERT_TRUE(id.has_value());
+    auto cog = hub.get(*id, T);
+    ASSERT_TRUE(cog.has_value());
+    EXPECT_EQ(cog->kind, CognizerKind::Human);
 }

@@ -18,7 +18,8 @@ EXTRACTION_PROMPT = """You are an extractor for a Statement-based memory system.
 
 Given a conversation, extract ALL Statements. Output ONLY a JSON array.
 
-Each Statement: {"holder": str, "holder_perspective": "FIRST_PERSON"|"QUOTED"|"HEARSAY"|"INFERRED", "subject": str, "predicate": str, "object": str, "modality": "BELIEVES"|"DESIRES"|"INTENDS"|"COMMITS"|"ENFORCES"|"OBSERVES", "polarity": "POS"|"NEG"|"UNKNOWN", "nesting_depth": int}
+Each Statement: {"holder": str, "holder_perspective": "FIRST_PERSON"|"QUOTED"|"HEARSAY"|"INFERRED", "subject": str, "subject_kind": "cognizer"|"entity", "cognizer_kind": "self"|"human"|"agent"|"group"|"role"|"external", "predicate": str, "object": str, "modality": "BELIEVES"|"DESIRES"|"INTENDS"|"COMMITS"|"ENFORCES"|"OBSERVES", "polarity": "POS"|"NEG"|"UNKNOWN", "nesting_depth": int}
+(cognizer_kind is REQUIRED only when subject_kind="cognizer"; omit it for entities.)
 
 predicate must be one of: responsible_for, knows, prefers, promises, forbids, requires, located_at, member_of, believes, doubts. Do NOT use free-form English ("is responsible for", "thinks", "is handling") — pick the closest underscore form from the list above.
 
@@ -33,6 +34,15 @@ HOLDER vs SUBJECT (CRITICAL): holder is the SPEAKER who is asserting the claim i
 - "Alice: The handoff doc says 'Bob is responsible for auth'" → holder=Alice (she is quoting), subject=Bob, perspective=QUOTED
 - "Alice: I read that Carol prefers Python" → holder=Alice, subject=Carol, perspective=HEARSAY
 NEVER set holder to the subject of the claim. The holder is the conversation participant who voiced the claim.
+
+SUBJECT_KIND (CRITICAL): decide whether the subject is a COGNIZER (something that can hold beliefs) or an ENTITY (something that cannot).
+- cognizer: a person (human), an AI agent (e.g. Claude / "the assistant" / a named bot), an organization or team (group), a role, OR the narrator themselves (self) when the subject refers back to the speaker/agent ("Alice thinks I am reliable" → subject="I" → self).
+- entity: technical things, products, libraries, devices, metrics, numbers, budgets, abstract concepts — anything that cannot hold a belief.
+- Examples: subject="Postgres"/"H800 memory"/"the deploy budget"/"the API" → entity;
+  subject="Alice" → cognizer, cognizer_kind=human; subject="the eng team" → cognizer, cognizer_kind=group;
+  subject="Claude"/"the assistant" → cognizer, cognizer_kind=agent; subject="I"/"me" (the narrator) → cognizer, cognizer_kind=self.
+- Only set cognizer_kind when subject_kind="cognizer". self is a first-class cognizer (it has beliefs and a knowledge boundary) — do NOT downgrade a self-subject to human.
+- When unsure whether something can hold beliefs, prefer entity. A wrongly-registered entity pollutes the social layer; a missed cognizer is harmless (the statement is still stored).
 
 HOLDER_PERSPECTIVE rules:
 - FIRST_PERSON: speaker directly states their own belief/commitment ("I believe X", "I will Y", "I think Z")
@@ -83,9 +93,9 @@ The English canonical is "auth"; the Chinese canonical is also "auth" when the c
 
 POLICY-AS-HOLDER (CRITICAL): when a `requires` or `forbids` claim is grounded in a NAMED policy/rule/regulation (e.g., "公司安全政策要求…", "team policy requires…", "deployment policy requires…", "根据公司规定…"), holder is the POLICY ENTITY (not the speaker), and holder_perspective is QUOTED. Use the policy's name as it appears in the text. The speaker is conveying the policy, not asserting it personally.
 - "Alice: 根据公司的安全政策，生产权限需要两次审批。"
-  → {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批",...}
+  → {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","subject_kind":"entity","predicate":"requires","object":"两次审批",...}
 - "Dana: the team policy requires code review before merging."
-  → {"holder":"team policy","holder_perspective":"FIRST_PERSON","subject":"code review","predicate":"requires","object":"code review",...}
+  → {"holder":"team policy","holder_perspective":"FIRST_PERSON","subject":"code review","subject_kind":"entity","predicate":"requires","object":"code review",...}
   (When the speaker simply STATES the policy as a current rule without quoting an external source — "the team policy requires…" rather than "I read that…" — perspective=FIRST_PERSON; holder still = the policy entity.)
 - BUT (POSSESSIVE DOWNGRADE): when the policy is named with a POSSESSIVE PRONOUN ("our deployment policy", "our SOP", "我们的部署政策", "my rule"), the speaker is owning the rule, NOT citing an external authority. holder=SPEAKER, perspective=FIRST_PERSON.
   "Alice: our deployment policy requires two approvals" → holder=Alice, perspective=FIRST_PERSON (NOT holder='deployment policy').
@@ -95,7 +105,7 @@ POLICY-AS-HOLDER (CRITICAL): when a `requires` or `forbids` claim is grounded in
 
 QUOTE AUTHORSHIP (CRITICAL): when speaker A explicitly reads aloud or paraphrases what NAMED PERSON B wrote/said in a verbatim quote ("A: Alice wrote: 'Bob is responsible for auth'", "A: Alice said: '…'", "A: 在交接记录里，Alice 写道：'…'"), the holder of the QUOTED Statement is **B (the original author)**, NOT A (the reader). perspective=QUOTED.
 - "Charlie: In the handoff notes, Alice wrote, 'Bob is responsible for auth.'"
-  → {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth",...}
+  → {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth",...}
 - "Charlie: Alice said, 'Bob is responsible for auth.'" → holder=Alice (NOT Charlie), perspective=QUOTED
 - Contrast with SELF-QUOTING: when A quotes A's OWN prior utterance ("I said earlier: '…'", "我刚才在群里说过：'…'"), holder=A. The distinguishing test: who wrote/spoke the quoted material? holder = that person.
 
@@ -122,17 +132,17 @@ Conversation:
   Bob: I'm handling the auth service, but I haven't checked what Carol knows.
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"believes","object":"Carol knows the deployment plan","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"believes","object":"Carol knows the deployment plan","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
-(Bob's reply is a confirmation/acknowledgment — NO Statement extracted from Bob.)
+(Bob's reply is a confirmation/acknowledgment — NO Statement extracted from Bob. subject=Bob is a person → cognizer/human.)
 
 Conversation:
   Alice: 我刚在交接记录里写下了这句话："Bob 负责 auth"。
   Bob: 收到，我今天下午会确认 auth 的配置。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (holder=Alice not Bob — Alice voices the claim. perspective=QUOTED because she quotes a written source. Bob's reply is acknowledgment — NO Statement.)
 
@@ -141,7 +151,7 @@ Conversation:
   Alice: 可以，我承诺周五前提交认证模块测试报告。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","predicate":"promises","object":"周五前提交认证模块测试报告","modality":"COMMITS","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Alice","subject_kind":"cognizer","cognizer_kind":"human","predicate":"promises","object":"周五前提交认证模块测试报告","modality":"COMMITS","polarity":"POS","nesting_depth":0}
 ]
 (Bob's question is NOT a Statement. Alice's promise object keeps the full phrase including the temporal qualifier.)
 
@@ -150,17 +160,17 @@ Conversation:
   Bob: 收到。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","predicate":"requires","object":"两次审批","modality":"ENFORCES","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"公司安全政策","holder_perspective":"QUOTED","subject":"生产权限","subject_kind":"entity","predicate":"requires","object":"两次审批","modality":"ENFORCES","polarity":"POS","nesting_depth":0}
 ]
-(POLICY-AS-HOLDER: "根据公司的安全政策…" grounds the requires claim in a named external authority, so holder is the policy entity with perspective=QUOTED.)
+(POLICY-AS-HOLDER: "根据公司的安全政策…" grounds the requires claim in a named external authority, so holder is the policy entity with perspective=QUOTED. subject "生产权限" is an abstract thing, not a believer → subject_kind=entity, no cognizer_kind.)
 
 Conversation:
   Alice: 我刚才在群里说过：“Bob 负责 auth。”
   Bob: 好的。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (SELF-QUOTING: Alice quotes her OWN prior utterance verbatim → holder=Alice, perspective=QUOTED.)
 
@@ -169,7 +179,7 @@ Conversation:
   Bob: I'll keep an eye on it.
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"QUOTED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (QUOTE AUTHORSHIP: Charlie reads ALICE's written quote → holder is the AUTHOR (Alice), not the reader (Charlie). perspective=QUOTED.)
 
@@ -178,7 +188,7 @@ Conversation:
   Bob: 收到。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"HEARSAY","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  {"holder":"Alice","holder_perspective":"HEARSAY","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
 ]
 (HEARSAY ATTRIBUTION: holder=Alice — she is voicing the claim now. Carol is only the source she heard it from.)
 
@@ -187,17 +197,17 @@ Conversation:
   Bob: That sounds right for auth.
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Carol","predicate":"believes","object":"Bob prefers Postgres","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Alice","holder_perspective":"FIRST_PERSON","subject":"Carol","subject_kind":"cognizer","cognizer_kind":"human","predicate":"believes","object":"Bob prefers Postgres","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
-(DEPTH-2 here is FIRST_PERSON because Alice EXPLICITLY says "I also believe…" — direct self-attribution of the outer belief.)
+(DEPTH-2 here is FIRST_PERSON because Alice EXPLICITLY says "I also believe…" — direct self-attribution of the outer belief. subject=Carol is a person → cognizer/human.)
 
 Conversation:
   Alice: I think Bob assumes Carol knows auth, since he keeps assigning the auth runbook to her.
   Bob: Hmm.
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"believes","object":"Carol knows auth","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
+  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"believes","object":"Carol knows auth","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (DEPTH-2 here is INFERRED because Alice JUSTIFIES her claim from observed behavior — "since he keeps assigning…".)
 
@@ -206,18 +216,18 @@ Conversation:
   Carol: 我也这么理解。Bob 刚才还说，他觉得缓存问题是 Redis 配置导致的。
 JSON array:
 [
-  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
-  {"holder":"Carol","holder_perspective":"HEARSAY","subject":"Bob","predicate":"believes","object":"缓存问题是 Redis 配置导致的","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
+  {"holder":"Alice","holder_perspective":"INFERRED","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0},
+  {"holder":"Carol","holder_perspective":"HEARSAY","subject":"Bob","subject_kind":"cognizer","cognizer_kind":"human","predicate":"believes","object":"缓存问题是 Redis 配置导致的","modality":"BELIEVES","polarity":"POS","nesting_depth":2}
 ]
 (Multi-speaker depth-2: Carol introduces NEW content about Bob's said belief → Carol is the holder, perspective=HEARSAY. Alice's responsible_for is INFERRED — judged from the duty roster, not directly self-attributed.)
 
 WORKED EXAMPLE (non-belief attitudes — capture DESIRES / INTENDS / knowledge, not just beliefs):
-- "Li Hua: I want to spend the weekend outdoors" -> {"holder":"Li Hua","holder_perspective":"FIRST_PERSON","subject":"weekend","predicate":"prefers","object":"outdoors","modality":"DESIRES","polarity":"POS","nesting_depth":0}
-  (a WANT is modality=DESIRES; the predicate is the closest available for the want's target.)
-- "Mei: I'm going to finish the report tonight" -> {"holder":"Mei","holder_perspective":"FIRST_PERSON","subject":"report","predicate":"responsible_for","object":"report","modality":"INTENDS","polarity":"POS","nesting_depth":0}
-  (a plan/INTENT is modality=INTENDS.)
-- "Tom: I know the keys are in the drawer" -> {"holder":"Tom","holder_perspective":"FIRST_PERSON","subject":"keys","predicate":"knows","object":"drawer","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
-  (explicit knowing uses predicate=knows.)
+- "Li Hua: I want to spend the weekend outdoors" -> {"holder":"Li Hua","holder_perspective":"FIRST_PERSON","subject":"weekend","subject_kind":"entity","predicate":"prefers","object":"outdoors","modality":"DESIRES","polarity":"POS","nesting_depth":0}
+  (a WANT is modality=DESIRES; the predicate is the closest available for the want's target. subject "weekend" is a thing → entity, no cognizer_kind.)
+- "Mei: I'm going to finish the report tonight" -> {"holder":"Mei","holder_perspective":"FIRST_PERSON","subject":"report","subject_kind":"entity","predicate":"responsible_for","object":"report","modality":"INTENDS","polarity":"POS","nesting_depth":0}
+  (a plan/INTENT is modality=INTENDS. subject "report" is a thing → entity.)
+- "Tom: I know the keys are in the drawer" -> {"holder":"Tom","holder_perspective":"FIRST_PERSON","subject":"keys","subject_kind":"entity","predicate":"knows","object":"drawer","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
+  (explicit knowing uses predicate=knows. subject "keys" is a thing → entity.)
 Emit these attitudes when present — do NOT collapse every mental state to BELIEVES.
 
 Conversation:

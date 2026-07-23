@@ -39,14 +39,15 @@ std::string try_resolve(CognizerHub& hub, std::string_view tenant, std::string_v
 }  // namespace
 
 std::string resolve_or_register_cognizer(CognizerHub& hub, std::string_view tenant,
-                                         std::string_view surface) {
+                                         std::string_view surface,
+                                         CognizerKind kind) {
     if (surface.empty()) return std::string(surface);
     try {
         if (auto hit = try_resolve(hub, tenant, surface); !hit.empty()) return hit;
         // Register new; alias set = {surface, space-folded surface} so future
         // variants ("XiaoHong" / "xiao hong") resolve to this canonical name.
         CognizerRegistration reg;
-        reg.kind           = CognizerKind::Human;   // enum, not a string (cognizer.hpp)
+        reg.kind           = kind;   // from caller (LLM-judged); default Human
         reg.tenant_id      = std::string(tenant);
         reg.external_id    = std::string(surface);
         reg.canonical_name = std::string(surface);  // verbatim first-seen surface

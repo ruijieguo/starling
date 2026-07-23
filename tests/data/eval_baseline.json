@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "model": "gpt-5.5",
+    "updated_at": "2026-07-22T14:55:15Z",
+    "rounds": 3,
+    "max_items": null,
+    "tolerance": 0.05,
+    "corpus_hash": {
+      "extract": "sha256:ee8ff89dbffc3fd6",
+      "tom": "sha256:66ab2b79e6ae7dfa"
+    }
+  },
+  "evals": {
+    "extract": {
+      "holder": {
+        "median": 0.8079470198675496,
+        "threshold": 0.85
+      },
+      "holder_perspective": {
+        "median": 0.8211920529801324,
+        "threshold": 0.8
+      },
+      "predicate": {
+        "median": 0.8476821192052981,
+        "threshold": 0.75
+      },
+      "object": {
+        "median": 0.8476821192052981,
+        "threshold": 0.7
+      },
+      "nesting_depth_1": {
+        "median": 0.8000000000000002,
+        "threshold": 0.6
+      }
+    },
+    "tom": {
+      "accuracy": {
+        "median": 0.9583333333333334,
+        "threshold": 0.55
+      }
+    }
+  }
+}

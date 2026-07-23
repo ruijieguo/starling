@@ -1,0 +1,16 @@
+{"id":"sk-000","passage":"Alice is responsible for the auth service.","subject":"Alice","expect_subject_kind":"cognizer","expect_cognizer_kind":"human","note":"person name"}
+{"id":"sk-001","passage":"Postgres is a relational database.","subject":"Postgres","expect_subject_kind":"entity","note":"technical product"}
+{"id":"sk-002","passage":"The H800 memory is 80GB.","subject":"H800 memory","expect_subject_kind":"entity","note":"hardware spec — the exact pollution class"}
+{"id":"sk-003","passage":"The deploy budget is $40k.","subject":"deploy budget","expect_subject_kind":"entity","note":"abstract quantity"}
+{"id":"sk-004","passage":"The eng team owns the platform.","subject":"eng team","expect_subject_kind":"cognizer","expect_cognizer_kind":"group","note":"organization/group"}
+{"id":"sk-005","passage":"Claude is a helpful assistant that answers questions.","subject":"Claude","expect_subject_kind":"cognizer","expect_cognizer_kind":"agent","note":"AI agent — believes-capable per criteria"}
+{"id":"sk-006","passage":"The macro4 score dropped to 0.72 last run.","subject":"macro4 score","expect_subject_kind":"entity","note":"metric name — pollution class"}
+{"id":"sk-007","passage":"The token service depends on Redis.","subject":"token service","expect_subject_kind":"entity","note":"software component"}
+{"id":"sk-008","passage":"Bob reports to Carol on the billing project.","subject":"Bob","expect_subject_kind":"cognizer","expect_cognizer_kind":"human","note":"person in org relation"}
+{"id":"sk-009","passage":"The on-call engineer must ack every page within 5 minutes.","subject":"on-call engineer","expect_subject_kind":"cognizer","expect_cognizer_kind":"role","note":"role (believes-capable role-holder)"}
+{"id":"sk-010","passage":"FLA chunk backward kernel throughput improved after the patch.","subject":"FLA chunk backward kernel","expect_subject_kind":"entity","note":"technical artifact — pollution class"}
+{"id":"sk-011","passage":"The platform team believes the migration is on track.","subject":"platform team","expect_subject_kind":"cognizer","expect_cognizer_kind":"group","note":"group holding a belief"}
+{"id":"sk-012","passage":"TE 2.14.1 introduced a regression in the parser.","subject":"TE 2.14.1","expect_subject_kind":"entity","note":"version string — pollution class"}
+{"id":"sk-013","passage":"Dana knows the deployment plan for Q3.","subject":"Dana","expect_subject_kind":"cognizer","expect_cognizer_kind":"human","note":"person with knowledge"}
+{"id":"sk-014","passage":"The staging server is rack-mounted in row 3.","subject":"staging server","expect_subject_kind":"entity","note":"physical device"}
+{"id":"sk-015","passage":"The ToMBench run time was 26 seconds.","subject":"ToMBench run time","expect_subject_kind":"entity","note":"measurement — pollution class"}
