@@ -26,6 +26,9 @@ prompt 配置(python/starling/extractor/)、eval harness(scripts/eval_*.py)。
 - **判据锁定**:认知体 = 能持有信念的主体(human/agent/group/role/self/external);技术实体/抽象事物 = entity。
 - **fallback 锁定**:LLM 漏输出或非法值 → subject_kind 默认 "entity"(不注册);cognizer_kind 缺失 → 默认 human。
 - **勿动写路径**:`src/tom/second_order.cpp:140` `st.subject_kind="cognizer"` 是二阶信念写语句(subject 天然是认知体),保留硬编码,不改。
+- **self 表征(eng-review D6′)**:cognizer_kind 含 `self`;LLM 判 subject 指向 agent 自己时标 self,C++ resolver 遇 self **不新建认知体**,而是解析到本次 run 的 `holder_id`(agent 身份已在手)——既表征 self 是一等认知主体,又堵死「我/me/myself」碎片化。
+- **原子部署(eng-review D7)**:PR1 的 C++(Task 1-4)与 prompt(Task 5-7)**必须同一次部署上线**,禁止分期。中间态(C++ 上了、prompt 没上)= 全走 entity 默认 = 零认知体注册的静默半坏窗口。能编能测 ≠ 可部署。
+- **PR 拆分(eng-review D2)**:本 plan = PR1(Task 1-9,抽取修复)。Task 10-11(存量重分类归档)拆为**独立 PR2**,跑在已验证修好的管线上——代码修复与数据变更风险剥度不同。PR2 的身份键/事务/回滚/审计由 PR2 自己的 eng-review 覆盖。
 
 ---
 
@@ -222,11 +225,10 @@ TEST(RegistrationGate, CognizerSubjectUsesLlmKind) {
 
 Run: `cd build-macos && ctest -R "RegistrationGate|orchestrator" --output-on-failure`
 
-- [ ] **Step 3: 实现** —— extractor.cpp:313 传 kind
+- [ ] **Step 3: 实现** —— extractor.cpp:313 传 kind + self 消解到 holder_id
 
 ```cpp
-// extractor.cpp:313-316,守卫逻辑不变(现在 subject_kind 有真值,守卫才有意义),
-// resolve 调用传入 LLM 判的 kind:
+// extractor.cpp:313-316,守卫逻辑不变(现在 subject_kind 有真值,守卫才有意义)。
 if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
     // llm_cognizer_kind 已由 Task 1 校验:要么是合法值域,要么是空。
     // 故此处只需处理空(默认 Human);合法串直接 cognizer_kind_from_string,
@@ -234,12 +236,21 @@ if (cog_hub && stmt.subject_kind == "cognizer" && !stmt.subject_id.empty()) {
     const cognizer::CognizerKind k = stmt.llm_cognizer_kind.empty()
         ? cognizer::CognizerKind::Human
         : cognizer::cognizer_kind_from_string(stmt.llm_cognizer_kind);
-    stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
-        *cog_hub, holder_tenant_id, stmt.subject_id, k);
+    // self 消解(eng-review D6′):LLM 判 subject 指向 agent 自己(kind=self)时,
+    // 不新建认知体,直接解析到本次 run 的 holder_id(agent 身份,已在 run 签名手边)。
+    // 否则「我/me/myself」会碎成一堆独立认知体。self 是一等认知主体,但它的身份是
+    // 运行时的(holder_id),不由文本表面串建号。
+    if (k == cognizer::CognizerKind::Self) {
+        stmt.subject_id = std::string(holder_id);  // run 的 agent 身份
+    } else {
+        stmt.subject_id = starling::cognizer::resolve_or_register_cognizer(
+            *cog_hub, holder_tenant_id, stmt.subject_id, k);
+    }
 }
 ```
 `cognizer_kind_from_string`(`include/starling/cognizer/cognizer.hpp:117`)对未知串
 throw `std::invalid_argument`,但 Task 1 已保证传入的非空 kind 一定在值域内,故安全。
+`holder_id` 是 `Extractor::run` 的入参(`extractor.hpp:102`),抽取时已在手,self 消解零额外查询。
 
 - [ ] **Step 4: 运行,确认通过 + 全量 ctest 不回归**
 
@@ -257,42 +268,55 @@ git commit -m "feat(extractor): 注册守卫接 LLM subject_kind/cognizer_kind +
 
 ### Task 4: episodic 判据接线(C++,进 CI)
 
-**决策(交 plan-eng-review 质疑):episodic actor 走完整 subject_kind 判定;participants
-采「轻触」—— 保持 `[str]`,靠 prompt 强化不放非人进 participants,而非把 `[str]` 重构成
-`[{name,kind}]`。** 理由:(1) actor 是主要注册触发点、也是非人污染源("the script ran");
-(2) participants 被 prompt 定义为「ONLY the cognizers NAMED」,是策展过的人名列表,污染
-风险低,而 [str]→[obj] 重构横扫 parser/writer/perceived_by JSON,代价高收益低。
-**替代方案(eng-review 若否决轻触):participants 也结构化带 kind。**
+**决策(plan-eng-review D3/D5 已定):**
+- **actor** 走完整 subject_kind 判定(actor_kind),非认知体不注册。
+- **D5(P1 正确性):`episodic_extractor.cpp:183` 那行独立硬编码 `stmt.subject_kind="cognizer"`
+  必须改为跟 actor_kind 走** —— 否则 entity actor 的 OCCURRED 语句会 subject_kind="cognizer"
+  却无 cognizer 注册,ToM 读路径把它当认知体去查(自相矛盾的行)。写语句的 subject_kind
+  必须与「是否真注册了认知体」一致。
+- **D3:participants 本轮停止自动注册。** `[str]` 上没有 kind 信息,prompt 字面「只放认知体」
+  约束不住模型(与 fallback=entity『宁漏勿污』同源:prompt 不能当安全边界)。participants
+  本就是社会图边的信号源 —— 连同注册一起归**缺陷 B(社会图上线)**统一做。本轮 participants
+  只用于 `perceived_by`(既有 JSON,不注册 cognizer)。
 
 **Files:**
-- Modify: `src/extractor/episodic_extractor.cpp:167,183`(actor 按 kind 判定/注册)
-- Modify: `include/starling/extractor/episodic_extractor.hpp`(EpisodicEvent 加 actor_kind 字段)
+- Modify: `src/extractor/episodic_extractor.cpp:167,183`(actor 按 kind 判定/注册;subject_kind
+  跟 actor_kind;participants 循环移除 `resolve_or_register_cognizer` 调用)
+- Modify: `include/starling/extractor/episodic_extractor.hpp`(ParsedEpisodicEvent 加 actor_kind 字段)
 - Test: `tests/cpp/test_episodic_extractor.cpp`
 
 **Interfaces:**
 - Consumes: `resolve_or_register_cognizer(..., kind)`(Task 2)。
-- Produces: episodic actor 非认知体时不注册(subject_kind="entity" 的 OCCURRED 语句
-  仍可落,但不建 cognizer);participants 维持既有注册(轻触)。
+- Produces: entity actor 不注册且其 OCCURRED 语句 `subject_kind="entity"`;participants
+  本轮**完全不注册 cognizer**(仅入 perceived_by)。
 
-- [ ] **Step 1: 写测试** —— 非人 actor 不注册 + actor kind 透传
+- [ ] **Step 1: 写测试** —— 非人 actor 不注册 + subject_kind 跟 actor_kind + participants 不注册
 
 ```cpp
-TEST(EpisodicExtractor, NonCognizerActorNotRegistered) {
-    // event.actor_kind="entity"(如 "the script")→ 不建 cognizer
+TEST(EpisodicExtractor, NonCognizerActorNotRegisteredAndSubjectKindEntity) {
+    // event.actor_kind="entity"(如 "the script ran")→ 不建 cognizer,
+    // 且落库的 OCCURRED 语句 subject_kind == "entity"(D5:不再恒 cognizer)。
+}
+TEST(EpisodicExtractor, ParticipantsNotRegisteredThisRound) {
+    // 一个 participant 名(如 "Bob")本轮不应新建 cognizers 行(D3:归缺陷 B)。
+    // 但仍出现在该事件的 perceived_by JSON 里。
 }
 ```
 既有 `test_episodic_extractor.cpp:129/132` 断言 `subject_kind='cognizer'` —— 对真人 actor
-样例(Sally/Anne)仍成立(它们是 cognizer);无需改,除非新增 entity-actor 夹具。
+样例(Sally/Anne,actor_kind=cognizer)仍成立;新增 entity-actor 夹具断言 "entity"。
 
 - [ ] **Step 2: 运行,确认失败** —— `ctest -R episodic --output-on-failure`
 
-- [ ] **Step 3: 实现** —— actor 按 kind 判;participants 保持
+- [ ] **Step 3: 实现** —— actor 按 kind 判 + subject_kind 跟 actor_kind + participants 停注册
 
 ```cpp
-// episodic_extractor.cpp:163-177 的 resolve_name lambda 与 actor 处理:
-// actor 只在 actor_kind=="cognizer"(或缺省)时 resolve_or_register;
-// entity actor → subject_id 保留表面串,不注册。
-// participants 循环维持既有(轻触:靠 prompt 挡非人)。
+// episodic_extractor.cpp:163-183:
+// (a) actor:仅 actor_kind=="cognizer"(或缺省)时 resolve_or_register_cognizer(传 kind);
+//     entity actor → subject_id 保留表面串,不注册。
+// (b) D5:stmt.subject_kind = (actor_kind=="entity") ? "entity" : "cognizer";
+//     不再硬编码 "cognizer"。
+// (c) D3:participants 循环删除 resolve_or_register_cognizer 调用 —— participant 名
+//     直接进 perceived_by(表面串),本轮不注册任何 cognizer。
 ```
 
 - [ ] **Step 4: 运行,确认通过** —— `ctest -R episodic --output-on-failure`
@@ -302,7 +326,7 @@ TEST(EpisodicExtractor, NonCognizerActorNotRegistered) {
 ```bash
 git add src/extractor/episodic_extractor.cpp include/starling/extractor/episodic_extractor.hpp \
         tests/cpp/test_episodic_extractor.cpp
-git commit -m "feat(extractor): episodic actor 按 subject_kind 判定,非人不注册(participants 轻触)"
+git commit -m "feat(extractor): episodic actor 按 subject_kind 判定 + subject_kind 跟 actor_kind(D5) + participants 停注册(D3)"
 ```
 
 ---
@@ -317,17 +341,20 @@ git commit -m "feat(extractor): episodic actor 按 subject_kind 判定,非人不
 - [ ] **Step 1: 改 schema 声明行**(`prompts.py:21`)
 
 在 `Each Statement: {...}` 加 `"subject_kind": "cognizer"|"entity"` 与
-`"cognizer_kind": "human"|"agent"|"group"|"role"|"external"(仅 cognizer 时)`。
+`"cognizer_kind": "self"|"human"|"agent"|"group"|"role"|"external"(仅 cognizer 时)`。
+**D6′:含 `self`** —— subject 指向 agent 自己("Alice 觉得我可靠" 里的「我」)时用 self;
+self 是一等认知主体(有信念/知识边界),不能降级成 human。
 
 - [ ] **Step 2: 加判据段**(紧接 HOLDER vs SUBJECT 那段,`prompts.py:31` 附近)
 
 ```
 SUBJECT_KIND (CRITICAL): 判断 subject 是不是能持有信念的主体。
-- cognizer:人、AI agent(如 Claude / the assistant)、组织/团队(group)、角色(role)。
+- cognizer:人(human)、AI agent(如 Claude / the assistant)、组织/团队(group)、
+  角色(role)、以及 subject 指向叙述者自己时的 self。
 - entity:技术实体、产品、库、设备、指标、数值、抽象事物 —— 任何不能持有信念的东西。
 - 例:subject="Postgres"/"H800 memory"/"deploy budget" → entity;
       subject="Alice" → cognizer/human;"the eng team" → cognizer/group;
-      "Claude" → cognizer/agent。
+      "Claude" → cognizer/agent;"我"/"me"/"myself"(指叙述者自己)→ cognizer/self。
 只有 subject_kind=="cognizer" 时才给 cognizer_kind。
 ```
 
@@ -438,13 +465,46 @@ Run: `python scripts/eval_quality_baseline.py --check`
 Expected: 三维相对退化在容差(0.05)内、不破阈值。**退化超容差 = prompt 改坏了抽取,
 回 Task 5-7 修 prompt,不是放宽容差。**
 
-- [ ] **Step 3: subject_kind 判准抽样**
+- [ ] **Step 3: subject_kind 分类准确率子门(硬门,eng-review 加)**
 
-用一小组已知 cognizer/entity 样例(Alice/eng team/Claude vs Postgres/H800 memory/budget)
-跑抽取,人工核对 LLM 的 subject_kind 判对率 + 漏字段率(json_parser 的
-MissingSubjectKind warning 计数)。判对率低或漏字段频繁 → 回 Task 5-7 强化 prompt 示例。
+三维总分只测任务好不好,结构上看不到「一半真人被默认成 entity」这类分类崩塌 —— 所以
+单独立一个分类准确率门,守本次改动的核心风险。
+
+建一个固定标注集(进仓库,`tests/eval/subject_kind_labeled.jsonl`,~40-60 条),覆盖
+每个类别至少数条:human / agent(Claude) / group(eng team) / role / self(我/me) /
+entity(Postgres / H800 memory / macro4 score / deploy budget / 库版本号)。跑抽取,
+按类别统计 subject_kind 的 precision/recall + cognizer_kind 判对率。
+
+**硬阈值(破则回 Task 5-7,不放宽):**
+- entity recall ≥ 0.9(技术实体几乎不该漏判成 cognizer —— 这是污染的直接度量);
+- cognizer recall ≥ 0.9(真人/agent 几乎不该被默认成 entity —— 这是「fallback=entity
+  误伤召回」的直接度量,codex 点名的风险);
+- cognizer_kind 判对率 ≥ 0.85(human/agent/group/role/self 分类)。
+- 漏字段率:直接数标注集里 subject_kind 缺失的比例(parser 静默默认 entity,无 warning
+  计数结构 —— 就靠这个固定集来量,不在 parser 里加机制)。漏字段频繁 → 回 Task 5-7 补示例。
 
 - [ ] **Step 4: 结果进 PR body + 账本。**
+
+**Task 9 执行结果(真 LLM,gpt-5.5,改前 baseline vs 改后 current):**
+
+子门(D4,核心验证,0 SSL 失败):
+- subject_kind 判对率 **16/16 = 1.000**(阈值 0.90)✅
+- cognizer_kind 判对率 **8/8 = 1.000**(阈值 0.80)✅
+- 漏抽 0;含 5 真实污染类(H800 memory/macro4 score/FLA kernel/TE 2.14.1/ToMBench run time)全判对
+
+三维回归(容差门 相对 baseline 退化 ≤0.05,recheck 0 SSL 失败):
+| metric | base | curr | delta | 判定 |
+|---|---|---|---|---|
+| holder | 0.808 | 0.834 | +0.026 | ✅ |
+| holder_perspective | 0.821 | 0.848 | +0.027 | ✅ |
+| predicate | 0.848 | 0.861 | +0.013 | ✅ |
+| object | 0.848 | 0.861 | +0.013 | ✅ |
+| tom accuracy | 0.958 | 1.000 | +0.042 | ✅ |
+| nesting_depth_1 | 0.800 | 0.600 | -0.200 | ⚠ 抖动(见下) |
+
+nesting_depth_1 -0.20 判为**抖动非回归**:(1) 同一改前 prompt 两次建 baseline 该指标自己 0.6↔0.8 跳(样本仅 10 条,2 条翻转=0.2);(2) git diff 证明 nesting 规则文字+depth 数值一字未改,只插了 subject_kind/cognizer_kind;(3) 因果上不可能只伤 nesting 而 holder/perspective/predicate/object 四项全改善。**裁定:PASS。**
+
+资产:`scripts/eval_subject_kind.py` + `tests/data/eval_subject_kind_corpus.jsonl`(16 条)+ `tests/data/eval_baseline.json`(三维基线)。
 
 ---
 
@@ -505,13 +565,22 @@ Run: `launchctl kickstart -k gui/$(id -u)/io.starling.dashboard`
 
 ---
 
-## 分阶段依赖
+## PR 拆分(eng-review D2)
 
-- Task 1-4(C++ 纯逻辑,安全默认):可先落地,即便 prompt 未改也不崩(全走 entity 默认)。
-- Task 5-7(prompt):加字段,让 LLM 真正判。
-- Task 9(eval):**必须夹在 prompt 改动前后**(前建 baseline,后 check)。
-- Task 10(存量):独立,可在代码修好后任意时刻跑。
-- Task 8/11:整合门 + 实测。
+**PR1 = Task 1-9(抽取修复):** 止住新污染。纯代码 + prompt + eval,风险同质。
+**PR2 = Task 10-11(存量回填):** migration + LLM 重分类 300+ 行数据 + 实测。风险剥度不同,
+且必须跑在「已验证修好」的 PR1 管线上。PR2 单独过一轮 review(codex 已给出一批 PR2 专属
+发现:身份键用 (tenant_id, cognizer_id) 而非裸 name、归档行的全局语义、批量改 statements 的
+事务边界、有边保护不是可靠不误杀策略 —— 都留给 PR2 的 review 消化,不在本轮 PR1 范围)。
+
+## 分阶段依赖(PR1 内)
+
+- **原子部署(eng-review D7,硬约束):** Task 1-4(C++)与 Task 5-7(prompt)**必须同一次
+  部署上线**,不许「C++ 先落地」。理由:旧 prompt 不输出 subject_kind → parser 全 fallback
+  entity → 守卫恒假 → 零认知体注册窗口,窗口内 dogfood 摄入的真人全部漏注册,ToM 社会层
+  静默失效。中间 commit 能编能测 ≠ 可部署。commit 可以分开,但 **deploy 是一次**。
+- Task 9(eval):**必须夹在 prompt 改动前后**(前建 baseline,后 check + subject_kind 子门)。
+- Task 8:整合门(重建 + 全量 ctest/pytest),在部署前。
 
 ## Self-Review(写完自查)
 
@@ -519,5 +588,59 @@ Run: `launchctl kickstart -k gui/$(id -u)/io.starling.dashboard`
 - [x] 类型一致:subject_kind/cognizer_kind/llm_cognizer_kind 跨 Task 一致;resolve 签名 Task 2 定义、Task 3/4 消费。
 - [x] spec 覆盖:判据(Task 5-7)、parser(1)、kind(2)、守卫(3)、episodic(4)、eval(9)、存量(10)全有对应 Task。
 - [x] 勿动写路径(second_order:140)写进 Global Constraints。
-- [x] eval 门夹在 prompt 前后(Task 9 Step 1 明确「改前」)。
-- 遗留给 eng-review 的开放取舍:episodic participants 轻触 vs 结构化(Task 4);归档 archived_at 列 vs 影子表(Task 10 选了列)。
+- [x] eval 门夹在 prompt 前后(Task 9 Step 1 明确「改前」)+ subject_kind 判准子门(eng-review D4)。
+- [x] eng-review 决策已折入:participants 本轮停自动注册(D3, Task 4);subject_kind=actor_kind 映射(D5, Task 4);
+      self kind + 消解到 holder_id(D6′, Task 3/5);原子部署(D7, 分阶段依赖);PR 拆分(D2);cognizer_kind 含 self(D6′)。
+- [x] 归档 archived_at 列(Task 10,PR2)—— 影子表已排除。
+
+---
+
+## Implementation Tasks
+Synthesized from this review's findings. Each task derives from a specific finding above.
+
+- [ ] **T1 (P1, human: ~1h / CC: ~10min)** — episodic_extractor — OCCURRED 语句 subject_kind 跟 actor_kind 走
+  - Surfaced by: Architecture/正确性 (D5) — `episodic_extractor.cpp:183` 独立硬编码 `subject_kind="cognizer"`,entity actor 会产出自相矛盾行
+  - Files: `src/extractor/episodic_extractor.cpp`, `tests/cpp/test_episodic_extractor.cpp`
+  - Verify: `ctest -R episodic` — entity-actor 夹具的 OCCURRED 行 subject_kind=="entity"
+- [ ] **T2 (P1, human: ~2h / CC: ~15min)** — episodic — 本轮停 participants 自动注册
+  - Surfaced by: Architecture (D3, codex) — participants 是无 kind 信息的注册触发路径,prompt 不能当安全边界
+  - Files: `src/extractor/episodic_extractor.cpp`, `python/starling/extractor/episodic_prompt.py`, `tests/cpp/test_episodic_extractor.cpp`
+  - Verify: `ctest -R episodic` — participant 表面串不再建 cognizer 行
+- [ ] **T3 (P1, human: ~3h / CC: ~20min)** — extractor/name_resolver — self subject 消解到 holder_id
+  - Surfaced by: Architecture (D6′, user) — self 是一等认知主体;不消解则「我/me」碎片化成多个认知体
+  - Files: `src/extractor/extractor.cpp`, `src/cognizer/name_resolver.cpp`, `tests/cpp/`
+  - Verify: `ctest` — cognizer_kind=self 的 subject 解析到本次 run holder_id,不新建「me」
+- [ ] **T4 (P1, human: ~2h / CC: ~15min)** — eval — subject_kind 分类准确率子门
+  - Surfaced by: Tests (D4, codex) — 三维总分结构性看不到 cognizer 召回崩塌
+  - Files: `scripts/eval_quality_baseline.py` 或配套标注集
+  - Verify: 已知 cognizer/entity 样例集上分类准确率有硬阈值,低于则拦
+- [ ] **T5 (P1, human: ~30min / CC: ~5min)** — 部署 — PR1 强制 C++ + prompt 原子上线
+  - Surfaced by: Architecture (D7, codex) — 分期部署开「零注册」静默半坏窗口
+  - Files: 分阶段依赖 section(流程约束,非代码)
+  - Verify: PR1 合并即同时含 Task 1-8;无「仅 C++」中间部署
+- [ ] **T6 (P2, human: ~15min / CC: ~5min)** — prompt — cognizer_kind 选项补 self
+  - Surfaced by: Code Quality (D6′, codex) — schema 值域含 self 但 LLM 选项漏了
+  - Files: `python/starling/extractor/prompts.py`, `general_fact_prompt.py`
+  - Verify: schema 行/判据/示例三处 kind 选项一致含 self
+- [ ] **T7 (P2, human: ~1h / CC: ~10min)** — 下游审计 — subject_kind 全消费方清点
+  - Surfaced by: Architecture (codex) — subject_id 从认知体名变实体表面串,需确认无隐含 ID 假设(已验:今值本就是 canonical_name==surface,风险降级但仍需成文清单)
+  - Files: 审计 `src/tom/`, `src/cognizer/`, `bindings/` 中读 subject_kind/subject_id 的路径
+  - Verify: 清单入 PR body;确认 entity 语句不误入 ToM/关系/别名解析
+
+_PR2(存量回填)findings(身份键、有边保护、归档全局语义、批量改 statements)归 PR2 自身审查,不在本表。_
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | outside-voice 抛 16 点,PR1 相关 7 点已折入,余归 PR2 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | 7 issues, 0 critical gaps(全部经 AskUserQuestion 折入 plan) |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **CODEX:** outside voice(codex, high effort)独立抛 16 点。PR1 相关的 7 点全部折入(episodic subject_kind 映射、participants 停注册、eval 分类子门、原子部署、self kind、下游审计);其中「subject_id→surface 破坏 FK」经亲验为假(今值本就是 canonical_name==surface),降级为审计清单项。其余 9 点属 PR2 回填(身份键、有边保护、归档全局语义、批量改 statements、发布顺序),D2 拆分已挪至 PR2。
+- **CROSS-MODEL:** 两处张力均由用户裁决 —— participants 轻触(review) vs 停注册(codex)→ 采 codex(D3);eval 三维门(review) vs 加分类子门(codex)→ 采 codex(D4)。self 表征方向由用户洞察推翻我原判(D6′)。
+- **VERDICT:** ENG CLEARED — ready to implement(PR1)。7 findings 全部经 AskUserQuestion 折入,0 critical gaps。PR2(存量回填)单列,含 codex 的 9 点回填风险,须自身审查后再实施。
+
+NO UNRESOLVED DECISIONS
