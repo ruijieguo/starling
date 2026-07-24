@@ -1,0 +1,14 @@
+-- 0031: cognizers.archived_at — 存量污染重分类的可逆归档标记。
+--
+-- 背景:M0.4-M0.7 的抽取管线把每条 statement 的 subject 无条件注册成 human 认知体
+-- (json_parser 硬编码 subject_kind=cognizer + name_resolver 焊死 Human)。PR1 (#61)
+-- 已止血:抽取时 LLM 逐句判 subject_kind,只有认知体才注册。但存量已有 1000+ 条把技术
+-- 实体/指标/数值(H800 memory / macro4 score / v3.6 Q4 score ...)误注册成认知体的行。
+--
+-- 本列供一次性 LLM 重分类脚本(scripts/reclassify_cognizers.py)标记:NULL=活跃认知体;
+-- 时间戳=经 LLM 重分类判为 entity 而归档。可逆:UPDATE archived_at=NULL 即恢复。
+-- /cognizers 只读查询过滤 archived_at IS NULL,前端不受影响。
+--
+-- 归档而非 DELETE:保留审计痕迹 + 可逆 + 不破坏任何以 subject_id 引用这些行的历史
+-- statements(它们的 subject_kind 由重分类脚本单独更新为 'entity')。
+ALTER TABLE cognizers ADD COLUMN archived_at TEXT;  -- NULL=活;ISO-8601 时间戳=已归档(可逆)
