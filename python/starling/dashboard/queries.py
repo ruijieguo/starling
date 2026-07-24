@@ -150,7 +150,8 @@ def cognizers(db_path: str, tenant: str) -> dict:
         nodes = _rows(
             conn,
             "SELECT id, kind, canonical_name, last_seen_at FROM cognizers "
-            "WHERE tenant_id=? ORDER BY last_seen_at DESC LIMIT 500",
+            "WHERE tenant_id=? AND archived_at IS NULL "
+            "ORDER BY last_seen_at DESC LIMIT 500",
             (tenant,),
         )
         rels = _rows(
