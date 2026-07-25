@@ -3,6 +3,7 @@
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/bus/pipeline_ledger.hpp"
+#include "starling/cognizer/cognizer.hpp"
 #include "starling/cognizer/cognizer_hub.hpp"
 #include "starling/cognizer/name_resolver.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
@@ -134,6 +135,62 @@ bool extraction_span_key_already_succeeded(
     starling::persistence::StmtHandle h(raw);
     starling::persistence::detail::bind_sv(h.get(), 1, span_key);
     return sqlite3_step(h.get()) == SQLITE_ROW;
+}
+
+// Social-graph edge from a belief relation predicate (缺陷 B / PR4).
+// reports_to / member_of are cognizer→cognizer social relations. When such a
+// statement lands (subject already resolved to a cognizer id), reverse-look
+// the object surface to an EXISTING cognizer and upsert a DIRECTED, TYPED edge
+// (a_id=subject, b_id=object). Fiske: reports_to→Authority-heavy (superior/
+// subordinate), member_of→Communal-heavy (belonging). Object miss → skip (never
+// register — that is the over-registration bug we just fixed; only edge between
+// cognizers that already exist). Best-effort: any hub error is swallowed so a
+// bad edge never aborts a good statement write.
+bool is_relation_predicate(std::string_view predicate) {
+    return predicate == "reports_to" || predicate == "member_of";
+}
+
+std::unordered_map<cognizer::FiskeMode, double> fiske_for_predicate(
+        std::string_view predicate) {
+    // Dominant mode 0.7, remaining three 0.1 each (sums to 1.0).
+    if (predicate == "reports_to") {
+        return {{cognizer::FiskeMode::Authority, 0.7},
+                {cognizer::FiskeMode::Communal, 0.1},
+                {cognizer::FiskeMode::Equality, 0.1},
+                {cognizer::FiskeMode::Market, 0.1}};
+    }
+    // member_of → Communal (belonging).
+    return {{cognizer::FiskeMode::Communal, 0.7},
+            {cognizer::FiskeMode::Authority, 0.1},
+            {cognizer::FiskeMode::Equality, 0.1},
+            {cognizer::FiskeMode::Market, 0.1}};
+}
+
+void maybe_build_relation_edge(
+        cognizer::CognizerHub& hub,
+        std::string_view tenant,
+        std::string_view subject_kind,
+        std::string_view a_id,
+        std::string_view predicate,
+        std::string_view object_surface) {
+    if (subject_kind != "cognizer") return;   // only cognizer→cognizer edges
+    if (!is_relation_predicate(predicate)) return;
+    if (a_id.empty() || object_surface.empty()) return;
+    // Reverse-look object surface to an EXISTING cognizer. Miss → skip (no register).
+    const std::optional<std::string> b_id =
+        hub.lookup_by_alias(tenant, object_surface);
+    if (!b_id.has_value() || b_id->empty()) return;
+    if (*b_id == std::string(a_id)) return;  // no self-loop edge
+    try {
+        cognizer::RelationEdgeInput edge;
+        edge.tenant_id     = std::string(tenant);
+        edge.a_id          = std::string(a_id);
+        edge.b_id          = *b_id;
+        edge.fiske_weights = fiske_for_predicate(predicate);
+        hub.upsert_relation(edge);
+    } catch (const std::exception&) {
+        // Best-effort: a bad edge must never abort the statement write.
+    }
 }
 
 }  // namespace
@@ -398,6 +455,16 @@ ExtractionRunResult Extractor::persist(
                                       /*raw_output=*/{},
                                       /*error=*/{},
                                       take_cost());
+                // 缺陷 B(社会图边):statement 落库成功后,若这是一条认知体间的
+                // 关系谓词(reports_to/member_of)且 object 能反查到【已存在】的
+                // 认知体,建一条有向带类型的社会图边(subject→object)。object 只
+                // 反查不注册(与 PR2 归档同源的安全侧:错建认知体是病,漏建边无害)。
+                // 只对真正新写入的语句建边(此分支),去重/被拒的不建。
+                if (cog_hub) {
+                    maybe_build_relation_edge(*cog_hub, holder_tenant_id,
+                                            stmt.subject_kind, stmt.subject_id,
+                                            stmt.predicate, stmt.object_value);
+                }
             } else {
                 result.accepted_statement_ids.push_back(
                     std::get<StatementWriteChunkDuplicate>(outcome).stmt_id);
