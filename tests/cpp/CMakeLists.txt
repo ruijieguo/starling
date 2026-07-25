@@ -62,6 +62,7 @@ add_executable(starling_tests
     test_extractor_orchestrator.cpp
     test_extractor_phases.cpp
     test_cognizer_registration_gate.cpp
+    test_social_graph_edges.cpp
     test_conflict_probe_indices.cpp
     test_conflict_probe_scan.cpp
     test_bus_write_conflict.cpp
