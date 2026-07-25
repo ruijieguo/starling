@@ -22,6 +22,18 @@ EVAL_THRESHOLDS: dict[str, dict[str, float]] = {
 DEFAULT_BASELINE = Path(__file__).resolve().parents[1] / "tests" / "data" / "eval_baseline.json"
 NETWORK_FLOOR = 0.05   # 某维全指标 < 此值 = 报告附注疑似网络(不隐藏,仍报 BELOW_THRESHOLD)
 
+# Per-metric regression tolerance override. A metric with few gold samples has
+# large sampling noise, so the shared --tolerance (0.05) mis-flags LLM jitter as
+# REGRESSION. nesting_depth_1 has only ~10 gold depth≥1 statements in the extract
+# corpus: one flip = 0.1 F1 swing, so its real run-to-run noise is ≈±0.15. PR1
+# hit exactly this (0.8→0.6 on an unchanged nesting rule) and needed a manual
+# override to pass. Keys are "eval_id.metric"; diff_against_baseline prefers this
+# over the global tolerance. Only widen a metric here when its small-N noise is
+# understood — this is not a knob to silence real regressions.
+PER_METRIC_TOLERANCE: dict[str, float] = {
+    "extract.nesting_depth_1": 0.15,
+}
+
 
 def median(values: list[float]) -> float:
     return float(statistics.median(values))
@@ -51,12 +63,14 @@ def diff_against_baseline(current: dict[str, dict[str, float] | None],
             continue
         for metric, spec in base_eval.items():
             base, thr = spec["median"], spec["threshold"]
+            # Prefer a per-metric tolerance (small-N noise) over the global one.
+            eff_tol = PER_METRIC_TOLERANCE.get(f"{eval_id}.{metric}", tolerance)
             cur = cur_eval.get(metric)
             if cur is None:
                 verdict = "ERRORED"
             elif cur < thr:
                 verdict = "BELOW_THRESHOLD"
-            elif cur < base - tolerance:
+            elif cur < base - eff_tol:
                 verdict = "REGRESSION"
             else:
                 verdict = "OK"

@@ -65,6 +65,40 @@ def test_diff_below_threshold():
     assert exit_code(f) == 1
 
 
+def test_per_metric_tolerance_nesting_depth_1_wider():
+    # nesting_depth_1 只有 N=10 gold 语句,单条翻转=0.1 F1 摆幅 > 全局 0.05 容差,
+    # 任何 LLM 抖动都会误报 REGRESSION(PR1 实测撞过 0.8→0.6)。per-metric 容差给它
+    # 匹配 small-N 采样噪声的更宽容差,同一降幅不再误报。
+    base = {"extract": {"nesting_depth_1": {"median": 0.80, "threshold": 0.60}},
+            "tom": {"accuracy": {"median": 0.65, "threshold": 0.55}}}
+    cur = {"extract": {"nesting_depth_1": 0.70}, "tom": {"accuracy": 0.65}}  # 降 0.10
+    # 全局 0.05 容差下 0.10 降幅本会 REGRESSION;per-metric(nesting_depth_1=0.15)吸收之。
+    f = diff_against_baseline(cur, base, tolerance=0.05)
+    r = [x for x in f if x["metric"] == "nesting_depth_1"][0]
+    assert r["verdict"] == "OK" and not has_regression(f)
+
+
+def test_per_metric_tolerance_still_catches_real_collapse():
+    # per-metric 容差不能宽到放过真崩塌:nesting_depth_1 降到破地板阈值(0.60)之下
+    # 仍必须 BELOW_THRESHOLD(地板判据独立于容差)。
+    base = {"extract": {"nesting_depth_1": {"median": 0.80, "threshold": 0.60}},
+            "tom": {"accuracy": {"median": 0.65, "threshold": 0.55}}}
+    cur = {"extract": {"nesting_depth_1": 0.50}, "tom": {"accuracy": 0.65}}  # 破 0.60 地板
+    f = diff_against_baseline(cur, base, tolerance=0.05)
+    r = [x for x in f if x["metric"] == "nesting_depth_1"][0]
+    assert r["verdict"] == "BELOW_THRESHOLD" and exit_code(f) == 1
+
+
+def test_per_metric_tolerance_other_metrics_use_global():
+    # 未在 per-metric 表里的指标(如 predicate)仍用全局容差:0.08 降幅 > 0.05 → REGRESSION。
+    base = {"extract": {"predicate": {"median": 0.80, "threshold": 0.60}},
+            "tom": {"accuracy": {"median": 0.65, "threshold": 0.55}}}
+    cur = {"extract": {"predicate": 0.72}, "tom": {"accuracy": 0.65}}  # 降 0.08,仍达标
+    f = diff_against_baseline(cur, base, tolerance=0.05)
+    r = [x for x in f if x["metric"] == "predicate"][0]
+    assert r["verdict"] == "REGRESSION"
+
+
 def test_diff_errored_dim_is_exit_2_not_regression():
     cur = {"extract": {"predicate": 0.80}, "tom": None}   # tom 采分失败(None)
     f = diff_against_baseline(cur, _baseline(), tolerance=0.05)
