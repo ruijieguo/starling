@@ -16,6 +16,11 @@
 		edgeOpacity,
 		powerDash,
 		relationTooltip,
+		dominantFiskeMode,
+		fiskeColorVar,
+		fiskeLabel,
+		retractEndpoint,
+		edgeMidpoint,
 		partitionByConnectivity,
 		layoutForce,
 		fitToBox,
@@ -33,7 +38,13 @@
 	} from '$lib/graph';
 
 	type Node = { id: string; label: string; kind?: string };
-	type Edge = { a: string; b: string; affinity?: number | null; power_asymmetry?: number | null };
+	type Edge = {
+		a: string;
+		b: string;
+		affinity?: number | null;
+		power_asymmetry?: number | null;
+		fiske_weights_json?: string | null;
+	};
 	let {
 		nodes,
 		edges,
@@ -191,24 +202,57 @@
 				<title>{n.label} · {kindLabel(n.kind)}</title>
 			{/snippet}
 
+			<defs>
+				<marker
+					id="arrow"
+					viewBox="0 0 10 10"
+					refX="9"
+					refY="5"
+					markerWidth="6"
+					markerHeight="6"
+					orient="auto-start-reverse"
+					markerUnits="strokeWidth"
+				>
+					<path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
+				</marker>
+			</defs>
 			<g transform={viewTransform(view, CX, CY)}>
 				{#each edges as e}
 					{@const a = pos.get(e.a)}
 					{@const b = pos.get(e.b)}
 					{#if a && b}
 						{@const lit = hovered === e.a || hovered === e.b || selectedId === e.a || selectedId === e.b}
+						{@const mode = dominantFiskeMode(e.fiske_weights_json)}
+						{@const col = lit ? 'var(--color-brand)' : fiskeColorVar(mode)}
+						{@const r = 6 / clampZoom(view.zoom)}
+						{@const tip = retractEndpoint(a.x, a.y, b.x, b.y, r)}
+						{@const mid = edgeMidpoint(a.x, a.y, b.x, b.y)}
 						<line
 							x1={a.x}
 							y1={a.y}
-							x2={b.x}
-							y2={b.y}
-							stroke={lit ? 'var(--color-brand)' : 'currentColor'}
+							x2={tip.x}
+							y2={tip.y}
+							stroke={col}
 							stroke-width={edgeWidth(e.affinity) / clampZoom(view.zoom)}
 							stroke-opacity={lit ? 0.95 : edgeOpacity(e.affinity)}
 							stroke-dasharray={powerDash(e.power_asymmetry)}
+							marker-end="url(#arrow)"
 						>
 							<title>{relationTooltip(e.affinity, e.power_asymmetry)}</title>
 						</line>
+						{#if mode && showLabel(view.zoom, { hovered: lit, selected: lit })}
+							<text
+								x={mid.x}
+								y={mid.y}
+								font-size={9 / clampZoom(view.zoom)}
+								fill={col}
+								text-anchor="middle"
+								paint-order="stroke"
+								stroke="var(--color-surface)"
+								stroke-width={3 / clampZoom(view.zoom)}
+								stroke-linejoin="round">{fiskeLabel(mode)}</text
+							>
+						{/if}
 					{/if}
 				{/each}
 

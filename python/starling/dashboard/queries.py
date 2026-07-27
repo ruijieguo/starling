@@ -156,7 +156,8 @@ def cognizers(db_path: str, tenant: str) -> dict:
         )
         rels = _rows(
             conn,
-            "SELECT a_id, b_id, affinity, power_asymmetry FROM cognizer_relations "
+            "SELECT a_id, b_id, affinity, power_asymmetry, fiske_weights_json "
+            "FROM cognizer_relations "
             "WHERE tenant_id=? LIMIT 2000",
             (tenant,),
         )

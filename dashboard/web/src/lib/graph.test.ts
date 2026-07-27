@@ -8,6 +8,12 @@ import {
 	edgeOpacity,
 	powerDirection,
 	powerDash,
+	FISKE_MODES,
+	dominantFiskeMode,
+	fiskeColorVar,
+	fiskeLabel,
+	retractEndpoint,
+	edgeMidpoint,
 	relationTooltip,
 	partitionByConnectivity,
 	layoutForce,
@@ -111,6 +117,83 @@ describe('powerDirection / powerDash — power_asymmetry mapping', () => {
 		expect(powerDash(0)).toBeUndefined();
 		expect(powerDash(0.5)).toBe('4 2');
 		expect(powerDash(-0.5)).toBe('4 2');
+	});
+});
+
+describe('dominantFiskeMode / fiskeColorVar / fiskeLabel — 边类型映射', () => {
+	it('picks the argmax weight as the dominant mode', () => {
+		// reports_to → authority 重(PR4 缺陷B)
+		expect(dominantFiskeMode('{"authority":0.7,"communal":0.1,"equality":0.1,"market":0.1}')).toBe(
+			'authority'
+		);
+		// member_of → communal 重
+		expect(dominantFiskeMode('{"communal":0.7,"authority":0.1,"equality":0.1,"market":0.1}')).toBe(
+			'communal'
+		);
+	});
+
+	it('returns null on empty / null / invalid JSON (边类型未知,不上色)', () => {
+		expect(dominantFiskeMode(null)).toBeNull();
+		expect(dominantFiskeMode(undefined)).toBeNull();
+		expect(dominantFiskeMode('')).toBeNull();
+		expect(dominantFiskeMode('not json')).toBeNull();
+		expect(dominantFiskeMode('{}')).toBeNull();
+	});
+
+	it('ignores non-numeric weights and NaN', () => {
+		expect(dominantFiskeMode('{"authority":"high","communal":0.3}')).toBe('communal');
+	});
+
+	it('breaks ties deterministically by FISKE_MODES order (communal first)', () => {
+		// communal 与 authority 同为 0.5;FISKE_MODES 顺序 communal 在前 → communal 胜。
+		expect(dominantFiskeMode('{"communal":0.5,"authority":0.5}')).toBe('communal');
+	});
+
+	it('maps each mode to a distinct CSS var; null/unknown falls back to subtle', () => {
+		const vars = FISKE_MODES.map((m) => fiskeColorVar(m));
+		expect(new Set(vars).size).toBe(FISKE_MODES.length); // 各不相同
+		expect(fiskeColorVar(null)).toBe('var(--color-subtle)');
+		expect(fiskeColorVar('bogus' as never)).toBe('var(--color-subtle)');
+	});
+
+	it('labels modes in Chinese; null → empty string (不画标签)', () => {
+		expect(fiskeLabel('authority')).toBe('权威');
+		expect(fiskeLabel('communal')).toBe('共同体');
+		expect(fiskeLabel(null)).toBe('');
+		expect(fiskeLabel(undefined)).toBe('');
+	});
+});
+
+describe('retractEndpoint / edgeMidpoint — 箭头几何', () => {
+	it('retracts the endpoint by r along a→b so the arrow lands on b\'s circle', () => {
+		// a=(0,0) b=(10,0),回退 2 → 终点 (8,0)。
+		const p = retractEndpoint(0, 0, 10, 0, 2);
+		expect(p.x).toBeCloseTo(8);
+		expect(p.y).toBeCloseTo(0);
+	});
+
+	it('retracts diagonally preserving direction', () => {
+		// a=(0,0) b=(3,4) len=5,回退 5 → 落在 a(t=0)。
+		const p = retractEndpoint(0, 0, 3, 4, 5);
+		expect(p.x).toBeCloseTo(0);
+		expect(p.y).toBeCloseTo(0);
+	});
+
+	it('zero-length edge (a==b) returns b unchanged (no direction to retract)', () => {
+		const p = retractEndpoint(5, 5, 5, 5, 6);
+		expect(p).toEqual({ x: 5, y: 5 });
+	});
+
+	it('over-retraction clamps at a (t floored at 0, never overshoots past a)', () => {
+		// len=10,回退 100 → t=max(0,(10-100)/10)=0 → 落在 a。
+		const p = retractEndpoint(0, 0, 10, 0, 100);
+		expect(p.x).toBeCloseTo(0);
+		expect(p.y).toBeCloseTo(0);
+	});
+
+	it('edgeMidpoint is the average of the two endpoints', () => {
+		expect(edgeMidpoint(0, 0, 10, 20)).toEqual({ x: 5, y: 10 });
+		expect(edgeMidpoint(-4, 6, 4, -6)).toEqual({ x: 0, y: 0 });
 	});
 });
 
