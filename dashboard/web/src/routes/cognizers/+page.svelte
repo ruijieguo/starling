@@ -7,7 +7,13 @@
 	import { Card, EmptyState, Drawer } from '$lib/components/ui';
 
 	type Cognizer = { id: string; canonical_name: string; kind: string; last_seen_at: string };
-	type Relation = { a_id: string; b_id: string; affinity: number; power_asymmetry: number };
+	type Relation = {
+		a_id: string;
+		b_id: string;
+		affinity: number;
+		power_asymmetry: number;
+		fiske_weights_json: string;
+	};
 
 	const q = createQuery(() => api.get<{ nodes: Cognizer[]; relations: Relation[] }>('/api/cognizers'));
 	$effect(() => {

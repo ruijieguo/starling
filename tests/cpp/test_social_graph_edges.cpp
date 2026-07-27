@@ -66,6 +66,7 @@ std::string seed_cognizer(cognizer::CognizerHub& hub, const std::string& name,
     cognizer::CognizerRegistration reg;
     reg.kind = kind;
     reg.tenant_id = "default";
+    reg.tenant_explicitly_set = true;   // kind=group 要求显式 tenant(08_cognizer.md:139)
     reg.canonical_name = name;
     reg.aliases = {name};
     reg.external_id = name;

@@ -78,6 +78,95 @@ export function edgeOpacity(affinity: number | null | undefined): number {
 	return MIN_EDGE_OPACITY + a * (MAX_EDGE_OPACITY - MIN_EDGE_OPACITY);
 }
 
+// ── Fiske 主导模式(边类型)──────────────────────────────────────────────
+//
+// 关系类型(reports_to/member_of 等原始谓词)抽取时未落库 —— 只把它折叠进
+// fiske_weights(extractor.cpp:PR4 缺陷B:reports_to→authority 重, member_of→
+// communal 重)。故前端只能反推**主导 Fiske 模式**(argmax 权重),无法还原谓词。
+// FiskeMode 值域(小写,C++ cognizer.hpp + cognizer_hub.cpp 序列化一致):
+// communal / authority / equality / market。
+export const FISKE_MODES = ['communal', 'authority', 'equality', 'market'] as const;
+export type FiskeMode = (typeof FISKE_MODES)[number];
+
+// 每个 fiske 模式 → 既有语义 token 的 CSS 变量名(边 stroke 用)。语义意图:
+// authority(权威/等级,如 reports_to)用 warn(需留意的层级);communal(共同体/
+// 归属,如 member_of)用 info(温和联结);equality(对等)用 success;market
+// (交换)用 subtle(弱化)。未知/缺失回退 subtle。
+const FISKE_COLOR_VAR: Record<FiskeMode, string> = {
+	authority: 'var(--color-warn)',
+	communal: 'var(--color-info)',
+	equality: 'var(--color-success)',
+	market: 'var(--color-subtle)'
+};
+
+const FISKE_LABEL: Record<FiskeMode, string> = {
+	authority: '权威',
+	communal: '共同体',
+	equality: '对等',
+	market: '交换'
+};
+
+/** fiske_weights_json(如 `{"authority":0.7,"communal":0.1}`)→ 主导模式(argmax
+ * 权重)。解析失败/空/非法 JSON → null(边类型未知,不上色/不标签)。平局取
+ * FISKE_MODES 顺序的第一个(确定性)。 */
+export function dominantFiskeMode(fiskeJson: string | null | undefined): FiskeMode | null {
+	if (!fiskeJson) return null;
+	let obj: Record<string, unknown>;
+	try {
+		obj = JSON.parse(fiskeJson);
+	} catch {
+		return null;
+	}
+	if (obj == null || typeof obj !== 'object') return null;
+	let best: FiskeMode | null = null;
+	let bestW = -Infinity;
+	for (const mode of FISKE_MODES) {
+		const w = obj[mode];
+		if (typeof w === 'number' && !Number.isNaN(w) && w > bestW) {
+			bestW = w;
+			best = mode;
+		}
+	}
+	return best;
+}
+
+/** fiske 主导模式 → CSS 颜色变量(边 stroke 用);null/未知回退 subtle。 */
+export function fiskeColorVar(mode: FiskeMode | null | undefined): string {
+	return FISKE_COLOR_VAR[mode as FiskeMode] ?? 'var(--color-subtle)';
+}
+
+/** fiske 主导模式 → 中文标签(边中点标签用);null → 空串(不画标签)。 */
+export function fiskeLabel(mode: FiskeMode | null | undefined): string {
+	return FISKE_LABEL[mode as FiskeMode] ?? '';
+}
+
+/** 有向边终点回退:把 (bx,by) 沿 a→b 方向回退 r 个单位,使箭头落在节点 b 的圆
+ * 边而非被圆盖住。零长度边(a==b)原样返回 (bx,by)(无方向可退)。 */
+export function retractEndpoint(
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
+	r: number
+): { x: number; y: number } {
+	const dx = bx - ax;
+	const dy = by - ay;
+	const len = Math.hypot(dx, dy);
+	if (len === 0) return { x: bx, y: by };
+	const t = Math.max(0, (len - r) / len);
+	return { x: ax + dx * t, y: ay + dy * t };
+}
+
+/** 边中点(fiske 类型标签的锚点)。 */
+export function edgeMidpoint(
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number
+): { x: number; y: number } {
+	return { x: (ax + bx) / 2, y: (ay + by) / 2 };
+}
+
 // power_asymmetry 有符号(REAL,方向 a_id→b_id):
 //   > 0 → a 对 b 权力更高;< 0 → b 对 a 权力更高;≈0 → 对称。
 // 阈值 0.05 之内视为对称(浮点/近零噪声不误判方向)。

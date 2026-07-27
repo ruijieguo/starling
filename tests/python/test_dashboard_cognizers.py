@@ -34,6 +34,20 @@ def _cog(conn, cid, tenant, name, archived_at):
     )
 
 
+_REL_COLS = (
+    "id, tenant_id, a_id, b_id, fiske_weights_json, affinity, trust_json, "
+    "power_asymmetry, created_at, updated_at"
+)
+
+
+def _rel(conn, rid, tenant, a_id, b_id, fiske_json):
+    conn.execute(
+        f"INSERT INTO cognizer_relations ({_REL_COLS}) VALUES ({','.join('?' * 10)})",
+        (rid, tenant, a_id, b_id, fiske_json, 0.7, "{}", 0.2,
+         "2026-04-10T10:00:00Z", "2026-04-10T10:00:00Z"),
+    )
+
+
 def _seed(db_path: str):
     from starling import runtime as rt
     r = rt._build_local_store_sqlite_runtime(Path(db_path))
@@ -44,6 +58,9 @@ def _seed(db_path: str):
     _cog(conn, "cog_active2", "default", "Bob", None)
     _cog(conn, "cog_archived", "default", "H800 memory", "2026-07-23T00:00:00Z")
     _cog(conn, "cog_other", "other", "Carol", None)  # other tenant — must never surface
+    # 一条 Alice→Bob 的 authority 边(reports_to 折叠成 fiske)——测有向渲染要的字段。
+    _rel(conn, "rel_1", "default", "cog_active1", "cog_active2",
+         '{"authority":0.7,"communal":0.1,"equality":0.1,"market":0.1}')
     conn.commit()
     conn.close()
 
@@ -84,3 +101,15 @@ def test_endpoint_cognizers_excludes_archived(db):
     assert resp.status_code == 200
     names = {n["canonical_name"] for n in resp.json()["nodes"]}
     assert names == {"Alice", "Bob"}
+
+
+def test_queries_cognizers_relations_carry_direction_and_fiske(db):
+    # 有向渲染需要:relations 带方向(a_id→b_id 有序)+ fiske_weights_json(边类型)。
+    result = queries.cognizers(db, "default")
+    rels = result["relations"]
+    assert len(rels) == 1
+    r = rels[0]
+    assert r["a_id"] == "cog_active1"        # 方向:Alice→Bob(有序,不可交换)
+    assert r["b_id"] == "cog_active2"
+    assert "fiske_weights_json" in r          # 边类型信息(前端 argmax 主导模式)
+    assert '"authority":0.7' in r["fiske_weights_json"]
