@@ -170,21 +170,29 @@ void maybe_build_relation_edge(
         cognizer::CognizerHub& hub,
         std::string_view tenant,
         std::string_view subject_kind,
-        std::string_view a_id,
+        std::string_view subject_surface,
         std::string_view predicate,
         std::string_view object_surface) {
     if (subject_kind != "cognizer") return;   // only cognizer→cognizer edges
     if (!is_relation_predicate(predicate)) return;
-    if (a_id.empty() || object_surface.empty()) return;
-    // Reverse-look object surface to an EXISTING cognizer. Miss → skip (no register).
+    if (subject_surface.empty() || object_surface.empty()) return;
+    // Both endpoints must resolve to EXISTING cognizer ids (UUID space). The
+    // caller's stmt.subject_id is the canonical_name/surface (resolve_or_register
+    // returns canonical_name, not the UUID), so reverse-look BOTH sides via
+    // lookup_by_alias to keep a_id/b_id in the same id space as the nodes
+    // (cognizers.id = UUID). Either miss → skip (no register — the object over-
+    // registration guard applies to the subject too).
+    const std::optional<std::string> a_id =
+        hub.lookup_by_alias(tenant, subject_surface);
+    if (!a_id.has_value() || a_id->empty()) return;
     const std::optional<std::string> b_id =
         hub.lookup_by_alias(tenant, object_surface);
     if (!b_id.has_value() || b_id->empty()) return;
-    if (*b_id == std::string(a_id)) return;  // no self-loop edge
+    if (*a_id == *b_id) return;  // no self-loop edge
     try {
         cognizer::RelationEdgeInput edge;
         edge.tenant_id     = std::string(tenant);
-        edge.a_id          = std::string(a_id);
+        edge.a_id          = *a_id;
         edge.b_id          = *b_id;
         edge.fiske_weights = fiske_for_predicate(predicate);
         hub.upsert_relation(edge);
