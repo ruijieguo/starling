@@ -33,7 +33,7 @@ std::string random_id() {
     return oss.str();
 }
 
-// Column indices for the 26-column SELECT list used in get/find_active_run/read_row_.
+// Column indices for the 27-column SELECT list used in get/find_active_run/read_row_.
 // Order matches kCols below; any reordering breaks map_row_.
 enum ColIdx : std::uint8_t {
     kColId = 0,
@@ -47,6 +47,7 @@ enum ColIdx : std::uint8_t {
     kColIdempotencyKey,
     kColPipelineName,
     kColPipelineVersion,
+    kColMetadataJson,
     kColStatus,
     kColCheckpointSequence,
     kColErrorKind,
@@ -64,12 +65,12 @@ enum ColIdx : std::uint8_t {
     kColUpdatedAt,
 };
 
-// 26-column SELECT list shared by get(), find_active_run(), and read_row_().
+// 27-column SELECT list shared by get(), find_active_run(), and read_row_().
 // MUST stay in sync with ColIdx above.
 constexpr const char* kCols =
     "id,kind,aggregate_id,tenant_id,business_task_id,parent_run_id,"
     "profile_name,input_hash,idempotency_key,pipeline_name,pipeline_version,"
-    "status,checkpoint_sequence,error_kind,retry_count,worker_id,lease_until,"
+    "metadata_json,status,checkpoint_sequence,error_kind,retry_count,worker_id,lease_until,"
     "item_run_ids,step_contracts,watermark,progress,counters,warnings,"
     "stage_timings_ms,started_at,updated_at";
 
@@ -91,7 +92,7 @@ std::optional<std::string> col_text_opt(sqlite3_stmt* stmt, int idx) {
     return col_text(stmt, idx);
 }
 
-// Map a prepared statement row (26 columns in ColIdx order) into a PipelineRun.
+// Map a prepared statement row (27 columns in ColIdx order) into a PipelineRun.
 PipelineRun map_row_(sqlite3_stmt* stmt) {
     PipelineRun run;
     run.id               = col_text(stmt, kColId);
@@ -105,6 +106,7 @@ PipelineRun map_row_(sqlite3_stmt* stmt) {
     run.idempotency_key  = col_text(stmt, kColIdempotencyKey);
     run.pipeline_name    = col_text(stmt, kColPipelineName);
     run.pipeline_version = col_text(stmt, kColPipelineVersion);
+    run.metadata_json    = col_text(stmt, kColMetadataJson);
     run.status           = status_from_string(col_text(stmt, kColStatus));
 
     if (sqlite3_column_type(stmt, kColCheckpointSequence) == SQLITE_NULL) {
@@ -131,7 +133,7 @@ PipelineRun map_row_(sqlite3_stmt* stmt) {
 
 // Build a "SELECT <kCols> FROM governance_pipeline_run WHERE id=?" query string.
 // The kCols literal is assembled at compile time via string concatenation.
-// Using a helper avoids repeating the 26-column list in get() and read_row_().
+// Using a helper avoids repeating the 27-column list in get() and read_row_().
 std::string select_by_id_sql() {
     return std::string("SELECT ") + kCols +
            " FROM governance_pipeline_run WHERE id=?";
@@ -220,8 +222,8 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
         "INSERT INTO governance_pipeline_run("
         "id,kind,aggregate_id,tenant_id,business_task_id,parent_run_id,"
         "profile_name,input_hash,idempotency_key,pipeline_name,pipeline_version,"
-        "status,step_contracts,started_at,updated_at"
-        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        "metadata_json,status,step_contracts,started_at,updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(dbh, kInsertSql, -1, &raw, nullptr) != SQLITE_OK) {
@@ -253,10 +255,11 @@ PipelineRun PipelineRunStore::enqueue(const NewRun& spec) {
     bind_sv(hnd.get(), 9, spec.idempotency_key);
     bind_sv(hnd.get(), 10, spec.pipeline_name);
     bind_sv(hnd.get(), 11, spec.pipeline_version);
-    sqlite3_bind_text(hnd.get(), 12, "QUEUED", -1, SQLITE_STATIC);
-    bind_sv(hnd.get(), 13, spec.step_contracts);
-    bind_sv(hnd.get(), 14, now_ts);
+    bind_sv(hnd.get(), 12, spec.metadata_json);
+    sqlite3_bind_text(hnd.get(), 13, "QUEUED", -1, SQLITE_STATIC);
+    bind_sv(hnd.get(), 14, spec.step_contracts);
     bind_sv(hnd.get(), 15, now_ts);
+    bind_sv(hnd.get(), 16, now_ts);
 
     const int rcode = sqlite3_step(hnd.get());
 

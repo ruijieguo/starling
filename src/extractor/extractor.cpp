@@ -504,7 +504,8 @@ ExtractionRunResult Extractor::persist(
         result.status = result_partial
             ? ExtractionRunResult::Status::PARTIAL_SUCCESS
             : ExtractionRunResult::Status::SUCCESS;
-        ledger.finish_run(run_id, PipelineStatus::Finished);
+        ledger.finish_run(run_id, result_partial
+            ? PipelineStatus::PartialSuccess : PipelineStatus::Finished);
         emit_pipeline_event(conn_, "pipeline.run_completed",
                             holder_tenant_id, run_id, run_started_event_id);
     } else if (all_failed) {

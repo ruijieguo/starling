@@ -31,14 +31,19 @@ def _seed_metrics(cfg, rows):
     conn.commit(); conn.close()
 
 
-def _seed_extraction(cfg, rows):
+def _seed_extraction(cfg, rows, tenant="default", prefix=""):
     conn = sqlite3.connect(cfg.db_path)
     for i, (ts, lat, tok) in enumerate(rows):
+        run_id = f"{prefix}p{i}"
+        conn.execute(
+            "INSERT INTO pipeline_run(id,tenant_id,started_at,status) VALUES(?,?,?,'finished')",
+            (run_id, tenant, ts),
+        )
         conn.execute(
             "INSERT INTO extraction_attempt(id,pipeline_run_id,extraction_span_key,"
             "attempt_number,status,created_at,prompt_tokens,completion_tokens,total_tokens,latency_ms)"
             " VALUES(?,?,?,1,'success',?,0,0,?,?)",
-            (f"e{i}", f"p{i}", f"span{i}", ts, tok, lat))
+            (f"{prefix}e{i}", run_id, f"{prefix}span{i}", ts, tok, lat))
     conn.commit(); conn.close()
 
 
@@ -77,6 +82,19 @@ def test_latency_cross_bucket(env):
     assert len(series) == 2                          # 两个小时桶
     assert series[0]["count"] == 2 and series[0]["total_tokens"] == 110
     assert series[1]["count"] == 1 and series[1]["total_tokens"] == 70
+
+
+def test_latency_is_tenant_scoped(env):
+    cfg, client = env
+    _seed_extraction(cfg, [("2026-07-12T00:00:10Z", 100, 50)])
+    _seed_extraction(
+        cfg, [("2026-07-12T00:00:20Z", 900, 999)], tenant="other", prefix="other-"
+    )
+    series = client.get(
+        "/api/metrics/latency?since=2026-07-11T00:00:00Z&bucket=3600"
+    ).json()["series"]
+    assert series == [{"bucket_ts": "2026-07-12T00:00:00Z", "count": 1,
+                       "p50_ms": 100, "p95_ms": 100, "total_tokens": 50}]
 
 
 def test_embed_depth_missing_metrics_db_returns_empty(env):

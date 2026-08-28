@@ -73,6 +73,54 @@ def test_commitments_joins_statement(client):
     assert rows and rows[0]["state"] == "ACTIVE" and rows[0]["object_value"] == "auth"
 
 
+def _copy_statement_to_other_tenant(conn, sid, object_value):
+    original = conn.execute(
+        "SELECT * FROM statements WHERE tenant_id='default' AND id=?", (sid,)
+    ).fetchone()
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(statements)")]
+    other = dict(zip(columns, original))
+    other["tenant_id"] = "other"
+    other["object_value"] = object_value
+    placeholders = ",".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO statements({','.join(columns)}) VALUES({placeholders})",
+        tuple(other[c] for c in columns),
+    )
+
+
+def test_commitments_join_is_tenant_scoped(client):
+    db_path = client.app.state.config.db_path
+    conn = sqlite3.connect(db_path)
+    sid = conn.execute(
+        "SELECT stmt_id FROM commitments WHERE tenant_id='default'"
+    ).fetchone()[0]
+    _copy_statement_to_other_tenant(conn, sid, "secret-other-tenant")
+    conn.commit()
+    conn.close()
+
+    rows = client.get("/api/commitments").json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["object_value"] == "auth"
+
+
+def test_embedding_backlog_join_is_tenant_scoped(client):
+    db_path = client.app.state.config.db_path
+    conn = sqlite3.connect(db_path)
+    sid = conn.execute(
+        "SELECT id FROM statements WHERE tenant_id='default'"
+    ).fetchone()[0]
+    _copy_statement_to_other_tenant(conn, sid, "other")
+    conn.execute(
+        "INSERT INTO statement_vectors(tenant_id,stmt_id,dim,model,status) "
+        "VALUES('other',?,1,'test','embedded')",
+        (sid,),
+    )
+    conn.commit()
+    conn.close()
+
+    assert client.get("/api/queues").json()["embedding_backlog"] == 1
+
+
 def test_replay_conflicts_queues_shape(client):
     assert client.get("/api/replay").status_code == 200
     assert "by_kind" in client.get("/api/conflicts").json()

@@ -73,7 +73,9 @@ TEST(PipelineRunStore, EnqueueGetRoundTrip) {
     auto conn = fresh_db();
     PipelineRunStore store(conn);
 
-    const PipelineRun run = store.enqueue(make_spec());
+    auto spec = make_spec();
+    spec.metadata_json = R"({"source":"test"})";
+    const PipelineRun run = store.enqueue(spec);
     const auto fetched    = store.get(run.id);
 
     ASSERT_TRUE(fetched.has_value());
@@ -81,6 +83,7 @@ TEST(PipelineRunStore, EnqueueGetRoundTrip) {
     EXPECT_EQ(fetched->kind,         PipelineKind::Replay);
     EXPECT_EQ(fetched->aggregate_id, "agg-abc");
     EXPECT_EQ(fetched->tenant_id,    "tenant-1");
+    EXPECT_EQ(fetched->metadata_json, R"({"source":"test"})");
     EXPECT_EQ(fetched->status,       PipelineRunStatus::Queued);
 }
 
@@ -92,6 +95,7 @@ TEST(PipelineRunStore, EnqueueJsonDefaults) {
 
     // JSON columns must have their table DEFAULT values on a fresh QUEUED row.
     EXPECT_EQ(run.item_run_ids,     "[]");
+    EXPECT_EQ(run.metadata_json,    "{}");
     EXPECT_EQ(run.watermark,        "{}");
     EXPECT_EQ(run.progress,         "{}");
     EXPECT_EQ(run.counters,         "{}");

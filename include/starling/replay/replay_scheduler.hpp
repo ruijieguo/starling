@@ -2,6 +2,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/replay/consolidation_ops.hpp"
 #include "starling/replay/gist_clustering.hpp"   // GistThresholds (K/T/min_confidence)
+#include <compare>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,6 +18,13 @@ struct ReplayStats {
     int gist_failed=0;      // #38-C P2: gist proposals that errored (LLM/write/promote)
     int gist_gated=0;       // #38-C P4: gists rejected by gating (floor/entailment/conflict)
     std::string replay_batch_id;
+};
+
+struct DecayCandidate {
+    std::string tenant_id;
+    std::string stmt_id;
+
+    auto operator<=>(const DecayCandidate&) const = default;
 };
 
 class ReplayScheduler {
@@ -43,7 +51,7 @@ public:
     int sweep_volatile_ttl(persistence::Connection& conn, std::string_view now_iso);
     // decay 一批候选 (op_decay 包装 + emit statement.archived per archived stmt; 串行守护幂等).
     int run_decay(persistence::Connection& conn,
-                  const std::vector<std::string>& candidate_ids, std::string_view now_iso);
+                  const std::vector<DecayCandidate>& candidates, std::string_view now_iso);
 
     // Python binding helper: exposes adapter_.connection() without making adapter_ public.
     persistence::Connection& connection() { return adapter_.connection(); }

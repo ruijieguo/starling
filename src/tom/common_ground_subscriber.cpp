@@ -4,11 +4,13 @@
 
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/schema/common_ground_scope.hpp"
 
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +25,12 @@ namespace {
 std::string col(sqlite3_stmt* h, int i) {
     const char* t = reinterpret_cast<const char*>(sqlite3_column_text(h, i));
     return t ? t : "";
+}
+
+std::optional<std::string> ref_from_parties_json(std::string_view parties_json) {
+    const auto parties = schema::parse_common_ground_parties_json(parties_json);
+    if (!parties || parties->size() < 2) return std::nullopt;
+    return schema::common_ground_ref(*parties);
 }
 }  // namespace
 
@@ -83,13 +91,8 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             bind_sv(h.get(), 1, now_iso);   // created_at < now 的超集,sweep 内部再判 24h
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const std::string tenant = col(h.get(), 0);
-                std::string pj = col(h.get(), 1);
-                try {
-                    auto a = nlohmann::json::parse(pj);
-                    if (a.is_array() && a.size() >= 2)
-                        rebuilt.emplace_back(tenant,
-                            a[0].get<std::string>() + "::" + a[1].get<std::string>());
-                } catch (...) {}
+                if (const auto ref = ref_from_parties_json(col(h.get(), 1)))
+                    rebuilt.emplace_back(tenant, *ref);
             }
         }
         if (writer.sweep_timeout_downgrade(conn, now_iso) == 0) {
@@ -127,12 +130,8 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             }
             for (const auto& hit : hits) {
                 writer.supersede_ground(conn, hit.cg_id, new_id, now_iso);
-                try {
-                    auto a = nlohmann::json::parse(hit.parties);
-                    if (a.is_array() && a.size() >= 2)
-                        rebuilt.emplace_back(ev.tenant,
-                            a[0].get<std::string>() + "::" + a[1].get<std::string>());
-                } catch (...) {}
+                if (const auto ref = ref_from_parties_json(hit.parties))
+                    rebuilt.emplace_back(ev.tenant, *ref);
             }
             continue;
         }
@@ -152,23 +151,17 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             hash = col(h.get(), 3); polarity = col(h.get(), 4); sp_json = col(h.get(), 5);
         }
         std::vector<std::string> parties;
-        if (!sp_json.empty()) {
-            try {
-                auto a = nlohmann::json::parse(sp_json);
-                if (a.is_array())
-                    for (auto& e : a)
-                        if (e.is_string()) parties.push_back(e.get<std::string>());
-            } catch (...) {}
-        }
+        if (const auto parsed = schema::parse_common_ground_parties_json(sp_json))
+            parties = *parsed;
         if (parties.size() < 2) continue;
-        std::sort(parties.begin(), parties.end());
 
-        struct Match { std::string cg_id, asserter, polarity; };
+        struct Match { std::string cg_id, asserter, polarity, parties_json; };
         std::vector<Match> matches;
         {
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(db,
-                "SELECT cg.id, st.holder_id, st.polarity FROM common_ground cg "
+                "SELECT cg.id, st.holder_id, st.polarity, cg.parties_json "
+                "FROM common_ground cg "
                 "JOIN statements st ON st.id=cg.statement_id AND st.tenant_id=cg.tenant_id "
                 "WHERE cg.tenant_id=? AND cg.status='asserted_unack' "
                 "  AND st.subject_id=? AND st.predicate=? AND st.canonical_object_hash=?",
@@ -180,11 +173,15 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             bind_sv(h.get(), 3, predicate);
             bind_sv(h.get(), 4, hash);
             while (sqlite3_step(h.get()) == SQLITE_ROW)
-                matches.push_back({col(h.get(), 0), col(h.get(), 1), col(h.get(), 2)});
+                matches.push_back({col(h.get(), 0), col(h.get(), 1),
+                                   col(h.get(), 2), col(h.get(), 3)});
         }
 
         bool handled = false;
         for (const auto& m : matches) {
+            const auto match_parties =
+                schema::parse_common_ground_parties_json(m.parties_json);
+            if (!match_parties || *match_parties != parties) continue;
             if (m.asserter == holder) continue;            // 同一方不算确认/repair
             if (m.polarity == polarity) writer.acknowledge(conn, m.cg_id, holder, now_iso);  // #1/#3
             else                        writer.repair(conn, m.cg_id, holder, now_iso);        // 矛盾
@@ -198,19 +195,39 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         // #2 共同在场推定：该 scope 下 asserted_unack 条目轮次+1，达 N=3 自动 grounded。
         // 设计要求 perceived_by⊇parties；本期恒成立——extractor.cpp 在对话语境把
         // perceived_by 设成与 scope_parties 同一 sorted pair，故此处不再单独校验。
-        // parties_js 须与 writer 的 json_array_of_strings 字节一致（2 方 ["a","b"] 无空格）。
-        const std::string parties_js = std::string("[\"") + parties[0] + "\",\"" + parties[1] + "\"]";
+        const std::string parties_js = schema::common_ground_parties_json(parties);
         {
+            std::vector<std::string> scope_rows;
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(db,
-                "UPDATE common_ground SET rounds_since_assert = rounds_since_assert + 1 "
-                "WHERE tenant_id=? AND status='asserted_unack' AND parties_json=?",
+                "SELECT id, parties_json FROM common_ground "
+                "WHERE tenant_id=? AND status='asserted_unack'",
                 -1, &raw, nullptr) != SQLITE_OK)
-                throw make_sqlite_error(db, "cg_subscriber: bump rounds prepare");
+                throw make_sqlite_error(db, "cg_subscriber: select rounds scope prepare");
             StmtHandle h(raw);
             bind_sv(h.get(), 1, ev.tenant);
-            bind_sv(h.get(), 2, parties_js);
-            sqlite3_step(h.get());
+            while (sqlite3_step(h.get()) == SQLITE_ROW) {
+                const auto row_parties =
+                    schema::parse_common_ground_parties_json(col(h.get(), 1));
+                if (row_parties && *row_parties == parties)
+                    scope_rows.push_back(col(h.get(), 0));
+            }
+
+            for (const auto& id : scope_rows) {
+                sqlite3_stmt* update_raw = nullptr;
+                if (sqlite3_prepare_v2(db,
+                    "UPDATE common_ground "
+                    "SET rounds_since_assert=rounds_since_assert+1, parties_json=? "
+                    "WHERE id=? AND tenant_id=? AND status='asserted_unack'",
+                    -1, &update_raw, nullptr) != SQLITE_OK)
+                    throw make_sqlite_error(db, "cg_subscriber: bump rounds prepare");
+                StmtHandle update(update_raw);
+                bind_sv(update.get(), 1, parties_js);
+                bind_sv(update.get(), 2, id);
+                bind_sv(update.get(), 3, ev.tenant);
+                if (sqlite3_step(update.get()) != SQLITE_DONE)
+                    throw make_sqlite_error(db, "cg_subscriber: bump rounds step");
+            }
         }
         {
             // 达 N=3 → grounded（co-presence），逐条 acknowledge 走审计 + grounded_at。
@@ -227,9 +244,7 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             while (sqlite3_step(h.get()) == SQLITE_ROW) due.push_back(col(h.get(), 0));
             for (const auto& id : due) writer.acknowledge(conn, id, "copresence", now_iso);
         }
-        // cg_ref = sorted "a::b"（与 Task 7 Python 读路径一致）。本期假设 2 方对话；
-        // parties>2 时仅取前两个（多方 grounding 超本期范围，见 spec §1）。
-        rebuilt.emplace_back(ev.tenant, parties[0] + "::" + parties[1]);
+        rebuilt.emplace_back(ev.tenant, schema::common_ground_ref(parties));
     }
 
     // 3. rebuild affected containers（去重）
@@ -247,7 +262,8 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, max_seq);
         bind_sv(h.get(), 2, now_iso);
-        sqlite3_step(h.get());
+        if (sqlite3_step(h.get()) != SQLITE_DONE)
+            throw make_sqlite_error(db, "cg_subscriber: advance checkpoint step");
     }
     return static_cast<int>(evs.size());
 }

@@ -46,6 +46,30 @@ int icol(sqlite3* db, const std::string& q) {
     return v;
 }
 
+void seed_stmt(sqlite3* db, const std::string& id,
+               const std::string& tenant = "default") {
+    const std::string sql =
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,created_at,updated_at) VALUES('" + id + "','" + tenant +
+        "','alice','first_person','cognizer','bob','knows','str','x','h-" + id +
+        "','v1','believes','pos',0.9,'2026-05-30T00:00:00Z',0.5,'{}',0.0,"
+        "'2026-05-30T00:00:00Z','user_input','2026-05-30T00:00:00Z',"
+        "'2026-05-30T00:00:00Z')";
+    ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+}
+
+std::string assert_cg(CommonGroundWriter& writer,
+                      starling::persistence::Connection& conn,
+                      const std::string& stmt_id,
+                      const std::vector<std::string>& parties,
+                      const std::string& now) {
+    seed_stmt(conn.raw(), stmt_id);
+    return writer.assert_(conn, "default", stmt_id, parties, now);
+}
+
 }  // namespace
 
 // ── TC-CGW-001: AssertCreatesAssertedUnack ────────────────────────────────────
@@ -56,8 +80,7 @@ TEST(CommonGroundWriter, AssertCreatesAssertedUnack) {
     CommonGroundWriter writer(*adapter);
 
     const std::string now = "2026-05-30T10:00:00Z";
-    std::string cg_id = writer.assert_(conn, "default", "stmt-001",
-                                       {"alice", "bob"}, now);
+    std::string cg_id = assert_cg(writer, conn, "stmt-001", {"alice", "bob"}, now);
 
     EXPECT_FALSE(cg_id.empty());
 
@@ -83,7 +106,7 @@ TEST(CommonGroundWriter, AcknowledgeGrounds) {
     const std::string now1 = "2026-05-30T10:00:00Z";
     const std::string now2 = "2026-05-30T10:01:00Z";
 
-    std::string cg_id = writer.assert_(conn, "default", "stmt-002", {}, now1);
+    std::string cg_id = assert_cg(writer, conn, "stmt-002", {}, now1);
     writer.acknowledge(conn, cg_id, "alice", now2);
 
     std::string status = scol(conn.raw(),
@@ -110,7 +133,7 @@ TEST(CommonGroundWriter, RepairDiverges) {
     const std::string now1 = "2026-05-30T10:00:00Z";
     const std::string now2 = "2026-05-30T10:02:00Z";
 
-    std::string cg_id = writer.assert_(conn, "default", "stmt-003", {}, now1);
+    std::string cg_id = assert_cg(writer, conn, "stmt-003", {}, now1);
     writer.repair(conn, cg_id, "bob", now2);
 
     std::string status = scol(conn.raw(),
@@ -133,7 +156,7 @@ TEST(CommonGroundWriter, WithdrawRecants) {
     const std::string now1 = "2026-05-30T10:00:00Z";
     const std::string now2 = "2026-05-30T10:03:00Z";
 
-    std::string cg_id = writer.assert_(conn, "default", "stmt-004", {}, now1);
+    std::string cg_id = assert_cg(writer, conn, "stmt-004", {}, now1);
     writer.withdraw(conn, cg_id, "alice", now2);
 
     std::string status = scol(conn.raw(),
@@ -157,7 +180,9 @@ TEST(CommonGroundWriter, SupersedeSetsSupersededBy) {
     const std::string now2    = "2026-05-30T10:04:00Z";
     const std::string new_stmt = "stmt-new-001";
 
-    std::string cg_id = writer.assert_(conn, "default", "stmt-005", {}, now1);
+    std::string cg_id = assert_cg(writer, conn, "stmt-005", {}, now1);
+    seed_stmt(conn.raw(), new_stmt);
+    writer.acknowledge(conn, cg_id, "bob", now2);
     writer.supersede_ground(conn, cg_id, new_stmt, now2);
 
     std::string superseded_by = scol(conn.raw(),
@@ -181,11 +206,11 @@ TEST(CommonGroundWriter, TimeoutDowngrades) {
 
     // Seed an old asserted_unack row (25h ago = 2026-05-29T11:00:00Z).
     const std::string old_now = "2026-05-29T11:00:00Z";
-    std::string old_cg = writer.assert_(conn, "default", "stmt-old", {}, old_now);
+    std::string old_cg = assert_cg(writer, conn, "stmt-old", {}, old_now);
 
     // Seed a fresh asserted_unack row (1h ago = 2026-05-30T11:00:00Z).
     const std::string fresh_now = "2026-05-30T11:00:00Z";
-    std::string fresh_cg = writer.assert_(conn, "default", "stmt-fresh", {}, fresh_now);
+    std::string fresh_cg = assert_cg(writer, conn, "stmt-fresh", {}, fresh_now);
 
     // Sweep with now = 2026-05-30T12:00:00Z (cutoff = 2026-05-29T12:00:00Z)
     int downgraded = writer.sweep_timeout_downgrade(conn, now);
@@ -210,7 +235,7 @@ TEST(CommonGroundWriter, ExpireGroundOnlyFromGrounded) {
     CommonGroundWriter writer(*adapter);
     const std::string now = "2026-06-12T10:00:00Z";
 
-    std::string cg = writer.assert_(conn, "default", "stmt-x", {"alice"}, now);
+    std::string cg = assert_cg(writer, conn, "stmt-x", {"alice"}, now);
     // 未 grounded 时 expire 是 no-op(状态机不允许 asserted_unack → expired)。
     writer.expire_ground(conn, cg, "policy", now);
     EXPECT_EQ(scol(conn.raw(),
@@ -234,7 +259,7 @@ TEST(CommonGroundWriter, UngroundBackToSuspectedDiverge) {
     CommonGroundWriter writer(*adapter);
     const std::string now = "2026-06-12T10:00:00Z";
 
-    std::string cg = writer.assert_(conn, "default", "stmt-y", {"alice"}, now);
+    std::string cg = assert_cg(writer, conn, "stmt-y", {"alice"}, now);
     writer.acknowledge(conn, cg, "bob", now);
     writer.unground(conn, cg, "erasure", now);
     EXPECT_EQ(scol(conn.raw(),
@@ -251,11 +276,60 @@ TEST(CommonGroundWriter, ManualAcknowledgeKeepsAuditActor) {
     CommonGroundWriter writer(*adapter);
     const std::string now = "2026-06-12T10:00:00Z";
 
-    std::string cg = writer.assert_(conn, "default", "stmt-z", {"alice"}, now);
+    std::string cg = assert_cg(writer, conn, "stmt-z", {"alice"}, now);
     writer.acknowledge_manual(conn, cg, "reviewer-jane", now);
     EXPECT_EQ(scol(conn.raw(),
         "SELECT status FROM common_ground WHERE id='" + cg + "'"), "grounded");
     EXPECT_EQ(scol(conn.raw(),
         "SELECT audit_actor FROM common_ground WHERE id='" + cg + "'"),
         "reviewer-jane");
+}
+
+TEST(CommonGroundWriter, AssertRejectsMissingOrCrossTenantStatement) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    CommonGroundWriter writer(*adapter);
+    seed_stmt(conn.raw(), "shared", "other");
+
+    EXPECT_THROW(
+        writer.assert_(conn, "default", "shared", {"alice", "bob"},
+                       "2026-06-12T10:00:00Z"),
+        std::invalid_argument);
+    EXPECT_EQ(icol(conn.raw(), "SELECT COUNT(*) FROM common_ground"), 0);
+    EXPECT_EQ(icol(conn.raw(), "SELECT COUNT(*) FROM grounding_acts"), 0);
+}
+
+TEST(CommonGroundWriter, MigrationRejectsCrossTenantSupersededReferenceOnInsert) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    seed_stmt(conn.raw(), "current", "default");
+    seed_stmt(conn.raw(), "replacement", "other");
+
+    const char* sql =
+        "INSERT INTO common_ground("
+        "id,tenant_id,statement_id,status,parties_json,superseded_by,created_at,updated_at) "
+        "VALUES('cg-cross','default','current','grounded','[]','replacement',"
+        "'2026-06-12T10:00:00Z','2026-06-12T10:00:00Z')";
+    EXPECT_EQ(sqlite3_exec(conn.raw(), sql, nullptr, nullptr, nullptr), SQLITE_CONSTRAINT);
+    EXPECT_EQ(icol(conn.raw(), "SELECT COUNT(*) FROM common_ground"), 0);
+}
+
+TEST(CommonGroundWriter, TerminalStateCannotBeAcknowledgedOrAudited) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    CommonGroundWriter writer(*adapter);
+    const std::string now = "2026-06-12T10:00:00Z";
+    std::string cg = assert_cg(writer, conn, "stmt-terminal", {"alice", "bob"}, now);
+    writer.withdraw(conn, cg, "alice", now);
+    writer.acknowledge(conn, cg, "bob", now);
+
+    EXPECT_EQ(scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE id='" + cg + "'"), "recanted");
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE common_ground_id='" + cg +
+        "' AND act='acknowledge'"), 0);
+
+    writer.acknowledge(conn, "missing-cg", "bob", now);
+    EXPECT_EQ(icol(conn.raw(),
+        "SELECT COUNT(*) FROM grounding_acts WHERE common_ground_id='missing-cg'"), 0);
 }

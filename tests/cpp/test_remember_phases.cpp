@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace starling::memoryops {
 namespace {
@@ -51,6 +53,17 @@ RememberParams rp(std::string_view text) {
 extractor::LLMResponse ok_json() {
     return extractor::LLMResponse{.raw_xml = kJson, .ok = true};
 }
+
+class RecordingLLMAdapter final : public extractor::LLMAdapter {
+public:
+    extractor::LLMResponse extract(std::string_view prompt,
+                                   std::string_view) override {
+        prompts.emplace_back(prompt);
+        return {.raw_xml = "[]", .ok = true};
+    }
+
+    std::vector<std::string> prompts;
+};
 
 }  // namespace
 
@@ -111,6 +124,60 @@ TEST(RememberPhases, CommitThrowsWhenGateClosesMidTurn) {
     pa->set_write_admit([] { return false; });               // 生成期间关门
     EXPECT_THROW(remember_commit(*pa, pllm, rp("hi"), prepared, llm),
                  governance::WriteGateRejected);
+}
+
+TEST(RememberPhases, CommitAllRollsBackEarlierChannelsWhenLaterChannelFails) {
+    auto pa = make_adapter();
+    extractor::FakeLLMAdapter pllm;
+    pllm.set_default_response(ok_json());
+    const auto p = rp("hi");
+    const auto prepared = remember_prepare(*pa, p);
+
+    RememberLlmBundle extracted;
+    extracted.belief = extract_llm(*pa, pllm, "", p);
+    extracted.general_fact = extracted.belief;
+    extracted.episodic.ok = true;
+    extractor::ParsedEpisodicEvent event;
+    event.seq = 1;
+    event.actor = "Alice";
+    event.actor_kind = "cognizer";
+    event.action = "moved";
+    event.object_value = "the ball";
+    event.canonical_object_hash = "episodic-hash";
+    extracted.episodic.events.push_back(std::move(event));
+
+    const int statements_before = row_count(pa->connection(), "statements");
+    const int events_before = row_count(pa->connection(), "bus_events");
+    pa->connection().exec(
+        "CREATE TRIGGER fail_second_extraction_run "
+        "BEFORE INSERT ON governance_pipeline_run "
+        "WHEN (SELECT COUNT(*) FROM governance_pipeline_run) > 0 "
+        "BEGIN SELECT RAISE(ABORT, 'injected later-channel failure'); END");
+
+    EXPECT_THROW(remember_commit_all(*pa, pllm, p, prepared, extracted),
+                 persistence::SqliteError);
+    EXPECT_EQ(row_count(pa->connection(), "statements"), statements_before);
+    EXPECT_EQ(row_count(pa->connection(), "bus_events"), events_before);
+    EXPECT_EQ(row_count(pa->connection(), "governance_pipeline_run"), 0);
+    EXPECT_EQ(row_count(pa->connection(), "extraction_attempt"), 0);
+    EXPECT_EQ(row_count(pa->connection(), "episodic_events"), 0);
+}
+
+TEST(RememberPhases, CoreExpandsAllRememberPromptsBeforeLlmCalls) {
+    auto adapter = make_adapter();
+    RecordingLLMAdapter llm;
+    const RememberPrompts prompts{
+        .belief = "BELIEF::{convo}",
+        .episodic = "EPISODIC::{passage}",
+        .general_fact = "GENERAL::{self}::{self}::{convo}",
+    };
+
+    (void)remember_extract_all(*adapter, llm, rp("hi"), prompts);
+
+    ASSERT_EQ(llm.prompts.size(), 3u);
+    EXPECT_EQ(llm.prompts[0], "BELIEF::hi");
+    EXPECT_EQ(llm.prompts[1], "GENERAL::cog-self::cog-self::hi");
+    EXPECT_EQ(llm.prompts[2], "EPISODIC::hi");
 }
 
 }  // namespace starling::memoryops

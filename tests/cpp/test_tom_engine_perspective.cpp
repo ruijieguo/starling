@@ -143,6 +143,8 @@ TEST_F(ToMEngineTest, TargetBeliefsFromHolderQuery) {
 TEST_F(ToMEngineTest, CommonGroundReturnsGroundedEntries) {
     // Seed a grounded common_ground row with parties containing system_self + alice.
     // grounded_at is NULL so it passes the (grounded_at IS NULL OR grounded_at <= as_of) filter.
+    insert_stmt(*adapter_, "stmt-x", "default", "system_self",
+                "consolidated", "approved");
     sqlite3* db = adapter_->connection().raw();
     const char* insert_sql =
         "INSERT INTO common_ground"

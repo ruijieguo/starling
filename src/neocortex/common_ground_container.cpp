@@ -4,6 +4,7 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/schema/common_ground_scope.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -68,30 +69,25 @@ void CommonGroundContainer::rebuild(
     std::vector<std::string> suspected_diverge;
 
     {
-        // P3.a2 修复(P2.j 遗留缺口):cg_ref 为 sorted-pair "a::b" 时必须按
-        // parties 过滤,否则每个 pair 容器都镜像全租户共识(多方对场景误判)。
-        // 不含 "::" 的 cg_ref 保留旧的全租户语义(向后兼容既有调用方/钉测)。
-        std::string sel_sql =
-            "SELECT statement_id, status FROM common_ground "
+        // A scoped ref must match the complete canonical party set. Legacy refs
+        // without a separator retain the historical all-tenant materialization.
+        const auto scoped_parties = schema::common_ground_parties_from_ref(cg_ref);
+        const char* sel_sql =
+            "SELECT statement_id, status, parties_json FROM common_ground "
             "WHERE tenant_id=? AND status IN ('grounded','asserted_unack','suspected_diverge')";
-        std::string pa, pb;
-        const std::string ref(cg_ref);
-        const auto sep = ref.find("::");
-        if (sep != std::string::npos) {
-            pa = "%\"" + ref.substr(0, sep) + "\"%";
-            pb = "%\"" + ref.substr(sep + 2) + "\"%";
-            sel_sql += " AND parties_json LIKE ? AND parties_json LIKE ?";
-        }
         sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, sel_sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(db, sel_sql, -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(db, "CommonGroundContainer::rebuild: prepare SELECT");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, tenant_id);
-        if (sep != std::string::npos) {
-            bind_sv(h.get(), 2, pa);
-            bind_sv(h.get(), 3, pb);
-        }
         while (sqlite3_step(h.get()) == SQLITE_ROW) {
+            if (scoped_parties) {
+                const auto* parties_text = sqlite3_column_text(h.get(), 2);
+                if (parties_text == nullptr) continue;
+                const auto row_parties = schema::parse_common_ground_parties_json(
+                    reinterpret_cast<const char*>(parties_text));
+                if (!row_parties || *row_parties != *scoped_parties) continue;
+            }
             const auto* sid_txt = sqlite3_column_text(h.get(), 0);
             const auto* sta_txt = sqlite3_column_text(h.get(), 1);
             std::string sid = sid_txt ? reinterpret_cast<const char*>(sid_txt) : "";

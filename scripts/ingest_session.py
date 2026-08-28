@@ -34,9 +34,19 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
-SPOOL = Path.home() / ".starling" / "ingest-spool"
+SPOOL = Path(os.environ.get(
+    "STARLING_DASH_INGEST_SPOOL",
+    str(Path.home() / ".starling" / "ingest-spool"),
+)).expanduser()
 LOG = Path.home() / ".starling" / "ingest.log"
+
+
+def _tenant_spool_dir(root: Path, tenant: str) -> Path:
+    if not tenant:
+        raise ValueError("ingest spool tenant must not be empty")
+    return root / f"tenant-{quote(tenant, safe='')}"
 
 
 def _log(msg: str) -> None:
@@ -49,12 +59,13 @@ def _log(msg: str) -> None:
 
 
 def write_job(session_id: str, transcript_path: str, cwd: str, tenant: str) -> Path:
-    """把一个摄入 job 原子落到 `SPOOL/<uuid>.json`:先写 `.tmp`,再 `rename`——worker
+    """把一个摄入 job 原子落到租户分区:先写 `.tmp`,再 `rename`——worker
     扫 spool 时不会读到半写的文件。"""
-    SPOOL.mkdir(parents=True, exist_ok=True)
+    spool = _tenant_spool_dir(SPOOL, tenant)
+    spool.mkdir(parents=True, exist_ok=True)
     job = {"session_id": session_id, "transcript_path": transcript_path,
            "cwd": cwd, "tenant": tenant}
-    path = SPOOL / f"{uuid.uuid4().hex}.json"
+    path = spool / f"{uuid.uuid4().hex}.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(job))
     tmp.rename(path)                              # 原子出现(worker 不会读到半写)

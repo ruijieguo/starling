@@ -154,6 +154,20 @@ def test_empty_extraction_is_success_not_failed(tmp_path):
     assert not (spool / "failed").exists() or not list((spool / "failed").glob("*"))
 
 
+def test_worker_does_not_claim_other_tenant_job(tmp_path):
+    spool = tmp_path / "spool"
+    eng = _engine(tmp_path, spool)
+    _job(spool, _transcript(tmp_path))
+    job_path = spool / "s1.json"
+    job = json.loads(job_path.read_text())
+    job["tenant"] = "other"
+    job_path.write_text(json.dumps(job))
+
+    assert eng._ingest_drain_once() == "deferred"
+    assert job_path.exists()
+    assert not list(spool.glob("*.processing"))
+
+
 def test_retryable_failure_bounded_retry_then_failed(tmp_path):
     """Fix 3: extraction_failed=True (adapter ok=False -> every retry
     attempt fails -> Status::FAILED) is retryable, not instantly permanent.

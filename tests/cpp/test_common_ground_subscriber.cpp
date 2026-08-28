@@ -13,6 +13,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/schema/common_ground_scope.hpp"
 
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -48,6 +49,19 @@ int icol(sqlite3* db, const std::string& q) {
     int v = sqlite3_column_int(s, 0);
     sqlite3_finalize(s);
     return v;
+}
+
+std::string container_content(sqlite3* db, const std::string& holder_id) {
+    sqlite3_stmt* raw = nullptr;
+    const char* sql =
+        "SELECT content_json FROM containers "
+        "WHERE tenant_id='default' AND kind='common_ground' AND holder_id=?";
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) return {};
+    StmtHandle h(raw);
+    sqlite3_bind_text(h.get(), 1, holder_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(h.get()) != SQLITE_ROW) return {};
+    const auto* text = sqlite3_column_text(h.get(), 0);
+    return text ? reinterpret_cast<const char*>(text) : "";
 }
 
 // Insert a statement row carrying scope_parties_json (covers required NOT NULL cols).
@@ -253,6 +267,127 @@ TEST(CommonGroundSubscriber, CoPresenceGroundsAfterThreeRounds) {
     int act_cnt = icol(conn.raw(),
         "SELECT COUNT(*) FROM grounding_acts WHERE act='acknowledge' AND actor_cognizer_id='copresence'");
     EXPECT_GE(act_cnt, 1);
+}
+
+TEST(CommonGroundSubscriber, EscapedPartyIdsAdvanceCoPresenceRounds) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    const std::vector<std::string> parties{R"(a"lice)", R"(b\ob)"};
+    const std::string parties_json =
+        starling::schema::common_ground_parties_json(parties);
+
+    for (int i = 1; i <= 3; ++i) {
+        const std::string id = "Q" + std::to_string(i);
+        insert_statement(conn, id, parties[0], "pos", parties_json,
+                         "default", "subject-" + id, "pred-" + id, "hash-" + id);
+        insert_bus_event(conn, "ev-" + id, id, i);
+        CommonGroundSubscriber::tick_one_batch(
+            *adapter, conn, "2026-06-06T10:0" + std::to_string(i) + ":00Z");
+    }
+
+    EXPECT_EQ("grounded", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='Q1'"));
+    EXPECT_NE(container_content(
+        conn.raw(), starling::schema::common_ground_ref(parties)).find("Q1"),
+        std::string::npos);
+}
+
+TEST(CommonGroundSubscriber, DelimiterBearingPartyIdsUseDistinctContainers) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    const std::vector<std::string> first{"a::b", "c"};
+    const std::vector<std::string> second{"a", "b::c"};
+
+    insert_statement(conn, "D1", "a::b", "pos",
+                     starling::schema::common_ground_parties_json(first),
+                     "default", "subject-D1", "pred-D1", "hash-D1");
+    insert_bus_event(conn, "ev-D1", "D1", 1);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z");
+
+    insert_statement(conn, "D2", "a", "pos",
+                     starling::schema::common_ground_parties_json(second),
+                     "default", "subject-D2", "pred-D2", "hash-D2");
+    insert_bus_event(conn, "ev-D2", "D2", 2);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:01:00Z");
+
+    const std::string first_ref = starling::schema::common_ground_ref(first);
+    const std::string second_ref = starling::schema::common_ground_ref(second);
+    ASSERT_NE(first_ref, second_ref);
+    const std::string first_content = container_content(conn.raw(), first_ref);
+    const std::string second_content = container_content(conn.raw(), second_ref);
+    EXPECT_NE(first_content.find("D1"), std::string::npos);
+    EXPECT_EQ(first_content.find("D2"), std::string::npos);
+    EXPECT_NE(second_content.find("D2"), std::string::npos);
+    EXPECT_EQ(second_content.find("D1"), std::string::npos);
+}
+
+TEST(CommonGroundSubscriber, EquivalentStatementsDoNotCrossPartyScopes) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    const std::vector<std::string> first{"a::b", "c"};
+    const std::vector<std::string> second{"a", "b::c"};
+
+    insert_statement(conn, "X1", "a::b", "pos",
+                     starling::schema::common_ground_parties_json(first),
+                     "default", "topic", "knows", "same-hash");
+    insert_bus_event(conn, "ev-X1", "X1", 1);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z");
+
+    insert_statement(conn, "X2", "a", "pos",
+                     starling::schema::common_ground_parties_json(second),
+                     "default", "topic", "knows", "same-hash");
+    insert_bus_event(conn, "ev-X2", "X2", 2);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:01:00Z");
+
+    EXPECT_EQ("asserted_unack", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='X1'"));
+    EXPECT_EQ(icol(conn.raw(), "SELECT COUNT(*) FROM common_ground"), 2);
+}
+
+TEST(CommonGroundSubscriber, LegacyUnsortedPartiesAreNormalizedWhenRoundsAdvance) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    insert_statement(conn, "L0", "self", "pos", R"(["self","bob"])",
+                     "default", "legacy", "old", "legacy-hash");
+    conn.exec(
+        "INSERT INTO common_ground(id,tenant_id,statement_id,status,parties_json,"
+        "created_at,updated_at) VALUES("
+        "'cg-L0','default','L0','asserted_unack','[\"self\",\"bob\"]',"
+        "'2026-06-06T09:00:00Z','2026-06-06T09:00:00Z')");
+
+    insert_statement(conn, "L1", "self", "pos", R"(["bob","self"])",
+                     "default", "new", "new", "new-hash");
+    insert_bus_event(conn, "ev-L1", "L1", 1);
+    CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z");
+
+    EXPECT_EQ(1, icol(conn.raw(),
+        "SELECT rounds_since_assert FROM common_ground WHERE id='cg-L0'"));
+    EXPECT_EQ(R"(["bob","self"])", scol(conn.raw(),
+        "SELECT parties_json FROM common_ground WHERE id='cg-L0'"));
+}
+
+TEST(CommonGroundSubscriber, NaryPartiesAdvanceRoundsAndRemainScoped) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    const std::vector<std::string> parties{"alice", "bob", "carol"};
+    const std::string parties_json =
+        starling::schema::common_ground_parties_json(parties);
+
+    for (int i = 1; i <= 3; ++i) {
+        const std::string id = "N" + std::to_string(i);
+        insert_statement(conn, id, "alice", "pos", parties_json,
+                         "default", "subject-" + id, "pred-" + id, "hash-" + id);
+        insert_bus_event(conn, "ev-" + id, id, i);
+        CommonGroundSubscriber::tick_one_batch(
+            *adapter, conn, "2026-06-06T11:0" + std::to_string(i) + ":00Z");
+    }
+
+    EXPECT_EQ("grounded", scol(conn.raw(),
+        "SELECT status FROM common_ground WHERE statement_id='N1'"));
+    const std::string ref = starling::schema::common_ground_ref(parties);
+    EXPECT_TRUE(ref.starts_with("cg:v1:"));
+    const std::string content = container_content(conn.raw(), ref);
+    EXPECT_NE(content.find("N1"), std::string::npos);
 }
 
 // ── TC-CGS-004: ContainerRebuilt ──────────────────────────────────────────────

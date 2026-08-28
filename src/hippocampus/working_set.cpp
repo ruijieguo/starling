@@ -8,6 +8,7 @@
 #include "starling/neocortex/common_ground_container.hpp"
 #include "starling/neocortex/persona_container.hpp"
 #include "starling/prospective/commitment_engine.hpp"
+#include "starling/schema/common_ground_scope.hpp"
 
 namespace starling::hippocampus {
 
@@ -112,19 +113,22 @@ ContextBlock build_working_set(persistence::SqliteAdapter& adapter,
         }
     }
 
-    // common_ground ← 双方 sorted-pair key 的已 grounded 共识。
+    // common_ground <- canonical party-scope key 的已 grounded 共识。
     {
-        std::string a = p.agent_id, b = p.interlocutor;
-        if (b < a) std::swap(a, b);
-        const auto cg = neocortex::CommonGroundContainer(adapter).read(
-            adapter.connection(), p.tenant_id, a + "::" + b);
-        if (cg.found && !cg.grounded.empty()) {
-            std::string s;
-            for (const auto& g : cg.grounded) {
-                if (!s.empty()) s += "\n";
-                s += "- " + g;
+        if (!p.agent_id.empty() && !p.interlocutor.empty() &&
+            p.agent_id != p.interlocutor) {
+            const std::string ref = schema::common_ground_ref(
+                {p.agent_id, p.interlocutor});
+            const auto cg = neocortex::CommonGroundContainer(adapter).read(
+                adapter.connection(), p.tenant_id, ref);
+            if (cg.found && !cg.grounded.empty()) {
+                std::string s;
+                for (const auto& g : cg.grounded) {
+                    if (!s.empty()) s += "\n";
+                    s += "- " + g;
+                }
+                sections["common_ground"] = std::move(s);
             }
-            sections["common_ground"] = std::move(s);
         }
     }
 

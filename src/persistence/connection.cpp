@@ -1,5 +1,7 @@
 #include "starling/persistence/connection.hpp"
 
+#include <atomic>
+
 namespace starling::persistence {
 
 Connection Connection::open(const std::filesystem::path& db_path) {
@@ -42,6 +44,35 @@ void Connection::rollback() noexcept {
 
 int64_t Connection::last_insert_rowid() const noexcept {
     return sqlite3_last_insert_rowid(handle_.get());
+}
+
+TransactionGuard::TransactionGuard(Connection& c) : conn_(c) {
+    if (sqlite3_get_autocommit(conn_.raw()) != 0) {
+        outer_ = true;
+        conn_.begin_immediate();
+        return;
+    }
+    static std::atomic<unsigned long long> sequence{0};
+    savepoint_ = "starling_tx_" + std::to_string(++sequence);
+    conn_.exec("SAVEPOINT " + savepoint_);
+}
+
+TransactionGuard::~TransactionGuard() {
+    if (!active_) return;
+    if (outer_) {
+        conn_.rollback();
+        return;
+    }
+    sqlite3_exec(conn_.raw(), ("ROLLBACK TO SAVEPOINT " + savepoint_).c_str(),
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(conn_.raw(), ("RELEASE SAVEPOINT " + savepoint_).c_str(),
+                 nullptr, nullptr, nullptr);
+}
+
+void TransactionGuard::commit() {
+    if (outer_) conn_.commit();
+    else conn_.exec("RELEASE SAVEPOINT " + savepoint_);
+    active_ = false;
 }
 
 }  // namespace starling::persistence

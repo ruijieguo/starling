@@ -272,6 +272,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
     // 纯句柄:extract→commit 之间传递,无成员导出。
     // NOLINTNEXTLINE(bugprone-unused-raii) -- pybind 类型注册是有意的副作用,无需命名对象
     py::class_<starling::extractor::ExtractionLlmResult>(m, "ExtractionLlmResult");
+    py::class_<starling::memoryops::RememberLlmBundle>(m, "RememberLlmBundle");
 
     m.def("memory_remember_prepare",
           [](starling::persistence::SqliteAdapter& adapter,
@@ -354,6 +355,107 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"), py::arg("holder_id"),
           py::arg("interlocutor"),
           py::arg("prepared"), py::arg("llm_result"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
+    m.def("memory_remember_extract_all",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& belief_prompt,
+             const std::string& episodic_prompt,
+             const std::string& general_fact_prompt,
+             const std::string& holder_id,
+             const py::bytes& payload,
+             const starling::extractor::ValidationPolicy& policy) {
+              starling::memoryops::RememberParams params;
+              params.holder_id = holder_id;
+              {
+                  const std::string raw = payload;
+                  params.payload.assign(raw.begin(), raw.end());
+              }
+              starling::memoryops::RememberPrompts prompts{
+                  belief_prompt, episodic_prompt, general_fact_prompt};
+              starling::memoryops::RememberLlmBundle result;
+              {
+                  py::gil_scoped_release release;
+                  result = starling::memoryops::remember_extract_all(
+                      adapter, llm, params, prompts, policy);
+              }
+              return result;
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("belief_prompt"),
+          py::arg("episodic_prompt"), py::arg("general_fact_prompt"),
+          py::arg("holder_id"), py::arg("payload"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
+    m.def("memory_remember_commit_all",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& tenant_id,
+             const std::string& holder_id,
+             const std::string& interlocutor,
+             const starling::memoryops::RememberPrepared& prepared,
+             const starling::memoryops::RememberLlmBundle& extracted,
+             const starling::extractor::ValidationPolicy& policy) {
+              starling::memoryops::RememberParams params;
+              params.tenant_id = tenant_id;
+              params.holder_id = holder_id;
+              params.interlocutor = interlocutor;
+              starling::memoryops::RememberOutcome result;
+              {
+                  py::gil_scoped_release release;
+                  result = starling::memoryops::remember_commit_all(
+                      adapter, llm, params, prepared, extracted, policy);
+              }
+              return py::dict("engram_ref"_a = result.engram_ref,
+                              "statement_ids"_a = result.statement_ids,
+                              "outcome"_a = result.outcome,
+                              "extraction_failed"_a = result.extraction_failed);
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"),
+          py::arg("holder_id"), py::arg("interlocutor"), py::arg("prepared"),
+          py::arg("extracted"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
+    m.def("memory_remember_all",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& belief_prompt,
+             const std::string& episodic_prompt,
+             const std::string& general_fact_prompt,
+             const std::string& tenant_id, const std::string& holder_id,
+             const std::string& interlocutor, const std::string& adapter_name,
+             const std::string& source_prefix, const std::string& created_at_iso8601,
+             const py::bytes& payload,
+             const starling::extractor::ValidationPolicy& policy) {
+              starling::memoryops::RememberParams params;
+              params.tenant_id = tenant_id;
+              params.holder_id = holder_id;
+              params.interlocutor = interlocutor;
+              params.adapter_name = adapter_name;
+              params.source_prefix = source_prefix;
+              params.created_at_iso8601 = created_at_iso8601;
+              {
+                  const std::string raw = payload;
+                  params.payload.assign(raw.begin(), raw.end());
+              }
+              const starling::memoryops::RememberPrompts prompts{
+                  belief_prompt, episodic_prompt, general_fact_prompt};
+              starling::memoryops::RememberOutcome result;
+              {
+                  py::gil_scoped_release release;
+                  result = starling::memoryops::remember_all(
+                      adapter, llm, params, prompts, policy);
+              }
+              return py::dict("engram_ref"_a = result.engram_ref,
+                              "statement_ids"_a = result.statement_ids,
+                              "outcome"_a = result.outcome,
+                              "extraction_failed"_a = result.extraction_failed);
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("belief_prompt"),
+          py::arg("episodic_prompt"), py::arg("general_fact_prompt"),
+          py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
+          py::arg("adapter_name"), py::arg("source_prefix"),
+          py::arg("created_at_iso8601"), py::arg("payload"),
           py::arg("policy") = starling::extractor::ValidationPolicy{});
 
     m.def("memory_tick_all",

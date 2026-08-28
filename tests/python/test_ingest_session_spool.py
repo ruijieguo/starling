@@ -1,6 +1,9 @@
 import importlib.util
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -17,6 +20,30 @@ def test_write_job_creates_spool_file(tmp_path, monkeypatch):
     job = json.loads(p.read_text())
     assert job["session_id"] == "s1" and job["transcript_path"] == "/t/x.jsonl"
     assert job["cwd"] == "/proj/foo" and job["tenant"] == "default"
+    assert p.parent.name == "tenant-default"
+
+
+def test_script_runs_standalone_without_starling_package(tmp_path):
+    spool = tmp_path / "spool"
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("{}")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "ingest_session.py"
+    env = os.environ.copy()
+    env["STARLING_DASH_INGEST_SPOOL"] = str(spool)
+    env["STARLING_DASH_TENANT"] = "tenant/with spaces"
+
+    result = subprocess.run(
+        [sys.executable, "-I", str(script), "--bootstrap", str(transcript)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    jobs = list((spool / "tenant-tenant%2Fwith%20spaces").glob("*.json"))
+    assert len(jobs) == 1
+    assert json.loads(jobs[0].read_text())["tenant"] == "tenant/with spaces"
 
 
 def test_hook_main_reads_stdin_and_exits_zero(tmp_path, monkeypatch):
@@ -25,7 +52,7 @@ def test_hook_main_reads_stdin_and_exits_zero(tmp_path, monkeypatch):
         {"session_id": "s2", "transcript_path": "/t/y.jsonl", "cwd": "/proj/bar"})))
     monkeypatch.setattr("sys.argv", ["ingest_session.py"])
     ingest_session.main()                       # 不抛
-    jobs = list((tmp_path / "spool").glob("*.json"))
+    jobs = list((tmp_path / "spool" / "tenant-default").glob("*.json"))
     assert len(jobs) == 1 and json.loads(jobs[0].read_text())["session_id"] == "s2"
 
 
@@ -41,7 +68,7 @@ def test_bootstrap_writes_job_per_path(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.argv",
                         ["ingest_session.py", "--bootstrap", "/t/a.jsonl", "/t/b.jsonl"])
     ingest_session.main()
-    assert len(list((tmp_path / "spool").glob("*.json"))) == 2
+    assert len(list((tmp_path / "spool" / "tenant-default").glob("*.json"))) == 2
 
 
 # --- Controller resolution: transcript_path 可能缺失于 SessionEnd payload,须按
@@ -62,7 +89,7 @@ def test_missing_transcript_path_reconstructs_from_cwd(tmp_path, monkeypatch):
         {"session_id": "s3", "cwd": cwd})))
     monkeypatch.setattr("sys.argv", ["ingest_session.py"])
     ingest_session.main()
-    jobs = list((tmp_path / "spool").glob("*.json"))
+    jobs = list((tmp_path / "spool" / "tenant-default").glob("*.json"))
     assert len(jobs) == 1
     job = json.loads(jobs[0].read_text())
     assert job["session_id"] == "s3"
@@ -80,5 +107,5 @@ def test_missing_transcript_and_no_file_skips(tmp_path, monkeypatch):
         {"session_id": "s4", "cwd": "/proj/bar"})))
     monkeypatch.setattr("sys.argv", ["ingest_session.py"])
     ingest_session.main()                        # 不抛
-    assert not list((tmp_path / "spool").glob("*.json"))
+    assert not list((tmp_path / "spool").rglob("*.json"))
     assert (fake_home / ".starling" / "ingest.log").exists()   # skip 记了日志

@@ -58,9 +58,9 @@ def test_partial_success(rt):
             "SELECT status FROM extraction_attempt ORDER BY rowid DESC LIMIT 1"
         ).fetchone()[0]
         run_status = conn.execute(
-            "SELECT status FROM pipeline_run"
+            "SELECT status FROM governance_pipeline_run"
         ).fetchone()[0]
 
     assert attempt_status == "partial_success"
-    assert run_status == "finished"
+    assert run_status == "PARTIAL_SUCCESS"
     assert r.status == "partial_success"

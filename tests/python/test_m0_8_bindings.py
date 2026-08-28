@@ -2,8 +2,10 @@
 
 Verifies that every M0.8 class is importable from _core, constructable from a
 SqliteAdapter, and that its connection-free Python methods are callable without
-error on a freshly opened in-memory database.
+error on a freshly opened temporary database.
 """
+
+import sqlite3
 
 import pytest
 from starling import _core
@@ -12,8 +14,22 @@ NOW = "2026-05-27T10:00:00Z"
 
 
 @pytest.fixture
-def adapter():
-    return _core.SqliteAdapter.open(":memory:")
+def adapter(tmp_path):
+    return _core.SqliteAdapter.open(str(tmp_path / "m0_8.db"))
+
+
+def _seed_statement(adapter, stmt_id, tenant="default"):
+    with sqlite3.connect(str(adapter.db_path)) as conn:
+        conn.execute(
+            "INSERT INTO statements("
+            "id,tenant_id,holder_id,holder_perspective,subject_kind,subject_id,"
+            "predicate,object_kind,object_value,canonical_object_hash,modality,"
+            "polarity,confidence,observed_at,salience,affect_json,activation,"
+            "last_accessed,provenance,created_at,updated_at) "
+            "VALUES(?,?,?,'first_person','cognizer','bob','knows','str','x',?,"
+            "'believes','pos',0.9,?,0.5,'{}',0.0,?,'user_input',?,?)",
+            (stmt_id, tenant, "alice", f"h-{tenant}-{stmt_id}", NOW, NOW, NOW, NOW),
+        )
 
 
 # ── ReplayScheduler ───────────────────────────────────────────────────────────
@@ -131,6 +147,7 @@ class TestCommonGroundWriter:
         assert isinstance(result, int)
 
     def test_assert_and_acknowledge(self, adapter):
+        _seed_statement(adapter, "stmt-001")
         cgw = _core.CommonGroundWriter(adapter)
         cg_id = cgw.assert_(
             "default", "stmt-001", ["alice", "bob"], NOW
@@ -139,11 +156,13 @@ class TestCommonGroundWriter:
         cgw.acknowledge(cg_id, "alice", NOW)
 
     def test_assert_and_repair(self, adapter):
+        _seed_statement(adapter, "stmt-002")
         cgw = _core.CommonGroundWriter(adapter)
         cg_id = cgw.assert_("default", "stmt-002", ["alice"], NOW)
         cgw.repair(cg_id, "alice", NOW)
 
     def test_assert_and_withdraw(self, adapter):
+        _seed_statement(adapter, "stmt-003")
         cgw = _core.CommonGroundWriter(adapter)
         cg_id = cgw.assert_("default", "stmt-003", ["alice"], NOW)
         cgw.withdraw(cg_id, "alice", NOW)

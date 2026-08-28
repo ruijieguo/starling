@@ -14,6 +14,7 @@
 
 #include "starling/embedding/embedding_worker.hpp"
 #include "starling/extractor/extractor.hpp"
+#include "starling/extractor/episodic_extractor.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
 #include "starling/governance/stage_timer.hpp"
@@ -59,6 +60,20 @@ struct RememberPrepared {
     std::string created_at_iso8601;
 };
 
+struct RememberPrompts {
+    std::string belief;
+    std::string episodic;
+    std::string general_fact;
+};
+
+// Opaque host hand-off between the network-only and transaction-only phases.
+// The order and failure policy of all three extraction channels live in Core.
+struct RememberLlmBundle {
+    extractor::ExtractionLlmResult belief;
+    extractor::EpisodicLlmResult episodic;
+    extractor::ExtractionLlmResult general_fact;
+};
+
 // 相位 1(锁内短):require_write_admission fail-fast + append_evidence(engram 写)。
 RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
                                   const RememberParams& params);
@@ -92,6 +107,22 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
                          std::string_view prompt_template,
                          const RememberParams& params,
                          const extractor::ValidationPolicy& policy = {});
+
+RememberLlmBundle remember_extract_all(
+    persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm,
+    const RememberParams& params, const RememberPrompts& prompts,
+    const extractor::ValidationPolicy& policy = {});
+
+RememberOutcome remember_commit_all(
+    persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm,
+    const RememberParams& params, const RememberPrepared& prepared,
+    const RememberLlmBundle& extracted,
+    const extractor::ValidationPolicy& policy = {});
+
+RememberOutcome remember_all(
+    persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm,
+    const RememberParams& params, const RememberPrompts& prompts,
+    const extractor::ValidationPolicy& policy = {});
 
 // ── converse — chat-with-memory turn (Phase 2c) ──
 struct ConverseParams {

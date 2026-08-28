@@ -44,6 +44,26 @@ extractor::ExtractedStatement base_stmt() {
     return s;
 }
 
+void seed_parent(sqlite3* db, const char* id, const char* tenant_id, int derived_depth) {
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db,
+        "INSERT INTO statements("
+        "id,tenant_id,holder_id,holder_perspective,subject_kind,subject_id,predicate,"
+        "object_kind,object_value,canonical_object_hash,modality,polarity,confidence,"
+        "observed_at,salience,affect_json,activation,last_accessed,provenance,"
+        "derived_depth,created_at,updated_at) "
+        "VALUES(?,?,'alice','first_person','cognizer','bob','knows','str','calculus',"
+        "'hash-parent','BELIEVES','pos',0.9,'2026-05-24T00:00:00Z',0.1,'{}',0.0,"
+        "'2026-05-24T00:00:00Z','user_input',?,'2026-05-24T00:00:00Z',"
+        "'2026-05-24T00:00:00Z')",
+        -1, &stmt, nullptr), SQLITE_OK);
+    persistence::StmtHandle handle(stmt);
+    sqlite3_bind_text(handle.get(), 1, id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(handle.get(), 2, tenant_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(handle.get(), 3, derived_depth);
+    ASSERT_EQ(sqlite3_step(handle.get()), SQLITE_DONE);
+}
+
 }  // namespace
 
 TEST(StatementWriterDerivedFromTest, PersistsParentIdsAndDepth) {
@@ -81,6 +101,33 @@ TEST(StatementWriterDerivedFromTest, PersistsParentIdsAndDepth) {
     ASSERT_EQ(rows[p_id].second, 0);
     ASSERT_EQ(rows[c_id].first, std::string("[\"") + p_id + "\"]");
     ASSERT_EQ(rows[c_id].second, 1);
+}
+
+TEST(StatementWriterDerivedFromTest, ParentDepthIsTenantScoped) {
+    auto a = make_adapter();
+    sqlite3* db = a->connection().raw();
+    seed_parent(db, "shared-parent", "tenant-a", 8);
+    seed_parent(db, "shared-parent", "tenant-b", 0);
+
+    Bus bus(*a);
+    extractor::ExtractedStatement child = base_stmt();
+    child.holder_tenant_id = "tenant-b";
+    child.subject_id = "carol";
+    child.canonical_object_hash = "hash-child";
+    child.derived_from = {"shared-parent"};
+
+    const auto outcome = bus.write(child, "engram-child", "chunk-child", std::nullopt);
+    const auto child_id = std::get<StatementWriteAccepted>(outcome).stmt_id;
+
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db,
+        "SELECT derived_depth FROM statements WHERE id = ? AND tenant_id = ?",
+        -1, &stmt, nullptr), SQLITE_OK);
+    persistence::StmtHandle handle(stmt);
+    sqlite3_bind_text(handle.get(), 1, child_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(handle.get(), 2, child.holder_tenant_id.c_str(), -1, SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(handle.get()), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(handle.get(), 0), 1);
 }
 
 }  // namespace starling::bus

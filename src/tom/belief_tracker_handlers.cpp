@@ -1,6 +1,6 @@
 // belief_tracker_handlers.cpp — handler functions for BeliefTracker event dispatch.
 // Each handler is called by belief_tracker.cpp for a specific event_type.
-// Handlers are best-effort: callers wrap them in try/catch.
+// Database and payload failures propagate so the batch checkpoint is not advanced.
 
 #include "belief_tracker_internal.hpp"
 
@@ -42,12 +42,7 @@ void handle_statement_written(
     persistence::Connection& conn,
     TickStats& stats) {
 
-    nlohmann::json j;
-    try {
-        j = nlohmann::json::parse(payload_json);
-    } catch (...) {
-        return;
-    }
+    const nlohmann::json j = nlohmann::json::parse(payload_json);
 
     const std::string stmt_id = j.value("stmt_id", primary_id);
     const std::string engram_ref_id = j.value("engram_ref_id", std::string{});
@@ -71,7 +66,9 @@ void handle_statement_written(
             "SELECT observed_at, perceived_by_json FROM statements "
             "WHERE id = ? AND tenant_id = ? LIMIT 1";
         sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) return;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw starling::persistence::detail::make_sqlite_error(
+                conn.raw(), "belief_tracker: statement lookup prepare");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, stmt_id);
         bind_sv(h.get(), 2, tenant_id);
@@ -91,16 +88,15 @@ void handle_statement_written(
 
     // Parse perceived_by array.
     std::vector<std::string> perceived_by;
-    try {
-        auto pj = nlohmann::json::parse(perceived_by_json_str.empty() ? "[]" : perceived_by_json_str);
-        if (pj.is_array()) {
-            for (const auto& item : pj) {
-                if (item.is_string()) {
-                    perceived_by.push_back(item.get<std::string>());
-                }
+    auto pj = nlohmann::json::parse(
+        perceived_by_json_str.empty() ? "[]" : perceived_by_json_str);
+    if (pj.is_array()) {
+        for (const auto& item : pj) {
+            if (item.is_string()) {
+                perceived_by.push_back(item.get<std::string>());
             }
         }
-    } catch (...) {}
+    }
 
     if (perceived_by.empty()) return;
 
@@ -116,10 +112,8 @@ void handle_statement_written(
 
     // 3. update_last_seen_at for each cognizer in perceived_by.
     for (const auto& cognizer_id : perceived_by) {
-        try {
-            hub.update_last_seen_at(cognizer_id, tenant_id, observed_at);
-            stats.last_seen_updates++;
-        } catch (...) {}
+        hub.update_last_seen_at(cognizer_id, tenant_id, observed_at);
+        stats.last_seen_updates++;
     }
 
     // 4. negation_subject — P2.a v11 prompt has no such field; skip if absent.
@@ -141,12 +135,7 @@ void handle_evidence_appended(
     persistence::Connection& conn,
     TickStats& stats) {
 
-    nlohmann::json j;
-    try {
-        j = nlohmann::json::parse(payload_json);
-    } catch (...) {
-        return;
-    }
+    const nlohmann::json j = nlohmann::json::parse(payload_json);
 
     const std::string engram_id = j.value("engram_id", primary_id);
     if (engram_id.empty()) return;
@@ -157,7 +146,9 @@ void handle_evidence_appended(
         const char* sql =
             "SELECT adapter_name FROM engrams WHERE id = ? AND tenant_id = ? LIMIT 1";
         sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) return;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw starling::persistence::detail::make_sqlite_error(
+                conn.raw(), "belief_tracker: engram lookup prepare");
         StmtHandle h(raw);
         bind_sv(h.get(), 1, engram_id);
         bind_sv(h.get(), 2, tenant_id);

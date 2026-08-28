@@ -19,8 +19,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from starling import _core
-from starling.extractor.prompts import EXTRACTION_PROMPT
-from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
 from starling.extractor.config import ExtractionConfig
 
 
@@ -51,7 +49,10 @@ def _make_vector_index(backend: str, dim: int, store_path):
         if parent:
             os.makedirs(parent, exist_ok=True)
         return _core.ZvecVectorIndex(path, int(dim))
-    return _core.SqliteBlobVectorIndex()
+    if backend == "sqlite":
+        return _core.SqliteBlobVectorIndex()
+    raise ValueError(
+        f"unknown vector_backend={backend!r}; expected 'sqlite' or 'zvec'")
 
 
 class LLMNotConfigured(RuntimeError):
@@ -132,16 +133,23 @@ class MemoryCore:
         self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
-        """单体 = 三相内联(单一语义源)。facade 直接走本单体;DashboardEngine
-        分相调用以在锁外跑 belief+gf+episodic extraction。belief/episodic/gf 顺序不变。"""
+        """Core-owned belief/general-fact/episodic remember pipeline."""
         if self.llm is None:   # #1:fail-fast(prepare 会写 engram,故在写前查;facade 路径的兜底)
             raise LLMNotConfigured(
                 "remember requires an llm adapter "
                 "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
-        bundle = self.remember_prepare(text, holder=holder,
-                                       interlocutor=interlocutor, now=now)
-        extracted = self.remember_extract(bundle)
-        return self.remember_commit(bundle, extracted)
+        created_iso = parse_now(now).astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        holder_id = holder or self.agent
+        return _core.memory_remember_all(
+            self.rt.adapter, self.llm,
+            self._extraction.belief_prompt,
+            self._extraction.episodic_prompt,
+            self._extraction.general_fact_prompt,
+            tenant_id=self.tenant, holder_id=holder_id,
+            interlocutor=interlocutor or "", adapter_name=self.adapter_name,
+            source_prefix=self.source_prefix, created_at_iso8601=created_iso,
+            payload=text.encode("utf-8"), policy=_build_policy(self._extraction))
 
     def remember_prepare(self, text: str, *, holder=None, interlocutor=None,
                          now=None) -> dict:
@@ -160,84 +168,36 @@ class MemoryCore:
         return {"prepared": prepared, "holder_id": holder_id,
                 "interlocutor": interlocutor or "", "text": text}
 
-    def remember_extract(self, bundle: dict, llm=None) -> dict:
-        """三相之二(锁外无事务):belief + general-fact + episodic 三条 LLM 抽取(纯网络)。
-        should_extract=False(no_store/rejected)→ 空。llm 缺省 self.llm;DashboardEngine
-        传本轮解析出的局部 adapter(避拆锁后全局 slot 竞态)。episodic LLM 就此出锁。"""
+    def remember_extract(self, bundle: dict, llm=None):
+        """三相之二：Core 统一执行三条 LLM 抽取，Python 仅转发配置。"""
         prepared = bundle["prepared"]
         if not prepared.should_extract:
-            return {"belief": None, "gf": None, "episodic_llm": None}
+            return None
         extraction_llm = llm or self.llm
         if extraction_llm is None:   # #1:extract 真正用 llm 处兜底(直呼 extract 时)
             raise LLMNotConfigured("remember requires an llm adapter")
-        holder_id = bundle["holder_id"]
-        payload = bundle["text"].encode("utf-8")
-        policy = _build_policy(self._extraction)
-        belief = _core.memory_extract_llm(
-            self.rt.adapter, extraction_llm, self._extraction.belief_prompt,
-            holder_id=holder_id, payload=payload, policy=policy)
-        # {self} 由 holder_id 填充,使事实 holder=self → 默认 recall 命中。
-        gf_prompt = self._extraction.general_fact_prompt.replace("{self}", holder_id)
-        gf = _core.memory_extract_llm(
-            self.rt.adapter, extraction_llm, gf_prompt,
-            holder_id=holder_id, payload=payload, policy=policy)
-        # episodic 相①(锁外,option B 收尾):~20-50s LLM 出锁,与 belief+gf 并列。
-        episodic = _core.EpisodicExtractor(
-            self.conn, extraction_llm, self.rt.adapter,
-            self._extraction.episodic_prompt)
-        episodic_llm = episodic.extract_llm(bundle["text"])
-        return {"belief": belief, "gf": gf, "episodic_llm": episodic_llm}
+        return _core.memory_remember_extract_all(
+            self.rt.adapter, extraction_llm,
+            self._extraction.belief_prompt,
+            self._extraction.episodic_prompt,
+            self._extraction.general_fact_prompt,
+            holder_id=bundle["holder_id"], payload=bundle["text"].encode("utf-8"),
+            policy=_build_policy(self._extraction))
 
-    def remember_commit(self, bundle: dict, extracted: dict, llm=None) -> dict:
-        """三相之三(锁内短):belief persist → episodic persist(option B 收尾:
-        LLM 已锁外跑完,此处纯 DB)→ gf persist(复用同 engram)。statement_ids
-        顺序 belief+episodic+gf 与单体一致。"""
+    def remember_commit(self, bundle: dict, extracted, llm=None) -> dict:
+        """三相之三：Core 在一个外层事务内提交三条管线。"""
         prepared = bundle["prepared"]
         if not prepared.should_extract:
             return {"engram_ref": prepared.engram_ref, "statement_ids": [],
                     "outcome": prepared.outcome, "extraction_failed": False}
         extraction_llm = llm or self.llm
-        created_iso = prepared.created_at_iso8601   # #6:权威时戳从 prepared 读(不再自持)
         holder_id = bundle["holder_id"]
         interlocutor = bundle["interlocutor"]
-        text = bundle["text"]
-        policy = _build_policy(self._extraction)
-
-        # 第一条:belief persist(#6:不传 created_at,C++ 用 prepared 的权威时戳)。
-        out = _core.memory_remember_commit(
+        return _core.memory_remember_commit_all(
             self.rt.adapter, extraction_llm, tenant_id=self.tenant,
             holder_id=holder_id, interlocutor=interlocutor,
-            prepared=prepared, llm_result=extracted["belief"], policy=policy)
-
-        # 第二条:episodic(叙事事件)。相② persist:LLM 已在锁外 extract_llm 跑完,
-        # 此处纯 DB 落库(option B 收尾:episodic LLM 出锁)。次序 belief→episodic→
-        # reconstruct→gf 不变;reconstruct 读 episodic_events 故须在 persist 之后。
-        engram_ref = out.get("engram_ref") or ""
-        if engram_ref:
-            episodic = _core.EpisodicExtractor(
-                self.conn, extraction_llm, self.rt.adapter,
-                self._extraction.episodic_prompt)
-            event_ids = episodic.persist(
-                engram_ref=engram_ref, tenant=self.tenant,
-                agent_self=holder_id, now=created_iso,
-                llm_result=extracted["episodic_llm"])
-            if event_ids:
-                out["statement_ids"] = list(out.get("statement_ids", [])) + list(event_ids)
-                try:
-                    _core.PerceptionReconstructor(
-                        self.conn, self.rt.adapter).reconstruct(tenant=self.tenant)
-                except Exception:  # noqa: BLE001 — perception 是 best-effort;绝不失败 remember
-                    pass
-
-        # 第三条:general-fact persist(复用同 idempotent engram;#6:不传 created_at)。
-        gf_out = _core.memory_remember_commit(
-            self.rt.adapter, extraction_llm, tenant_id=self.tenant,
-            holder_id=holder_id, interlocutor=interlocutor,
-            prepared=prepared, llm_result=extracted["gf"], policy=policy)
-        gf_ids = gf_out.get("statement_ids", []) if gf_out else []
-        if gf_ids:
-            out["statement_ids"] = list(out.get("statement_ids", [])) + list(gf_ids)
-        return out
+            prepared=prepared, extracted=extracted,
+            policy=_build_policy(self._extraction))
 
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic", holder: str | None = None) -> list:

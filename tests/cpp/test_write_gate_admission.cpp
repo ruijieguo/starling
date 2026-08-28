@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <functional>
+#include <system_error>
 using starling::ProfileCapability;
 using starling::RuntimeHealth;
 using namespace starling::governance;
@@ -32,8 +33,12 @@ ProfileCapability all_present() {
   };
 }
 std::unique_ptr<starling::persistence::SqliteAdapter> open_tmp(const char* name) {
-  return starling::persistence::SqliteAdapter::open(
-      std::filesystem::temp_directory_path() / name);
+  const auto path = std::filesystem::temp_directory_path() / name;
+  std::error_code ignored;
+  std::filesystem::remove(path, ignored);
+  std::filesystem::remove(path.string() + "-wal", ignored);
+  std::filesystem::remove(path.string() + "-shm", ignored);
+  return starling::persistence::SqliteAdapter::open(path);
 }
 }  // namespace
 

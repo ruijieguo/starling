@@ -4,6 +4,8 @@
 
 把上层逻辑层（Statement / Container / Engram）与底层物理存储完全隔离。提供三档 profile（local-store / dist-store / cloud-store），每档支持文本、向量、图三类索引与检索。它不做：业务逻辑、查询计划器、缓存、事务补偿（补偿由 Reconsolidation Engine 负责）。
 
+> **实现状态（2026-07-28）**：当前 local-store 以 SQLite 作为 Meta/Graph 真相源；向量后端默认 `sqlite`，构建时启用 `STARLING_VECTOR_ZVEC` 后可选 `zvec`。LadybugDB PoC 的结论为 no-go，seekdb / dist-store / cloud-store 仍是目标态而非当前实现。Zvec 文档主键从旧的全局 `stmt_id` 升级为版本化复合键 `starling:v1:<tenant_len>:<stmt_len>:<tenant><stmt>`；读取兼容旧裸键，重新嵌入时惰性删除旧裸键。旧全局键无法恢复已经发生的跨租户覆盖，因此升级既有 Zvec store 必须从 SQLite Statement 真相源执行一次完整向量重建，不能只依赖惰性改键。
+
 ## 输入
 
 - 上层 Bus.write / append_evidence / rebuild_container / query 调用

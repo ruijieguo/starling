@@ -425,12 +425,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
     MaintainerStats stats;
 
     // 1. Read checkpoint.
-    int last_seq = 0;
-    try {
-        last_seq = read_checkpoint(conn);
-    } catch (...) {
-        return stats;  // cannot read checkpoint — no-op
-    }
+    const int last_seq = read_checkpoint(conn);
 
     // 2. SELECT events after checkpoint.
     std::vector<EventRow> batch;
@@ -442,7 +437,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
             "ORDER BY outbox_sequence";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            return stats;
+            throw make_sqlite_error(conn.raw(), "projection_maintainer: select events prepare");
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, last_seq);
         while (sqlite3_step(h.get()) == SQLITE_ROW) {
@@ -514,11 +509,7 @@ MaintainerStats ProjectionMaintainer::tick_one_batch(
     }
 
     // 4. Advance checkpoint.
-    try {
-        write_checkpoint(conn, max_seq, now_iso);
-    } catch (...) {
-        // best-effort; don't fail the batch
-    }
+    write_checkpoint(conn, max_seq, now_iso);
 
     return stats;
 }

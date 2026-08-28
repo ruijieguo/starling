@@ -36,9 +36,23 @@ TEST(PipelineLedger, StartFinishRoundTrip) {
     PipelineLedger l(c);
     const auto run_id = l.start_run("t1", "msg-uri-1", "{\"k\":\"v\"}");
     EXPECT_FALSE(run_id.empty());
-    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM pipeline_run WHERE status='started'"), 1);
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM governance_pipeline_run WHERE status='RUNNING'"), 1);
     l.finish_run(run_id, PipelineStatus::Finished);
-    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM pipeline_run WHERE status='finished'"), 1);
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM governance_pipeline_run WHERE status='COMPLETED'"), 1);
+    EXPECT_EQ(count(c,
+        "SELECT COUNT(*) FROM governance_pipeline_run "
+        "WHERE metadata_json='{\"k\":\"v\"}'"), 1);
+    EXPECT_EQ(count(c,
+        "SELECT COUNT(*) FROM pipeline_run WHERE metadata_json='{\"k\":\"v\"}'"), 1);
+}
+
+TEST(PipelineLedger, RejectsSecondExecutorForActiveRun) {
+    auto c = fresh_db();
+    PipelineLedger l(c);
+    const auto run_id = l.start_run("t1", "same-input");
+    EXPECT_THROW(l.start_run("t1", "same-input"), std::runtime_error);
+    EXPECT_EQ(count(c, "SELECT COUNT(*) FROM governance_pipeline_run"), 1);
+    l.finish_run(run_id, PipelineStatus::Finished);
 }
 
 TEST(PipelineLedger, AttemptUniquePerSpanAndAttemptNumber) {

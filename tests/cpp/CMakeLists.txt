@@ -120,6 +120,7 @@ add_executable(starling_tests
     test_projection_repair_guard.cpp
     test_subscriber_pump.cpp
     test_vector_math.cpp
+    test_zvec_primary_key.cpp
     test_pattern_separator.cpp
     test_sqlite_blob_vector_index.cpp
     test_stub_embedding_adapter.cpp
@@ -188,7 +189,7 @@ add_executable(starling_tests
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
     "${gtest_SOURCE_DIR}")
-target_link_libraries(starling_tests PRIVATE starling_core starling_testing_marker GTest::gtest_main)
+target_link_libraries(starling_tests PRIVATE starling_testing_marker GTest::gtest_main)
 
 # P3.b1 phase 5: ZvecVectorIndex parity 测试(仅 STARLING_VECTOR_ZVEC=ON)。link 经
 # starling_core PUBLIC zvec_backend 传递(force_load plugins + main + 系统框架)。

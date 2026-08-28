@@ -533,12 +533,12 @@ int ReplayScheduler::sweep_volatile_ttl(persistence::Connection& conn,
 }
 
 int ReplayScheduler::run_decay(persistence::Connection& conn,
-                                const std::vector<std::string>& candidate_ids,
+                                const std::vector<DecayCandidate>& candidates,
                                 std::string_view now_iso) {
-    if (candidate_ids.empty()) return 0;
+    if (candidates.empty()) return 0;
 
-    // Deduplicate input
-    std::vector<std::string> deduped = candidate_ids;
+    // The statement identity is composite. Deduplicate only exact tenant/id pairs.
+    std::vector<DecayCandidate> deduped = candidates;
     std::sort(deduped.begin(), deduped.end());
     deduped.erase(std::unique(deduped.begin(), deduped.end()), deduped.end());
 
@@ -548,15 +548,16 @@ int ReplayScheduler::run_decay(persistence::Connection& conn,
     struct CandInfo { std::string id, holder_id, tenant_id, state; };
     std::vector<CandInfo> info;
     info.reserve(deduped.size());
-    for (const auto& id : deduped) {
+    for (const auto& candidate : deduped) {
         const char* sql =
             "SELECT id, holder_id, tenant_id, consolidation_state "
-            "FROM statements WHERE id=?";
+            "FROM statements WHERE tenant_id=? AND id=?";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) continue;
         StmtHandle h(raw);
-        bind_sv(h.get(), 1, id);
-        while (sqlite3_step(h.get()) == SQLITE_ROW) {
+        bind_sv(h.get(), 1, candidate.tenant_id);
+        bind_sv(h.get(), 2, candidate.stmt_id);
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
             CandInfo ci;
             ci.id        = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
             ci.holder_id = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));

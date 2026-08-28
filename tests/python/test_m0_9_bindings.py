@@ -1,3 +1,5 @@
+import pytest
+
 from starling import _core
 
 
@@ -10,3 +12,10 @@ def test_classes_exist():
 def test_construct_stub_and_index():
     assert _core.StubEmbeddingAdapter(8) is not None
     assert _core.SqliteBlobVectorIndex() is not None
+
+
+def test_unknown_vector_backend_fails_fast():
+    from starling._memory_core import _make_vector_index
+
+    with pytest.raises(ValueError, match="unknown vector_backend"):
+        _make_vector_index("sqllite", 8, None)

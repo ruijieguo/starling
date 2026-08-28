@@ -139,9 +139,11 @@ def test_cmake_configure_command_contains_core_flags(tmp_path):
         build_tests=True,
         allow_network=True,
         extra_args=["-DSQLite3_INCLUDE_DIR=/sqlite/include"],
+        cmake=tmp_path / "venv" / "cmake",
     )
 
-    assert cmd[:5] == ["cmake", "-S", str(cb.REPO_ROOT), "-B", str(tmp_path / "build-linux")]
+    assert cmd[:5] == [str(tmp_path / "venv" / "cmake"), "-S", str(cb.REPO_ROOT),
+                       "-B", str(tmp_path / "build-linux")]
     assert "-G" in cmd and "Ninja" in cmd
     assert "-DSTARLING_BUILD_PYTHON=ON" in cmd
     assert "-DSTARLING_BUILD_TESTS=ON" in cmd
@@ -171,13 +173,25 @@ def test_planned_commands_include_configure_build_and_ctest(tmp_path):
         build_dir=tmp_path / "build",
         build=True,
         test=True,
+        cmake=tmp_path / "venv" / "cmake",
+        ctest=tmp_path / "venv" / "ctest",
     )
 
     assert commands == [
         ["cmake", "-S", ".", "-B", str(tmp_path / "build")],
-        ["cmake", "--build", str(tmp_path / "build")],
-        ["ctest", "--test-dir", str(tmp_path / "build"), "--output-on-failure"],
+        [str(tmp_path / "venv" / "cmake"), "--build", str(tmp_path / "build")],
+        [str(tmp_path / "venv" / "ctest"), "--test-dir", str(tmp_path / "build"),
+         "--output-on-failure"],
     ]
+
+
+def test_tool_executable_prefers_venv(tmp_path, monkeypatch):
+    monkeypatch.setattr(cb, "REPO_ROOT", tmp_path)
+    tool = tmp_path / ".venv" / "bin" / "cmake"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("")
+
+    assert cb.tool_executable("cmake") == tool
 
 
 def test_python_editable_command_passes_cmake_defines(tmp_path):

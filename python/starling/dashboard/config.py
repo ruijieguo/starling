@@ -29,6 +29,7 @@ from pathlib import Path
 _DEFAULT_DIR = Path.home() / ".starling"
 _DEFAULT_CONFIG = _DEFAULT_DIR / "starling.json"
 _DEFAULT_DB = _DEFAULT_DIR / "dashboard.db"
+_DEFAULT_INGEST_SPOOL = _DEFAULT_DIR / "ingest-spool"
 
 # Role keys. extraction/embedding are wired today; chat is consumed by
 # converse() (2c); consolidation is reserved (replay uses no LLM yet).
@@ -37,7 +38,7 @@ ROLES = ("extraction", "embedding", "chat", "consolidation")
 _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
     "cors_origins", "providers", "roles", "tick_interval_s",
-    "vector_backend", "vector_store_path", "gist_thresholds",
+    "vector_backend", "vector_store_path", "gist_thresholds", "ingest_spool_path",
 )
 
 
@@ -59,6 +60,8 @@ class DashboardConfig:
     # P3.b1 phase 5: 向量后端选型。sqlite(默认)=暴力 cosine + SQL scope。
     vector_backend: str = "sqlite"
     vector_store_path: str = ""
+    # Root directory only. DashboardEngine adds a tenant-specific partition.
+    ingest_spool_path: str = ""
     # #38-C v2 threshold surface: NORM-gist tuning knobs. Empty keys → C++ defaults
     # (min_holders=3, min_replay_count=1, min_confidence=0.6). Threaded into
     # run_idle/run_sleep via MemoryCore.gist_thresholds.
@@ -103,6 +106,8 @@ class DashboardConfig:
             port=int(os.environ.get("STARLING_DASH_PORT", "8787")),
             cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
             tick_interval_s=float(os.environ.get("STARLING_DASH_TICK_INTERVAL", "30")),
+            ingest_spool_path=os.environ.get(
+                "STARLING_DASH_INGEST_SPOOL", str(_DEFAULT_INGEST_SPOOL)),
         )
 
     @classmethod
@@ -119,6 +124,8 @@ class DashboardConfig:
             _migrate_legacy_model_config(cfg, data)
         _env_overlay(cfg)
         cfg.db_path = str(Path(cfg.db_path).expanduser())
+        if cfg.ingest_spool_path:
+            cfg.ingest_spool_path = str(Path(cfg.ingest_spool_path).expanduser())
         if not cfg.token:
             cfg.token = secrets.token_urlsafe(24)
             cfg.save()
@@ -150,6 +157,11 @@ class DashboardConfig:
             raise RuntimeError(
                 "refusing to bind dashboard to non-loopback host without a token"
             )
+
+    def ingest_spool_root(self) -> Path:
+        configured = self.ingest_spool_path or os.environ.get(
+            "STARLING_DASH_INGEST_SPOOL", str(_DEFAULT_INGEST_SPOOL))
+        return Path(configured).expanduser()
 
 
 def _migrate_legacy_model_config(cfg: DashboardConfig, data: dict) -> None:
@@ -186,6 +198,7 @@ def _env_overlay(cfg: DashboardConfig) -> None:
     if e("STARLING_DASH_TICK_INTERVAL"): cfg.tick_interval_s = float(e("STARLING_DASH_TICK_INTERVAL"))
     if e("STARLING_DASH_VECTOR_BACKEND"): cfg.vector_backend = e("STARLING_DASH_VECTOR_BACKEND")
     if e("STARLING_DASH_VECTOR_STORE_PATH"): cfg.vector_store_path = e("STARLING_DASH_VECTOR_STORE_PATH")
+    if e("STARLING_DASH_INGEST_SPOOL"): cfg.ingest_spool_path = e("STARLING_DASH_INGEST_SPOOL")
     if e("STARLING_DASH_CORS_ORIGINS"):
         cfg.cors_origins = [o.strip() for o in e("STARLING_DASH_CORS_ORIGINS").split(",") if o.strip()]
     if cfg.resolve_role("extraction") is None and e("OPENAI_API_KEY"):

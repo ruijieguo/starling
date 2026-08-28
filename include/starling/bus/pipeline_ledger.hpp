@@ -9,7 +9,7 @@ namespace starling::bus {
 
 // Terminal status for a pipeline_run row. 'Started' is written by start_run;
 // finish_run only takes a terminal status.
-enum class PipelineStatus   { Started, Finished, Failed };
+enum class PipelineStatus { Started, Finished, PartialSuccess, Failed };
 
 // extraction_attempt.status. M0.4's LLM extractor will write one row per
 // (span_key, attempt_number) tuple per pipeline_run; the uniqueness is enforced
@@ -33,24 +33,22 @@ struct AttemptCost {
     int latency_ms        = 0;
 };
 
-// Sole sanctioned write path into pipeline_run / extraction_attempt for M0.4's
-// LLM extractor. Sealing the API here, before the extractor exists, prevents
+// Extraction facade over the authoritative governance PipelineRunStore plus
+// item-level extraction_attempt rows. Sealing the API here prevents
 // M0.4 from inventing ad-hoc inserts that bypass the (span_key, attempt_number)
 // discipline.
 class PipelineLedger {
 public:
     explicit PipelineLedger(starling::persistence::Connection& c) : conn_(c) {}
 
-    // Inserts a pipeline_run row with status='started' and started_at=now (UTC).
-    // Returns the generated run_id (random 128-bit hex with UUID-style dashes
-    // — placeholder for real UUIDv7 in M0.4; see random_id() in the .cpp).
+    // Enqueues and claims an extraction PipelineRun, returning its run id.
+    // A matching RUNNING run is returned by the authoritative store for dedup,
+    // but this inline executor rejects it so a second caller cannot execute it.
     std::string start_run(std::string_view tenant_id,
                           std::string_view input_ref,
                           std::string_view metadata_json = "{}");
 
-    // UPDATE pipeline_run SET finished_at=now, status=<terminal>. Caller must
-    // pass a terminal status (Finished or Failed); Started is rejected at the
-    // SQL level only — the helper does not validate the enum value.
+    // Transition the authoritative governance run to its terminal status.
     void finish_run(std::string_view run_id, PipelineStatus terminal);
 
     // INSERTs an extraction_attempt row. The dedup invariant lives HERE:

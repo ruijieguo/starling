@@ -15,7 +15,6 @@
 
 #include <sqlite3.h>
 
-#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -68,7 +67,7 @@ std::string lookup_modality(persistence::Connection& conn,
         "SELECT modality FROM statements WHERE id = ? AND tenant_id = ?";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-        return "believes";
+        throw make_sqlite_error(conn.raw(), "reconsolidation_engine: modality lookup prepare");
     StmtHandle h(raw);
     bind_sv(h.get(), 1, stmt_id);
     bind_sv(h.get(), 2, tenant_id);
@@ -135,12 +134,7 @@ EngineStats ReconsolidationEngine::tick_one_batch(
     EngineStats stats;
 
     // 1. Read checkpoint.
-    int last_seq = 0;
-    try {
-        last_seq = read_checkpoint(conn);
-    } catch (...) {
-        return stats;  // cannot read checkpoint — no-op
-    }
+    const int last_seq = read_checkpoint(conn);
 
     // 2. SELECT events after checkpoint.
     std::vector<EventRow> batch;
@@ -152,7 +146,7 @@ EngineStats ReconsolidationEngine::tick_one_batch(
             "ORDER BY outbox_sequence";
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
-            return stats;
+            throw make_sqlite_error(conn.raw(), "reconsolidation_engine: select events prepare");
         StmtHandle h(raw);
         sqlite3_bind_int(h.get(), 1, last_seq);
         while (sqlite3_step(h.get()) == SQLITE_ROW) {
@@ -189,42 +183,28 @@ EngineStats ReconsolidationEngine::tick_one_batch(
             ev.event_type == "statement.references_existing" ||
             ev.event_type == "belief.conflict" ||
             ev.event_type == "reconsolidate.requested") {
-            try {
-                const std::string tenant = ev.tenant_id;
-                if (tenant.empty()) continue;
-                const std::string modality =
-                    lookup_modality(conn, ev.primary_id, tenant);
-                OpenResult res = open_or_append(
-                    conn,
-                    ev.primary_id,    // stmt_id
-                    tenant,           // tenant_id
-                    ev.event_id,      // event_id
-                    ev.event_type,    // event_type
-                    ev.event_id,      // payload_hash (use event_id as hash)
-                    1.0,              // weight
-                    modality,
-                    now_iso);
-                if (res.opened) stats.windows_opened++;
-            } catch (const std::exception& e) {
-                std::fprintf(stderr,
-                    "[reconsolidation_engine] WARN event %s (%s) open_or_append threw: %s\n",
-                    ev.event_id.c_str(), ev.event_type.c_str(), e.what());
-            } catch (...) {
-                std::fprintf(stderr,
-                    "[reconsolidation_engine] WARN event %s (%s) open_or_append threw unknown\n",
-                    ev.event_id.c_str(), ev.event_type.c_str());
-            }
+            const std::string tenant = ev.tenant_id;
+            if (tenant.empty()) continue;
+            const std::string modality =
+                lookup_modality(conn, ev.primary_id, tenant);
+            OpenResult res = open_or_append(
+                conn,
+                ev.primary_id,    // stmt_id
+                tenant,           // tenant_id
+                ev.event_id,      // event_id
+                ev.event_type,    // event_type
+                ev.event_id,      // payload_hash (use event_id as hash)
+                1.0,              // weight
+                modality,
+                now_iso);
+            if (res.opened) stats.windows_opened++;
         }
         // commitment.fulfilled / commitment.broken: P2.c stub — intentionally skip.
         // Unknown types: silently skip.
     }
 
     // 4. Advance checkpoint.
-    try {
-        write_checkpoint(conn, max_seq, now_iso);
-    } catch (...) {
-        // best-effort; don't fail the batch
-    }
+    write_checkpoint(conn, max_seq, now_iso);
 
     return stats;
 }

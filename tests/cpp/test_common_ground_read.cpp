@@ -1,6 +1,7 @@
 // test_common_ground_read.cpp -- P2.e CommonGroundContainer.read
 #include "starling/neocortex/common_ground_container.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/tom/common_ground.hpp"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <string>
@@ -35,6 +36,21 @@ void seed_cg(sqlite3* db, const std::string& sid, const std::string& status) {
         "','[\"alice\",\"bob\"]','2026-06-01T09:00:00Z','2026-06-01T09:00:00Z')";
     sqlite3_exec(db, s.c_str(), nullptr, nullptr, nullptr);
 }
+
+void seed_cg_parties(sqlite3* db, const std::string& id,
+                     const std::string& sid, const std::string& parties_json) {
+    sqlite3_stmt* raw = nullptr;
+    const char* sql =
+        "INSERT INTO common_ground(id,tenant_id,statement_id,status,parties_json,"
+        "created_at,updated_at) VALUES(?,'default',?,'grounded',?,"
+        "'2026-06-01T09:00:00Z','2026-06-01T09:00:00Z')";
+    ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &raw, nullptr));
+    sqlite3_bind_text(raw, 1, id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(raw, 2, sid.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(raw, 3, parties_json.c_str(), -1, SQLITE_TRANSIENT);
+    EXPECT_EQ(SQLITE_DONE, sqlite3_step(raw));
+    sqlite3_finalize(raw);
+}
 }  // namespace
 
 TEST(CommonGroundRead, RebuildThenRead) {
@@ -58,4 +74,18 @@ TEST(CommonGroundRead, MissingReturnsNotFound) {
     CommonGroundContainer cg(*adapter);
     CommonGroundView v = cg.read(conn, "default", "none::none");
     EXPECT_FALSE(v.found);
+}
+
+TEST(CommonGroundRead, PartyLookupTreatsSqlWildcardsLiterally) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    sqlite3* db = adapter->connection().raw();
+    seed_stmt(db, "wild", "exact");
+    seed_stmt(db, "lookalike", "wrong");
+    seed_cg_parties(db, "cg-wild", "wild", R"(["a%","b_"])" );
+    seed_cg_parties(db, "cg-lookalike", "lookalike", R"(["ax","bZ"])" );
+
+    const auto rows = starling::tom::common_ground::query(
+        *adapter, "a%", "b_", "default", "2026-06-01T10:00:00Z");
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].statement_id, "wild");
 }

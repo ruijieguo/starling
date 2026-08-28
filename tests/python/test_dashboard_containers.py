@@ -152,6 +152,8 @@ def test_common_ground_joins_statement_text(tmp_path):
 def test_common_ground_by_status_counts(tmp_path):
     db = str(tmp_path / "cg_status.db")
     conn = _fresh_db(db)
+    for sid in ("s1", "s2", "s3", "s4"):
+        _stmt(conn, sid)
     _cg(conn, "a", statement_id="s1", status="grounded")
     _cg(conn, "b", statement_id="s2", status="grounded")
     _cg(conn, "c", statement_id="s3", status="suspected_diverge")
@@ -168,7 +170,11 @@ def test_common_ground_missing_statement_null_text(tmp_path):
     # surfaces, with NULL subject/predicate/object rather than being dropped.
     db = str(tmp_path / "cg_orphan.db")
     conn = _fresh_db(db)
+    _stmt(conn, "gone")
     _cg(conn, "cg1", statement_id="gone")
+    conn.execute(
+        "DELETE FROM statements WHERE id=? AND tenant_id=?", ("gone", "default")
+    )
     conn.commit()
     conn.close()
 
@@ -183,6 +189,8 @@ def test_common_ground_missing_statement_null_text(tmp_path):
 def test_common_ground_tenant_scoped(tmp_path):
     db = str(tmp_path / "cg_tenant.db")
     conn = _fresh_db(db)
+    _stmt(conn, "s1", tenant="default")
+    _stmt(conn, "s2", tenant="other")
     _cg(conn, "mine", tenant="default", statement_id="s1")
     _cg(conn, "alien", tenant="other", statement_id="s2")
     conn.commit()
@@ -198,8 +206,12 @@ def test_common_ground_join_does_not_leak_cross_tenant_statement(tmp_path):
     # not supply text to this tenant's common_ground row.
     db = str(tmp_path / "cg_join_tenant.db")
     conn = _fresh_db(db)
+    _stmt(conn, "s1", tenant="default", subj="Local", predicate="public", obj="y")
     _stmt(conn, "s1", tenant="other", subj="Alien", predicate="secret", obj="x")
     _cg(conn, "cg1", tenant="default", statement_id="s1")
+    conn.execute(
+        "DELETE FROM statements WHERE id=? AND tenant_id=?", ("s1", "default")
+    )
     conn.commit()
     conn.close()
 

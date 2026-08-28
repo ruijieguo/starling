@@ -12,8 +12,10 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -32,15 +34,34 @@ class TruncatingServer {
 public:
     TruncatingServer() {
         listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listen_fd_ < 0) {
+            error_ = std::strerror(errno);
+            return;
+        }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = 0;  // ephemeral
-        ::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            error_ = std::strerror(errno);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+            return;
+        }
         socklen_t len = sizeof(addr);
-        ::getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
+        if (::getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+            error_ = std::strerror(errno);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+            return;
+        }
         port_ = ntohs(addr.sin_port);
-        ::listen(listen_fd_, 8);
+        if (::listen(listen_fd_, 8) != 0) {
+            error_ = std::strerror(errno);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+            return;
+        }
         worker_ = std::thread([this] { run(); });
     }
     TruncatingServer(const TruncatingServer&) = delete;
@@ -49,11 +70,14 @@ public:
 
     [[nodiscard]] int port() const { return port_; }
     [[nodiscard]] int connections() const { return count_.load(); }
+    [[nodiscard]] bool ready() const { return listen_fd_ >= 0; }
+    [[nodiscard]] const std::string& error() const { return error_; }
 
     void stop() {
         if (stopped_.exchange(true)) {
             return;
         }
+        if (listen_fd_ < 0) return;
         // Wake the blocking accept with a throwaway connection, then join.
         const int wake_fd = ::socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in addr{};
@@ -62,7 +86,7 @@ public:
         addr.sin_port = htons(static_cast<std::uint16_t>(port_));
         (void)::connect(wake_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
         ::close(wake_fd);
-        worker_.join();
+        if (worker_.joinable()) worker_.join();
         ::close(listen_fd_);
     }
 
@@ -98,6 +122,7 @@ private:
     std::atomic<int> count_{0};
     std::atomic<bool> stopped_{false};
     std::thread worker_;
+    std::string error_;
 };
 
 }  // namespace
@@ -151,6 +176,9 @@ TEST(HttpPostJson, StreamNeverRetriesOnceBytesStreamed) {
     // guard must surface the failure after exactly ONE connection even with
     // max_retries budget left.
     TruncatingServer server;
+    if (!server.ready()) {
+        GTEST_SKIP() << "sandbox does not permit a loopback listener: " << server.error();
+    }
     std::string got;
     const auto res = http_post_json_stream(
         "http://127.0.0.1:" + std::to_string(server.port()) + "/v1/x", {}, "{}",

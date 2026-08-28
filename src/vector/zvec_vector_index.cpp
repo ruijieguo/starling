@@ -3,6 +3,7 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
+#include "starling/vector/zvec_primary_key.hpp"
 
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
@@ -14,6 +15,7 @@
 
 #include <cctype>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -73,13 +75,23 @@ void ZvecVectorIndex::insert(persistence::Connection& /*conn*/,
                                  std::to_string(vec.size()) + ", expect " +
                                  std::to_string(dim_) + ")");
     zvec::Doc doc;
-    doc.set_pk(std::string(stmt_id));
+    doc.set_pk(detail::encode_zvec_primary_key(tenant_id, stmt_id));
     doc.set<std::string>("tenant_id", std::string(tenant_id));
     doc.set<std::vector<float>>(kVecField, vec);
     std::vector<zvec::Doc> docs{std::move(doc)};
     auto r = coll_->Upsert(docs);
     if (!r.has_value())
         throw std::runtime_error("ZvecVectorIndex::insert: " + r.error().message());
+
+    // Pre-v1 stores used bare stmt_id as the global PK. Remove that alias after
+    // the tenant-scoped upsert so rolling re-embedding cannot return duplicates.
+    // A full rebuild is still required to recover historical cross-tenant
+    // collisions because the old key could only retain one tenant's vector.
+    std::vector<std::string> legacy_pks{std::string(stmt_id)};
+    auto cleanup = coll_->Delete(legacy_pks);
+    if (!cleanup.has_value())
+        throw std::runtime_error("ZvecVectorIndex::insert legacy-key cleanup: " +
+                                 cleanup.error().message());
 }
 
 std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn,
@@ -113,7 +125,11 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
     // 候选(zvec KNN 顺序 = 相似度降序)。
     std::vector<ScoredId> cand;
     cand.reserve(docs.size());
-    for (const auto& d : docs) cand.push_back({d->pk(), d->score()});
+    for (const auto& d : docs) {
+        auto stmt_id = detail::decode_zvec_statement_id(d->pk(), scope.tenant_id);
+        if (stmt_id) cand.push_back({std::move(*stmt_id), d->score()});
+    }
+    if (cand.empty()) return {};
 
     // ② SQL 精过滤 scope(holder/perspective/visibility):实时 JOIN statements 取
     //    最新 state,逐字对齐 SqliteBlobVectorIndex。候选 id IN(...) + scope 谓词。
@@ -154,8 +170,9 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
     // 按 zvec KNN 顺序(相似度降序)保留通过 scope 的候选,取前 k。
     std::vector<ScoredId> out;
     out.reserve(static_cast<std::size_t>(k));
+    std::unordered_set<std::string> emitted;
     for (const auto& c : cand) {
-        if (passed.count(c.stmt_id)) {
+        if (passed.count(c.stmt_id) && emitted.insert(c.stmt_id).second) {
             out.push_back(c);
             if (static_cast<int>(out.size()) >= k) break;
         }
@@ -165,8 +182,11 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
 
 void ZvecVectorIndex::remove(persistence::Connection& /*conn*/,
                              std::string_view stmt_id,
-                             std::string_view /*tenant_id*/) {
-    std::vector<std::string> pks{std::string(stmt_id)};
+                             std::string_view tenant_id) {
+    // Delete both the v1 tenant key and the pre-v1 global alias during rolling
+    // upgrades. The latter may represent only one of several colliding tenants.
+    std::vector<std::string> pks{
+        detail::encode_zvec_primary_key(tenant_id, stmt_id), std::string(stmt_id)};
     auto r = coll_->Delete(pks);
     if (!r.has_value())
         throw std::runtime_error("ZvecVectorIndex::remove: " + r.error().message());

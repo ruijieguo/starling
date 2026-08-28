@@ -30,7 +30,8 @@ std::unique_ptr<persistence::SqliteAdapter> make_adapter() {
 
 // 种一行 statements(覆盖 scope 关心的 holder/perspective/state/review)。
 void seed_stmt(persistence::Connection& conn, const char* id, const char* holder,
-               const char* state, const char* review = "approved") {
+               const char* state, const char* review = "approved",
+               const char* tenant = "default") {
     char sql[1200];
     std::snprintf(sql, sizeof(sql),
         "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
@@ -39,11 +40,11 @@ void seed_stmt(persistence::Connection& conn, const char* id, const char* holder
         "confidence,observed_at,salience,affect_json,activation,last_accessed,"
         "provenance,evidence_json,consolidation_state,review_status,nesting_depth,"
         "created_at,updated_at) VALUES("
-        "'%s','default','%s','FIRST_PERSON','cognizer','subj','knows','str','o-%s',"
+        "'%s','%s','%s','FIRST_PERSON','cognizer','subj','knows','str','o-%s',"
         "'h-%s','v1','KNOWS','POS',0.9,'2026-06-10T00:00:00Z',0.5,'{}',0.3,"
         "'2026-06-10T00:00:00Z','user_input','[]','%s','%s',0,"
         "'2026-06-10T00:00:00Z','2026-06-10T00:00:00Z')",
-        id, holder, id, id, state, review);
+        id, tenant, holder, id, id, state, review);
     char* err = nullptr;
     ASSERT_EQ(sqlite3_exec(conn.raw(), sql, nullptr, nullptr, &err), SQLITE_OK)
         << (err ? err : "");
@@ -168,6 +169,36 @@ TEST(ZvecVectorIndex, ParityRemove) {
     EXPECT_TRUE(zvec_idx.search_topk(conn, v, 10, scope).empty());
 
     zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
+    std::filesystem::remove_all(coll);
+}
+
+TEST(ZvecVectorIndex, SharedStmtIdIsTenantScoped) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_stmt(conn, "shared", "alice", "consolidated", "approved", "tenant-a");
+    seed_stmt(conn, "shared", "bob", "consolidated", "approved", "tenant-b");
+
+    const std::string coll = temp_coll("tenant_scope");
+    std::filesystem::remove_all(coll);
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, 4);
+    auto& index = *zvp;
+    const std::vector<float> va{1.0f, 0.0f, 0.0f, 0.0f};
+    const std::vector<float> vb{0.0f, 1.0f, 0.0f, 0.0f};
+    index.insert(conn, "shared", "tenant-a", va);
+    index.insert(conn, "shared", "tenant-b", vb);
+
+    SearchScope scope_a;
+    scope_a.tenant_id = "tenant-a";
+    SearchScope scope_b;
+    scope_b.tenant_id = "tenant-b";
+    ASSERT_EQ(index.search_topk(conn, va, 10, scope_a).size(), 1u);
+    ASSERT_EQ(index.search_topk(conn, vb, 10, scope_b).size(), 1u);
+
+    index.remove(conn, "shared", "tenant-a");
+    EXPECT_TRUE(index.search_topk(conn, va, 10, scope_a).empty());
+    EXPECT_EQ(index.search_topk(conn, vb, 10, scope_b).size(), 1u);
+
+    zvp.reset();
     std::filesystem::remove_all(coll);
 }
 

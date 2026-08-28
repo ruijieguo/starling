@@ -76,6 +76,7 @@ class PipelineRun(BaseEntity):
     idempotency_key: str
     pipeline_name: str
     pipeline_version: str                 # P1 简单版本号；P3 升级为 revision token
+    metadata_json: dict = {}              # 调用方 run metadata；受 trace_retention 约束
     step_contracts: list[dict] = []       # P3 启用；P1 不启用通用 step graph
     status: Literal["QUEUED","RUNNING","PAUSED","COMPLETED","PARTIAL_SUCCESS",
                     "DEGRADED_COMPLETED","FAILED","CANCELLED","DEAD_LETTERED"]

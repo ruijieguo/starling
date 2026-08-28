@@ -52,10 +52,15 @@ void bind_09_brain_dynamics(pybind11::module_& m) {
              py::arg("now_iso"))
         .def("run_decay",
              [](starling::replay::ReplayScheduler& s,
-                std::vector<std::string> ids, std::string now) {
-                 return s.run_decay(s.connection(), ids, now);
+                const std::vector<std::pair<std::string, std::string>>& keys,
+                std::string now) {
+                 std::vector<starling::replay::DecayCandidate> candidates;
+                 candidates.reserve(keys.size());
+                 for (const auto& [tenant_id, stmt_id] : keys)
+                     candidates.push_back({tenant_id, stmt_id});
+                 return s.run_decay(s.connection(), candidates, now);
              },
-             py::arg("candidate_ids"), py::arg("now_iso"))
+             py::arg("candidate_keys"), py::arg("now_iso"))
         .def("tick_online",
              [](starling::replay::ReplayScheduler& s, std::string now) {
                  return s.tick_online(s.connection(), now);

@@ -305,21 +305,23 @@ StatementWriteOutcome StatementWriter::write(
         oss << "]";
         derived_from_json = oss.str();
 
-        // Look up max(derived_depth) among parent rows.
+        // Look up max(derived_depth) among parent rows in the current tenant.
         std::string in_clause;
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
             if (k) in_clause += ",";
             in_clause += "?";
         }
         const std::string depth_sql =
-            "SELECT MAX(derived_depth) FROM statements WHERE id IN (" + in_clause + ")";
+            "SELECT MAX(derived_depth) FROM statements "
+            "WHERE tenant_id = ? AND id IN (" + in_clause + ")";
         sqlite3_stmt* q_raw = nullptr;
         if (sqlite3_prepare_v2(conn_.raw(), depth_sql.c_str(), -1, &q_raw, nullptr) != SQLITE_OK) {
             throw make_sqlite_error(conn_.raw(), "StatementWriter::write: prepare MAX(derived_depth)");
         }
         StmtHandle q(q_raw);
+        bind_sv(q.get(), 1, s.holder_tenant_id);
         for (size_t k = 0; k < s.derived_from.size(); ++k)
-            sqlite3_bind_text(q.get(), static_cast<int>(k + 1),
+            sqlite3_bind_text(q.get(), static_cast<int>(k + 2),
                               s.derived_from[k].c_str(), -1, SQLITE_TRANSIENT);
         int max_parent_depth = 0;
         // MAX() returns SQL NULL when no matching parent rows exist; sqlite3_column_int

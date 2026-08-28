@@ -192,6 +192,20 @@ TEST(ReconsolidationEngine, CheckpointAdvancesAndIdempotent) {
     EXPECT_EQ(s2.windows_opened, 0);
 }
 
+TEST(ReconsolidationEngine, HandlerFailureDoesNotAdvanceCheckpoint) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    ReconsolidationEngine engine(*adapter);
+    seed_stmt(conn.raw(), "stmt-fail");
+    append_bus_event(conn, "belief.conflict", "stmt-fail", "default",
+                     "{}", "ikey-recon-handler-fail");
+    ASSERT_EQ(sqlite3_exec(conn.raw(), "DROP TABLE reconsolidation_windows",
+                           nullptr, nullptr, nullptr), SQLITE_OK);
+
+    EXPECT_THROW(engine.tick_one_batch(conn, "2026-05-27T10:00:00Z"), std::exception);
+    EXPECT_EQ(get_recon_checkpoint(conn), 0);
+}
+
 // ── TC-A5-002: close_due_windows arbitrates expired window ──────────────────
 
 TEST(ReconsolidationEngine, CloseDueWindowsArbitrates) {

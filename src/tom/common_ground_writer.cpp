@@ -2,12 +2,12 @@
 
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/schema/common_ground_scope.hpp"
 
 #include <cstdio>
 #include <ctime>
 #include <format>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -19,6 +19,30 @@ using starling::persistence::detail::bind_sv;
 using starling::persistence::detail::make_sqlite_error;
 using starling::persistence::StmtHandle;
 
+class SavepointGuard {
+public:
+    SavepointGuard(persistence::Connection& conn, std::string name)
+        : conn_(conn), name_(std::move(name)) {
+        conn_.exec("SAVEPOINT " + name_);
+    }
+    ~SavepointGuard() {
+        if (released_) return;
+        try {
+            conn_.exec("ROLLBACK TO SAVEPOINT " + name_);
+            conn_.exec("RELEASE SAVEPOINT " + name_);
+        } catch (...) {}
+    }
+    void release() {
+        conn_.exec("RELEASE SAVEPOINT " + name_);
+        released_ = true;
+    }
+
+private:
+    persistence::Connection& conn_;
+    std::string name_;
+    bool released_ = false;
+};
+
 std::string random_hex_32() {
     static thread_local std::mt19937_64 rng{std::random_device{}()};
     const std::uint64_t a = rng();
@@ -28,22 +52,6 @@ std::string random_hex_32() {
                   static_cast<unsigned long long>(a),
                   static_cast<unsigned long long>(b));
     return std::string(buf, 32);
-}
-
-std::string json_array_of_strings(const std::vector<std::string>& items) {
-    std::ostringstream oss;
-    oss << '[';
-    for (std::size_t i = 0; i < items.size(); ++i) {
-        if (i != 0) oss << ',';
-        oss << '"';
-        for (char c : items[i]) {
-            if (c == '"' || c == '\\') oss << '\\';
-            oss << c;
-        }
-        oss << '"';
-    }
-    oss << ']';
-    return oss.str();
 }
 
 // Parse ISO-8601 UTC string to epoch seconds.
@@ -107,8 +115,23 @@ std::string CommonGroundWriter::assert_(persistence::Connection& conn,
                                          const std::vector<std::string>& parties,
                                          std::string_view now_iso) {
     const std::string cg_id      = random_hex_32();
-    const std::string parties_js = json_array_of_strings(parties);
+    const std::string parties_js = schema::common_ground_parties_json(parties);
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_assert");
+
+    {
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(
+                db, "SELECT 1 FROM statements WHERE tenant_id=? AND id=?", -1,
+                &raw, nullptr) != SQLITE_OK)
+            throw make_sqlite_error(db, "assert_ statement lookup prepare");
+        StmtHandle h(raw);
+        bind_sv(h.get(), 1, tenant_id);
+        bind_sv(h.get(), 2, stmt_id);
+        if (sqlite3_step(h.get()) != SQLITE_ROW)
+            throw std::invalid_argument(
+                "CommonGroundWriter::assert_: statement not found in tenant");
+    }
 
     const char* sql =
         "INSERT INTO common_ground"
@@ -128,6 +151,7 @@ std::string CommonGroundWriter::assert_(persistence::Connection& conn,
         throw make_sqlite_error(db, "assert_ step");
 
     log_act(db, tenant_id, cg_id, "assert", "", stmt_id, now_iso);
+    savepoint.release();
     return cg_id;
 }
 
@@ -136,10 +160,11 @@ void CommonGroundWriter::acknowledge(persistence::Connection& conn,
                                       std::string_view actor,
                                       std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_acknowledge");
     const char* sql =
         "UPDATE common_ground"
         " SET status='grounded', grounded_at=?, last_confirmed_at=?, updated_at=?"
-        " WHERE id=?";
+        " WHERE id=? AND status IN ('asserted_unack','suspected_diverge','grounded')";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "acknowledge prepare");
@@ -150,6 +175,10 @@ void CommonGroundWriter::acknowledge(persistence::Connection& conn,
     bind_sv(h.get(), 4, cg_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "acknowledge step");
+    if (sqlite3_changes(db) == 0) {
+        savepoint.release();
+        return;
+    }
 
     // Fetch tenant_id for the audit log.
     std::string tenant_id;
@@ -166,6 +195,7 @@ void CommonGroundWriter::acknowledge(persistence::Connection& conn,
         }
     }
     log_act(db, tenant_id, cg_id, "acknowledge", actor, "", now_iso);
+    savepoint.release();
 }
 
 void CommonGroundWriter::repair(persistence::Connection& conn,
@@ -173,10 +203,11 @@ void CommonGroundWriter::repair(persistence::Connection& conn,
                                  std::string_view actor,
                                  std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_repair");
     const char* sql =
         "UPDATE common_ground"
         " SET status='suspected_diverge', updated_at=?"
-        " WHERE id=?";
+        " WHERE id=? AND status IN ('asserted_unack','grounded')";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "repair prepare");
@@ -185,6 +216,10 @@ void CommonGroundWriter::repair(persistence::Connection& conn,
     bind_sv(h.get(), 2, cg_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "repair step");
+    if (sqlite3_changes(db) == 0) {
+        savepoint.release();
+        return;
+    }
 
     std::string tenant_id;
     {
@@ -200,6 +235,7 @@ void CommonGroundWriter::repair(persistence::Connection& conn,
         }
     }
     log_act(db, tenant_id, cg_id, "repair", actor, "", now_iso);
+    savepoint.release();
 }
 
 void CommonGroundWriter::withdraw(persistence::Connection& conn,
@@ -207,10 +243,11 @@ void CommonGroundWriter::withdraw(persistence::Connection& conn,
                                    std::string_view actor,
                                    std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_withdraw");
     const char* sql =
         "UPDATE common_ground"
         " SET status='recanted', updated_at=?"
-        " WHERE id=?";
+        " WHERE id=? AND status IN ('asserted_unack','grounded','suspected_diverge')";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "withdraw prepare");
@@ -219,6 +256,10 @@ void CommonGroundWriter::withdraw(persistence::Connection& conn,
     bind_sv(h.get(), 2, cg_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "withdraw step");
+    if (sqlite3_changes(db) == 0) {
+        savepoint.release();
+        return;
+    }
 
     std::string tenant_id;
     {
@@ -234,6 +275,7 @@ void CommonGroundWriter::withdraw(persistence::Connection& conn,
         }
     }
     log_act(db, tenant_id, cg_id, "withdraw", actor, "", now_iso);
+    savepoint.release();
 }
 
 void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
@@ -241,10 +283,13 @@ void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
                                            std::string_view new_stmt_id,
                                            std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_supersede");
     const char* sql =
         "UPDATE common_ground"
         " SET superseded_by=?, updated_at=?"
-        " WHERE id=?";
+        " WHERE id=? AND status='grounded' AND superseded_by IS NULL"
+        " AND EXISTS (SELECT 1 FROM statements s"
+        "             WHERE s.id=? AND s.tenant_id=common_ground.tenant_id)";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "supersede_ground prepare");
@@ -252,8 +297,13 @@ void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
     bind_sv(h.get(), 1, new_stmt_id);
     bind_sv(h.get(), 2, now_iso);
     bind_sv(h.get(), 3, old_cg_id);
+    bind_sv(h.get(), 4, new_stmt_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "supersede_ground step");
+    if (sqlite3_changes(db) == 0) {
+        savepoint.release();
+        return;
+    }
 
     std::string tenant_id;
     {
@@ -269,6 +319,7 @@ void CommonGroundWriter::supersede_ground(persistence::Connection& conn,
         }
     }
     log_act(db, tenant_id, old_cg_id, "supersede", "", new_stmt_id, now_iso);
+    savepoint.release();
 }
 
 namespace {
@@ -293,6 +344,7 @@ void CommonGroundWriter::expire_ground(persistence::Connection& conn,
                                         std::string_view actor,
                                         std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_expire");
     const char* sql =
         "UPDATE common_ground"
         " SET status='expired', expired_at=?, updated_at=?"
@@ -308,6 +360,7 @@ void CommonGroundWriter::expire_ground(persistence::Connection& conn,
         throw make_sqlite_error(db, "expire_ground step");
     if (sqlite3_changes(db) > 0)
         log_act(db, lookup_tenant(db, cg_id), cg_id, "expire", actor, "", now_iso);
+    savepoint.release();
 }
 
 void CommonGroundWriter::unground(persistence::Connection& conn,
@@ -315,6 +368,7 @@ void CommonGroundWriter::unground(persistence::Connection& conn,
                                    std::string_view actor,
                                    std::string_view now_iso) {
     sqlite3* db = conn.raw();
+    SavepointGuard savepoint(conn, "cg_unground");
     const char* sql =
         "UPDATE common_ground"
         " SET status='suspected_diverge', updated_at=?"
@@ -329,16 +383,19 @@ void CommonGroundWriter::unground(persistence::Connection& conn,
         throw make_sqlite_error(db, "unground step");
     if (sqlite3_changes(db) > 0)
         log_act(db, lookup_tenant(db, cg_id), cg_id, "unground", actor, "", now_iso);
+    savepoint.release();
 }
 
 void CommonGroundWriter::acknowledge_manual(persistence::Connection& conn,
                                              std::string_view cg_id,
                                              std::string_view audit_actor,
                                              std::string_view now_iso) {
+    SavepointGuard savepoint(conn, "cg_acknowledge_manual");
     // 人工确认必须保留审计 actor(spec grounded 判定规则 #4)。
     acknowledge(conn, cg_id, audit_actor, now_iso);
     sqlite3* db = conn.raw();
-    const char* sql = "UPDATE common_ground SET audit_actor=? WHERE id=?";
+    const char* sql =
+        "UPDATE common_ground SET audit_actor=? WHERE id=? AND status='grounded'";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "acknowledge_manual prepare");
@@ -347,6 +404,7 @@ void CommonGroundWriter::acknowledge_manual(persistence::Connection& conn,
     bind_sv(h.get(), 2, cg_id);
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "acknowledge_manual step");
+    savepoint.release();
 }
 
 int CommonGroundWriter::sweep_timeout_downgrade(persistence::Connection& conn,

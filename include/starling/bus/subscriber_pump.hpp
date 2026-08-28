@@ -7,7 +7,7 @@ namespace starling::bus {
 
 class SubscriberPump {
 public:
-    // Called once after Bus::write commit. Runs 5 subscribers in fixed order,
+    // Called once after Bus::write commit. Runs 7 subscribers in fixed order,
     // each SAVEPOINT-isolated — a single subscriber failure rolls back only
     // itself and does not affect the committed write or other subscribers.
     static void run_post_write(persistence::SqliteAdapter& adapter,

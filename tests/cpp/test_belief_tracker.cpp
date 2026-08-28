@@ -263,6 +263,21 @@ TEST(BeliefTracker, CheckpointAdvances) {
     EXPECT_EQ(get_checkpoint(conn), max_seq);
 }
 
+TEST(BeliefTracker, HandlerFailureDoesNotAdvanceCheckpoint) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    insert_statement_row(conn, "stmt-fail", "default", "holder-1", "engram-1");
+    append_bus_event(
+        conn, "statement.written", "stmt-fail", "default",
+        "{\"stmt_id\":\"stmt-fail\",\"engram_ref_id\":\"engram-1\"}",
+        "ikey-handler-fail");
+    ASSERT_EQ(sqlite3_exec(conn.raw(), "DROP TABLE cognizer_frontier_facts",
+                           nullptr, nullptr, nullptr), SQLITE_OK);
+
+    EXPECT_THROW(tick_one_batch(*adapter), std::exception);
+    EXPECT_EQ(get_checkpoint(conn), 0);
+}
+
 TEST(BeliefTracker, IdempotentReprocess) {
     auto adapter = open_fresh();
     auto& conn = adapter->connection();

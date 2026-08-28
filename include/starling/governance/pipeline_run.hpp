@@ -96,6 +96,7 @@ struct PipelineRun {
     std::string idempotency_key;
     std::string pipeline_name;
     std::string pipeline_version;
+    std::string metadata_json = "{}";              // caller-supplied run metadata (opaque JSON)
     PipelineRunStatus status{};
     std::optional<long long> checkpoint_sequence;
     std::optional<std::string> error_kind;
@@ -123,6 +124,7 @@ struct NewRun {
     std::string idempotency_key;
     std::string pipeline_name;
     std::string pipeline_version;
+    std::string metadata_json = "{}";              // governed by the trace-retention policy
     std::optional<std::string> business_task_id;
     std::optional<std::string> parent_run_id;
     std::string step_contracts = "[]";           // opaque JSON

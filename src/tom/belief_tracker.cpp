@@ -1,7 +1,8 @@
 // belief_tracker.cpp -- BeliefTracker outbox subscriber main tick loop.
 // Consumes bus_events from last_processed_outbox_sequence+1 onwards,
 // dispatches to handlers, advances the checkpoint.
-// Wraps all work in a SAVEPOINT so failures don't propagate (best-effort).
+// Wraps all work in a SAVEPOINT. A failed event rolls back the batch and leaves
+// the checkpoint unchanged so the caller can retry it.
 
 #include "starling/tom/belief_tracker.hpp"
 
@@ -16,7 +17,6 @@
 #include <sqlite3.h>
 
 #include <chrono>
-#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -51,11 +51,7 @@ TickStats tick_one_batch(
     cognizer::KnowledgeFrontier frontier(adapter);
 
     // SAVEPOINT so any failure here cannot corrupt an outer transaction.
-    try {
-        conn.exec("SAVEPOINT belief_tracker_tick");
-    } catch (...) {
-        return stats;
-    }
+    conn.exec("SAVEPOINT belief_tracker_tick");
 
     try {
         // 1. Read checkpoint.
@@ -120,34 +116,24 @@ TickStats tick_one_batch(
             stats.events_processed++;
             if (ev.outbox_sequence > max_seq) max_seq = ev.outbox_sequence;
 
-            try {
-                if (ev.event_type == "statement.written") {
-                    detail::handle_statement_written(
-                        ev.tenant_id, ev.primary_id, ev.payload_json,
-                        hub, frontier, conn, stats);
-                } else if (ev.event_type == "evidence.appended") {
-                    detail::handle_evidence_appended(
-                        ev.tenant_id, ev.primary_id, ev.payload_json,
-                        frontier, conn, stats);
-                } else if (ev.event_type == "statement.archived") {
-                    detail::handle_statement_archived(stats);
-                } else if (ev.event_type == "statement.superseded") {
-                    detail::handle_statement_superseded(stats);
-                } else if (ev.event_type == "commitment.fulfilled") {
-                    detail::handle_commitment_fulfilled(stats);
-                } else if (ev.event_type == "commitment.broken") {
-                    detail::handle_commitment_broken(stats);
-                }
-                // Unknown event types are silently skipped.
-            } catch (const std::exception& e) {
-                std::fprintf(stderr,
-                    "[belief_tracker] WARN event %s (%s) handler threw: %s\n",
-                    ev.event_id.c_str(), ev.event_type.c_str(), e.what());
-            } catch (...) {
-                std::fprintf(stderr,
-                    "[belief_tracker] WARN event %s (%s) handler threw unknown\n",
-                    ev.event_id.c_str(), ev.event_type.c_str());
+            if (ev.event_type == "statement.written") {
+                detail::handle_statement_written(
+                    ev.tenant_id, ev.primary_id, ev.payload_json,
+                    hub, frontier, conn, stats);
+            } else if (ev.event_type == "evidence.appended") {
+                detail::handle_evidence_appended(
+                    ev.tenant_id, ev.primary_id, ev.payload_json,
+                    frontier, conn, stats);
+            } else if (ev.event_type == "statement.archived") {
+                detail::handle_statement_archived(stats);
+            } else if (ev.event_type == "statement.superseded") {
+                detail::handle_statement_superseded(stats);
+            } else if (ev.event_type == "commitment.fulfilled") {
+                detail::handle_commitment_fulfilled(stats);
+            } else if (ev.event_type == "commitment.broken") {
+                detail::handle_commitment_broken(stats);
             }
+            // Unknown event types are intentionally acknowledged as no-ops.
         }
 
         // 4. Advance checkpoint to max processed sequence.
@@ -178,8 +164,7 @@ TickStats tick_one_batch(
             conn.exec("ROLLBACK TO SAVEPOINT belief_tracker_tick");
             conn.exec("RELEASE SAVEPOINT belief_tracker_tick");
         } catch (...) {}
-        // Return zeroed stats -- tick failure is best-effort.
-        return TickStats{};
+        throw;
     }
 
     return stats;

@@ -304,7 +304,8 @@ P3.a2 交付:**Grounding Acts 七幕齐全**(expire_ground/unground/
 acknowledge_manual 补全,migration 0024 放行七幕 CHECK;人工确认落
 audit_actor 列);**治理接线**——`statement.superseded` → SupersedeGround
 联动(CG 订阅者消费仲裁 payload,主触发器断线修复)+ 24h 超时降级每批自动
-运行 + pair 形 cg_ref 的 parties 过滤(P2.j 遗留修复);**双限流补全**
+运行 + canonical cg_ref 的完整 parties 集合过滤（普通双方兼容 `a::b`，N 元或
+含分隔符 ID 使用 `cg:v1:<canonical-parties-json>`）;**双限流补全**
 (`tom/limiting`:链长 derived_depth>=3 ‖ 链长>=3 对齐 Bus 深度帽,
 复用 10min 窗口);**二阶生产端**(`tom/second_order`:belief_tracker 的
 statement.written handler 自动把他者一手语句建模为 self 的 depth=1 嵌套行,

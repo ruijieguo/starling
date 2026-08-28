@@ -13,8 +13,8 @@ struct TickStats {
 };
 
 // Process events from last_processed_outbox_sequence+1 onwards in
-// a single SAVEPOINT batch (default 100 events). Failures don't
-// propagate (best-effort observer). Returns stats.
+// a single SAVEPOINT batch (default 100 events). Failures propagate after
+// rollback, leaving the checkpoint unchanged for at-least-once retry.
 TickStats tick_one_batch(
     persistence::SqliteAdapter& adapter,
     int batch_size = 100);

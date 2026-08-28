@@ -12,6 +12,7 @@
 #include <sqlite3.h>
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 using namespace starling::neocortex;
@@ -45,8 +46,24 @@ int icol(sqlite3* db, const std::string& q) {
     return v;
 }
 
+void seed_stmt(sqlite3* db, const std::string& id) {
+    const std::string sql =
+        "INSERT INTO statements(id,tenant_id,holder_id,holder_perspective,"
+        "subject_kind,subject_id,predicate,object_kind,object_value,"
+        "canonical_object_hash,canonical_object_hash_version,modality,polarity,"
+        "confidence,observed_at,salience,affect_json,activation,last_accessed,"
+        "provenance,created_at,updated_at) VALUES('" + id +
+        "','default','alice','first_person','cognizer','bob','knows','str','x',"
+        "'h-" + id + "','v1','believes','pos',0.9,'2026-05-27T09:00:00Z',"
+        "0.5,'{}',0.0,'2026-05-27T09:00:00Z','user_input',"
+        "'2026-05-27T09:00:00Z','2026-05-27T09:00:00Z')";
+    ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK)
+        << sqlite3_errmsg(db);
+}
+
 void seed_cg(sqlite3* db, const std::string& id, const std::string& sid,
              const std::string& status) {
+    seed_stmt(db, sid);
     std::string s =
         "INSERT INTO common_ground(id,tenant_id,statement_id,status,parties_json,"
         "created_at,updated_at) VALUES('" +
@@ -153,6 +170,7 @@ TEST(CommonGroundContainer, RebuildIncrementsVersion) {
 namespace {
 void seed_cg_pair(sqlite3* db, const std::string& id, const std::string& sid,
                   const std::string& parties_json) {
+    seed_stmt(db, sid);
     std::string s =
         "INSERT INTO common_ground(id,tenant_id,statement_id,status,parties_json,"
         "created_at,updated_at) VALUES('" +
@@ -182,4 +200,15 @@ TEST(CommonGroundContainer, PairRefFiltersByParties) {
         "SELECT content_json FROM containers WHERE holder_id='legacy-ref'");
     EXPECT_NE(legacy.find("stmt-ab"), std::string::npos);
     EXPECT_NE(legacy.find("stmt-cd"), std::string::npos);
+}
+
+TEST(CommonGroundContainer, AmbiguousLegacyRefFailsClosed) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    CommonGroundContainer cgc(*adapter);
+
+    EXPECT_THROW(
+        cgc.rebuild(conn, "default", "a::b::c", "2026-06-12T10:00:00Z"),
+        std::invalid_argument);
+    EXPECT_EQ(icol(conn.raw(), "SELECT COUNT(*) FROM containers"), 0);
 }

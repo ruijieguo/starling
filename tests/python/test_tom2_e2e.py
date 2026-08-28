@@ -291,6 +291,13 @@ def test_grounding_seven_acts_bindings(tmp_path):
     llm = starling.make_stub_llm(default_response=CANNED)
     mem = starling.Memory.open(db, agent="alice", llm=llm)
     try:
+        with sqlite3.connect(db) as conn:
+            _ins_stmt(conn, id="stmt-1", holder="alice", subject_kind="entity",
+                      subject_id="launch", object_kind="str", object_value="ready",
+                      depth=0, observed=NOW)
+            _ins_stmt(conn, id="stmt-2", holder="alice", subject_kind="entity",
+                      subject_id="launch", object_kind="str", object_value="delayed",
+                      depth=0, observed=NOW)
         w = _core.CommonGroundWriter(mem._rt.adapter)
         cg = w.assert_("default", "stmt-1", ["alice", "bob"], NOW)
         w.acknowledge_manual(cg, "reviewer-jane", NOW)

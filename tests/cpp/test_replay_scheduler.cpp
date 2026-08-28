@@ -224,7 +224,8 @@ TEST(ReplayScheduler, RunDecay_ArchivesOldConsolidated) {
 
     ReplayScheduler sched(*a);
     // Pass duplicate id to test deduplication
-    const int archived = sched.run_decay(c, {"old_cons", "old_cons"},
+    const int archived = sched.run_decay(c, {{"default", "old_cons"},
+                                              {"default", "old_cons"}},
                                           "2026-05-27T00:00:00Z");
     EXPECT_EQ(archived, 1);
 
@@ -238,7 +239,7 @@ TEST(ReplayScheduler, RunDecay_ArchivesOldConsolidated) {
         1);
 }
 
-TEST(ReplayScheduler, RunDecayHandlesSharedStmtIdAcrossTenants) {
+TEST(ReplayScheduler, RunDecayIsTenantScopedForSharedStmtId) {
     auto a = SqliteAdapter::open(":memory:");
     auto& c = a->connection();
 
@@ -246,15 +247,18 @@ TEST(ReplayScheduler, RunDecayHandlesSharedStmtIdAcrossTenants) {
     seed_consolidated(c.raw(), "shared", "2025-01-01T00:00:00Z", 0.0, "tenant-b");
 
     ReplayScheduler sched(*a);
-    const int archived = sched.run_decay(c, {"shared"},
+    const int archived = sched.run_decay(c, {{"tenant-a", "shared"}},
                                          "2026-05-27T00:00:00Z");
-    EXPECT_EQ(archived, 2);
+    EXPECT_EQ(archived, 1);
     EXPECT_EQ(icol(c.raw(),
-        "SELECT COUNT(*) FROM statements WHERE id='shared' "
-        "AND consolidation_state='archived'"), 2);
+        "SELECT COUNT(*) FROM statements WHERE id='shared' AND tenant_id='tenant-a' "
+        "AND consolidation_state='archived'"), 1);
+    EXPECT_EQ(scol(c.raw(),
+        "SELECT consolidation_state FROM statements WHERE id='shared' "
+        "AND tenant_id='tenant-b'"), "consolidated");
     EXPECT_EQ(icol(c.raw(),
         "SELECT COUNT(*) FROM bus_events WHERE event_type='statement.archived' "
-        "AND primary_id='shared'"), 2);
+        "AND primary_id='shared'"), 1);
 }
 
 // ── Test 6: run_idle writes a replay_ledger row with mode='idle' ──

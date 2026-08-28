@@ -42,6 +42,64 @@ TEST(Connection, CommitInsideGuardPersists) {
     sqlite3_finalize(s);
 }
 
+TEST(Connection, NestedCommitPersistsWithOuterCommit) {
+    auto c = Connection::open(":memory:");
+    c.exec("CREATE TABLE t(x INTEGER)");
+    {
+        TransactionGuard outer(c);
+        c.exec("INSERT INTO t(x) VALUES(1)");
+        {
+            TransactionGuard inner(c);
+            c.exec("INSERT INTO t(x) VALUES(2)");
+            inner.commit();
+        }
+        outer.commit();
+    }
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(c.raw(), "SELECT COUNT(*) FROM t", -1, &s, nullptr);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 2);
+    sqlite3_finalize(s);
+}
+
+TEST(Connection, NestedRollbackPreservesOuterWork) {
+    auto c = Connection::open(":memory:");
+    c.exec("CREATE TABLE t(x INTEGER)");
+    {
+        TransactionGuard outer(c);
+        c.exec("INSERT INTO t(x) VALUES(1)");
+        {
+            TransactionGuard inner(c);
+            c.exec("INSERT INTO t(x) VALUES(2)");
+        }
+        outer.commit();
+    }
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(c.raw(), "SELECT x FROM t ORDER BY x", -1, &s, nullptr);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 1);
+    EXPECT_EQ(sqlite3_step(s), SQLITE_DONE);
+    sqlite3_finalize(s);
+}
+
+TEST(Connection, OuterRollbackUndoesCommittedNestedWork) {
+    auto c = Connection::open(":memory:");
+    c.exec("CREATE TABLE t(x INTEGER)");
+    {
+        TransactionGuard outer(c);
+        {
+            TransactionGuard inner(c);
+            c.exec("INSERT INTO t(x) VALUES(2)");
+            inner.commit();
+        }
+    }
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(c.raw(), "SELECT COUNT(*) FROM t", -1, &s, nullptr);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 0);
+    sqlite3_finalize(s);
+}
+
 TEST(Connection, ExecThrowsOnSyntaxError) {
     auto c = Connection::open(":memory:");
     EXPECT_THROW(c.exec("THIS IS NOT SQL"), SqliteError);

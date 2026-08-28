@@ -38,7 +38,24 @@ def _act_count(rt, cg_id, act):
             (cg_id, act)).fetchone()[0]
 
 
+def _seed_statement(rt, stmt_id, tenant="default"):
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        c.execute(
+            "INSERT INTO statements("
+            "id,tenant_id,holder_id,holder_perspective,subject_kind,subject_id,"
+            "predicate,object_kind,object_value,canonical_object_hash,modality,"
+            "polarity,confidence,observed_at,salience,affect_json,activation,"
+            "last_accessed,provenance,created_at,updated_at) "
+            "VALUES(?,?,?,'first_person','cognizer','bob','knows','str','x',?,"
+            "'believes','pos',0.9,'2026-05-30T10:00:00Z',0.5,'{}',0.0,"
+            "'2026-05-30T10:00:00Z','user_input','2026-05-30T10:00:00Z',"
+            "'2026-05-30T10:00:00Z')",
+            (stmt_id, tenant, "alice", f"h-{tenant}-{stmt_id}"),
+        )
+
+
 def test_assert_then_acknowledge_grounds(rt):
+    _seed_statement(rt, "stmt-1")
     w = _core.CommonGroundWriter(rt.adapter)
     cg = w.assert_("default", "stmt-1", ["alice", "bob"], "2026-05-30T10:00:00Z")
     assert _status(rt, cg) == "asserted_unack"
@@ -53,6 +70,7 @@ def test_assert_then_acknowledge_grounds(rt):
 
 
 def test_repair_diverges(rt):
+    _seed_statement(rt, "stmt-2")
     w = _core.CommonGroundWriter(rt.adapter)
     cg = w.assert_("default", "stmt-2", [], "2026-05-30T10:00:00Z")
     w.repair(cg, "bob", "2026-05-30T10:02:00Z")
@@ -61,6 +79,7 @@ def test_repair_diverges(rt):
 
 
 def test_withdraw_recants(rt):
+    _seed_statement(rt, "stmt-3")
     w = _core.CommonGroundWriter(rt.adapter)
     cg = w.assert_("default", "stmt-3", [], "2026-05-30T10:00:00Z")
     w.withdraw(cg, "alice", "2026-05-30T10:03:00Z")
@@ -69,8 +88,11 @@ def test_withdraw_recants(rt):
 
 
 def test_supersede_sets_superseded_by(rt):
+    _seed_statement(rt, "stmt-4")
+    _seed_statement(rt, "stmt-new")
     w = _core.CommonGroundWriter(rt.adapter)
     cg = w.assert_("default", "stmt-4", [], "2026-05-30T10:00:00Z")
+    w.acknowledge(cg, "bob", "2026-05-30T10:01:00Z")
     w.supersede_ground(cg, "stmt-new", "2026-05-30T10:04:00Z")
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         sup = c.execute(
@@ -80,6 +102,8 @@ def test_supersede_sets_superseded_by(rt):
 
 
 def test_sweep_timeout_downgrades_only_stale(rt):
+    _seed_statement(rt, "stmt-old")
+    _seed_statement(rt, "stmt-fresh")
     w = _core.CommonGroundWriter(rt.adapter)
     old = w.assert_("default", "stmt-old", [], "2026-05-29T11:00:00Z")   # 25h ago
     fresh = w.assert_("default", "stmt-fresh", [], "2026-05-30T11:00:00Z")  # 1h ago

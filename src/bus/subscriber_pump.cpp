@@ -7,25 +7,93 @@
 #include "starling/prospective/policy_engine.hpp"
 #include "starling/tom/common_ground_subscriber.hpp"
 #include <sqlite3.h>
+#include <cstdio>
 #include <functional>
+#include <stdexcept>
 #include <string>
 
 namespace starling::bus {
 namespace {
 
+bool exec_control(sqlite3* db, const std::string& sql, std::string& error) {
+    char* raw_error = nullptr;
+    const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &raw_error);
+    if (rc == SQLITE_OK) return true;
+    error = raw_error ? raw_error : sqlite3_errmsg(db);
+    sqlite3_free(raw_error);
+    return false;
+}
+
+// Restore the connection to its pre-savepoint boundary. A top-level SAVEPOINT
+// may fall back to a full ROLLBACK; nested callers retain ownership of their
+// outer transaction, so cleanup failure must propagate instead.
+bool rollback_savepoint(sqlite3* db, const std::string& sp,
+                        bool started_in_autocommit, std::string& error) {
+    std::string rollback_error;
+    if (exec_control(db, "ROLLBACK TO " + sp, rollback_error)) {
+        std::string release_error;
+        if (exec_control(db, "RELEASE " + sp, release_error)) return true;
+        error = "release after rollback failed: " + release_error;
+    } else {
+        error = "rollback to savepoint failed: " + rollback_error;
+    }
+
+    if (started_in_autocommit && sqlite3_get_autocommit(db) == 0) {
+        std::string full_rollback_error;
+        if (exec_control(db, "ROLLBACK", full_rollback_error)) return true;
+        error += "; full rollback failed: " + full_rollback_error;
+    }
+    return false;
+}
+
 // Run one subscriber inside a named SAVEPOINT. On any exception, ROLLBACK TO
 // the savepoint so the subscriber's partial work is undone but the main write
-// and other subscribers are unaffected. Best-effort: never propagates.
+// and other subscribers are unaffected. The subscriber checkpoint remains
+// behind, so a later pump retries the batch.
 void run_isolated(persistence::Connection& conn, const char* name,
                   const std::function<void()>& fn) {
     const std::string sp = std::string("sub_") + name;
-    sqlite3_exec(conn.raw(), ("SAVEPOINT " + sp).c_str(), nullptr, nullptr, nullptr);
+    sqlite3* db = conn.raw();
+    const bool started_in_autocommit = sqlite3_get_autocommit(db) != 0;
+    std::string control_error;
+    if (!exec_control(db, "SAVEPOINT " + sp, control_error)) {
+        std::fprintf(stderr,
+                     "[subscriber_pump] %s skipped; savepoint unavailable: %s\n",
+                     name, control_error.c_str());
+        return;
+    }
     try {
         fn();
-        sqlite3_exec(conn.raw(), ("RELEASE " + sp).c_str(), nullptr, nullptr, nullptr);
+    } catch (const std::exception& e) {
+        if (!rollback_savepoint(db, sp, started_in_autocommit, control_error)) {
+            throw std::runtime_error(
+                std::string("subscriber_pump: ") + name +
+                " failed and transaction cleanup failed: " + control_error);
+        }
+        std::fprintf(stderr, "[subscriber_pump] %s failed; checkpoint retained: %s\n",
+                     name, e.what());
+        return;
     } catch (...) {
-        sqlite3_exec(conn.raw(), ("ROLLBACK TO " + sp).c_str(), nullptr, nullptr, nullptr);
-        sqlite3_exec(conn.raw(), ("RELEASE " + sp).c_str(), nullptr, nullptr, nullptr);
+        if (!rollback_savepoint(db, sp, started_in_autocommit, control_error)) {
+            throw std::runtime_error(
+                std::string("subscriber_pump: ") + name +
+                " failed and transaction cleanup failed: " + control_error);
+        }
+        std::fprintf(stderr, "[subscriber_pump] %s failed; checkpoint retained\n", name);
+        return;
+    }
+
+    if (!exec_control(db, "RELEASE " + sp, control_error)) {
+        const std::string release_error = control_error;
+        if (!rollback_savepoint(db, sp, started_in_autocommit, control_error)) {
+            throw std::runtime_error(
+                std::string("subscriber_pump: ") + name +
+                " release failed (" + release_error +
+                ") and transaction cleanup failed: " + control_error);
+        }
+        std::fprintf(stderr,
+                     "[subscriber_pump] %s release failed; batch rolled back: %s\n",
+                     name, release_error.c_str());
     }
 }
 

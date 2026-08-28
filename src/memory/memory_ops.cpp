@@ -7,6 +7,7 @@
 #include "starling/bus/outbox_dispatcher.hpp"
 #include "starling/bus/subscriber_pump.hpp"
 #include "starling/crypto/sha256.hpp"
+#include "starling/cognizer/perception_reconstructor.hpp"
 #include "starling/evidence/engram.hpp"
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/extractor.hpp"
@@ -116,6 +117,92 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
     }
     const auto llm_result = extract_llm(adapter, llm, prompt_template, params, policy);
     return remember_commit(adapter, llm, params, prepared, llm_result, policy);
+}
+
+RememberLlmBundle remember_extract_all(
+        persistence::SqliteAdapter& adapter,
+        extractor::LLMAdapter& llm,
+        const RememberParams& params,
+        const RememberPrompts& prompts,
+        const extractor::ValidationPolicy& policy) {
+    RememberLlmBundle out;
+    out.belief = extract_llm(adapter, llm, prompts.belief, params, policy);
+
+    std::string gf_prompt = prompts.general_fact;
+    static constexpr std::string_view kSelf = "{self}";
+    for (std::size_t pos = 0;
+         (pos = gf_prompt.find(kSelf, pos)) != std::string::npos;) {
+        gf_prompt.replace(pos, kSelf.size(), params.holder_id);
+        pos += params.holder_id.size();
+    }
+    out.general_fact = extract_llm(adapter, llm, gf_prompt, params, policy);
+
+    extractor::EpisodicExtractor episodic(
+        adapter.connection(), llm, adapter, prompts.episodic);
+    const std::string passage(params.payload.begin(), params.payload.end());
+    out.episodic = episodic.extract_llm(passage);
+    return out;
+}
+
+RememberOutcome remember_commit_all(
+        persistence::SqliteAdapter& adapter,
+        extractor::LLMAdapter& llm,
+        const RememberParams& params,
+        const RememberPrepared& prepared,
+        const RememberLlmBundle& extracted,
+        const extractor::ValidationPolicy& policy) {
+    RememberOutcome out;
+    out.outcome = prepared.outcome;
+    out.engram_ref = prepared.engram_ref;
+    if (!prepared.should_extract) return out;
+
+    // The nested persists use SAVEPOINT-backed TransactionGuards. Any later
+    // channel failure rolls back belief, episodic, general-fact, pump effects,
+    // and audit rows as one commit unit.
+    persistence::TransactionGuard transaction(adapter.connection());
+    out = remember_commit(adapter, llm, params, prepared, extracted.belief, policy);
+
+    extractor::EpisodicExtractor episodic(
+        adapter.connection(), llm, adapter, /*prompt_template=*/"");
+    const auto event_result = episodic.persist(
+        out.engram_ref, params.tenant_id, params.holder_id,
+        prepared.created_at_iso8601, extracted.episodic);
+    out.statement_ids.insert(out.statement_ids.end(),
+                             event_result.event_statement_ids.begin(),
+                             event_result.event_statement_ids.end());
+    if (!event_result.event_statement_ids.empty()) {
+        try {
+            // Perception is a rebuildable projection; failure must not reject
+            // durable memory, but this degradation policy now belongs to Core.
+            cognizer::PerceptionReconstructor(adapter.connection()).reconstruct(
+                params.tenant_id);
+        } catch (...) {}
+    }
+
+    auto gf = remember_commit(
+        adapter, llm, params, prepared, extracted.general_fact, policy);
+    out.statement_ids.insert(out.statement_ids.end(),
+                             gf.statement_ids.begin(), gf.statement_ids.end());
+    out.extraction_failed = out.extraction_failed || gf.extraction_failed;
+    transaction.commit();
+    return out;
+}
+
+RememberOutcome remember_all(
+        persistence::SqliteAdapter& adapter,
+        extractor::LLMAdapter& llm,
+        const RememberParams& params,
+        const RememberPrompts& prompts,
+        const extractor::ValidationPolicy& policy) {
+    const auto prepared = remember_prepare(adapter, params);
+    if (!prepared.should_extract) {
+        return {.engram_ref = prepared.engram_ref,
+                .statement_ids = {},
+                .outcome = prepared.outcome,
+                .extraction_failed = false};
+    }
+    const auto extracted = remember_extract_all(adapter, llm, params, prompts, policy);
+    return remember_commit_all(adapter, llm, params, prepared, extracted, policy);
 }
 
 std::string neutralize_recall_fence(std::string_view context_pack) {

@@ -7,6 +7,7 @@ import argparse
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -428,6 +429,19 @@ def python_executable() -> Path:
     return venv_python if venv_python.exists() else Path(sys.executable)
 
 
+def tool_executable(name: str) -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    venv_tool = REPO_ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin") / f"{name}{suffix}"
+    if venv_tool.exists():
+        return venv_tool
+    system_tool = shutil.which(name)
+    if system_tool:
+        return Path(system_tool)
+    raise BuildConfigError(
+        f"{name} was not found; run .venv/bin/python -m pip install -r requirements-build.txt"
+    )
+
+
 def pybind11_cmake_dir(python: Path) -> Path | None:
     code = "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
     try:
@@ -490,9 +504,10 @@ def cmake_configure_command(
     build_tests: bool,
     allow_network: bool,
     extra_args: Sequence[str],
+    cmake: str | Path = "cmake",
 ) -> list[str]:
     cmd = [
-        "cmake",
+        str(cmake),
         "-S",
         str(REPO_ROOT),
         "-B",
@@ -523,12 +538,14 @@ def planned_commands(
     build_dir: Path,
     build: bool,
     test: bool,
+    cmake: str | Path = "cmake",
+    ctest: str | Path = "ctest",
 ) -> list[list[str]]:
     commands = [list(configure_cmd)]
     if build:
-        commands.append(["cmake", "--build", str(build_dir)])
+        commands.append([str(cmake), "--build", str(build_dir)])
     if test:
-        commands.append(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
+        commands.append([str(ctest), "--test-dir", str(build_dir), "--output-on-failure"])
     return commands
 
 
@@ -578,6 +595,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.install_build_tools:
         install_build_tools(python)
     try:
+        cmake = tool_executable("cmake")
+        ctest = tool_executable("ctest")
         check_stale_cache(args.build_dir, expected_generator="Ninja")
         build_rpath, exe_linker_flags, shared_linker_flags, module_linker_flags = runtime_link_cache_values(args.build_dir)
         hints = discover_dependency_hints(
@@ -603,6 +622,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_tests=args.build_tests,
         allow_network=args.allow_network,
         extra_args=hints.cmake_args,
+        cmake=cmake,
     )
     for note in hints.notes:
         print(f"found: {note}")
@@ -611,7 +631,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.python_editable:
         run(python_editable_command(build_dir=args.build_dir, cmake_args=hints.cmake_args))
         return 0
-    for cmd in planned_commands(configure_cmd=configure_cmd, build_dir=args.build_dir, build=args.build, test=args.test):
+    for cmd in planned_commands(
+        configure_cmd=configure_cmd, build_dir=args.build_dir,
+        build=args.build, test=args.test, cmake=cmake, ctest=ctest,
+    ):
         run(cmd)
     return 0
 

@@ -1,12 +1,15 @@
 #include "starling/bus/pipeline_ledger.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
+#include "starling/crypto/sha256.hpp"
+#include "starling/governance/pipeline_run_store.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 namespace starling::bus {
@@ -38,15 +41,6 @@ std::string random_id() {
     return oss.str();
 }
 
-const char* pipeline_status_string(PipelineStatus s) {
-    switch (s) {
-        case PipelineStatus::Started:  return "started";
-        case PipelineStatus::Finished: return "finished";
-        case PipelineStatus::Failed:   return "failed";
-    }
-    return "unknown";
-}
-
 const char* extraction_status_string(ExtractionStatus s) {
     switch (s) {
         case ExtractionStatus::Success:        return "success";
@@ -63,47 +57,39 @@ std::string PipelineLedger::start_run(
         std::string_view tenant_id,
         std::string_view input_ref,
         std::string_view metadata_json) {
-    sqlite3* const db = conn_.raw();
-    const std::string id = random_id();
-    const std::string ts = iso8601_utc(std::chrono::system_clock::now());
-
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db,
-            "INSERT INTO pipeline_run("
-            "id,tenant_id,started_at,status,input_ref,metadata_json) "
-            "VALUES(?,?,?,?,?,?)",
-            -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "PipelineLedger::start_run: prepare failed");
+    governance::PipelineRunStore store(conn_);
+    governance::NewRun spec;
+    spec.kind = governance::PipelineKind::Extraction;
+    spec.aggregate_id = std::string(input_ref);
+    spec.tenant_id = std::string(tenant_id);
+    spec.profile_name = "inline";
+    spec.input_hash = crypto::sha256_hex(input_ref);
+    spec.idempotency_key = random_id();
+    spec.pipeline_name = "extractor";
+    spec.pipeline_version = "1";
+    spec.metadata_json = std::string(metadata_json);
+    auto run = store.enqueue(spec);
+    if (run.status == governance::PipelineRunStatus::Queued) {
+        const auto lease = iso8601_utc(
+            std::chrono::system_clock::now() + std::chrono::minutes(5));
+        run = store.claim(run.id, "inline", lease);
+    } else if (run.status == governance::PipelineRunStatus::Running) {
+        throw std::runtime_error(
+            "PipelineLedger::start_run: extraction run already RUNNING: " + run.id);
     }
-    starling::persistence::StmtHandle h(raw);
-    bind_sv(h.get(), 1, id);
-    bind_sv(h.get(), 2, tenant_id);
-    bind_sv(h.get(), 3, ts);
-    sqlite3_bind_text(h.get(), 4, "started", -1, SQLITE_STATIC);
-    bind_sv(h.get(), 5, input_ref);
-    bind_sv(h.get(), 6, metadata_json);
-    if (sqlite3_step(h.get()) != SQLITE_DONE) {
-        throw make_sqlite_error(db, "PipelineLedger::start_run: INSERT step failed");
-    }
-    return id;
+    return run.id;
 }
 
 void PipelineLedger::finish_run(std::string_view run_id, PipelineStatus terminal) {
-    sqlite3* const db = conn_.raw();
-    const std::string ts = iso8601_utc(std::chrono::system_clock::now());
-
-    sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db,
-            "UPDATE pipeline_run SET finished_at=?, status=? WHERE id=?",
-            -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "PipelineLedger::finish_run: prepare failed");
-    }
-    starling::persistence::StmtHandle h(raw);
-    bind_sv(h.get(), 1, ts);
-    sqlite3_bind_text(h.get(), 2, pipeline_status_string(terminal), -1, SQLITE_STATIC);
-    bind_sv(h.get(), 3, run_id);
-    if (sqlite3_step(h.get()) != SQLITE_DONE) {
-        throw make_sqlite_error(db, "PipelineLedger::finish_run: UPDATE step failed");
+    governance::PipelineRunStore store(conn_);
+    if (terminal == PipelineStatus::Finished) {
+        store.confirm(run_id, "{}", governance::PipelineRunStatus::Completed);
+    } else if (terminal == PipelineStatus::PartialSuccess) {
+        store.confirm(run_id, "{}", governance::PipelineRunStatus::PartialSuccess);
+    } else if (terminal == PipelineStatus::Failed) {
+        store.dead_letter(run_id, "extraction_failed");
+    } else {
+        throw std::invalid_argument("PipelineLedger::finish_run requires terminal status");
     }
 }
 

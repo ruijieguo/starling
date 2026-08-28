@@ -27,8 +27,7 @@ public:
     // Executes SQL with no parameters. Throws SqliteError on failure.
     void exec(std::string_view sql);
 
-    // BEGIN IMMEDIATE / COMMIT / ROLLBACK helpers. Nesting is not supported by
-    // SQLite's default transaction model and not supported here either.
+    // BEGIN IMMEDIATE / COMMIT / ROLLBACK helpers.
     void begin_immediate();
     void commit();
     void rollback() noexcept;
@@ -42,9 +41,10 @@ private:
 
 class TransactionGuard {
 public:
-    explicit TransactionGuard(Connection& c) : conn_(c), active_(true) { conn_.begin_immediate(); }
-    ~TransactionGuard() { if (active_) conn_.rollback(); }
-    void commit() { conn_.commit(); active_ = false; }
+    // The outermost guard owns BEGIN IMMEDIATE; nested guards use SAVEPOINTs.
+    explicit TransactionGuard(Connection& c);
+    ~TransactionGuard();
+    void commit();
 
     TransactionGuard(const TransactionGuard&) = delete;
     TransactionGuard& operator=(const TransactionGuard&) = delete;
@@ -53,7 +53,9 @@ public:
 
 private:
     Connection& conn_;
-    bool active_;
+    std::string savepoint_;
+    bool outer_ = false;
+    bool active_ = true;
 };
 
 }  // namespace starling::persistence

@@ -132,14 +132,7 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         if (sources.empty()) {
             continue;
         }
-        try {
-            container.rebuild(conn, tenant, subject, sources, now_iso);
-        } catch (const neocortex::ConcurrentRebuildError&) {
-            // Defensive swallow: a concurrent CAS race advanced this holder's
-            // version between our read and write (rare in the single-writer tick
-            // context; effectively never fires). Skip — a later tick reconverges.
-            continue;
-        }
+        container.rebuild(conn, tenant, subject, sources, now_iso);
     }
 
     // 5. advance checkpoint (events were seen).
@@ -153,7 +146,8 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         StmtHandle handle(raw);
         sqlite3_bind_int(handle.get(), 1, max_seq);
         bind_sv(handle.get(), 2, now_iso);
-        sqlite3_step(handle.get());
+        if (sqlite3_step(handle.get()) != SQLITE_DONE)
+            throw make_sqlite_error(dbh, "persona_subscriber: advance checkpoint step");
     }
 
     // 6. number of trigger events consumed this batch.

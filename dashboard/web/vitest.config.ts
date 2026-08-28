@@ -15,7 +15,7 @@ export default defineConfig({
 		environment: 'jsdom',
 		globals: true,
 		restoreMocks: true,
-		setupFiles: ['@testing-library/svelte/vitest'],
+		setupFiles: ['@testing-library/svelte/vitest', './vitest.setup.ts'],
 		include: [...(configDefaults.include ?? []), '**/*.test.svelte.ts'],
 		// Playwright e2e specs run under `playwright test`, not vitest.
 		exclude: [...configDefaults.exclude, 'e2e/**']

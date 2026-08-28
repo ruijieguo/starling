@@ -36,7 +36,8 @@ def _seed_consolidated_old(rt, stmt_id):
 def test_duplicate_decay_candidates_archive_once(rt):
     _seed_consolidated_old(rt, "dup")
     sched = _core.ReplayScheduler(rt.adapter)
-    sched.run_decay(["dup", "dup"], "2026-05-27T00:00:00Z")
+    sched.run_decay([("default", "dup"), ("default", "dup")],
+                    "2026-05-27T00:00:00Z")
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         n_arch = c.execute(
             "SELECT COUNT(*) FROM bus_events WHERE event_type='statement.archived' "

@@ -176,7 +176,8 @@ def commitments(db_path: str, tenant: str) -> dict:
             conn,
             "SELECT c.stmt_id, c.state, c.broken_count, c.deadline, c.created_at, "
             "c.updated_at, s.subject_id, s.predicate, s.object_value "
-            "FROM commitments c LEFT JOIN statements s ON s.id = c.stmt_id "
+            "FROM commitments c LEFT JOIN statements s "
+            "ON s.id = c.stmt_id AND s.tenant_id = c.tenant_id "
             "WHERE c.tenant_id=? ORDER BY c.updated_at DESC LIMIT 500",
             (tenant,),
         )
@@ -298,7 +299,8 @@ def queues(db_path: str, tenant: str) -> dict:
         )
         backlog = conn.execute(
             "SELECT COUNT(*) FROM statements s LEFT JOIN statement_vectors v "
-            "ON v.stmt_id = s.id WHERE s.tenant_id=? AND v.stmt_id IS NULL",
+            "ON v.stmt_id = s.id AND v.tenant_id = s.tenant_id "
+            "WHERE s.tenant_id=? AND v.stmt_id IS NULL",
             (tenant,),
         ).fetchone()[0]
         vec = _rows(
@@ -969,14 +971,14 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             conn,
             "SELECT a.id, a.pipeline_run_id, a.extraction_span_key, a.attempt_number, "
             "a.status, a.error, a.raw_output, a.created_at "
-            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "FROM extraction_attempt a JOIN governance_pipeline_run p ON p.id = a.pipeline_run_id "
             "WHERE p.tenant_id=? AND a.status='failed' "
             "ORDER BY a.created_at DESC LIMIT ?",
             (tenant, list_limit),
         )
         extraction_failures_total = _count_or_zero(
             conn,
-            "SELECT COUNT(*) FROM extraction_attempt a JOIN pipeline_run p "
+            "SELECT COUNT(*) FROM extraction_attempt a JOIN governance_pipeline_run p "
             "ON p.id = a.pipeline_run_id WHERE p.tenant_id=? AND a.status='failed'",
             (tenant,),
         )
@@ -991,7 +993,7 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             "COALESCE(SUM(a.completion_tokens),0) AS completion_tokens, "
             "COALESCE(SUM(a.total_tokens),0) AS total_tokens, "
             "COALESCE(SUM(a.latency_ms),0) AS latency_ms "
-            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "FROM extraction_attempt a JOIN governance_pipeline_run p ON p.id = a.pipeline_run_id "
             "WHERE p.tenant_id=?",
             (tenant,),
         )
@@ -1006,7 +1008,7 @@ def vitals(db_path: str, tenant: str, *, now: str, list_limit: int = 50) -> dict
             "COALESCE(SUM(a.total_tokens),0) AS total_tokens, "
             "COALESCE(SUM(a.latency_ms),0) AS latency_ms, "
             "MIN(a.created_at) AS started_at "
-            "FROM extraction_attempt a JOIN pipeline_run p ON p.id = a.pipeline_run_id "
+            "FROM extraction_attempt a JOIN governance_pipeline_run p ON p.id = a.pipeline_run_id "
             "WHERE p.tenant_id=? "
             "GROUP BY a.pipeline_run_id "
             "ORDER BY started_at DESC LIMIT ?",
@@ -1186,15 +1188,19 @@ def metrics_gist_quality(db_path: str, tenant: str, since_iso: str, bucket_s: in
 
 
 def metrics_latency(db_path: str, tenant: str, since_iso: str, bucket_s: int) -> dict:
-    """抽取时延时间序列(dashboard.db 的 extraction_attempt)。tenant 当前不生效
-    (该表无 tenant_id 列,见文件头注),参数留给该列补上后接入。since 过滤按解析后的
+    """租户级抽取时延时间序列，通过所属 pipeline_run 解析 tenant。since 过滤按解析后的
     时间值比较(_parse_iso),不做字典序 SQL WHERE——created_at 由 C++ iso8601_utc()
     写入、恒整秒,本表暂不触发字典序边界 bug,但与 metrics_embed_depth 统一走同一条
     健壮路径,避免写入格式未来变化时静默重犯(见 _parse_iso docstring)。"""
     since_dt = _parse_iso(since_iso)
     with open_ro(db_path) as conn:
-        rows = _rows(conn, "SELECT created_at, latency_ms, total_tokens FROM extraction_attempt "
-                           "ORDER BY created_at")
+        rows = _rows(
+            conn,
+            "SELECT a.created_at, a.latency_ms, a.total_tokens "
+            "FROM extraction_attempt a JOIN governance_pipeline_run p ON p.id=a.pipeline_run_id "
+            "WHERE p.tenant_id=? ORDER BY a.created_at",
+            (tenant,),
+        )
     buckets: dict = {}
     for r in rows:
         if _parse_iso(r["created_at"]) < since_dt:

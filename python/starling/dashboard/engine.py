@@ -36,6 +36,7 @@ from starling import _core
 from starling import runtime as _runtime
 from starling._memory_core import LLMNotConfigured, MemoryCore
 from starling.dashboard.ingest_filter import chunk_dialogue, clean_turns
+from starling.dashboard.ingest_spool import tenant_spool_dir
 
 
 # ── Phase 5 backpressure sampler defaults (L1 / L2) ─────────────────────────
@@ -184,11 +185,12 @@ class DashboardEngine:
         self.set_consolidation(config.resolve_role("consolidation") or {})  # #38-C role consumer
         self.set_gist_thresholds(config.gist_thresholds or {})              # #38-C v2 threshold surface
         self.rebuild_embedder(config.embedding() or {}, reembed=False)
-        # dogfood sub-project A (Task 3): spool ingest worker — drains
-        # ~/.starling/ingest-spool/ (jobs written by the SessionEnd hook via
+        # dogfood sub-project A (Task 3): spool ingest worker — drains this
+        # tenant's configured partition (jobs written by the SessionEnd hook via
         # scripts/ingest_session.py) into remember() calls. Tests inject a
         # tmp spool dir via `eng._ingest_spool = tmp_path / "spool"`.
-        self._ingest_spool = Path.home() / ".starling" / "ingest-spool"
+        self._ingest_spool = tenant_spool_dir(
+            config.ingest_spool_root(), config.tenant)
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
         self._ingest_remember_ms_total = 0      # observability: see _ingest_drain_once
@@ -354,7 +356,8 @@ class DashboardEngine:
             with closing(sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)) as ro:
                 backlog = ro.execute(
                     "SELECT COUNT(*) FROM statements s LEFT JOIN statement_vectors v "
-                    "ON v.stmt_id=s.id WHERE s.tenant_id=? AND v.stmt_id IS NULL",
+                    "ON v.stmt_id=s.id AND v.tenant_id=s.tenant_id "
+                    "WHERE s.tenant_id=? AND v.stmt_id IS NULL",
                     (self._core.tenant,)).fetchone()[0]
                 embedded = ro.execute(
                     "SELECT COUNT(*) FROM statement_vectors WHERE tenant_id=? AND status='embedded'",
@@ -685,7 +688,8 @@ class DashboardEngine:
     # ── dogfood 子项 A(Task 3):spool ingest worker ──────────────────────
     #
     # `scripts/ingest_session.py`(Task 2)把 SessionEnd hook 的 transcript
-    # 摄入 job 原子落到 `<spool>/*.json`;这里在 dashboard 进程内轮询消化:
+    # 摄入 job 原子落到 `<spool>/tenant-<encoded>/*.json`;这里在对应租户的
+    # dashboard 进程内只轮询该分区:
     # claim(rename → .json.processing)→ 读 transcript → clean_turns/
     # chunk_dialogue(ingest_filter,Task 1)→ 逐块 self.remember()(持锁,见
     # 下方 docstring)→ done/ 或 failed/,可重试的失败留在 spool 根下等下一
@@ -732,36 +736,14 @@ class DashboardEngine:
         poll — never hot-reclaimed within this call). Callers (see
         start_ingest_worker) must not busy-loop on "deferred"/"empty".
 
-        Lock discipline (opus review Hazard 1, single-writer VIOLATION —
-        user-adjudicated fix): this calls `self.remember(...)`, the
-        ENGINE-wrapped method that holds `self._lock` across the ENTIRE
-        call including the extraction LLM network call — same as every
-        other engine writer (tick/forget/approve_review/converse_commit).
-        A prior version of this worker called `self._core.remember(...)`
-        directly to avoid serializing behind the lock, reasoning that the
-        shared sqlite3 connection is opened SQLITE_OPEN_FULLMUTEX so a race
-        could not corrupt it. That reasoning was wrong: FULLMUTEX only
-        serializes individual C-API calls, not a BEGIN…COMMIT span (SQLite
-        transaction state is per-*connection*, not per-thread), and
-        remember's `BEGIN IMMEDIATE` (extractor.cpp TransactionGuard) stays
-        open across the full multi-second extraction retry loop — a
-        concurrent writer on the same connection (background tick, an HTTP
-        /api/converse) hitting BEGIN while that transaction is open throws
-        "cannot start a transaction within a transaction", silently
-        dropping a whole maintenance tick or surfacing a spurious 500 to a
-        user. That is exactly the single-writer serialization `self._lock`
-        exists to enforce (this class's docstring: "SQLite has a single
-        writer connection"), so bypassing it was a genuine violation, not a
-        safe optimization. Holding the lock here means the worker's writes
-        correctly queue behind every other engine caller (the whole point
-        of a single-writer DB) — the cost is that ingest is serialized with
-        the rest of the dashboard for the duration of each chunk's
-        extraction. That cost is deliberately accepted and mitigated by a
-        heavy throttle (`_ingest_throttle_s`, applied in start_ingest_
-        worker's _loop): after every job this worker actually processes, it
-        sleeps a multi-second gap so tick/HTTP get guaranteed windows even
-        while churning a large backlog, instead of chaining remember() call
-        after remember() call with zero gap between them.
+        Lock discipline: this calls the ENGINE-wrapped `self.remember(...)`,
+        so the shared facade/adapter state remains serialized with every
+        other engine operation. Core now splits remember into short prepare
+        and atomic commit transactions with all LLM extraction between them;
+        no SQLite transaction spans the network phase. The engine lock still
+        covers the whole facade call, so ingest cannot race provider swaps or
+        another operation using the same adapter. `_ingest_throttle_s` leaves
+        service windows between backlog jobs.
 
         Failure classification (opus review Hazard 2, "zero statements ==
         failure" — WRONG): a legitimate no-facts chunk (most pure-coding
@@ -772,17 +754,11 @@ class DashboardEngine:
         (src/memory/memory_ops.cpp:78, derived from Extractor::run's
         Status::FAILED — set only when the LLM adapter/JSON-parse failed on
         EVERY retry attempt, never for a successful-but-empty extraction) is
-        now surfaced through the `memory_remember` binding (bindings/python/
-        bind_13_memory_ops.cpp) and passed through untouched by
-        MemoryCore.remember() (python/starling/_memory_core.py) to this
-        worker. NOTE (verified, not just assumed): MemoryCore.remember()
-        runs belief extraction (the call whose dict this worker reads) and
-        a SEPARATE general-fact `_core.memory_remember` call whose own
-        extraction_failed is discarded (never merged into the returned
-        dict) — so this signal reflects the belief pipeline only, not
-        general-fact. Documented as a residual gap, not fixed here (fixing
-        it would touch the core aggregation in _memory_core.py, out of this
-        fix wave's bindings-only scope).
+        now surfaced through the Core-owned `memory_remember_all` binding and
+        passed through by MemoryCore.remember(). The returned flag merges the
+        belief and general-fact channel outcomes. Episodic extraction remains
+        explicitly best-effort: an empty/invalid episodic response contributes
+        no event statements but does not fail an otherwise durable remember.
 
         A chunk with extraction_failed=False is success REGARDLESS of
         statement count (an all-chitchat job legitimately produces zero
@@ -801,7 +777,18 @@ class DashboardEngine:
         jobs = sorted(sp.glob("*.json")) if sp.exists() else []
         if not jobs:
             return "empty"
-        job_path = jobs[0]
+        job_path = None
+        for candidate in jobs:
+            try:
+                candidate_job = json.loads(candidate.read_text())
+            except Exception:
+                candidate_job = None
+            if (candidate_job is None or "tenant" not in candidate_job
+                    or candidate_job.get("tenant") == self._cfg.tenant):
+                job_path = candidate
+                break
+        if job_path is None:
+            return "deferred"
         claimed = job_path.with_suffix(".json.processing")
         try:
             job_path.rename(claimed)               # 原子 claim
@@ -811,6 +798,9 @@ class DashboardEngine:
             job = json.loads(claimed.read_text())
         except Exception:                           # noqa: BLE001 — 损坏的 job 文件按空 job 处理,下方统一走有界重试
             job = {}
+        if "tenant" in job and job.get("tenant") != self._cfg.tenant:
+            claimed.rename(job_path)
+            return "deferred"
         try:
             tp = Path(job["transcript_path"])
             lines = tp.read_text(errors="replace").splitlines()

@@ -37,8 +37,8 @@ def _seed_consolidated_old(rt, stmt_id):
 def test_decay_serial_idempotent(rt):
     _seed_consolidated_old(rt, "d1")
     sched = _core.ReplayScheduler(rt.adapter)
-    sched.run_decay(["d1"], "2026-05-27T00:00:00Z")
-    sched.run_decay(["d1"], "2026-05-27T00:00:00Z")
+    sched.run_decay([("default", "d1")], "2026-05-27T00:00:00Z")
+    sched.run_decay([("default", "d1")], "2026-05-27T00:00:00Z")
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         state = c.execute(
             "SELECT consolidation_state FROM statements WHERE id='d1'").fetchone()[0]

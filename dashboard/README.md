@@ -38,7 +38,7 @@ export STARLING_DASH_CORS_ORIGINS=https://your-frontend.example
 
 Claude Code 会话结束时自动把清洁对话喂进 starling 记忆(纯 host、复用 remember)。
 
-**架构**:SessionEnd hook 只写一个 job 文件到 `~/.starling/ingest-spool/` 立即退出 → dashboard 进程内后台 worker 扫 spool、读 transcript、过滤(剥 thinking/工具/tool_result/代码围栏/超长行)、分块、逐块 `remember`(持 engine 锁=尊重单写者;重限流)→ statements 落库可 `/statements` 检视。
+**架构**:SessionEnd hook 只写一个 job 文件到 `~/.starling/ingest-spool/tenant-<url-encoded-tenant>/` 立即退出 → 对应租户的 dashboard worker 只扫描自己的分区、读 transcript、过滤(剥 thinking/工具/tool_result/代码围栏/超长行)、分块、逐块 `remember`(持 engine 锁串行化 facade 状态；LLM 网络阶段不持 SQLite 事务)→ statements 落库可 `/statements` 检视。
 
 **装 hook**(`~/.claude/settings.json`,全局):
 ```json
@@ -53,7 +53,7 @@ hook 近零工作(只写 job 文件),永不阻塞会话退出;dashboard 不在�
 
 **运维**:
 - 状态:`GET /api/ingest_status` → `{pending, processing, done, failed, ingest_remember_ms_total}`。
-- spool:`~/.starling/ingest-spool/`(pending `*.json`)、`done/`、`failed/`(死信 + `.error`);崩溃残留 `*.processing` 由 worker 启动时 reaper 收回。
+- spool 根：`~/.starling/ingest-spool/`；每租户分区 `tenant-<url-encoded-tenant>/` 内含 pending `*.json`、`done/`、`failed/`(死信 + `.error`)。worker 只 claim 当前配置租户的分区；崩溃残留 `*.processing` 由该分区 worker 启动时 reaper 收回。
 - 失败:瞬态(LLM 黑洞)留 spool 有界重试(attempts<5),超限进 `failed/`;空抽取(无可记事实)= 正常成功进 `done/`。
 - 卸载 hook:从 `~/.claude/settings.json` 删 `hooks.SessionEnd`(备份在 `settings.json.bak-*`)。
-- `ingest_remember_ms_total` 是 worker 持锁跑 extraction 的累计墙钟——摄入期间 dashboard 会等这把锁(实测一块 ~54s),此值是「extraction 出锁」优化(方案 2)是否该做的证据。
+- `ingest_remember_ms_total` 是 worker 持 engine 锁执行完整 remember 的累计墙钟（含锁外数据库事务的 LLM 网络阶段）；SQLite 写事务只覆盖 prepare/commit，但其他 dashboard facade 调用仍会等待 engine 锁。
