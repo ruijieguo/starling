@@ -80,11 +80,25 @@ def test_s_rag_returns_recalled_lines(rt):
 
 
 def test_s_star_carries_context_pack_labels(rt):
-    """S_star 走 RetrievalPlanner → context_pack 带 8 标签(S_rag 拿不到)。
-    这是 S_star 与 S_rag 唯一差异 = 认知层的直接证据。"""
+    """S_star 走 RetrievalPlanner → context_pack 带标签(S_rag 拿不到)。
+    这是 S_star 与 S_rag 唯一差异 = 认知层的直接证据。
+
+    探针 query 逐字命中一条语句被 embed 的文本(EmbeddingWorker 的
+    render_text = "<subject_id> <predicate> <object_value>",见
+    src/embedding/embedding_worker.cpp:47)。这样做的原因是可复现性,
+    与测试意图无关:StubEmbeddingAdapter 用 std::hash<string_view> 做 RNG
+    种子(implementation-defined),同一 stub 实例对**同一字符串**必产
+    逐字节相同向量 → cosine(v,v)=1.0 是唯一跨平台成立的不变量;而两个
+    **不同**字符串在 8 维里是独立随机单位向量,cosine 期望≈0、跨 stdlib
+    (libc++ vs libstdc++)随机过/不过 planner 的 tau_recall=0.25 弃答阈值
+    → 曾致本测试在 CI(ubuntu)上偶发 assert []。命中串让"planner 产
+    labels"这个结构事实在任何平台确定性显现。自然问句的语义召回质量属于
+    real-mode(真 embedder)的关注点,不压在离线 stub 结构测试上。"""
     emb, idx = _pipeline(rt)
+    # 逐字 = HISTORY[1] 的 render_text("subject" + " said " + text)。
+    hit = "subject said " + HISTORY[1]["text"]
     r = pipe.recall_block(_core, "S_star", adapter=rt.adapter, embedder=emb,
-                          index=idx, question=QUESTION, history=HISTORY, k=5)
+                          index=idx, question=hit, history=HISTORY, k=5)
     assert r["labels"]                          # 有标签(FACT/BELIEF/...)
     assert "[" in r["block"]                    # context_pack 带 [LABEL] 前缀
 
