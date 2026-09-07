@@ -65,14 +65,18 @@ def _answerer_correct(prompt, backbone):
     return "1"   # always the correct index → isolates retrieval assembly
 
 
-def _cfg(answerer=_answerer_correct):
+def _judge_accept(question, reference, candidate, backbone):
+    return True   # default accepting judge → isolates retrieval assembly
+
+
+def _cfg(answerer=_answerer_correct, judge=_judge_accept):
     return {"core": _core, "make_pipeline": _make_pipeline,
-            "extract": _mock_extract, "answerer": answerer,
+            "extract": _mock_extract, "answerer": answerer, "judge": judge,
             "k": 10, "now_iso": "2026-06-01T00:00:00Z", "backbone": "stub"}
 
 
-def _run_stage(stage, rec, answerer=_answerer_correct):
-    return ladder._real_answer(stage, rec, 0, _cfg(answerer))
+def _run_stage(stage, rec, answerer=_answerer_correct, judge=_judge_accept):
+    return ladder._real_answer(stage, rec, 0, _cfg(answerer, judge))
 
 
 def test_all_six_stages_wire_end_to_end_offline():
@@ -114,3 +118,84 @@ def test_abstain_item_scores_on_abstention():
     abstain_rec = dict(REC, is_abstain=True, history=[], gold_statements=[])
     # empty store → planner abstains → is_abstain item scored correct
     assert _run_stage("S_star", abstain_rec) is True
+
+
+def test_ladder_prompt_never_injects_full_history():
+    """归因不变式:阶梯答题 prompt 只喂"该台阶的记忆块"(recalled),绝不无条件
+    塞完整 record.history。否则各台阶都能从 always-present history 读到答案:
+    S0 地板失真、S_star−S_rag 认知层净贡献信号归零、S_full history 重复。
+
+    钉法:record.history 里放一个 recalled 里绝不会出现的哨兵事实,断言它
+    不进 prompt;同时确认 prompt 确实带上了 recalled 的内容。回归此断言即
+    重新引入 eval_longmemeval._build_answer_prompt 的长上下文混淆。"""
+    sentinel = "SENTINEL-HISTORY-ONLY-FACT-must-not-leak-into-prompt"
+    rec = dict(
+        REC,
+        history=[{"speaker": "alice", "text": sentinel,
+                  "observed_at": "2026-04-01T10:00:00Z"}],
+    )
+    recalled = ["said: Carol has taken over auth from Bob."]
+    prompt = ladder._ladder_prompt(rec, recalled)
+    assert sentinel not in prompt, "record.history 泄漏进阶梯 prompt(归因混淆回归)"
+    assert "Full conversation history" not in prompt, "history 段落不该出现"
+    assert recalled[0] in prompt, "该台阶的记忆块必须进 prompt"
+    # S_full 的 history 语义不丢:它经 recall_block 进入 block→recalled,而非 prompt 硬编码。
+    full_prompt = ladder._ladder_prompt(rec, [f"[t] alice: {sentinel}"])
+    assert sentinel in full_prompt, "S_full 台阶经 recalled 传入的 history 必须可达"
+
+
+# --- 自由文本(long_form/short_answer)打分岔路 ---------------------------------
+
+FREE_REC = dict(
+    REC,
+    item_id="f0",
+    answer_format="long_form",
+    options=[],
+    answer="Carol currently owns the auth service.",
+)
+
+
+def test_free_text_routes_through_judge_not_index():
+    """自由文本题走 judge 路径:answerer 出的是自然语言(非 MC 下标),
+    命中与否完全由 judge 决定,而非 _parse_option_index。"""
+    calls = {"answerer": 0, "judge": 0}
+
+    def answerer(prompt, backbone):
+        calls["answerer"] += 1
+        return "Carol owns it now."   # 自然语言,不是下标
+
+    def judge(question, reference, candidate, backbone):
+        calls["judge"] += 1
+        assert candidate == "Carol owns it now."
+        assert reference == FREE_REC["answer"]
+        return True
+
+    ok = ladder._real_answer("S_rag", FREE_REC, 0, _cfg(answerer, judge))
+    assert ok is True
+    assert calls["answerer"] == 1 and calls["judge"] == 1
+
+
+def test_free_text_judge_rejects_scores_miss():
+    """judge 判不等价 → 该题记未命中(与 answerer 文本无关)。"""
+    ok = ladder._real_answer("S_rag", FREE_REC, 0,
+                             _cfg(answerer=lambda p, b: "wrong answer",
+                                  judge=lambda q, r, c, b: False))
+    assert ok is False
+
+
+def test_free_text_all_six_stages_wire_offline():
+    for stage in ladder.ALL_STAGES:
+        ok = ladder._real_answer(stage, FREE_REC, 0, _cfg())
+        assert isinstance(ok, bool)
+
+
+def test_free_text_prompt_never_injects_full_history():
+    """自由文本 prompt 与 MC 同一契约:只喂 recalled,绝不塞完整 record.history。"""
+    sentinel = "SENTINEL-FREE-HISTORY-must-not-leak"
+    rec = dict(FREE_REC, history=[{"speaker": "alice", "text": sentinel,
+                                   "observed_at": "2026-04-01T10:00:00Z"}])
+    recalled = ["said: Carol has taken over auth from Bob."]
+    prompt = ladder._ladder_prompt_free(rec, recalled)
+    assert sentinel not in prompt, "record.history 泄漏进自由文本 prompt(归因混淆回归)"
+    assert recalled[0] in prompt, "该台阶的记忆块必须进 prompt"
+    assert rec["question"] in prompt, "问题必须进 prompt"
