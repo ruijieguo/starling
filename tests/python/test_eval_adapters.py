@@ -40,29 +40,127 @@ def test_answer_index_out_of_range_rejected():
                              benchmark="longmemeval")
 
 
-def test_socialmembench_joins_conversations_by_network():
-    qa = [{"qa_id": "q0", "network_id": "n1", "question": "who owns X?",
-           "choices": ["Bob", "Carol"], "answer_idx": 1, "category": "attribution"}]
-    conv = [
-        {"network_id": "n1", "turn_idx": 1, "speaker": "carol", "text": "I took over X.",
-         "timestamp": "2026-05-01T10:00:00Z"},
-        {"network_id": "n1", "turn_idx": 0, "speaker": "bob", "text": "I own X.",
-         "timestamp": "2026-04-01T10:00:00Z"},
-    ]
-    out = ad.adapt_socialmembench(qa, conv)
+# --- SocialMemBench 真实 schema(下载 4 parquet 后 profile 得,2026-07 校验)---
+# JSON 列在真实 parquet 里以**字符串**落地,fixture 也用字符串以走 _parse_json。
+_SM_CONV = [
+    {"network_id": "n1", "session_index": 1, "turn_id": "n1_s01_t001",
+     "speaker_display_name": "Bob", "message": "I own X.", "message_index": 1,
+     "timestamp": "2025-04-01T10:00:00"},
+    {"network_id": "n1", "session_index": 3, "turn_id": "n1_s03_t000",
+     "speaker_display_name": "Carol", "message": "I took over X.", "message_index": 0,
+     "timestamp": "2025-05-01T10:00:00"},
+]
+
+
+def test_socialmembench_mc_normalizes_options_and_gold():
+    qa = [{
+        "qa_id": "q0", "network_id": "n1", "query_type": "Q4",
+        "question": "who owns X?", "answer": "Carol took over X after Bob.",
+        "answer_format": "multiple_choice",
+        "options_json": '{"A": "Bob", "B": "Carol", "C": "Dan"}',
+        "correct_option": "B",
+        "evidence_anchors_json": (
+            '[{"session_index": 1, "turn_id": "n1_s01_t001", '
+            '"speaker_display_name": "Bob", "message_excerpt": "I own X.", '
+            '"relevance": "high"}]'),
+    }]
+    out = ad.adapt_socialmembench(qa, _SM_CONV)
     assert len(out) == 1
-    hist = out[0]["history"]
-    # 按 turn_idx 排序:bob(0) 在 carol(1) 之前
-    assert [h["speaker"] for h in hist] == ["bob", "carol"]
-    assert out[0]["subset"] == "attribution"
-    assert out[0]["answer"] == 1
+    rec = out[0]
+    # history 排序键 (session_index, message_index):Bob(1,1) 在 Carol(3,0) 之前
+    assert [h["speaker"] for h in rec["history"]] == ["Bob", "Carol"]
+    # options_json dict → 按字母排序成 list;correct_option 'B' → 下标 1
+    assert rec["options"] == ["Bob", "Carol", "Dan"]
+    assert rec["answer"] == 1
+    assert rec["answer_format"] == "multiple_choice"
+    # subset 是打分/归因轴:MC → socialmem_mc(band=0.05 确定性);
+    # 基准原生认知分类 query_type 保留在独立字段(报告二次细分,不参与打分)。
+    assert rec["subset"] == "socialmem_mc"
+    assert rec["query_type"] == "Q4"
+    # gold 检索级:holder=alice,subject=说话人,observed_at 按 turn_id 查真时戳
+    g = rec["gold_statements"][0]
+    assert g["holder"] == "alice"
+    assert g["subject"] == "Bob"
+    assert g["object"] == "I own X."
+    assert g["observed_at"] == "2025-04-01T10:00:00"
+    assert g["_gold_level"] == "retrieval"
+
+
+def test_socialmembench_mc_list_of_str_prefix_options():
+    # options_json 编码二:带 'X) ' 前缀的 list-of-str(214 条 MC 中 12 条)
+    qa = [{
+        "qa_id": "q0b", "network_id": "n1", "query_type": "Q4",
+        "question": "who owns X?", "answer": "Carol.",
+        "answer_format": "multiple_choice",
+        "options_json": '["A) Bob", "B) Carol", "C) Dan"]',
+        "correct_option": "C",
+        "evidence_anchors_json": "[]",
+    }]
+    rec = ad.adapt_socialmembench(qa, _SM_CONV)[0]
+    assert rec["options"] == ["Bob", "Carol", "Dan"]
+    assert rec["answer"] == 2  # 'C' → 下标 2
+
+
+def test_socialmembench_mc_list_of_dict_options():
+    # options_json 编码三:list-of-dict {"option": 字母, "name": 文本}(18 条)
+    qa = [{
+        "qa_id": "q0c", "network_id": "n1", "query_type": "Q4",
+        "question": "who owns X?", "answer": "Bob.",
+        "answer_format": "multiple_choice",
+        "options_json": (
+            '[{"option": "A", "name": "Bob"}, {"option": "B", "name": "Carol"}, '
+            '{"option": "C", "name": "Dan"}]'),
+        "correct_option": "A",
+        "evidence_anchors_json": "[]",
+    }]
+    rec = ad.adapt_socialmembench(qa, _SM_CONV)[0]
+    assert rec["options"] == ["Bob", "Carol", "Dan"]
+    assert rec["answer"] == 0  # 'A' → 下标 0
+
+
+def test_socialmembench_free_text_keeps_reference_answer():
+    qa = [{
+        "qa_id": "q1", "network_id": "n1", "query_type": "Q1",
+        "question": "what does Bob's behavior suggest?",
+        "answer": "Bob asserts ownership directly and does not deflect.",
+        "answer_format": "long_form",
+        "options_json": "[]", "correct_option": "",  # correct_option 截断不可用
+        "evidence_anchors_json": (
+            '[{"session_index": 3, "turn_id": "n1_s03_t000", '
+            '"speaker_display_name": "Carol", "message_excerpt": "I took over X.", '
+            '"relevance": "med"}]'),
+    }]
+    out = ad.adapt_socialmembench(qa, _SM_CONV)
+    rec = out[0]
+    assert rec["options"] == []
+    assert rec["answer"] == "Bob asserts ownership directly and does not deflect."
+    assert rec["answer_format"] == "long_form"
+    assert rec["subset"] == "socialmem_free"    # 打分轴:judge 自由文本(band=α_judge)
+    assert rec["query_type"] == "Q1"            # 原生认知分类保留(报告二次细分)
+    # gold observed_at 从对应 turn_id 查得
+    assert rec["gold_statements"][0]["observed_at"] == "2025-05-01T10:00:00"
 
 
 def test_socialmembench_orphan_qa_fail_loud():
-    qa = [{"qa_id": "q0", "network_id": "MISSING", "question": "?",
-           "choices": ["a", "b"], "answer_idx": 0}]
+    qa = [{
+        "qa_id": "q0", "network_id": "MISSING", "query_type": "Q4",
+        "question": "?", "answer": "x", "answer_format": "multiple_choice",
+        "options_json": '{"A": "a", "B": "b"}', "correct_option": "A",
+        "evidence_anchors_json": "[]",
+    }]
     with pytest.raises(ad.AdapterError):
-        ad.adapt_socialmembench(qa, [])  # network 无对应会话
+        ad.adapt_socialmembench(qa, _SM_CONV)  # network 无对应会话
+
+
+def test_socialmembench_unknown_answer_format_fail_loud():
+    qa = [{
+        "qa_id": "q0", "network_id": "n1", "query_type": "Q4",
+        "question": "?", "answer": "x", "answer_format": "essay",
+        "options_json": "[]", "correct_option": "",
+        "evidence_anchors_json": "[]",
+    }]
+    with pytest.raises(ad.AdapterError):
+        ad.adapt_socialmembench(qa, _SM_CONV)
 
 
 def test_memsyco_maps_gold_and_abstain():

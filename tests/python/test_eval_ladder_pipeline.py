@@ -131,3 +131,55 @@ def test_unknown_stage_rejected(rt):
     with pytest.raises(ValueError, match="unknown stage"):
         pipe.recall_block(_core, "S_bogus", adapter=rt.adapter, embedder=emb,
                           index=idx, question=QUESTION, history=HISTORY)
+
+
+# ---- embed_seeded 必须抽干(2026-08 冒烟实测的真 bug 回归钉)------------------
+# WorkerConfig.batch_size=32,而真实语料一题 50~302 turns。只 tick 一批会让超出
+# 32 的 statement 永远没有向量,S_rag/S_star 便在**残缺库**上检索——防守判据
+# S_star−S_rag 建立在两个都残缺的库上,分数与题目无关地偏低,归因结论被污染。
+
+
+def _long_history(n: int) -> list[dict]:
+    return [{"speaker": "alice", "text": f"fact number {i} about the auth service",
+             "observed_at": "2026-04-01T10:00:00Z"} for i in range(n)]
+
+
+def test_embed_seeded_drains_beyond_one_batch(rt):
+    """50 条(>batch_size=32)必须全部拿到向量,且用了多批。"""
+    pipe.seed_history_statements(str(rt.adapter.db_path), "drain-000", _long_history(50))
+    emb = _core.StubEmbeddingAdapter(8)
+    idx = _core.SqliteBlobVectorIndex()
+    stats = pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
+
+    assert stats["embedded"] == 50          # 全部嵌入,不止首批 32
+    assert stats["failed"] == 0
+    assert stats["ticks"] >= 2              # 确实抽干了多批(单批必然漏)
+
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        vectors = c.execute("SELECT COUNT(*) FROM statement_vectors").fetchone()[0]
+        missing = c.execute(
+            "SELECT COUNT(*) FROM statements s WHERE NOT EXISTS ("
+            "SELECT 1 FROM statement_vectors v WHERE v.stmt_id = s.id)").fetchone()[0]
+    assert vectors == 50
+    assert missing == 0                     # 一条都不许漏(否则检索库残缺)
+
+
+def test_embed_seeded_idempotent_second_call_is_noop(rt):
+    """已抽干后再调:0 新增、1 批即判停(不重复烧 embedding API)。"""
+    pipe.seed_history_statements(str(rt.adapter.db_path), "drain-001", _long_history(40))
+    emb = _core.StubEmbeddingAdapter(8)
+    idx = _core.SqliteBlobVectorIndex()
+    pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
+
+    again = pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
+    assert again == {"embedded": 0, "failed": 0, "ticks": 1}
+
+
+def test_embed_seeded_fails_loud_when_not_drained(rt):
+    """max_ticks 兜底:撞顶 fail-loud,绝不静默在残缺向量库上继续。"""
+    pipe.seed_history_statements(str(rt.adapter.db_path), "drain-002", _long_history(50))
+    emb = _core.StubEmbeddingAdapter(8)
+    idx = _core.SqliteBlobVectorIndex()
+    with pytest.raises(RuntimeError, match="仍未抽干"):
+        pipe.embed_seeded(_core, rt.adapter, emb, idx,
+                          "2026-06-01T00:00:00Z", max_ticks=1)

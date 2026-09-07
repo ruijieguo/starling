@@ -101,11 +101,32 @@ def seed_history_statements(db_path: str, item_id: str,
 
 
 def embed_seeded(core: Any, adapter: Any, embedder: Any, index: Any,
-                 now_iso: str) -> None:
-    """把已写入的 statement 嵌入(EmbeddingWorker 一批)。embedder 由调用方注入:
+                 now_iso: str, max_ticks: int = 200) -> dict:
+    """把已写入的 statement **全部**嵌入。embedder 由调用方注入:
     离线测试传 StubEmbeddingAdapter,real-mode 传 OpenAIEmbeddingAdapter——
-    **写入侧与检索侧必须同一 embedder 实例**(DashboardEngine rebuild_embedder 纪律)。"""
-    core.EmbeddingWorker(adapter, embedder, index).tick_one_batch(now_iso)
+    **写入侧与检索侧必须同一 embedder 实例**(DashboardEngine rebuild_embedder 纪律)。
+
+    **必须循环抽干,不能只 tick 一批**:WorkerConfig.batch_size=32,而真实语料
+    一题 50~302 turns。只调一次 tick_one_batch 会让超出 32 的 statement 永远没有
+    向量,S_rag/S_star 就在**残缺库**上检索——防守判据 S_star−S_rag 建立在两个都
+    残缺的库上,分数与题目无关地偏低,归因结论被污染(2026-08 冒烟实测:50 条
+    只嵌入 32 条,18 条无向量)。
+
+    判停:embedded+failed==0 即本批无待嵌入项(抽干)。max_ticks 兜底防呆,
+    避免 worker 永不返回 0 时无限循环;撞顶 fail-loud,不静默截断。
+    返回 {embedded, failed, ticks} 供调用方核验。"""
+    worker = core.EmbeddingWorker(adapter, embedder, index)
+    total_embedded = 0
+    total_failed = 0
+    for tick in range(1, max_ticks + 1):
+        stats = worker.tick_one_batch(now_iso)
+        total_embedded += int(stats.embedded)
+        total_failed += int(stats.failed)
+        if int(stats.embedded) == 0 and int(stats.failed) == 0:
+            return {"embedded": total_embedded, "failed": total_failed, "ticks": tick}
+    raise RuntimeError(
+        f"embed_seeded: {max_ticks} 批仍未抽干(embedded={total_embedded}, "
+        f"failed={total_failed});拒绝在残缺向量库上继续检索")
 
 
 def recall_block(core: Any, stage: str, *, adapter: Any, embedder: Any,
