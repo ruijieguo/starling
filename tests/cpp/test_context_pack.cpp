@@ -61,4 +61,39 @@ TEST(ContextPack, RenderShape) {
     EXPECT_NE(ab.find("low_score"), std::string::npos);
 }
 
+TEST(ContextPack, RenderPreservesNegativeRelation) {
+    auto r = row("preference", "Claudette", "desires", 0.7);
+    r.subject_id = "permanence";
+    r.predicate = "prefers";
+    r.object_value = "permanence";
+    r.polarity = "neg";
+    EXPECT_EQ(render_line(r, ContextPackLabel::FACT),
+              "[FACT] NOT (permanence prefers permanence) (conf 0.70, holder Claudette)");
+}
+
+TEST(ContextPack, RenderDistinguishesAllStoredPolarities) {
+    auto r = row("claim", "Alice", "believes", 0.6);
+    r.polarity = "pos";
+    const auto positive = render_line(r, ContextPackLabel::BELIEF);
+    EXPECT_EQ(positive, "[BELIEF] Bob responsible_for auth (conf 0.60, holder Alice)");
+    r.polarity = "neg";
+    EXPECT_EQ(render_line(r, ContextPackLabel::BELIEF),
+              "[BELIEF] NOT (Bob responsible_for auth) (conf 0.60, holder Alice)");
+    r.polarity = "unknown";
+    EXPECT_EQ(render_line(r, ContextPackLabel::BELIEF),
+              "[BELIEF] UNKNOWN (Bob responsible_for auth) (conf 0.60, holder Alice)");
+    r.polarity.clear();
+    EXPECT_EQ(render_line(r, ContextPackLabel::BELIEF), positive);
+}
+
+TEST(ContextPack, RenderDoesNotRewriteNegationInsideObject) {
+    auto r = row("preference", "Claudette", "desires", 0.7);
+    r.subject_id = "street";
+    r.predicate = "prefers";
+    r.object_value = "no more bulk";
+    r.polarity = "neg";
+    EXPECT_EQ(render_line(r, ContextPackLabel::FACT),
+              "[FACT] NOT (street prefers no more bulk) (conf 0.70, holder Claudette)");
+}
+
 }  // namespace starling::retrieval

@@ -5,6 +5,7 @@
 #include "starling/embedding/embedding_adapter.hpp"
 #include "starling/vector/vector_index.hpp"
 #include "starling/retrieval/statement_row.hpp"
+#include "starling/retrieval/retrieval_receipt.hpp"
 
 namespace starling::retrieval {
 
@@ -17,6 +18,7 @@ struct SemanticRetrieverParams {
 };
 struct SemanticScored { StatementRow row; double score; };
 struct SemanticResult {
+    RetrievalReceipt receipt;
     std::vector<SemanticScored> rows;   // cosine 降序
     bool degraded = false;              // 无 embedder/向量 → true
 };

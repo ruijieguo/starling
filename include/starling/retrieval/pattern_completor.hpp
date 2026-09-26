@@ -22,6 +22,7 @@ struct PatternCompletionParams {
 struct CompletionScored { StatementRow row; double activation; };
 
 struct CompletionResult {
+    RetrievalReceipt receipt;
     std::vector<CompletionScored> rows;   // activation 降序, ≤ result_k
     bool completion_truncated = false;     // 访问节点 ≥ node_cap
     bool degraded = false;                 // 传播自 seeds.degraded

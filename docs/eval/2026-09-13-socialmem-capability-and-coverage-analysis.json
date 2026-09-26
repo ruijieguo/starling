@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-13T11:48:18.939346+00:00",
+  "status": "local_implementation_verified_external_evaluation_blocked",
+  "core_sha256": "4f73bd6a19253d5ac2124f7d3c85a64f5e14e35b5279a8501b0a553d36e5e098",
+  "core_filename": "_core.cpython-314-darwin.so",
+  "tests": {
+    "cpp_passed": 1089,
+    "cpp_skipped": 0,
+    "python_passed": 1355,
+    "python_skipped": 15,
+    "relation_fixture_cases": 20,
+    "temporal_cpp_cases": 5,
+    "temporal_python_cases": 4
+  },
+  "production_defaults": {
+    "semantic_claim_contract": false,
+    "claim_output_mode": "Legacy",
+    "temporal_evidence": null
+  },
+  "external_evaluation": {
+    "status": "approval_review_blocked",
+    "provider": "dashscope",
+    "model": "deepseek-v3",
+    "actual_probe_requests": 0,
+    "actual_cohort_requests": 0,
+    "capability_state": "not_observed",
+    "quality": null,
+    "promotion_ready": false,
+    "review_reason": "Automatic approval review did not accept prior confirmation as explicit authorization for new payloads to DashScope."
+  },
+  "source_fixtures_sha256": "0829b12129645f7ef28ea26b1d28afcb874f731a931e8f5a94f2c616256de0c0",
+  "original_control_labels_sha256": "1258ff97eedb8d276149dbe44ffc4d293276b1175c6bfaa26501225dca13750d",
+  "schemas_sha256": "8955e5ba35b00ed97da0be645e7e9c5a49447a5da5430c3afadad67fad0c32ee",
+  "stage_archives": {
+    "protocol_legacy_smoke": {
+      "path": "build/socialmem_20260913_capability_smoke",
+      "status": "verified",
+      "run_status": "complete",
+      "core_sha256": "c3d3524f94343984cb9db291482d0af4bfbea1ed5ad2e07e1585cc4d9eb19489",
+      "manifest_sha256": "d1cbf59b1c66c75996cb97f4b16fe2c6a7a6d06054a868f4babe15946112f713",
+      "native_replays": 140,
+      "databases": 144,
+      "quality_evidence": false
+    },
+    "protocol_typed_smoke": {
+      "path": "build/socialmem_20260913_capability_typed_smoke",
+      "status": "verified",
+      "run_status": "complete",
+      "core_sha256": "c3d3524f94343984cb9db291482d0af4bfbea1ed5ad2e07e1585cc4d9eb19489",
+      "manifest_sha256": "cf2770dca6b94cef20888377325aea6a7c7e34a97ae34aa6a5f19f220ce78a27",
+      "native_replays": 140,
+      "databases": 144,
+      "quality_evidence": false
+    },
+    "relation_typed_smoke": {
+      "path": "build/socialmem_20260913_relation_boundary_typed_smoke",
+      "status": "verified",
+      "run_status": "complete",
+      "core_sha256": "817b1de501a05dc07a92c9e4e4005aea6578703ad8b222e5165fcfa6ee9a0ba1",
+      "manifest_sha256": "a50591db27a1352958d08bce6e38bed08ae34be9a415188874656fde1123f668",
+      "native_replays": 140,
+      "databases": 144,
+      "quality_evidence": false
+    }
+  },
+  "offline_replays": {
+    "protocol": {
+      "status": "verified_offline_compatibility",
+      "records": 140,
+      "core_sha256": "c3d3524f94343984cb9db291482d0af4bfbea1ed5ad2e07e1585cc4d9eb19489",
+      "historical_manifest_sha256": "47b71aa9538aa0bcb1f1a30882a4a68f719878464b93fb0d53bef8af685781d9",
+      "changes": [],
+      "fresh_model_calls": 0,
+      "quality": null
+    },
+    "relation_final": {
+      "status": "verified_offline_compatibility",
+      "records": 140,
+      "core_sha256": "4f73bd6a19253d5ac2124f7d3c85a64f5e14e35b5279a8501b0a553d36e5e098",
+      "historical_manifest_sha256": "47b71aa9538aa0bcb1f1a30882a4a68f719878464b93fb0d53bef8af685781d9",
+      "changes": [],
+      "fresh_model_calls": 0,
+      "quality": null,
+      "replay_mode": "frozen model bytes under current native prompts; does not establish model understanding of new prompts"
+    }
+  },
+  "logs_sha256": {
+    "build/protocol_coverage_final_cpp.log": "23cf8702c54b1b7d7c542eb907cceb7e16cec4f64feee7dd9813e97367dc6b86",
+    "build/protocol_coverage_final_python.log": "6ddbc913ed9177818200aa6a08bf8d0f9917d5b6d0a2b17ece4fbd7ad4ffdf7c",
+    "build/protocol_coverage_final_build.log": "ba48eb33222d646a39c31b2fabd66f20b1928fe7c6f465d071ecd98dea4ca83c",
+    "build/protocol_coverage_final_install.log": "29ce1c9f6ffb076c9fbd3684d26b64e8bd2ef84ca7d6266abbcbed1581cc7796"
+  }
+}

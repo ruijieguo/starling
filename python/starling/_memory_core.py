@@ -23,14 +23,8 @@ from starling.extractor.config import ExtractionConfig
 
 
 def _build_policy(extraction):
-    """Build a _core.ValidationPolicy from an ExtractionConfig."""
-    pol = _core.ValidationPolicy()
-    pol.extra_core_predicates = list(extraction.extra_core_predicates)
-    pol.confidence_drop_floor = extraction.confidence_drop_floor
-    pol.weak_inference_floor = extraction.weak_inference_floor
-    pol.attribute_first_order_mental_to_holder = (
-        extraction.attribute_first_order_mental_to_holder)
-    return pol
+    """Forward to the binding mapping; C++ owns policy validation."""
+    return extraction.to_native_policy()
 
 
 def _make_vector_index(backend: str, dim: int, store_path):

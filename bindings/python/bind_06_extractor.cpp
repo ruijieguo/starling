@@ -13,18 +13,46 @@
 #include "starling/schema/statement_enums.hpp"
 #include "starling/extractor/extracted_statement.hpp"
 #include "starling/extractor/extractor.hpp"
+#include "starling/extractor/claim_contract.hpp"
 #include "starling/extractor/episodic_extractor.hpp"
 #include "starling/cognizer/perception_reconstructor.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/extractor/openai_adapter.hpp"
 #include "starling/extractor/anthropic_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/extractor/reasoning_trace.hpp"
 #include "starling/persistence/connection.hpp"
+#include <nlohmann/json.hpp>
 
 namespace starling::bindings {
 
 void bind_06_extractor(pybind11::module_& m) {
     using namespace pybind11::literals;
+
+    // Read-only exposure of the native legacy answer normalization.  The
+    // evaluator uses this to bind raw_xml back to raw_completion without
+    // copying the <think> trace algorithm into Python.
+    m.def("strip_reasoning_trace", &starling::extractor::strip_reasoning_trace,
+          py::arg("text"));
+
+    py::class_<starling::extractor::PredicateSpec>(m, "PredicateSpec")
+        .def_readonly("name", &starling::extractor::PredicateSpec::name)
+        .def_readonly("aliases", &starling::extractor::PredicateSpec::aliases)
+        .def_readonly("semantic_family", &starling::extractor::PredicateSpec::semantic_family)
+        .def_readonly("allowed_modalities", &starling::extractor::PredicateSpec::allowed_modalities)
+        .def_readonly("allowed_polarities", &starling::extractor::PredicateSpec::allowed_polarities)
+        .def_readonly("subject_kinds", &starling::extractor::PredicateSpec::subject_kinds)
+        .def_readonly("object_kinds", &starling::extractor::PredicateSpec::object_kinds)
+        .def_readonly("supports_event_time", &starling::extractor::PredicateSpec::supports_event_time)
+        .def_readonly("supports_topic", &starling::extractor::PredicateSpec::supports_topic);
+    py::class_<starling::extractor::PredicateCatalog>(m, "PredicateCatalog")
+        .def_readonly("version", &starling::extractor::PredicateCatalog::version)
+        .def_readonly("predicates", &starling::extractor::PredicateCatalog::predicates);
+    m.def("claim_predicate_catalog", &starling::extractor::claim_predicate_catalog);
+    m.def("claim_predicate_catalog_json",
+          [] { return starling::extractor::claim_predicate_catalog_json().dump(); });
+    m.def("canonical_claim_predicate", &starling::extractor::canonical_claim_predicate,
+          py::arg("predicate"));
 
     // ----- M0.4: enums -----
     py::enum_<starling::schema::Perspective>(m, "Perspective")
@@ -97,6 +125,7 @@ void bind_06_extractor(pybind11::module_& m) {
         .def_readwrite("valid_to",              &starling::extractor::ExtractedStatement::valid_to)
         .def_readwrite("event_time_start",      &starling::extractor::ExtractedStatement::event_time_start)
         .def_readwrite("chunk_index",           &starling::extractor::ExtractedStatement::chunk_index)
+        .def_readwrite("semantic_claim_json",  &starling::extractor::ExtractedStatement::semantic_claim_json)
         .def_readwrite("source_hash",           &starling::extractor::ExtractedStatement::source_hash)
         .def_readwrite("perceived_by",          &starling::extractor::ExtractedStatement::perceived_by)
         .def_readwrite("provenance",            &starling::extractor::ExtractedStatement::provenance)
@@ -107,6 +136,35 @@ void bind_06_extractor(pybind11::module_& m) {
     // ----- M0.4: Connection (opaque) -----
     py::class_<starling::persistence::Connection>(m, "Connection");
 
+    // 原生类型、schema 和回执直接透传；绑定层不定义契约或能力逻辑。
+    {
+        using namespace starling::extractor;
+        py::enum_<OutputContractKind>(m,"OutputContractKind")
+            .value("Legacy",OutputContractKind::Legacy).value("ClaimExtractionV2",OutputContractKind::ClaimExtractionV2)
+            .value("ClaimAdmissionV1",OutputContractKind::ClaimAdmissionV1)
+            .value("SourceSelectionV1",OutputContractKind::SourceSelectionV1);
+        py::enum_<OutputMode>(m,"OutputMode")
+            .value("Legacy",OutputMode::Legacy).value("JsonObject",OutputMode::JsonObject).value("JsonSchemaStrict",OutputMode::JsonSchemaStrict);
+        py::enum_<CapabilityState>(m,"CapabilityState")
+            .value("Unknown",CapabilityState::Unknown).value("ObservedConformant",CapabilityState::ObservedConformant)
+            .value("Unsupported",CapabilityState::Unsupported).value("Nonconformant",CapabilityState::Nonconformant);
+        py::class_<StructuredOutputRequest>(m,"StructuredOutputRequest")
+            .def(py::init<>()).def(py::init<OutputContractKind,OutputMode>(),py::arg("contract"),py::arg("mode"))
+            .def_readwrite("contract",&StructuredOutputRequest::contract).def_readwrite("mode",&StructuredOutputRequest::mode);
+        py::class_<CapabilityEvidence>(m,"CapabilityEvidence")
+            .def_readonly("state",&CapabilityEvidence::state).def_readonly("request",&CapabilityEvidence::request)
+            .def_readonly("probe_version",&CapabilityEvidence::probe_version).def_readonly("schema_sha256",&CapabilityEvidence::schema_sha256)
+            .def_readonly("observed_at",&CapabilityEvidence::observed_at).def_readonly("evidence_id",&CapabilityEvidence::evidence_id)
+            .def_readonly("request_count",&CapabilityEvidence::request_count).def_readonly("error",&CapabilityEvidence::error)
+            .def("to_json",&capability_evidence_json);
+        m.def("structured_output_schema",&structured_output_schema);
+        m.def("structured_output_schema_sha256",&structured_output_schema_sha256);
+        m.def("structured_output_validation_error",&structured_output_validation_error);
+        m.def("capability_evidence_json",&capability_evidence_json);
+        m.def("validate_capability_evidence_json",&validate_capability_evidence_json);
+        m.def("llm_response_evidence_json",&llm_response_evidence_json);
+    }
+
     // ----- M0.4: LLMResponse + LLMAdapter base + FakeLLMAdapter -----
     py::class_<starling::extractor::LLMResponse>(m, "LLMResponse")
         .def(py::init<>())
@@ -115,13 +173,29 @@ void bind_06_extractor(pybind11::module_& m) {
         }), py::arg("raw_xml"), py::arg("ok"), py::arg("error") = "")
         .def_readwrite("raw_xml", &starling::extractor::LLMResponse::raw_xml)
         .def_readwrite("ok",      &starling::extractor::LLMResponse::ok)
-        .def_readwrite("error",   &starling::extractor::LLMResponse::error);
+        .def_readwrite("error",   &starling::extractor::LLMResponse::error)
+        .def_readwrite("output_mode",&starling::extractor::LLMResponse::output_mode)
+        .def_readwrite("output_contract",&starling::extractor::LLMResponse::output_contract)
+        .def_readwrite("schema_sha256",&starling::extractor::LLMResponse::schema_sha256)
+        .def_readwrite("capability_evidence_id",&starling::extractor::LLMResponse::capability_evidence_id)
+        .def_readwrite("finish_reason",&starling::extractor::LLMResponse::finish_reason)
+        .def_readwrite("refusal",&starling::extractor::LLMResponse::refusal)
+        .def_readwrite("raw_completion",&starling::extractor::LLMResponse::raw_completion)
+        .def_readwrite("raw_http_response",&starling::extractor::LLMResponse::raw_http_response)
+        .def_readonly("prompt_tokens",&starling::extractor::LLMResponse::prompt_tokens)
+        .def_readonly("completion_tokens",&starling::extractor::LLMResponse::completion_tokens)
+        .def_readonly("total_tokens",&starling::extractor::LLMResponse::total_tokens)
+        .def_readonly("latency_ms",&starling::extractor::LLMResponse::latency_ms)
+        .def("to_json",&starling::extractor::llm_response_evidence_json)
+        .def("structured_metadata_json",&starling::extractor::llm_response_evidence_json);
 
     // Abstract base — register so pybind knows FakeLLMAdapter / OpenAIAdapter /
     // AnthropicAdapter share it. `extract` is bound here on the base so EVERY
     // adapter exposes it to Python (the dashboard /api/config/test probe calls
     // it on real OpenAI/Anthropic adapters, not just FakeLLMAdapter).
     py::class_<starling::extractor::LLMAdapter>(m, "LLMAdapter")
+        .def("extract_with_contract",&starling::extractor::LLMAdapter::extract_with_contract,
+             py::arg("prompt"),py::arg("prompt_input_hash"),py::arg("request"),py::call_guard<py::gil_scoped_release>())
         .def("extract",
              [](starling::extractor::LLMAdapter& self, const std::string& prompt,
                 const std::string& prompt_input_hash) {
@@ -146,6 +220,9 @@ void bind_06_extractor(pybind11::module_& m) {
                  self.set_default_response(starling::extractor::LLMResponse{raw_xml, ok, error});
              },
              py::arg("raw_xml"), py::arg("ok") = true, py::arg("error") = "")
+        .def_property_readonly("structured_requests",&starling::extractor::FakeLLMAdapter::structured_requests)
+        .def("set_response_object",&starling::extractor::FakeLLMAdapter::set_response)
+        .def("set_default_response_object",&starling::extractor::FakeLLMAdapter::set_default_response)
         .def("set_delay_ms",
              &starling::extractor::FakeLLMAdapter::set_delay_ms,
              py::arg("delay_ms"))
@@ -163,9 +240,13 @@ void bind_06_extractor(pybind11::module_& m) {
             .def_readwrite("timeout_ms",   &OpenAIAdapter::Config::timeout_ms)
             .def_readwrite("max_retries",  &OpenAIAdapter::Config::max_retries)
             .def_readwrite("max_tokens",   &OpenAIAdapter::Config::max_tokens)
+            .def_readwrite("json_object_output", &OpenAIAdapter::Config::json_object_output)
+            .def_readwrite("enable_thinking", &OpenAIAdapter::Config::enable_thinking)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
-            .def(py::init<OpenAIAdapter::Config>());
+            .def(py::init<OpenAIAdapter::Config>())
+            .def("probe_structured_output",&OpenAIAdapter::probe_structured_output,py::call_guard<py::gil_scoped_release>())
+            .def("clear_structured_output_capabilities",&OpenAIAdapter::clear_structured_output_capabilities);
     }
 
     // ----- configurability: deployment-tunable validator policy -----
@@ -177,11 +258,35 @@ void bind_06_extractor(pybind11::module_& m) {
     // set; floors equal the historical 0.30 / 0.50 literals).
     py::class_<starling::extractor::ValidationPolicy>(m, "ValidationPolicy")
         .def(py::init<>())
+        .def("validate", &starling::extractor::ValidationPolicy::validate)
         .def_readwrite("extra_core_predicates", &starling::extractor::ValidationPolicy::extra_core_predicates)
         .def_readwrite("confidence_drop_floor", &starling::extractor::ValidationPolicy::confidence_drop_floor)
         .def_readwrite("weak_inference_floor", &starling::extractor::ValidationPolicy::weak_inference_floor)
         .def_readwrite("attribute_first_order_mental_to_holder",
-                       &starling::extractor::ValidationPolicy::attribute_first_order_mental_to_holder);
+                       &starling::extractor::ValidationPolicy::attribute_first_order_mental_to_holder)
+        .def_readwrite("preserve_text_objects", &starling::extractor::ValidationPolicy::preserve_text_objects)
+        .def_readwrite("semantic_claim_contract", &starling::extractor::ValidationPolicy::semantic_claim_contract)
+        .def_readwrite("claim_allow_code_fence", &starling::extractor::ValidationPolicy::claim_allow_code_fence)
+        .def_readwrite("claim_batch_size", &starling::extractor::ValidationPolicy::claim_batch_size)
+        .def_readwrite("claim_batch_target_units", &starling::extractor::ValidationPolicy::claim_batch_target_units)
+        .def_readwrite("claim_protocol_retry_budget", &starling::extractor::ValidationPolicy::claim_protocol_retry_budget)
+        .def_readwrite("claim_output_mode", &starling::extractor::ValidationPolicy::claim_output_mode);
+
+    m.def("claim_extraction_batch_plan", &starling::extractor::claim_extraction_batch_plan,
+          py::arg("payload"), py::arg("policy"));
+    m.def("claim_source_units", &starling::extractor::claim_source_units, py::arg("payload"));
+    m.def("claim_source_turn_payload", &starling::extractor::claim_source_turn_payload,
+          py::arg("turns_json"), py::arg("preserve_invalid_time")=false);
+    m.def("claim_extraction_prompt", &starling::extractor::claim_extraction_prompt,
+          py::arg("payload"), py::arg("holder"));
+    m.def("claim_admission_prompt", &starling::extractor::claim_admission_prompt,
+          py::arg("payload"), py::arg("candidates"));
+    m.def("claim_parse_response", &starling::extractor::claim_parse_response_json,
+          py::arg("raw"), py::arg("payload"), py::arg("holder"), py::arg("allow_code_fence") = false);
+    // ExtractionLlmResult is registered once in bind_13. This free accessor
+    // accepts the same opaque handle after module initialization completes.
+    m.def("claim_extraction_receipt", &starling::extractor::claim_extraction_receipt,
+          py::arg("result"));
 
     // ----- P2.l: AnthropicAdapter (native Messages API) -----
     {
@@ -223,11 +328,12 @@ void bind_06_extractor(pybind11::module_& m) {
     py::class_<starling::extractor::Extractor>(m, "Extractor")
         .def(py::init([](starling::persistence::Connection& conn,
                          starling::extractor::LLMAdapter& a,
-                         const std::string& prompt_template) {
-            return new starling::extractor::Extractor(conn, a, prompt_template);
+                         const std::string& prompt_template,
+                         const starling::extractor::ValidationPolicy& policy) {
+            return new starling::extractor::Extractor(conn, a, prompt_template, policy);
         }), py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
            py::arg("connection"), py::arg("adapter"),
-           py::arg("prompt_template") = "")
+           py::arg("prompt_template") = "", py::arg("policy") = starling::extractor::ValidationPolicy{})
         .def_static("compute_prompt_input_hash",
                     &starling::extractor::Extractor::compute_prompt_input_hash)
         .def_static("build_prompt_body",

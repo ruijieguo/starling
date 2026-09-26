@@ -37,7 +37,7 @@ from starling.schema.refs import (
     PersonaRef, StatementRef,
 )
 from starling.schema.source import SourceSpanRef
-from starling.schema.statement import EvidenceRef, Statement, TimeRange
+from starling.schema.statement import EvidenceRef, Statement, TimeRange, SemanticClaimEvidence
 from starling.schema.temporal import ConfidenceEvent, TemporalAnchor
 
 
@@ -167,6 +167,7 @@ _EXPORT_CLASSES: tuple[type, ...] = (
     Statement, Cognizer, Entity, Engram,
     AffectVector, TemporalAnchor, ConfidenceEvent,
     SourceSpanRef, EvidenceRef, TimeRange,
+    SemanticClaimEvidence,
     Container, Persona, CommonGround, KnowledgeFrontier,
     RelationEdge,
     # Bonus: the small placeholder dataclasses that reflect cleanly.

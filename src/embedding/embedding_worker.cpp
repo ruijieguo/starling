@@ -20,8 +20,11 @@
 #include "starling/store/sqlite_graph_store.hpp"
 
 #include <sqlite3.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
@@ -116,7 +119,93 @@ void mark_failed(persistence::Connection& conn, const PendingRow& row,
         throw make_sqlite_error(conn.raw(), "embedding_worker: mark_failed step");
 }
 
+bool valid_vector(sqlite3_stmt* row, int column, int dim) {
+    if (sqlite3_column_type(row, column) != SQLITE_BLOB ||
+        sqlite3_column_bytes(row, column) != static_cast<int64_t>(dim) * static_cast<int64_t>(sizeof(float))) return false;
+    const auto* bytes = static_cast<const unsigned char*>(sqlite3_column_blob(row, column));
+    if (!bytes) return false;
+    bool nonzero = false;
+    for (int i = 0; i < dim; ++i) {
+        float value;
+        std::memcpy(&value, bytes + static_cast<size_t>(i) * sizeof(float), sizeof(float));
+        if (!std::isfinite(value)) return false;
+        nonzero |= value != 0.0F;
+    }
+    return nonzero;
+}
+
+EmbeddingHealth read_health(sqlite3* db, int dim, std::string_view model, int max_retry) {
+    if (dim <= 0 || model.empty() || max_retry <= 0)
+        throw std::invalid_argument("embedding health: invalid model/dimension/retry policy");
+    const char* sql =
+        "SELECT v.stmt_id,v.status,v.retry_count,v.dim,v.model,v.raw_embedding,v.index_vector "
+        "FROM statements s LEFT JOIN statement_vectors v "
+        "ON v.stmt_id=s.id AND v.tenant_id=s.tenant_id "
+        "WHERE s.consolidation_state NOT IN ('archived','forgotten')";
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "embedding health: prepare");
+    StmtHandle stmt(raw);
+    EmbeddingHealth result;
+    int code;
+    while ((code = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+        ++result.total;
+        if (sqlite3_column_type(stmt.get(), 0) == SQLITE_NULL) { ++result.missing; continue; }
+        const auto status = col_text(stmt.get(), 1);
+        const auto retry = sqlite3_column_int64(stmt.get(), 2);
+        if (sqlite3_column_type(stmt.get(), 2) != SQLITE_INTEGER || retry < 0) {
+            ++result.invalid;
+        } else if (status == "failed" && retry > 0) {
+            if (retry < max_retry) ++result.retryable_failed;
+            else ++result.exhausted;
+        } else if (status == "embedded" && retry == 0 &&
+                   sqlite3_column_type(stmt.get(), 3) == SQLITE_INTEGER &&
+                   sqlite3_column_int64(stmt.get(), 3) == dim && col_text(stmt.get(), 4) == model &&
+                   valid_vector(stmt.get(), 5, dim) && valid_vector(stmt.get(), 6, dim)) {
+            ++result.embedded;
+        } else {
+            ++result.invalid;
+        }
+    }
+    if (code != SQLITE_DONE) throw make_sqlite_error(db, "embedding health: step");
+    return result;
+}
+
 }  // namespace
+
+std::string EmbeddingHealth::to_json() const {
+    return nlohmann::json{{"schema", "embedding-health-v1"}, {"total", total}, {"embedded", embedded},
+        {"missing", missing}, {"retryable_failed", retryable_failed}, {"exhausted", exhausted},
+        {"invalid", invalid}, {"complete", complete()}}.dump();
+}
+
+EmbeddingHealth EmbeddingWorker::health(persistence::Connection& conn) const {
+    return read_health(conn.raw(), embedder_.dim(), embedder_.model(), cfg_.max_retry);
+}
+
+EmbeddingHealth frozen_embedding_health(const std::filesystem::path& path, int dim,
+                                        std::string_view model, int max_retry) {
+    const auto filename = std::filesystem::absolute(path).string();
+    if (!std::filesystem::is_regular_file(path) || std::filesystem::exists(filename + "-wal") ||
+        std::filesystem::exists(filename + "-shm"))
+        throw std::invalid_argument("embedding health: database is not frozen");
+    // URI 编码路径；immutable 仅用于上述冻结边界，避免 WAL-mode 头触发 sidecar 写入。
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string uri = "file:";
+    for (const char ch : filename) {
+        const auto byte = static_cast<unsigned char>(ch);
+        if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9') || byte == '/' || byte == '-' || byte == '_' || byte == '.')
+            uri.push_back(ch);
+        else { uri.push_back('%'); uri.push_back(hex[byte >> 4]); uri.push_back(hex[byte & 15]); }
+    }
+    uri += "?mode=ro&immutable=1";
+    sqlite3* raw = nullptr;
+    const int code = sqlite3_open_v2(uri.c_str(), &raw, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr);
+    persistence::SqliteHandle db(raw);
+    if (code != SQLITE_OK) throw make_sqlite_error(db.get(), "embedding health: frozen open");
+    return read_health(db.get(), dim, model, max_retry);
+}
 
 EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
                                                std::string_view now_iso) {

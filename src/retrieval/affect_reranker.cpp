@@ -1,4 +1,5 @@
 #include "starling/retrieval/affect_reranker.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -57,7 +58,18 @@ std::vector<ScoreRow> rerank(std::vector<RerankCandidate>& cands,
         ScoreRow s;
         s.statement_id       = c.row.id;
         s.base               = c.base_relevance;
-        s.recency            = recency_factor(c.row.observed_at, as_of_iso);
+        std::string recency_time = c.row.observed_at;
+        if (!c.row.semantic_claim_json.empty()) {
+            const auto claim = parse_claim_evidence(c.row);
+            if (claim.is_object()) {
+                const auto event = claim.value("event_time", nlohmann::json());
+                if (event.is_object() && event.contains("start") && event["start"].is_string())
+                    recency_time = event["start"].get<std::string>();
+                else if (claim.contains("source_time") && claim["source_time"].is_string())
+                    recency_time = claim["source_time"].get<std::string>();
+            }
+        }
+        s.recency            = recency_factor(recency_time, as_of_iso);
         s.salience           = clamp01(c.salience);
         s.activation         = activation_level(c.activation);
         s.affect_consistency = affect_consistency(c.row.affect_json, querier.affect);

@@ -1,6 +1,66 @@
+
+> **R6.2 最终状态合同（2026-09-26）**：`EmbeddingStats.failed` 与 `embed_seeded.failed` 是累计失败尝试数；空 tick 不代表所有向量健康。新增 C++ `EmbeddingWorker::health` 与只读 `frozen_embedding_health`，按活动声明、租户关联、模型、维度及有限非零 raw/index 向量检查最终状态；binding 只透传。已恢复的失败保留计数且可继续，耗尽或损坏仍阻断。历史封存协议保留，新恢复入口重新原生核验。
+<!-- r56-current-status:start -->
+> **当前状态（R6.8，2026-09-26）**：本机无用编译中间产物已清理，删除4,041个可重建文件，目录占用减少612.48 MiB，保留证据核验一致。R6.8已完成中文设计、RED失败用例、C++原生SourceSelectionV1/JsonObject实现、133题来源选择、同期QA和独立核验；C++ 1395项、binding/localhost HTTP 20项、选择编排14项、QA编排16项通过。结构化请求133/133带合同且无Markdown围栏失败，但3题超过20条预算；v9为52/133，selector为60/133，净增6.02个百分点，六网络95%区间[-5.60,16.28]，候选正常127/133低于v9的130/133，门槛未通过，不晋升默认策略。结果仅为同八库、六网络133题开发集，不是完整SocialMemBench或生产结论。详见[当前设计](../superpowers/specs/2026-09-26-socialmem-r68-structured-selection-design.md)和[当前报告](../eval/2026-09-26-socialmem-r68-structured-selection.md)。
+<!-- r56-current-status:end -->
+
+> **R4.9 当前契约（2026-09-24）**：主题相关性与成员排序的 C++ 实现、回归、A/B 离线消融及真实复评已完成；检索回答 17/57、原生回答 16/57，较 R4.8 各净减 1 题，来源锚点 48→51/104，未证明准确率提升，不晋升默认策略。完整结果、归因边界及下一轮语义/事件证据方向见[中文评测报告](../eval/2026-09-24-socialmem-r49-topic-ranking.md)。下文历史阶段记录保留原口径。
+
+> R4.3 当前评测：事件状态与信念归属实验完成，检索 17/57、原生回答 19/57，0 技术失败，未晋升；详见 [中文评测报告](../eval/2026-09-22-socialmem-r43-state-attribution.md)。下一轮先补结构化 claim metadata。
+> **R4.0 当前契约（2026-09-22）**：已确认的证据覆盖、C++ 混合回答边界及双臂评测状态见 [统一中文设计](../superpowers/specs/2026-09-21-socialmem-r40-evidence-profile-design.md)。本文历史阶段事实保留原口径，现行实现与验证状态以该入口为准。 实评已封存：两臂均 19/57，较父净增 3，区间跨零；原生回答 3 次截断，不晋升。详见 [中文评测报告](../eval/2026-09-22-socialmem-r40-evidence-profile.md)。 R4.1 当前设计：人物—话题—时间链主体优先选择见 [中文设计](../superpowers/specs/2026-09-22-socialmem-r41-subject-topic-timeline-design.md)；R4.0 评测报告已封存。 R4.2 当前设计：主体时间链与支持性第三方证据见 [中文设计](../superpowers/specs/2026-09-22-socialmem-r42-support-lane-design.md)；R4.1 评测已封存。R4.2 评测已封存，详见 [中文评测报告](../eval/2026-09-22-socialmem-r42-support-lane.md)。 R4.3 事件状态与信念归属设计见 [中文设计](../superpowers/specs/2026-09-22-socialmem-r43-state-attribution-design.md)。
+> R4.4 设计：已完成真实评测；当前按中文设计、RED 测试、C++ 实现顺序修复 consolidated source 与原始 claim engram 的安全回连，详见 [中文设计](../superpowers/specs/2026-09-22-socialmem-r44-claim-attribution-design.md)。
+
+> **R3.1 实评收口（2026-09-20）**：结构化抽取上限 4096→8192 后完成 57/57 题，6/57 正确、30 项技术失败、成功子集 6/27，3/7 scope、15/36 holder 完成。抽取尝试未出现 `completion_truncated`，但仍有 3 次 `schema_failure` 和 1 次 `envelope_failure`；与 R2.3 的 27 题共同 `ok` 交集各正确 6 题，不能宣称 QA 提升。8192 仅作为诊断配置，生产默认继续关闭结构化合同。详见 [R3.1 评测报告](../eval/2026-09-20-socialmem-r31-extraction-capacity.md)。
+
+> **R3.1 抽取容量诊断设计（2026-09-20）**：已确认下一轮只把结构化抽取的 `extract_max_tokens` 从 4096 提升到 8192，`sources` 对照臂保持 4096；回答 512、裁判 64、超时 120000、零重试、题目、评分和 C++ 语义均不变。先完成中文设计与 RED 测试，再运行独立 57 题评测；Python 只透传配置，生产默认 `semantic_claim_contract=false`。设计与计划见 [R3.1 设计](../superpowers/specs/2026-09-20-socialmem-r31-extraction-capacity-design.md) 和 [实施计划](../superpowers/plans/2026-09-20-socialmem-r31-extraction-capacity.md)。
+
+> **结构化覆盖诊断修正（2026-09-20）**：历史 hybrid_dialogue 17/57 只覆盖 6/7 结构化抽取 scope；另 9 题复用仅来源库。96 条记录仅 14 条有结构化证据，且全部缺会话/话轮时间元数据。本轮补齐 C++ 拒绝分类和评测覆盖门禁，零新模型请求，无新 QA 提升；下一步先补输入与回执。详见[诊断与修复报告](../eval/2026-09-20-socialmem-structured-coverage-diagnosis.md)。本条同步当前评测边界，各子系统原有语义以正文为准，历史分数不重写。
+
+> **人物会话覆盖终态（2026-09-19）**：99开发自由题同期对照完成：旧邻句40/99、人物会话覆盖43/99，净增+3题；未达到本轮事前扩大开发验证条件，不晋升。来源公开锚点182→188/200，不等于QA收益。详见[本轮报告](../eval/2026-09-19-socialmem-source-coverage.md)。
+
+> **回答消融终态（2026-09-19）**：99开发自由题四组合完成：SOURCE旧指导42/99、JSON旧指导46/99、SOURCE新指导37/99、JSON新指导34/99。仅作机制诊断，不晋升；不能替代733题或保留集成绩。详见[本轮报告](../eval/2026-09-18-socialmem-answer-ablation.md)。
+
+> **单次综合回答终态（2026-09-18）**：733开发题309/733（42.16%），较376题对照净增-67、-9.14个百分点；95%网络差值区间[-12.94，-5.37]个百分点。未满足全部事前门槛，不晋升；推荐仍grounded_v1/512。详见[本轮报告](../eval/2026-09-18-socialmem-synthesis-answer.md)。
+
+> **两阶段证据回答完成（2026-09-18）**：733开发题313/733＝42.70%，较同1024容量父47.07%下降4.37个百分点，观测tokens增加69.46%，未晋升；推荐仍为grounded_v1/512。C++引用核验已实现，语义推断仍未验证。详见[本轮诊断报告](../eval/2026-09-18-socialmem-evidence-answer.md)。
+
+> **回答容量实验完成（2026-09-18）**：733题开发345/733＝47.07%，相对grounded_v1/512的332/733净增13题（+1.77个百分点）；网络区间下界为-0.70个百分点，未晋升。截断60→3，技术失败74→20，观测tokens3,185,355。保留grounded_v1/512为通过门槛的推荐开发配置；详见[当前报告](../eval/2026-09-18-socialmem-answer-capacity.md)。
+
+> **紧凑回答实验完成（2026-09-18）**：733题开发248/733＝33.83%，相对父45.29%下降11.46个百分点，不晋升；截断60→0，技术失败74→2。当前最佳开发仍为grounded_v1的332/733；核心C++、原评分和历史全量身份保持。详见[本轮报告](../eval/2026-09-18-socialmem-compact-answer.md)。
+
+> **证据约束回答完成（2026-09-18）**：C++自由回答政策使开发273/733→332/733（45.29%，+8.05百分点），通过预注册开发门槛；技术失败11→74，60项回答截断。来源/模型/评分不变，默认legacy保持；无本轮保留或全量成绩，详见[当前报告](../eval/2026-09-17-socialmem-grounded-answer.md)。
+
+> **人物检索优化已验收（2026-09-17）**：C++人物路由与邻接完成开发及保留集验证，同一候选392/1031=38.02%，原baseline20.47%，累计+17.56百分点；保留集19.46%→39.93%。默认bm25保持，模型/评分不变，结构谓词能力另行验证；详见[当前报告](../eval/2026-09-17-socialmem-source-focus.md)。历史结果按各自冻结版本解释。
+
 # Starling Memory:多主体社会心智 + 类脑动力学的智能体记忆系统设计方案
+> **当前评测进展（2026-09-17，写入修复与全量基线完成）**：C++坏时间容错及非流式截断/拒答识别已实现，94项C++和108项Python相关测试通过。49范围、473文档、7923话轮全部核验；qwen3.8-27b来源路径完整baseline为211/1031=20.47%，写入/回答失败0、裁判超时2，实际1848次HTTP、零重试。相较旧201/1031净增10题，其中恢复范围贡献8题；增益区间跨0，不宣称稳定质量提升。详见[本轮报告](../eval/2026-09-17-socialmem-baseline-recovered.md)；旧默认结构路径及历史封存单列。
+
+> **范围 Schema 对齐收口（2026-09-16）**：C++ 非空/去重约束与评测身份/预算守卫已实现；真实 16 次请求、零重试，C0 8/8，C1 因提供商拒绝数组 uniqueItems 为 6/8，按门槛停止。四来源覆盖及 QA 未执行，无新 F1。详见[本轮报告](../eval/2026-09-16-socialmem-scope-schema.md)。
+
+> **R1/B 实测收口（2026-09-16）**：旧 Python/重放误用模块的证据已撤回，D1 已重建验证。真实 16 次探测中 D0 通过、D1 因空 scope_markers 未通过原生契约，按计划停止；四来源样本未执行，不能判定谓词覆盖或问答质量改善。核心逻辑仍在 C++，默认关闭。详见[R1/B 阶段报告](../eval/2026-09-15-socialmem-predicate-coverage-r1b.md)。
+
+
+> **声明范围本地实施（2026-09-15）**：用户确认的 L/R0 已实现并完成最终本地回归：C++ 1103/1103、Python 1387 通过/15 跳过；A 的 140 条流程重放无差异，S/T 原文仅恢复 1 条已知 Femi 误拒。独立审查与封存核验已完成，详见[实施分析](../eval/2026-09-15-socialmem-claim-scope-implementation.md)。核心仅 C++，无新模型调用或 F1，默认关闭。
+
+> **作用域与超时真实诊断（2026-09-15）**：84 次请求、零重试已完成；S0/S1 完整响应 13/14、10/14，主作用域字段错误 2/3 次；T60/T120 完整响应 8/12、11/12。52 条原文原生重放一致。S1 不晋升，话轮范围误拒与现有谓词召回仍需优化；详见[真实诊断报告](../eval/2026-09-15-socialmem-scope-latency-real.md)，生产默认关闭。
+
+> **协议恢复 A 阶段结果（2026-09-14）**：A 已原生核验 verified / complete_with_errors；固定控制 62/64、误收 0，Q1 linked 3/3；但有 22 条技术失败，P1 低于冻结基线，Q9 无改善，质量门槛未通过。两轮获批探测 16 次服务响应，另有误调用的 8 次 DNS 失败，累计尝试 24 次。详见[A 阶段报告](../eval/2026-09-14-socialmem-protocol-recovery-a.md)；B 未执行，核心仅在 C++，默认关闭。
+
+> **协议能力与关系覆盖进展同步（2026-09-14）**：中文设计→RED 测试→C++ 实现及本地验证已完成（C++ 1,089/1,089、Python 1,355 通过/15 跳过）。授权后真实探测 8 次、零重试，均 HTTP 200，但两种模式的抽取/准入四组均为 `nonconformant`；原生核验 `capability_blocked`，后续评测调用 0、质量为空。详见[最新探测报告](../eval/2026-09-14-socialmem-capability-probe.md)；核心仍仅在 C++，默认关闭，历轮数字保留各自证据时间。
+
+> **最新输出协议与偏好边界结果（2026-09-13 核验）**：中文文档→失败测试→C++ 实现及评测已完成，C++ 1,062 项、Python 1,319 项通过（15 项跳过）。真实诊断 `verified / complete_with_errors`；固定候选 56/64、synthetic 契约 11/16（有效分母 15/16），P1 combined F1 为 0.7317/0.6829/0.7683，Q1/Q9 仅 full 阶段 3/3，质量门槛未通过。详见 [输出协议与偏好边界报告](../eval/2026-09-13-socialmem-protocol-boundary.md)。此前各阶段数字保留各自证据时间。
+
+> **来源话轮阶段进展（2026-09-12）**：C++ 版本化输入及独立扩展标签已实现，完整回归及离线/真实原生核验通过；真实质量门槛未通过。此前各阶段“时间输入/扩展标签未完成”的描述为当时状态；当前交付范围与剩余限制见 [来源话轮评测报告](../eval/2026-09-12-socialmem-source-turn.md)。
+
+> **JSON mode 请求实验（2026-09-12）**：C++ `OpenAIAdapter::Config::json_object_output` 默认关闭，仅约束抽取请求格式并保留响应原文，普通生成单独绕开。旧数组抽取使用默认实例；非法枚举继续严格拒绝。配置不代表服务器支持或 schema 保证，评测显式开启并归档参数；Python 仅绑定与编排。完整范围及待验证状态见 [中文优化设计](../superpowers/specs/2026-09-12-socialmem-optimization-design.md)。
+
+> **后续修复同步（2026-09-12）**：可空主题允许缺省或 null，无效类型统一在 C++ 预检；情绪校验不以“觉得/感觉”或整轮认知词直接拒绝。写入与检索共用原生契约。重复裁判一致率与有效分母单列，原严格门槛保持。实现范围及尚未完成的能力见 [中文优化设计](../superpowers/specs/2026-09-12-socialmem-optimization-design.md)。
 
 > **本版**为v24版本，是P1 编码起点。文档由主文档（本文件，§0 摘要、§1 公理、§2 总览、§3 数据本体、§14 端到端场景、§15 路线图、§16 取舍与风险）+ 12 个子系统文档（位于 `subsystems_design/` 目录）组成。历史变更记录见 [附录 H](#附录-h)。
+
+> **当前实验扩展（2026-09-12）**：[Source-Grounded Claim Contract Design](../superpowers/specs/2026-09-11-source-grounded-claim-contract-design.md) 已实现并通过完整工程验证；真实诊断已完成并核验，质量门槛未通过，默认关闭。按已确认契约，直接抽取 Statement 可携带子句级证据、断言范围、归属和事件时间；旧 Statement 与生产默认保持兼容。适用的现行子系统文档同步标注该状态，`docs/design/history/` 为不可改写的历史快照。
+
+> **当前优化设计与未完成项（2026-09-12）**：关系和言语行为、SourceTurn 主题/原始时间、结构化输出错误分类及扩展评价标签统一按中文设计文档执行。C++ 保持唯一生产语义实现，Python 仅作绑定和评测编排；默认开关继续关闭，详见 [优化设计](../superpowers/specs/2026-09-12-socialmem-optimization-design.md)。
 
 ---
 
@@ -68,7 +128,7 @@ Starling Memory 解决一个问题：让 LLM Agent 像人一样，对每个交�
 | 领域 | 简单默认 | 升级触发 |
 |---|---|---|
 | 写入 | `Bus.append_evidence` + `Bus.write` + outbox | 多 worker / 跨进程 / 重放恢复需求出现后启用完整 PipelineRun lease/checkpoint |
-| 证据锚 | `engram_ref + chunk_index + observed_at + source_hash` | 多 episode、PDF 分段、转录、多模态或 offset 级擦除需求出现后启用 `segment_map / span_start / span_end` |
+| 证据锚 | `engram_ref + chunk_index + observed_at + source_hash` | 语义证据契约按已确认契约，直接抽取增加 `clause_id + span_start/span_end + assertion_scope + event_time`；历史最小锚点保持兼容 |
 | 检索 | 固定 `basic_retrieve(statement_main)` | 多 scope 成本差异、sufficiency 短路或 engram raw gate 需求出现后启用完整 RetrievalScopePlan |
 | 投影 | 主 Statement 表 + 必要索引 | 主表查询无法满足 SLA 或数据量超过 P2 阈值后启用 Projection Index |
 | Container | 整体 rebuild + 单 version CAS | 多维度高频更新导致 CAS 冲突后启用 dimension-level versions |
@@ -312,7 +372,7 @@ C/C++ 是一等公民接口；其他语言绑定从 C++ API 自动生成存根�
 
 **数据流不变量**：
 
-- **EngramStore 永远先写**，再写 Statement。Statement.evidence 必须能追溯回 EngramStore；evidence 与 derived_from 至少其一非空。
+- **EngramStore 永远先写**，再写 Statement。Statement.evidence 必须能追溯回 EngramStore；evidence 与 derived_from 至少其一非空。语义证据契约启用时，直接抽取还必须通过完整 source clause、actor、assertion scope 和 event-time 校验；技术或范围失败不得生成空成功。
 - **Statement state 单向迁移为主**，唯一往回的路径是 `ARCHIVED → REPLAYING_RECONSOLIDATING`（被召回）。
 - **provenance 写入即冻结**。后续 confidence 调整、state 迁移、access_count 累加都不改 provenance。
 - **mild correction 不产新版**。轻微反对修改原 Statement 的 confidence + 追加 confidence_history，provenance 不变。
@@ -418,28 +478,28 @@ C/C++ 是一等公民接口；其他语言绑定从 C++ API 自动生成存根�
 
 | # | 子系统 | 文档 | 职责 |
 |---|---|---|---|
-| 1 | Substrate Adapter | [subsystems_design/04_substrate.md](subsystems_design/subsystems_design/04_substrate.md) | 三档 profile 的物理底座抽象，三层隔离 |
-| 2 | EngramStore | [subsystems_design/06_engramstore.md](subsystems_design/subsystems_design/06_engramstore.md) | verbatim 原档，retention_mode 生命周期 |
-| 3 | Hippocampus | [subsystems_design/06_hippocampus.md](subsystems_design/subsystems_design/06_hippocampus.md) | 快记忆（VOLATILE）、事件切分、Working Set、Affect Buffer |
-| 4 | Neocortex | [subsystems_design/07_neocortex.md](subsystems_design/subsystems_design/07_neocortex.md) | 慢记忆（CONSOLIDATED）、holder 子图族、五子区 |
+| 1 | Substrate Adapter | [subsystems_design/04_substrate.md](subsystems_design/04_substrate.md) | 三档 profile 的物理底座抽象，三层隔离 |
+| 2 | EngramStore | [subsystems_design/06_engramstore.md](subsystems_design/06_engramstore.md) | verbatim 原档，retention_mode 生命周期 |
+| 3 | Hippocampus | [subsystems_design/06_hippocampus.md](subsystems_design/06_hippocampus.md) | 快记忆（VOLATILE）、事件切分、Working Set、Affect Buffer |
+| 4 | Neocortex | [subsystems_design/07_neocortex.md](subsystems_design/07_neocortex.md) | 慢记忆（CONSOLIDATED）、holder 子图族、五子区 |
 
 **核心运行时子系统**（7 个）：
 
 | # | 子系统 | 文档 | 职责 |
 |---|---|---|---|
-| 5 | Statement Bus | [subsystems_design/05_bus.md](subsystems_design/subsystems_design/05_bus.md) | 写入入口、Validator、ConflictProbe、事件分发、幂等 |
-| 6 | Cognizer Hub | [subsystems_design/08_cognizer.md](subsystems_design/subsystems_design/08_cognizer.md) | 主体注册、KnowledgeFrontier、RelationEdge |
-| 7 | ToM Engine | [subsystems_design/09_tom.md](subsystems_design/subsystems_design/09_tom.md) | 二阶信念追踪、perspective_take、7 Mentalizing Primitives |
-| 8 | Replay Scheduler | [subsystems_design/10_replay.md](subsystems_design/subsystems_design/10_replay.md) | Online/Idle/Sleep 巩固，自适应遗忘 |
-| 9 | Reconsolidation Engine | [subsystems_design/11_reconsolidation.md](subsystems_design/subsystems_design/11_reconsolidation.md) | 被回忆即可塑，supersedes 链 |
-| 10 | Prospective Loop | [subsystems_design/12_prospective.md](subsystems_design/subsystems_design/12_prospective.md) | Trigger + Commitment 5 态 + ActionGuard（含 PolicyEngine 触发引擎） |
-| 11 | Retrieval Planner | [subsystems_design/13_retrieval.md](subsystems_design/subsystems_design/13_retrieval.md) | 9 Intent + 7 步规划 + Context Pack 8 标签 |
+| 5 | Statement Bus | [subsystems_design/05_bus.md](subsystems_design/05_bus.md) | 写入入口、Validator、ConflictProbe、事件分发、幂等 |
+| 6 | Cognizer Hub | [subsystems_design/08_cognizer.md](subsystems_design/08_cognizer.md) | 主体注册、KnowledgeFrontier、RelationEdge |
+| 7 | ToM Engine | [subsystems_design/09_tom.md](subsystems_design/09_tom.md) | 二阶信念追踪、perspective_take、7 Mentalizing Primitives |
+| 8 | Replay Scheduler | [subsystems_design/10_replay.md](subsystems_design/10_replay.md) | Online/Idle/Sleep 巩固，自适应遗忘 |
+| 9 | Reconsolidation Engine | [subsystems_design/11_reconsolidation.md](subsystems_design/11_reconsolidation.md) | 被回忆即可塑，supersedes 链 |
+| 10 | Prospective Loop | [subsystems_design/12_prospective.md](subsystems_design/12_prospective.md) | Trigger + Commitment 5 态 + ActionGuard（含 PolicyEngine 触发引擎） |
+| 11 | Retrieval Planner | [subsystems_design/13_retrieval.md](subsystems_design/13_retrieval.md) | 9 Intent + 7 步规划 + Context Pack 8 标签 |
 
 **横切子系统**（1 个）：
 
 | # | 子系统 | 文档 | 职责 |
 |---|---|---|---|
-| 12 | Runtime Governance | [subsystems_design/05_governance.md](subsystems_design/subsystems_design/05_governance.md) | RuntimeHealth 4 态、PipelineRun 账本、ScopedWorkGate 限流 |
+| 12 | Runtime Governance | [subsystems_design/05_governance.md](subsystems_design/05_governance.md) | RuntimeHealth 4 态、PipelineRun 账本、ScopedWorkGate 限流 |
 
 **Dashboard 子系统（实现新增，P2.g–P2.m，2026-06-10 审计回写）**：可视化观测与配置面，不在原 12 子系统清单内。FastAPI engine-API（引擎唯一属主、单进程单写者、bearer token 鉴权）+ SvelteKit 12 面板前端（同端口静态产物 serve，一键启动）+ 统一配置 `~/.starling/starling.json` + 多 provider（OpenAI 兼容族 + C++ AnthropicAdapter 原生）+ `POST /api/config/test` 测连通。它经 `starling.Memory` 门面与只读 SQL 检视访问核心，是 HTTP 前端而非语言绑定层。
 
@@ -719,6 +779,7 @@ class Statement(BaseEntity):
     # 证据归因
     evidence: list[EvidenceRef]             # 直接抽取必填；派生由 derived_from 追溯
     source_spans: list[SourceSpanRef]       # 直接抽取的 Engram 片段锚；派生作 supporting
+    semantic_claim_evidence: Optional[SemanticClaimEvidence] = None  # 实验直接声明；SQL 为 nullable JSON
     temporal_anchor: Optional[TemporalAnchor]
     derived_from: list[StatementRef]        # 直接前驱；派生 Statement 必填
     derived_depth: int = 0                  # 派生链深度缓存；根因 0
@@ -754,12 +815,16 @@ class Statement(BaseEntity):
 - 5 类时间：`event_time` 事件本身；`observed_at` 写入时刻；`inferred_at` 系统推断时刻；`valid_from / valid_to` 事实有效期。
 - `evidence` 与 `derived_from` 至少其一非空（Validator 校验）。
 - `source_spans` 指向 Engram 内的片段位置；P1 最小只要 `engram_ref + chunk_index + observed_at + source_hash`。
-- `temporal_anchor` P1 可空，序列化时按 `source_spans[0].observed_at` 推导；P3 多源时持久化。
+- `temporal_anchor` P1 可空，序列化时按 `source_spans[0].observed_at` 推导；这是来源观察锚，不表示事件起点。实验 `semantic_claim_evidence.event_time` 未知时保持 null，相对时间保留原词。
 - `derived_from` 是唯一持久化派生前驱；只记直接前驱，递归闭包由查询展开。
 - `derived_depth` 写入规则：`derived_from=[]` 时为 0；否则为 `max(parent.derived_depth)+1`；与 derived_from 同事务原子写入。SUPERSEDES 版本链不计入派生深度。
 - `nesting_depth` 默认 0；二阶 ToM 嵌套（object 是 Statement）时 +1。
 - `canonical_object_hash` 在写入时由 `canonicalize_object(object, version=canonical_object_hash_version)` 计算，供 ConflictProbe 索引使用；版本升级 maintenance 超 14 天 emit `projection.upgrade_overdue`。
 - **实现新增列（2026-06-10 审计回写）**：`scope_parties_json`（migration 0022，P2.j）——grounding 参与群体（sorted，独立于 `perceived_by`），供 CanonicalScope 七元组与 CommonGround grounding 协议使用，写后不可原地改；`last_replay_batch_id`（migration 0011，P2.b）——最近一次 Replay 批次标识，防同批重复采样。
+
+**2026-09-11 可选语义证据契约**：C++ 是所有语言 binding 共享的唯一执行实现，负责 source units、v2 解析、范围检查、retain/reject 准入、持久化与检索证据校验。Python 仅做类型/配置映射、转发和评测编排；不复制核心判断。证据包含确定性 `clause_id`、UTF-8 来源区间/完整 payload SHA256、actor/attributed_to、主范围与并存 `scope_markers`、关系极性/样态、可信来源观察时间及独立事件时间。完整字段、三通道边界和质量门槛见 [已确认设计](../superpowers/specs/2026-09-11-source-grounded-claim-contract-design.md) 与 [同步清单](claim_contract_sync.md)。
+
+`semantic_claim_contract` 和 `claim_allow_code_fence` 默认 false。启用实验必须保留文本，不允许自动改归属。迁移 0034 只加 `semantic_claim_json`，旧行 NULL、旧 hash 不变；原声明状态变化保留证据，新派生命题保留 derived_from 而不继承直接准入证书。检索保持原八种 Context Pack 标签并附范围/时间/链接；未决 event_time 用 source recency 排序时须计入回执 fallback。
 
 **Value 类型枚举与标准化**：
 
@@ -2361,3 +2426,234 @@ VAD 三轴 AffectVector；trust_priors 加入 Cognizer；polarity 与 modality �
 | Substrate | ProfileCapability / RuntimeHealth / ScopedWorkGate / PipelineRun / cross_partition_transaction |
 | ToM | Mentalizing Primitives / StatementRef / perspective_take / tom_inferred |
 | Prospective | ActionGuard / ActionPolicyGraph / PolicyEngine / commitment.active_holding |
+
+> **错误回执边界（2026-09-12）**：C++ 将 JSON 解析异常收敛为稳定、可编码的 `envelope_failure`，避免第三方异常中的多字节 token 截断破坏回执；响应原文保持完整，拒绝状态和严格分母不变。
+
+## JSON mode 本轮验证状态（2026-09-12）
+
+C++ 1,041 项、Python 1,282 项测试通过（Python 15 项跳过），离线 140 记录/144 数据库核验通过。独立审查发现的中文尾随文本错误回执已用 C++ 修复，原文及技术失败状态保持；服务端最小探测接受参数但未严格输出裸 JSON。140 条真实诊断已完成并核验；最新中文边界结果见 JSON mode 报告。完整证据见 [中文 JSON mode 报告](../eval/2026-09-12-socialmem-json-mode.md)。完整 schema、能力协商、扩展标签与时间输入继续列为未完成。
+
+
+> **中文边界同步（2026-09-12）**：C++ 只将明确“X 负责……”视为中文责任认知命题；情绪对象中的“职责/责任”交由准入判断。主题空白按 UTF-8 ASCII、NBSP、U+3000 统一处理，空主题报告 schema 失败。
+
+
+## 中文边界真实评测结论（2026-09-12）
+
+`build/socialmem_20260912_chinese_unicode_real/` 已核验 `verified / complete_with_errors`。固定候选 56/64，synthetic 冻结 10/16、契约 8/16，P1 combined holder/perspective/predicate-object F1 为 0.7101/0.6627/0.7456，原生技术失败 8；契约裁判两两一致率 100%。中文职责/情绪混合句误拒已消除，但固定与 P1 下降，不能宣称整体质量提升或生产就绪；Unicode 规则已由 C++ 回归覆盖，当前 cohort 未含对应固定样本。
+
+
+## 来源时间与独立扩展标签（2026-09-12）
+
+按已批准优化范围执行 [中文来源话轮设计](../superpowers/specs/2026-09-12-source-turn-evaluation-design.md)。C++ 生成并解析版本化话轮，保留原始消息时间与 UTF-8 来源位置，正文与元数据分开校验；Bus/检索重建 source_turn 防止篡改。Python 仅映射和统计，独立扩展标签不进入模型输入，不修改原 P1 金标。真实时间不推断为事件时间或 UTC；已完成 C++ 实现、全量测试、离线与真实核验；真实诊断为 verified / complete_with_errors，质量门槛未通过。普通正文冒号保留完整语义，直接写入/回读使用共享严格解析器拒绝嵌套重复键。详见 [来源话轮评测报告](../eval/2026-09-12-socialmem-source-turn.md)。
+
+
+## 生成契约完整性同步（2026-09-12）
+
+按 [中文生成契约设计](../superpowers/specs/2026-09-12-claim-generation-design.md)，C++ 在抽取提示中明确对象、逐字主题、原始时间限定和字段类型约束，并提供与本次来源隔离的通用中英文参考示例。模型输出校验、准入、存储/检索与默认开关保持既有约束，Python 仅绑定和评测编排；参考示例不作为当前证据。本轮 C++ 实现、完整回归、离线核验及历史响应 140/140 一致性重放已完成；真实诊断于北京时间 2026-09-13 完成核验，为 `verified / complete_with_errors`。固定候选 59/64、synthetic 契约 13/16、独立对象 12/14、主题/联合各 1/14，原生技术失败 5；主题字面匹配分数不能解释为字段缺失。P1 兼容与逐例不退步门槛仍失败，Q1/Q9 结构化及链接组仍为 0/3，默认关闭。详见 [生成契约评测报告](../eval/2026-09-12-socialmem-generation.md)。其他专项职责沿用设计同步清单，历史快照保持。
+
+## 输出协议与偏好边界同步（2026-09-13）
+
+按 [中文修复设计](../superpowers/specs/2026-09-13-claim-protocol-boundary-design.md) 继续已批准优化：C++ 提示强调键唯一、时间原文及同话轮引用，准入与解析共用合法原因目录，窄范围拒绝把明确偏好对象写成 feels。真情绪不因同源其他偏好句被拒；Bus/回读复用共享契约，Python 仅绑定与编排。当前已完成 RED、C++ 实现与复审修复后的完整回归（C++ 1,062 项，Python 1,319 项通过/15 项跳过）；旧响应重解析 137/140 一致，3 条偏好误标候选提前拒绝。复合/因果情绪及被动 preferred 感受保留准入，句尾标点边界有正反例覆盖。独立复审发现均已关闭，最终离线 140 条/144 数据库核验通过；真实诊断已完成并由原生验证器核验为 `verified / complete_with_errors`：140 条重放、144 个数据库；固定候选 56/64（TP 30、TN 26、误收 0、误拒 1、技术失败 7），synthetic 冻结 11/16、契约 11/16（有效分母 15/16），P1 combined F1 为 holder 0.7317、holder/perspective 0.6829、predicate/object 0.7683；扩展标签 object/topic/scope/time/joint 为 12/14、2/14、12/14、12/14、2/14（有效目标 13）；Q1/Q9 的 baseline、structured、linked 均为 0/3，full 均为 3/3；实际证据链仍受入库与证据聚合限制。原生技术失败共 10 条，主要为重复 JSON 键和准入 JSON 后追加文本；无效裁判票 0。`promotion_ready=false`，生产默认保持关闭，不运行 1,031 题全量。默认、原标签、检索与历史归档保持。
+
+## 声明范围与覆盖诊断职责（2026-09-15）
+
+范围定位是 C++ 语义解析链路的内部步骤，抽取、直接写入及检索通过同一 parser 复核。仅符合受限句首结构的完整 object 唯一逐字锚点可局部检查 QUESTIONED；其他作用域与关系守卫仍看完整来源。局部坐标只在诊断回执中出现，不能替换持久化整单元 source_span。schema、提示与默认不变，已实施，本地验证结果见实施分析。
+
+详见[声明范围定位与生成覆盖诊断设计](../superpowers/specs/2026-09-15-claim-scope-localization-design.md)。
+
+## 2026-09-16 范围字段协议对齐
+
+本轮 C++ schema 生成与本地 wire 校验共同要求 scope_markers 非空且唯一；主范围成员关系、范围组合、来源与主体语义仍由 C++ 原生契约执行，binding 不重复判定。评测脚本冻结指定核心、来源、配置及调度，并在每次请求前复验能力和预约预算。真实端点拒绝数组 uniqueItems（两次 HTTP 400），C1 未通过能力门槛，来源样本、入库、检索、QA 均未执行；本地约束对齐不得解释为谓词召回或问答质量提升。当前实验开关继续关闭，提供商 schema profile 分离方案仍待下一轮单独设计与验证。
+
+## 2026-09-16 能力与得分路线修订（已授权自主迭代）
+
+后续拟以网络/会话持续写入，原生跨主体授权查询和结构/来源联合证据形成可评测闭环。复用已有范围契约、事件、来源认证及时间选择器，仅在失败测试证明缺口时补齐。以同预算端到端回答提升验收，开发评测和生产晋升分开。 具体范围、测试与验收见[统一方案](../superpowers/specs/2026-09-16-socialmem-capability-and-score-design.md)。本段描述计划，不代表已经实现或获得新分数。
+
+最新执行顺序已按用户指令调整：先冻结当前默认 Starling 并完成全部 1031 题基线，再按真实失分执行中文文档→失败测试→C++ 改进→同条件复测，循环自主迭代，无需重复申请常规步骤授权。基线前仅补评测编排及题目允许来源范围，不预修被测能力。详见[基线优先执行计划](../superpowers/plans/2026-09-16-socialmem-baseline-first.md)。
+
+## 2026-09-17 独立来源与观察者检索
+
+新增C++来源保留接口经既有Bus写入Engram，0035的source_documents只登记tenant/holder/Engram及首次登记时间，不复制正文。旧来源不猜测owner回填。宿主提供显式授权holder，核心执行范围、擦除、保留策略、完整性哈希与时间截止过滤；SourceTurn保留说话人、来源时间和会话/话轮身份，未经声明抽取也可独立召回。
+
+ObserverRetriever将跨holder声明融合收进C++，并提供statements/sources/hybrid三种显式模式，统一去重、整行UTF-8字节预算和原生渲染；sources当前是确定性BM25，hybrid交替来源与声明。旧默认路径不变，新路径不会扫描整个租户来扩大权限。来源以SOURCE标记原始发言，不自动变成已认证事实；时间表示来源时间，不推断事件发生时间。Python和其他binding只转发接口。
+
+设计、验收和本轮开发评测状态见[独立来源专项](../superpowers/specs/2026-09-17-socialmem-independent-source-design.md)。现有39项原生与53项Python聚焦回归通过；两轮6题四臂已终态，回答关闭思考后声明/来源/融合/全文为1/6、2/6、2/6、3/6，零技术失败。1031题原始来源模式全量复测已完成，201题正确（19.50%），1007题成功评分、24题来源失败；其后的57题姓名词项候选未晋升。
+
+
+## 2026-09-17 来源可靠性与上下文回执更新
+
+C++在认证与时间过滤之后、BM25统计之前按可靠话轮身份及原文/来源时间去掉增量批次重复候选；缺身份或不同内容版本保留。登记与查询截止要求明确合法UTC时间，原始来源观察时间不改写。SOURCE模型输入保留说话人、观察时间、会话和位置及转义正文；完整Engram/clause/turn身份保留在按行对应的source_refs回执，避免把内部标识重复占用模型上下文。k=30/8000字节仅在显式开发候选配置测试，未切换旧默认记忆路径。实测与边界见[候选报告](../eval/2026-09-17-source-context-density.md)。
+
+## 显式人物来源检索契约（2026-09-17）
+
+ObserverQuery新增source_strategy，默认bm25；focused与focused_window仅适用于sources模式。C++在授权/时间/擦除/哈希过滤后完成完整姓名匹配、人物队列轮转、全局证据及同会话±1话轮扩展，共享k与UTF-8字节预算；按原时间与数值话轮顺序渲染并保持引用对齐。无人物匹配时复用旧BM25输出。Python只映射字段和编排实验。已完成本轮开发及保留集验证，默认保持bm25；完整算法与验收以本文件顶部当前报告及其设计链接为准。
+
+## 2026-09-18 原生两阶段证据回答边界
+
+新增`evidence_answer.hpp/.cpp`提供`source_evidence_prompt`、`verify_source_evidence`、`evidence_answer_prompt`及`answer_with_evidence`。输入仅为已授权召回的SOURCE块及问题；C++为来源分配局部编号，发起证据选择，核验source_id、实际发言人与连续原文引语，再以完整原来源和通过引用核验的证据生成答案。Python绑定只暴露DTO和原生调用，评测脚本只负责路由、三阶段回执与预算结算。
+
+该能力只认证引语与来源匹配，`interpretation`仍为未验证模型解释；不能把被描述主体、时间顺序或因果关系当成已经获得语义认证。未新增持久化事实、推断谓词或隐式授权，也没有将`select_temporal_evidence`的有序早晚声明视为因果验证。规划失败按固定策略回到原grounded提示，保留失败与成本记录；适配器异常标记未知预算，并按上界结算。
+
+`evidence_v1`为显式实验政策，sources自由回答最多增加一次模型调用；默认legacy及选择题原协议保持。工程契约和733题真实开发评测均已完成：313/733＝42.70%，相对同1024容量父下降4.37个百分点，未晋升。实验设计和诊断见文档首部；引用来源核验不表示社会语义推断已验证。
+
+## 两阶段证据回答验收结论（2026-09-18）
+
+C++实现和733开发题真实评测完成：313/733＝42.70%，相对同1024容量父345/733净减32题（−4.37个百分点），33网络95%差值区间[−7.89,−0.86]个百分点；自由题236→203/581。观测tokens5,397,777（+69.46%），1894 HTTP，24裁判超时和1回答截断全计零，4次规划降级。预注册五项仅截断与观测用量通过，拒绝晋升；通过门槛的推荐配置仍为grounded_v1/512，默认legacy不变。
+
+引用核验成功不表示解释正确：本轮2631条合格引语、115条不连续引用被拒；双方技术正常690题仍净减26题，不能仅用超时解释下降。固定案例暴露目标事件和时间错配、双向互动链遗漏；后续优先验证C++事件指向、主体归属与回应关系，先文档、再独立测试、最后实现，不追加本轮候选搜索。全部模型请求已结束，主评分保持原协议；保存的模型响应驱动581最终提示原生回放一致。完整诊断见本轮评测报告。
+
+## 2026-09-18 连续话轮扩展接口
+
+ObserverQuery新增focused_dialogue策略及source_seed_k、source_seed_max_context_bytes、source_dialogue_radius三个参数。C++在既有权限/时间/完整性过滤后复用focused_window选种子，再加入同会话、连续位置的原文；预算先保障种子，邻接不等于已验证的回复或因果边。Python仅暴露字段与透传配置。其他策略维持原行为。
+
+本轮固定30条/8000字节种子、半径2、总60条/16000字节，grounded_v1/1024，无额外模型规划。新增原生14项与实际绑定3项已通过；733题旧路径兼容、真实准确率及成本仍待冻结评测。与容量父比较同时改变组织和容量，不声称等预算的单因素收益。
+
+本接口开发验收：旧focused_window的733份block/refs/prompt全部逐字复现，focused_dialogue的733份实际来源完整保留原种子；39来源库不变。真实成绩376/733，相对345净增31，观测tokens+52.21%，未达到净增37的预注册门槛，因此不作为推荐默认。剩余主要限制是问题范围、时序、冲突陈述和答案覆盖；邻接仅提供来源上下文，不证明因果。原生54项、新Python31项、既有回归42项及封存辅助10项通过。完整结果见本页顶部链接。
+
+
+## 单次综合回答接口（2026-09-18）
+
+C++在evidence_answer.hpp/.cpp提供synthesis_source_answer_packet与synthesis_source_answer_prompt，复用来源解析器，将已授权的原生SOURCE块转换为synthesis_v1证据包。保留来源顺序、说话人、会话、话轮、陈述时间、未知时间元数据及原文；source_id是包内位置，text是正文保留字段，输入元数据不得占用这两个名称；空白说话人与损坏来源在请求前拒绝。证据包不是权限过滤器，也不补写事件时间或认证答案语义，semantic_verified始终为false。
+
+新提示引导单次模型回答注意问题范围、事件时序、实际触发、回应与反证、推断强度和多成员覆盖；规则没有实现自动语义校验。Python仅暴露接口和路由；synthesis_v1只允许sources召回，自由题一次回答、至多一次原裁判，选择题保持旧提示。旧政策与推荐默认不变。本轮固定上一轮733题来源和1024回答容量，仅证据表示与生成政策改变；输入token数可能因表示而变化，真实效果见本节终态验证及文档首部报告。
+
+单次综合回答终态验证：61项原生、37项新Python、22项旧政策、27项基线与账本、10项封存辅助测试通过。733题预检来源相同，581证据包无损，152选择题提示不变；实际可用上下文733题、证据包581题、选择题提示152题完成核验。真实成绩309/733，较376净增-67，观测tokens为4,857,066；未满足全部事前门槛，不晋升；推荐仍grounded_v1/512。此结果只评估固定开发集单次生成政策，不证明已实现问题范围、时序、关系或因果的自动语义校验。
+
+本轮成本口径补充：回答显式关闭thinking，裁判沿用旧协议且未显式设置此参数；原始HTTP usage中裁判有821,168个reasoning_tokens。judge_max_tokens=64不是观测总completion tokens的上限。后续若修改裁判配置须作为独立实验，不混入当前配对成绩。
+
+## 2026-09-18 回答表示与指导消融设计
+
+已新增C++显式实验接口source_answer_ablation_prompt，组合SOURCE/JSON表示与grounded/synthesis指导。两个历史对角提示逐字兼容，Python仅绑定和实验编排；模型qwen3.8-27b、固定来源、1024回答上限、原裁判不变。按33开发网络各3题抽样，99题四组合、上限792次请求，结果仅作机制诊断，不晋升。来源包保真不等于人物归属、因果或社会推断已验证。详见本文件顶部本轮报告。
+
+## 2026-09-19 回答消融结果与结构化能力边界
+
+99开发自由题四组合完成：SOURCE旧指导42/99、JSON旧指导46/99、SOURCE新指导37/99、JSON新指导34/99。仅作机制诊断，不晋升；不能替代733题或保留集成绩。 五项配对区间均包含0，没有达到完整开发集验证条件的方向。C++已提供显式source_answer_ablation_prompt，两个历史对角提示逐字复现，Python只做绑定和实验编排；默认推荐未改。39个来源库的statements与非空semantic_claim_json均为0，本轮不检验结构化抽取/记忆闭环。
+
+事后原文核对确认关键发言漏召回、人物归属错误及否认未约束推断；部分原裁判YES也包含错误归属。跨时段重复中另有3例相同答案与相同裁判提示标签翻转，不能当作总体误判率或修改主评分。下一阶段先用独立用例诊断召回选择，再复用现有claim_contract、claim_evidence、temporal_evidence，单独验收抽取→校验→写入→检索→回答；这些后续改动尚未执行。来源/字段完整性不认证人物归属或因果语义，补充契约的五类关系不代表全量谓词。评分稳定性校准须独立记录，不与旧主分数混比。
+
+## 2026-09-19 人物与会话覆盖检索设计
+
+显式focused_coverage候选已在既有来源过滤及focused_window种子后，用剩余条数与字节预算的一半按人物/会话轮转补充本人发言，再围绕原种子扩展；保持整行原文、总预算和授权范围。选择与trace均由C++实现，Python只绑定和实验编排。C++与99题同期对照已完成；99开发自由题同期对照完成：旧邻句40/99、人物会话覆盖43/99，净增+3题；未达到本轮事前扩大开发验证条件，不晋升。来源公开锚点182→188/200，不等于QA收益。结构化记忆闭环和裁判校准仍待独立验证。
+
+## 2026-09-19 结构化记忆闭环首轮实现与验收边界
+
+结构化声明能力采用方案 A：C++ `claim_contract` 内维护版本化 `claim-predicate-v2` 目录，统一生成抽取提示、合同视图、schema、别名归一和语义族；`memory_ops` 在 `prepare → extract_all → commit_all` 三相边界中记录失败类别、目录版本、接受/拒绝谓词计数、来源保留及结构化持久化状态；`structured_claim_retriever` 在 C++ 中完成 tenant/holder/subject、来源证据、谓词、topic、截至时间和 temporal early/late 选择。Python 只做参数归一、绑定转发和结果映射。
+
+本轮通过的工程证据为：C++ `StructuredMemoryClosure` 8/8，Python 结构化组合 10/10；完整 C++ 回归 1200/1201，唯一失败是沙箱禁止 loopback listener 的既有 HTTP 测试。专项夹具验证了目录扩展、别名、否认/人物归属、抽取失败来源保留以及跨 tenant/无效来源排除；temporal 正向持久化候选仍需补充，因此离线闭环门槛尚未通过。该实现不改变旧结构化声明读取、默认检索路径、历史归档或评测裁判，也未触发新的 DashScope 请求。
+
+## 2026-09-19 正向结构化闭环验收更新
+
+已补强正向夹具：一条真实 C++ 抽取→持久化→consolidation→BasicRetriever→结构化证据检索路径，以及两条带真实 Engram source hash/span 和 SourceTurn 的 early/late 路径均通过，正向夹具 3/3。专项 C++ 9/9、Python 10/10、相关合同/证据/抽取/记忆回归 105/105；完整回归 1200/1201，唯一失败是当前沙箱禁止 loopback listener 的既有 HTTP 测试。结构化闭环离线专项门槛已通过，允许启动一次固定 `qwen3.8-27b` 对照；这只是工程闭环资格，不是 SocialMemBench QA 提升或生产晋升。
+
+## 2026-09-20 hybrid 对话观察者合同与评测更新
+
+`ObserverRetriever` 的来源策略合同已在 C++ 中允许 `mode=hybrid` 搭配 `focused`、`focused_window`、`focused_dialogue` 和 `focused_coverage`；`mode=statements` 仍只允许 `bm25`。Python 仅透传 `ObserverQuery` 字段和评测配置，不复制人物识别、邻句选择、授权过滤或 UTF-8 预算逻辑。C++ 来源专项 50/50、新增 hybrid 合同测试通过；完整 C++ 回归 1203 项中 1180 通过、22 跳过，唯一失败仍为沙箱 loopback listener 测试。
+
+固定 57 题 `qwen3.8-27b` 实跑中，修复前的 `hybrid_dialogue` 57 题均在查询合同阶段失败；修复后重跑为 17/57（29.82%）、技术失败 0。来源对照 15/57、`hybrid_fenced` 16/57；按仓库 5,000 次网络 bootstrap，来源配对区间为 `[-3.03%, +11.63%]`，未达到晋级门槛。该轮 `dialogue_added_sources` 全部为 0，根因为默认 `source_seed_k=10` 等于外层 `k=10`。随后 `hybrid_dialogue_expanded` 将 seed_k 调为 5、seed_bytes 调为 4000、radius 保持 2，57 题均新增 5 条邻句，但得分降为 15/57（26.32%），相对来源区间 `[-5.26%, +4.76%]`，因此关闭该参数方向，不改变生产默认、历史归档或评分协议。
+# 评测输入与回执边界同步（2026-09-20）
+
+SocialMemBench 的真实抽取输入必须由 C++ `claim_source_turn_payload` 规范化，保留会话、话轮和观察时间元数据；Python 只做字段白名单映射、binding 调用和评测归档。`RememberLlmBundle` 的 belief、general-fact、episodic 三通道回执由 C++ `memory_remember_bundle_receipt` 统一导出，scope 级 `extraction.receipts.json` 仅作为诊断证据，不改变评分协议。详见 [SourceTurn 与三通道回执设计](../superpowers/specs/2026-09-20-socialmem-source-turn-receipt-design.md) 和 [结构化覆盖诊断](../eval/2026-09-20-socialmem-structured-coverage-diagnosis.md)。
+
+## R2 谓词覆盖扩展设计同步（2026-09-20）
+
+本阶段承接结构化覆盖诊断和 SourceTurn/三通道回执修复，目标是补齐结构化合同与 legacy mental-state 之间的能力断层。C++ 原生目录版本升级为 `claim-predicate-v3`，新增 `prefers`、`promises`、`doubts`、`believes`、`responsible_for`、`requires`、`forbids` 七类规范谓词及受控别名；既有谓词、来源证据、admission 和持久化格式保持兼容。目录、别名、语义族、允许模态/极性、抽取提示和准入提示均由 C++ `PredicateCatalog` 唯一生成，Python 只绑定、编排和归档，不维护第二份语义逻辑。
+
+本阶段严格执行中文设计文档 → C++/Python RED 测试 → C++ 实现 → 固定协议回归。测试覆盖中英文正反例、错误模态、主体与对象保真、admission 拒绝计数、`knows` 历史模态兼容、三通道证据回读和 Python binding 边界。新增结构化声明数量或离线测试通过率不等于 QA/F1 提升；只有 7/7 scope、36/36 holder 的同协议 SocialMemBench 结果和预注册统计门槛满足后，才讨论晋升。生产默认仍保持 `semantic_claim_contract=false`。
+
+## R2.1 结构化输出协议修正（2026-09-20）
+
+首次 `claim-predicate-v3` 固定评测中，qwen3.8-27b 在 legacy 结构化请求下出现截断、未转义 JSON 和证据范围不完整，57 题中 47 题在抽取建库阶段失败。该结果只说明协议性技术失败，不能解释为谓词扩展导致 QA 下降。下一轮由 C++ `OpenAIAdapter::extract_with_contract` 使用 `ValidationPolicy.claim_output_mode=JsonObject` 发送原生 `response_format`；C++ 继续执行 envelope、schema、scope、admission 和持久化校验，Python 仅传递配置和归档回执，不清洗模型文本。生产默认仍为 `semantic_claim_contract=false`、`claim_output_mode=Legacy`；新评测必须使用独立身份并分别报告技术完成率和 QA。
+
+## R2.2 结构化输出末端格式提醒（2026-09-20）
+
+`claim_extraction_prompt` 由 C++ 在 `SOURCE_DATA_JSON` 之后追加短格式提醒，明确 statement 字段必须位于顶层，`evidence` 只允许证据字段，禁止误嵌套和省略 `holder_perspective`。该提醒只降低 qwen3.8-27b 的 wire-shape 漂移，不改变 `parse_claim_response` 的严格接受集合；误嵌套、缺字段和额外字段仍由 C++ 拒绝并保留原始回执。Python 只绑定提示、透传 `claim_output_mode` 和归档失败分类。
+
+## R2.3 结构化输出重复键与布局对照（2026-09-20）
+
+第二轮 JSON Object 实评发现 qwen3.8-27b 仍偶发重复 `time_text`/`topic` 键和 evidence 误嵌套。C++ 提示末端增加“每个对象 key 只能出现一次”的约束和不含真实人物的 BAD/GOOD 顶层布局对照；原生 JSON 解析器继续拒绝重复键和错误布局，Python 不做清洗。
+
+### R2.3 实评证据收口（2026-09-20）
+
+独立网络评测完成 57/57 题，7/57 正确、26/57 技术失败；4/7 scope 完成，holder 为 19/36。失败包括重复 `time_text`/`topic` 的 `envelope_failure`、抽取超时、抽取/回答 `completion_truncated`。两轮共同完整题目只有 17 题，不能从 15/57 与 7/57 的非配对差异推断提示因果收益。当前仍保持 C++ 严格拒绝和 Python 仅 binding/编排，生产默认 `semantic_claim_contract=false`；完整证据见 [R2.3 鲁棒性评测报告](../eval/2026-09-20-socialmem-structured-output-robustness.md)。
+
+> **R3.2 结构化信封设计（2026-09-20）**：R3.1 已消除本轮可观察的抽取截断，但仍出现重复 JSON key、statement 字段误嵌套和批级 schema 失败。下一轮由 C++ 在 `SOURCE_DATA_JSON` 之后生成唯一结构模板，明确 statement 顶层字段与 evidence 允许字段；严格 parser、scope guard、admission 和生产默认保持不变。当前仅完成中文设计，尚未产生新模型分数。详见 [R3.2 设计](../superpowers/specs/2026-09-20-socialmem-r32-schema-envelope-design.md) 与 [实施计划](../superpowers/plans/2026-09-20-socialmem-r32-schema-envelope.md)。
+
+## R3.2 语义诊断与 R3.3 证据覆盖（2026-09-21）
+
+R3.2 独立目录完成 57/57 题，技术失败 1、成功子集 13/56（23.21%），6/7 scope、32/36 holder。43 道错误题中，26 道在来源和结构化声明两侧都没有命中金标话轮；6 道仅声明命中、5 道仅来源命中、6 道两侧命中后仍出现主体/时间/关系推理错误。该结果把后续瓶颈定位到证据覆盖与跨 session 组织，不能解释为谓词数量或 JSON 协议问题。
+
+R3.3 在 C++ `ObserverRetriever` 中增强 `focused_coverage`：识别 `each member` 等全体成员问题，时间变化问题首尾交替覆盖 session，并在 hybrid 中增加可审计的 `min_source_items` 来源配额。Python binding 只透传字段，默认 `bm25` 和零配额行为保持兼容；完整设计见[R3.3 证据覆盖设计](../superpowers/specs/2026-09-21-socialmem-r33-evidence-coverage-design.md)。来源命中、离线回放或声明数量均不等于 QA/F1，真实评测必须独立建目录并分开报告。
+
+R3.3 已完成 C++ 与 binding 回归。离线金标命中由 BM25 的 24/56 提升到 focused coverage 的 45/56；真实评测为 11/57、19 道技术失败，成功子集 11/38，未满足配对晋升门槛，生产默认保持不变。详见[R3.3 报告](../eval/2026-09-21-socialmem-r33-evidence-coverage.md)。
+
+## R3.4 结构化抽取协议有限重试设计（2026-09-21）
+
+R3.3 的两个失败 scope 分别由重复 JSON key 和目录外谓词触发 C++ envelope/schema 拒绝，导致 19 道题未进入回答。R3.4 只在 C++ `semantic_claim_contract` 路径对 `envelope_failure` 或 `schema_failure` 提供最多一次原生协议纠错重试；不修补原 JSON、不改写谓词、不重试语义 scope 拒绝。`ValidationPolicy.claim_protocol_retry_budget` 默认 0，Python 只透传 R3.4 的 1，生产默认和历史回执不变。设计与计划见 [R3.4 设计](../superpowers/specs/2026-09-21-socialmem-r34-protocol-retry-design.md) 和 [实施计划](../superpowers/plans/2026-09-21-socialmem-r34-protocol-retry.md)。
+
+## R3.5 Holder 级故障隔离与字段诊断（2026-09-21）
+
+R3.4 的协议重试降低了技术失败，但单个 holder 失败仍会放大为整个 scope 失败，且 schema 回执缺少字段路径。R3.5 由 C++ 增加 `ParseError.field_path`、字段级 retry 摘要和原生多 holder `prepare → extract → commit` 管线；每个 holder 独立保存三通道 attempt/receipt，失败后继续后续 holder，并从最后失败 attempt 派生 `failure_detail`（kind/路径/detail 或传输错误，持久化失败优先）。Python 只传递 holder/payload 列表并归档结果，不实现 holder 状态机、解析或重试。带完整 holder 结果的 partial scope 可用于分层诊断，但晋升仍要求 7/7 scope、36/36 holder 和预注册 QA 门槛；生产默认保持 `semantic_claim_contract=false`、`claim_protocol_retry_budget=0`。详见[R3.5 设计](../superpowers/specs/2026-09-21-socialmem-r35-holder-isolation-design.md)与[实施计划](../superpowers/plans/2026-09-21-socialmem-r35-holder-isolation.md)。
+
+## R4.5 声明车道选路优化（2026-09-23）
+
+R4.5 已验证 consolidated source 与原始 claim engram 的五元组安全回连，57 题检索均为 `ok`，`claim_metadata_loaded` 累计 1142、回连成功 1142、拒绝 0。当前优化只在实验策略 `evidence_profile_v6` 的 C++ `ObserverRetriever` 中生效：已通过声明证据校验的状态、信念归属和成员 claim 车道先于普通 relevance 获得名额，source limit、UTF-8 字节预算、tenant/holder/时间/擦除/哈希边界仍由核心统一执行。新增 `state_chain_claim_selected`、`belief_attribution_claim_selected`、`member_claim_selected` 和 `claim_lane_fallbacks`，并从最终 `selection_trace` 重算 `lane_selected_rendered`。Python binding 只透传策略和读取原生诊断，不复制谓词、角色或回连逻辑。R4.5 完整两臂为检索 14/57、原生回答 18/57；相对 R3.5 分别为 -2 和 +2，仍为开发诊断，未晋升生产。设计与计划见 [R4.5 设计](../superpowers/specs/2026-09-23-socialmem-r45-claim-lane-optimization-design.md) 和 [实施计划](../superpowers/plans/2026-09-23-socialmem-r45-claim-lane-optimization.md)。
+
+
+### R4.6 车道计数与排序补充（2026-09-23）
+
+v6 的 `lane_selected` 仅由成功的 `take()` 计一次，claim 计数仅统计该车道新选入的有效 claim。共享来源只归属于首次选中它的车道，可以满足其他覆盖要求，但不重复计数也不记回退。`claim_lane_fallbacks` 仅统计成员车道成功新增普通来源的次数，不统计名额/字节预算拒绝、缺失候选和 relevance 补齐。状态与归属车道保持严格 claim 资格。成员车道按有效 claim 优先稳定分组，组内沿用相关性排序，避免仅因时间早而抢占题目相关来源。内部优先级使用资格布尔值和现有排序，不新增无标定的浮点 claim 分数。R4.5 历史分数与 R4.6 新核心结果分开记录。
+
+
+R4.6 真实复评已封存：检索与原生回答均 15/57，来源锚点 48/104，546/600 次 HTTP，检索臂 1 次 512-token 截断。相对 R4.5 所有判分变化来自相同 prompt 的题目，变更 prompt 队列没有判分变化；无可归因的准确率提升，不晋升。底层 102 条 claim 全为第一人称，归属车道排除自述导致选中数为 0；同一来源多 claim 的单视图覆盖风险待下一轮 RED 验证。当前契约与详细结论见本文顶部 R4.6 中文报告入口。
+
+
+## R4.7 多声明与第一人称归属设计入口（2026-09-23）
+
+R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入归属车道的问题。R4.7 先保留全部通过证据校验的 claim，再按人物边界进入 C++ 归属车道；设计见 [2026-09-23-socialmem-r47-multi-claim-attribution-design.md](../superpowers/specs/2026-09-23-socialmem-r47-multi-claim-attribution-design.md)，实施计划见 [2026-09-23-socialmem-r47-multi-claim-attribution.md](../superpowers/plans/2026-09-23-socialmem-r47-multi-claim-attribution.md)。R4.7 已完成离线、真实复评和最终封存核验，详见[中文诊断报告](../eval/2026-09-23-socialmem-r47-multi-claim-attribution.md)。R4.6 原结果保留；本轮检索 19/57、原生回答 17/57，涨分尚不能归因于代码修复，不晋升。
+
+
+## R5.3 来源预算与结构化声明 sidecar 实现及评测边界（2026-09-25）
+
+R5.2 历史双臂结果保留：同一来源快照上，evidence_profile_v7 的上下文为 7 条 SOURCE 加 3 条结构化声明，v6 为 10 条 SOURCE；legacy 由 22/57 降至 12/57，grounded_memory_v1 由 24/57 降至 11/57。C++ 中来源与声明争用 k=10 名额的机制已确认，部分声明相关性不足也是诊断线索；但 R5.1 v6 的 345 次嵌入尝试全部进入降级路径，v7 无此降级，R5.2 又复用该批冻结上下文，因此历史分数差异受到检索健康状态混杂，不能把主要退化或全部退化归因于共享名额。该结果只代表 57 题开发集；产品默认仍为 bm25，开发对照为 v6。
+
+R5.3 方案 A 已在 C++ 实现：新增实验策略 evidence_profile_v8，先按 k 选择来源，再在剩余 UTF-8 字节预算内追加最多 3 条 sidecar 声明。声明必须回链到已选来源并通过相关性、tenant、holder、as-of、review、source hash/span 约束；低相关 semantic link 不得无条件压过直接来源，完全无直接来源时才允许 semantic 回退。source_count 与 statement_count 分开统计，selected 继续表示来源数；声明拒绝原因与两类字节计数进入原生诊断。Python binding 只透传策略字符串和结果，不重复实现选择或准入逻辑。
+
+本轮已执行中文设计、C++/Python RED 测试、C++ 实现、本地回归及同库真实语义检索复评；真实查询嵌入请求单独计费和记账，不称为零请求离线质量验证。三臂检索健康、来源控制一致，但 v8 来源锚点低于 v6，门槛未通过，未启动 QA、不晋升。后续仍须同时满足来源锚点召回不低于 v6、来源不因 sidecar 下降、sidecar 抽样相关性至少 0.8 及硬过滤审计，才进入 qwen3.8-27B 新鲜回答与裁判对照；开发晋升门槛不自动改变产品默认。完整设计见 [R5.3 设计](../superpowers/specs/2026-09-25-socialmem-r53-source-sidecar-design.md)，本轮冻结核心结果与后续修复验证分别见 [R5.3 中文评测报告](../eval/2026-09-25-socialmem-r53-source-sidecar.md)。
+
+## R5.4 来源预算与有效期合同（2026-09-25）
+
+实验策略 `evidence_profile_v9` 在 C++ 复用 v6 的来源选择顺序和 v8 的独立来源预算/严格 sidecar 准入；不启用 v8 的直接命中优先排序，也不启用 v7/v8 的 semantic/event 来源排序。`k` 只约束来源，先渲染来源，再按共同 UTF-8 字节预算追加最多三条声明，不能挤掉来源。v9 `sources` 不调用 planner/embedding，v9 `hybrid` 才查询声明候选。Python 仅透传和编排，不复制这些决策。
+
+语义 planner 和 source claim metadata 的声明有效期统一为 `[valid_from, valid_to)`，NULL/空界无界；复用既有结构化资格过滤并保持 semantic DTO、cosine 及 salience/activation/provenance，不用 observed_at 推断有效期。原行为兼容仅针对合法时间数据，未来/过期声明的旧准入属于已修复漏洞。
+
+同核心57题四臂检索完成：baseline/source7锚点51/104，source10/sidecar为67/104，228条回执全健康；两对来源控制逐题一致，source10无声明且无嵌入请求。source10通过预注册QA门槛，问答结论以当前R5.4评测报告为准。没有声明时相关性指标“不适用”；sidecar仍为诊断臂。fresh QA只比较baseline/source10的组合效果，不把锚点增量当作答题增量，不更改产品默认。
+
+## R5.6 原生分批声明抽取补记（2026-09-25）
+
+新增候选能力 `ValidationPolicy.claim_batch_size`：默认0保留原行为，1至32仅用于semantic claim，当前实验为8。C++用完整payload规划互斥的全局来源单元批，每批保留全部上下文；模型只能输出目标clause，原生在语义过滤前拒绝越界行。证据的原始字节坐标、来源hash及SourceTurn身份保持，不把批号写入声明身份。Python配置仅映射该字段；general_fact派生policy清零，episodic独立。
+
+原生 `claim_extraction_batch_plan(payload, policy)` 给出计划与请求上界；分批回执保留全局attempt编号、batch_index、target_clause_ids和 `claim_batches_complete`。全部批成功才允许该holder分批claim写入；后批失败保留全部原始回执与成本，0条分批claim落库。持久化重新验证计划、policy与候选来源，批间写异常由事务回滚；跨分批大小重放保持幂等。完整上下文重复输入增加成本，有限来源单元不等于token硬上限。
+
+本轮本地验证已通过，真实同输入验收与扩大评测尚待完成；不把测试结果当QA增益。完整设计与当前证据见[R5.6中文设计](../superpowers/specs/2026-09-25-socialmem-r56-bounded-claim-design.md)，历史评测继续按各自冻结核心解释。
+
+## R6.7 原生语义来源选择与评测边界（2026-09-26）
+
+新增独立实验模块 `include/starling/retrieval/source_selection.hpp` 和 `src/retrieval/source_selection.cpp`。`collect_selection_pool(observer, query)` 复制查询，以sources/bm25收集经租户、holder、时间、保留和擦除策略过滤的来源，最多1000条、131072字节；`eligible_sources`必须与池实际条数相同，溢出或不完整池显式失败。C++按观察时间、会话、turn_index和稳定身份排序，未知时间置后。模型输入只含问题、来源编号、原文、speaker/session/time及预算，不包含标准答案、题型或公开锚点。
+
+`source_selection_prompt`生成选择提示词，`select_sources`最多进行一次原生LLM调用，`apply_source_selection`验证并渲染回执。模型仅提议整数`source_ids`；C++拒绝额外字段、重复键/编号、未知编号、布尔/浮点编号、超过20条或8000 UTF-8字节的计划。来源整行、归属和引用保真，按原池时序呈现，不截断、不补齐、不回退。空池零调用；模型失败或异常保留原始响应和费用不确定性。纯回放接口消费已授权池，不是新的授权入口。
+
+这些规则只在C++实现，Python绑定仅透传；Python评测层负责快照、任务调度、started回执、HTTP账本、冻结和统计。选择核心与历史回答/审计核心在不同进程使用。候选无声明附加区，不证明谓词、人物状态或因果关系能力已被补齐，也不改变默认检索路径。
+
+R6.7已完成文档、RED、实现及评测：13项新增原生反例包含在1389项完整C++回归中，12项binding、14项选择编排和16项QA编排测试通过。同八库、六网络、133题来源选择129题成功，锚点194→205/263。同期v9→selector正确50→56/133（37.59%→42.11%，+4.51个百分点），聚类95%区间[-4.58,17.17]；正常130→125/133。共同正常123题正确49→55。增益、区间和健康门槛未全部满足，未晋升；不是全量、保留集或生产结论。
+
+本轮已证实尚未修复的边界：`OpenAIAdapter::generate()`调用`complete(prompt,false)`，选择工厂设置的`json_object_output`不会在此路径启用结构化输出。四次选择合同失败按完整分母计错；下一轮须在C++修复真实调用路径并测试HTTP请求体，不能在Python剥除围栏后事后修分。群体反例丢失、变化事件直接行为被压缩、回答遗漏已有证据分别进入后续设计；格式修复本身不等于质量晋升。
+
+真实调用共602/611 HTTP、零重试、零新增embedding；已知tokens为3,679,744，7次QA超时缺用量，总消费未知，账本无未结算预约。候选读取完整池的额外选择开销必须计入收益评估。详细数据、逐题机制及复现入口见[本轮中文诊断报告](../eval/2026-09-26-socialmem-r67-source-selection.md)。
+
+## R6.8 显式结构化来源选择合同（2026-09-26）
+
+新增C++ `select_sources_structured(question,pool,llm,k,max_context_bytes)`，显式传递`SourceSelectionV1/JsonObject`至已有`extract_with_contract`路径，实际HTTP体含`response_format.type=json_object`。SourceSelectionV1限定唯一键source_ids及最多20个互异正整数；池内编号与UTF-8动态预算继续由原生apply_source_selection验证。新旧入口共用一个执行器，旧select_sources保留自由生成以支持历史对照，Python只做绑定和实验编排。
+
+新入口核对响应合同、模式、schema哈希和原始内容一致性；不支持、超量、围栏或不健康响应直接失败，不隐式能力探测、不重试或回退。JSON mode只约束传输格式，不能保证来源选择语义正确或满足20条预算。既有显式能力探测API新增空来源列表夹具与可重放证据，真实评测不自动调用它。
+
+本地1395项C++回归、20项绑定/localhost HTTP、14项选择编排和16项QA编排测试通过。R6.8已完成133题结构化来源选择与同期QA：v9为52/133，selector为60/133，净增6.02个百分点；六网络聚类95%区间[-5.60,16.28]，候选正常127/133低于v9的130/133，门槛未通过，不晋升。选择合同失败从R6.7的4题降为3题，均为超过20条预算；Markdown围栏失败为0。来源池、选择提示词、预算及回答政策保持R6.7合同；群体反例、事件角色和裁判规则本轮不改。完整设计见[中文设计](../superpowers/specs/2026-09-26-socialmem-r68-structured-selection-design.md)，详细结果见[中文评测报告](../eval/2026-09-26-socialmem-r68-structured-selection.md)，历史R6.7原始结果保留。

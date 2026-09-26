@@ -1,6 +1,7 @@
 #pragma once
 
 #include "starling/extractor/extracted_statement.hpp"
+#include "starling/extractor/structured_output.hpp"
 #include "starling/schema/statement_enums.hpp"
 
 #include <functional>
@@ -36,6 +37,27 @@ struct ValidationPolicy {
     // holder_id=Xiao Ming and mental_state_of(character) finds it. Consumed only
     // by Extractor::run; the validator itself ignores this field.
     bool attribute_first_order_mental_to_holder = false;
+
+    // Opt-in for clause-valued belief/general-fact objects. Preserve their
+    // surface and hash it directly; noun-theme grounding remains the default.
+    // Episodic entity themes are unaffected. Enable consistently per corpus;
+    // switching does not migrate previously normalized objects or hashes.
+    bool preserve_text_objects = false;
+
+    // Experimental supplemental v2 path; never enables itself for base facts.
+    bool semantic_claim_contract = false;
+    bool claim_allow_code_fence = false;
+    OutputMode claim_output_mode = OutputMode::Legacy;
+    // Structured claim protocol correction attempts.  The native extractor
+    // is the only owner of retry semantics; Python may only select 0 or 1.
+    int claim_protocol_retry_budget = 0;
+    // Opt-in native source-unit batches; zero retains the legacy single call.
+    int claim_batch_size = 0;
+    // Opt-in target-only evidence index; the complete payload remains context.
+    bool claim_batch_target_units = false;
+
+    // Single native policy authority, also exposed through Python bindings.
+    void validate() const;
 };
 
 // M0.4 minimal validator. Enforces the §15.3.1 EXTRACTOR contracts

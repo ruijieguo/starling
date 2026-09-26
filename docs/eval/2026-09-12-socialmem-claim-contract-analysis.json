@@ -1,0 +1,589 @@
+{
+  "run": "build/socialmem_20260911_claim_contract_retry_run",
+  "analyzed_at": "2026-09-11T16:29:50.912687+00:00",
+  "manifest_sha256": "9dfc9d298e16e6f411bca7aa09bf9dd698f02ce26529a4e1a2cce4285d2ec5cf",
+  "verification_sha256": "b4e9e85a41289e29226fb161c8848e2eef6b86d47958acc88d8462dfb8b96bdc",
+  "controls_by": {
+    "origin": {
+      "archived": {
+        "cases": 32,
+        "expected_positive": 16,
+        "correct": 31,
+        "true_positives": 16,
+        "true_negatives": 15,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 1
+      },
+      "new": {
+        "cases": 32,
+        "expected_positive": 16,
+        "correct": 28,
+        "true_positives": 15,
+        "true_negatives": 13,
+        "false_accepts": 1,
+        "false_rejects": 1,
+        "technical_failures": 2
+      }
+    },
+    "language": {
+      "en": {
+        "cases": 32,
+        "expected_positive": 16,
+        "correct": 29,
+        "true_positives": 15,
+        "true_negatives": 14,
+        "false_accepts": 1,
+        "false_rejects": 1,
+        "technical_failures": 1
+      },
+      "zh": {
+        "cases": 32,
+        "expected_positive": 16,
+        "correct": 30,
+        "true_positives": 16,
+        "true_negatives": 14,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 2
+      }
+    },
+    "category": {
+      "attribution": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 7,
+        "true_positives": 3,
+        "true_negatives": 4,
+        "false_accepts": 0,
+        "false_rejects": 1,
+        "technical_failures": 0
+      },
+      "conditional": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 8,
+        "true_positives": 4,
+        "true_negatives": 4,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 0
+      },
+      "decision": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 8,
+        "true_positives": 4,
+        "true_negatives": 4,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 0
+      },
+      "emotion": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 7,
+        "true_positives": 4,
+        "true_negatives": 3,
+        "false_accepts": 1,
+        "false_rejects": 0,
+        "technical_failures": 0
+      },
+      "negation": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 7,
+        "true_positives": 4,
+        "true_negatives": 3,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 1
+      },
+      "time": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 7,
+        "true_positives": 4,
+        "true_negatives": 3,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 1
+      },
+      "trust": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 7,
+        "true_positives": 4,
+        "true_negatives": 3,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 1
+      },
+      "uncertainty": {
+        "cases": 8,
+        "expected_positive": 4,
+        "correct": 8,
+        "true_positives": 4,
+        "true_negatives": 4,
+        "false_accepts": 0,
+        "false_rejects": 0,
+        "technical_failures": 0
+      }
+    }
+  },
+  "control_failures": [
+    {
+      "id": "en_trust_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "source": "Mina: I believe Jules is responsible for deployments.",
+      "candidate": {
+        "holder": "Mina",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "holder_perspective": "FIRST_PERSON",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "predicate": "trusts",
+        "object": "Jules with deployments",
+        "modality": "BELIEVES",
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "semantic_rejections": [],
+      "raw_admission": "```json\n{\"schema_version\":1,\"decisions\":[{\"index\":0,\"retain\":false,\"reason\":\"wrong_relation\"}]}\n``` \n\nThe candidate uses the predicate \"trusts\" which is not appropriate for the given source text. The source states \"I believe Jules is responsible for deployments,\" which expresses a belief about responsibility, not interpersonal trust for a task/scope. Therefore, the relation is incorrect and the candidate should be rejected."
+    },
+    {
+      "id": "new_en_emotion_no",
+      "expected_keep": false,
+      "outcome": "admitted",
+      "source": "Mina: I feel that the missing keys are in the kitchen.",
+      "candidate": {
+        "holder": "Mina",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "holder_perspective": "FIRST_PERSON",
+        "predicate": "feels",
+        "object": "that the missing keys are in the kitchen",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "errors": [],
+      "semantic_rejections": [],
+      "raw_admission": "```json\n{\"schema_version\":1,\"decisions\":[{\"index\":0,\"retain\":true,\"reason\":\"supported\"}]}\n```"
+    },
+    {
+      "id": "new_en_attribution_yes",
+      "expected_keep": true,
+      "outcome": "semantic_rejection",
+      "source": "Mina: Jules said that if the ferry stopped running, he would not be worried about getting home.",
+      "candidate": {
+        "holder": "Mina",
+        "subject": "Jules",
+        "subject_kind": "cognizer",
+        "holder_perspective": "QUOTED",
+        "predicate": "feels",
+        "object": "would be worried about getting home if the ferry stopped running",
+        "modality": "BELIEVES",
+        "polarity": "NEG",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Jules",
+          "assertion_scope": "REPORTED",
+          "scope_markers": [
+            "REPORTED",
+            "CONDITIONAL",
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null,
+          "attributed_to": "Mina"
+        }
+      },
+      "errors": [],
+      "semantic_rejections": [],
+      "raw_admission": "```json\n{\"schema_version\":1,\"decisions\":[{\"index\":0,\"retain\":false,\"reason\":\"wrong_attribution\"}]}\n```"
+    },
+    {
+      "id": "new_zh_negation_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "source": "Mina: 对于新排班，我并没有不高兴。",
+      "candidate": {
+        "holder": "Mina",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "holder_perspective": "FIRST_PERSON",
+        "predicate": "feels",
+        "object": "对于新排班不高兴",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "NEGATED",
+          "scope_markers": [
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "semantic_rejections": [],
+      "raw_admission": "```json\n{\n  \"schema_version\": 1,\n  \"decisions\": [\n    {\n      \"index\": 0,\n      \"retain\": false,\n      \"reason\": \"wrong_relation\"\n    }\n  ]\n}\n``` \n\nThe candidate uses \"feels\" (emotion) but the source actually expresses a cognitive state (\"并没有不高兴\" - \"not unhappy\" is a cognitive assessment, not an emotional feeling). The relation is incorrect for the content, and the polarity should be NEG since the source negates the feeling."
+    },
+    {
+      "id": "new_zh_time_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "source": "Mina: 昨天我因活动取消而沮丧，今天已经释然了。",
+      "candidate": {
+        "holder": "Mina",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "holder_perspective": "FIRST_PERSON",
+        "predicate": "feels",
+        "object": "今天因活动取消而沮丧",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "今天",
+          "event_time": null
+        }
+      },
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "semantic_rejections": [],
+      "raw_admission": "```json\n{\"schema_version\":1,\"decisions\":[{\"index\":0,\"retain\":false,\"reason\":\"wrong_attribution\"}]}\n``` \n\nThe candidate states that Mina feels \"今天因活动取消而沮丧\" (today, frustrated due to the event cancellation), but the source text clarifies that Mina was frustrated *yesterday* (\"昨天我因活动取消而沮丧\") and has since moved on (\"今天已经释然了\" - today, already relieved). The candidate incorrectly attributes the current feeling of frustration to Mina, while the source explicitly states she is no longer frustrated today. This is a case of wrong_attribution because the temporal context of the emotion is misaligned with the source."
+    }
+  ],
+  "synthetic": [
+    {
+      "id": "emotion_positive",
+      "frozen_votes": 2,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "emotion_negative",
+      "frozen_votes": 3,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": false,
+      "identical_judge_prompt": false
+    },
+    {
+      "id": "relief_cause",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "mixed_emotions",
+      "frozen_votes": 3,
+      "contract_votes": 2,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "undecided",
+      "frozen_votes": 1,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "possible_not_decided",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "decided_decline",
+      "frozen_votes": 2,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "decision_change",
+      "frozen_votes": 3,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": false,
+      "identical_judge_prompt": false
+    },
+    {
+      "id": "indifference",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "preference_contrast",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "trust_target",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "reported_distrust",
+      "frozen_votes": 0,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": false,
+      "identical_judge_prompt": false
+    },
+    {
+      "id": "preference_qualifiers",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": false,
+      "identical_candidate": false,
+      "identical_judge_prompt": false
+    },
+    {
+      "id": "negative_target_scope",
+      "frozen_votes": 3,
+      "contract_votes": 3,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "property_and_desire",
+      "frozen_votes": 0,
+      "contract_votes": 0,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    },
+    {
+      "id": "topic_reference",
+      "frozen_votes": 2,
+      "contract_votes": 2,
+      "contract_native_ok": true,
+      "identical_candidate": true,
+      "identical_judge_prompt": true
+    }
+  ],
+  "qa_claim_coverage": [
+    {
+      "item_id": "Q1_a5s1c1",
+      "statement_id": "11591e0e-eb71-2edd-4545-6fa869682cb7",
+      "actor": "Claudette",
+      "predicate": "feels",
+      "object": "frightened by the traffic and the danger for our children",
+      "clause_id": "c4",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q1_a5s1c1",
+      "statement_id": "8301529e-cc05-4911-317d-6af7089d3d8e",
+      "actor": "Claudette",
+      "predicate": "feels",
+      "object": "emotional seeing the whole street out together",
+      "clause_id": "c8",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q1_a5s1c1",
+      "statement_id": "aa119643-0848-ac19-a439-7f475645e6b4",
+      "actor": "Claudette",
+      "predicate": "decided_on",
+      "object": "objecting to adding more bulk to the street",
+      "clause_id": "c0",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q1_a5s1c1",
+      "statement_id": "f5a88215-fc6a-b842-9ad0-d137a9dcf854",
+      "actor": "Claudette",
+      "predicate": "feels",
+      "object": "irritated by permanence",
+      "clause_id": "c3",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q1_a5s1c1",
+      "statement_id": "f8bb0937-6aec-a282-6bcd-1e56dcdc58a3",
+      "actor": "Claudette",
+      "predicate": "feels",
+      "object": "mixed feelings about the frustration with commuter parking and the additional burden on residents",
+      "clause_id": "c2",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "statement_id": "104643f7-3523-66c0-3389-a9f0937f56f1",
+      "actor": "Marcus",
+      "predicate": "feels",
+      "object": "nervous about starting over",
+      "clause_id": "c25",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "statement_id": "3dbde631-5fcf-f9d0-4039-86b08677b8cf",
+      "actor": "Marcus",
+      "predicate": "uncertain_about",
+      "object": "going for the new hub",
+      "clause_id": "c12",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": false,
+      "observer_selected": false,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "statement_id": "3fca50f1-ea2d-9a5c-78bd-8db5a643bdfc",
+      "actor": "Marcus",
+      "predicate": "feels",
+      "object": "like I've been in the same spot for three years",
+      "clause_id": "c25",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "statement_id": "539fc646-24fe-cd9c-a80b-4d728d0dbedf",
+      "actor": "Marcus",
+      "predicate": "indifferent_to",
+      "object": "either way",
+      "clause_id": "c6",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "statement_id": "cca21fc2-8be5-fe6a-8296-75497ba35e47",
+      "actor": "Marcus",
+      "predicate": "uncertain_about",
+      "object": "decided yet",
+      "clause_id": "c13",
+      "event_time": null,
+      "time_text": "",
+      "basic_eligible": true,
+      "planner_scope_returned": true,
+      "observer_selected": true,
+      "consolidation_state": "consolidated",
+      "review_status": "approved"
+    }
+  ]
+}

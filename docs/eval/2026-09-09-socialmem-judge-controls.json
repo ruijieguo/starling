@@ -1,0 +1,26 @@
+[
+  {
+    "item_id": "Q1_a5s1c1",
+    "kind": "reference_paraphrase",
+    "candidate": "Claudette is consistently against development that would change Maple Street's residential character. Her objection to the loft conversion focused on added bulk and visual character; she later also blamed development for traffic and danger to children. Thirty years on the street give her a strong sense of what it used to be and drive her resistance to change.",
+    "expected": true
+  },
+  {
+    "item_id": "Q1_a5s1c1",
+    "kind": "contradiction",
+    "candidate": "Claudette consistently welcomes denser development and supports the loft conversion. She wants Maple Street to abandon its residential character and sees extra traffic as a benefit.",
+    "expected": false
+  },
+  {
+    "item_id": "Q9_a0b1c2d3",
+    "kind": "reference_paraphrase",
+    "candidate": "By Sessions 4 and 5 Marcus was nervous but resolved to start over and unusually candid. He said his flat situation was stagnant and he needed change after three years, more than a pay rise, and appreciated the group's send-off. Earlier, in Sessions 1 to 3, he had kept personal and job matters to himself, giving short, noncommittal replies. Once departure was certain he opened up, so his last known state was cautious readiness with greater emotional openness.",
+    "expected": true
+  },
+  {
+    "item_id": "Q9_a0b1c2d3",
+    "kind": "contradiction",
+    "candidate": "Marcus ended the sessions completely carefree and certain that pay was his only reason to move. He had always discussed his personal feelings at length and became more secretive once departure was confirmed.",
+    "expected": false
+  }
+]

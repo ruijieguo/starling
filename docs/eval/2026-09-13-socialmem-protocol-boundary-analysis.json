@@ -1,0 +1,1714 @@
+{
+  "status": "verified_complete_with_errors",
+  "run": "build/socialmem_20260913_protocol_boundary_real",
+  "manifest_sha256": "47b71aa9538aa0bcb1f1a30882a4a68f719878464b93fb0d53bef8af685781d9",
+  "core_sha256": "6db899edae22cc65e53c278bbbecc88e57d7f0d8c96cfb879a194d1ed08793b5",
+  "labels_sha256": "489e9fa8af6cbc5bfbe3814757d90a73c3cc8597c74ca57a7ab1d769c1101322",
+  "source_input_mode": "source_turn_v1",
+  "scope": {
+    "records": 140,
+    "extraction_calls": 76,
+    "fixed_injections": 64,
+    "admission_calls": 73,
+    "answer_calls": 8,
+    "judge_votes": 120
+  },
+  "validation": {
+    "cpp_passed": 1062,
+    "python_passed": 1319,
+    "python_skipped": 15,
+    "claim_contract_passed": 39,
+    "http_tests_outside_sandbox": 6,
+    "historical_records": 140,
+    "historical_identical": 137,
+    "historical_changed": 3,
+    "independent_review": "all_reported_findings_closed",
+    "git_diff_check": true
+  },
+  "offline": {
+    "status": "verified",
+    "run_status": "complete",
+    "native_ingestion_replays": 140,
+    "databases": 144,
+    "manifest_sha256": "30db08e26f731702ceb321e5f9d9d49d713c255b9493e41207e047892408ce1a"
+  },
+  "controls": {
+    "cases": 64,
+    "expected_positive": 32,
+    "correct": 56,
+    "true_positives": 30,
+    "true_negatives": 26,
+    "false_accepts": 0,
+    "false_rejects": 1,
+    "technical_failures": 7
+  },
+  "tracks": {
+    "p1": {
+      "records": 50,
+      "stored": 4,
+      "outcomes": {
+        "technical_failure": 1,
+        "semantic_rejection": 44,
+        "empty": 2,
+        "admitted": 3
+      },
+      "error_kinds": {
+        "envelope_failure": 1
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 69
+      },
+      "deterministic_rejections": 69,
+      "model_rejections": 7
+    },
+    "synthetic": {
+      "records": 16,
+      "stored": 12,
+      "outcomes": {
+        "admitted": 11,
+        "technical_failure": 1,
+        "empty": 3,
+        "semantic_rejection": 1
+      },
+      "error_kinds": {
+        "envelope_failure": 1
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 2
+      },
+      "deterministic_rejections": 2,
+      "model_rejections": 0
+    },
+    "scoped": {
+      "records": 10,
+      "stored": 21,
+      "outcomes": {
+        "admitted": 8,
+        "semantic_rejection": 1,
+        "technical_failure": 1
+      },
+      "error_kinds": {
+        "envelope_failure": 1
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 19
+      },
+      "deterministic_rejections": 19,
+      "model_rejections": 1
+    },
+    "fixed_controls": {
+      "records": 64,
+      "stored": 30,
+      "outcomes": {
+        "admitted": 30,
+        "semantic_rejection": 27,
+        "technical_failure": 7
+      },
+      "error_kinds": {
+        "envelope_failure": 7
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 20
+      },
+      "deterministic_rejections": 20,
+      "model_rejections": 7
+    }
+  },
+  "p1": {
+    "baseline": {
+      "counts": {
+        "holder": [
+          60,
+          29,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          33,
+          15
+        ],
+        "predicate": [
+          63,
+          26,
+          8
+        ],
+        "object": [
+          63,
+          26,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7499999999999999,
+        "holder_perspective": 0.6999999999999998,
+        "predicate": 0.7875000000000001,
+        "object": 0.7875000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    },
+    "combined": {
+      "counts": {
+        "holder": [
+          60,
+          33,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          37,
+          15
+        ],
+        "predicate": [
+          63,
+          30,
+          8
+        ],
+        "object": [
+          63,
+          30,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7317073170731706,
+        "holder_perspective": 0.6829268292682926,
+        "predicate": 0.7682926829268293,
+        "object": 0.7682926829268293,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    }
+  },
+  "synthetic": {
+    "frozen": {
+      "cases": 16,
+      "majority": 11,
+      "invalid_votes": 0,
+      "valid_cases": 16,
+      "valid_majority": 11,
+      "semantic_accuracy": 0.6875
+    },
+    "contract": {
+      "cases": 16,
+      "majority": 11,
+      "invalid_votes": 0,
+      "valid_cases": 15,
+      "valid_majority": 11,
+      "semantic_accuracy": 0.7333333333333333
+    },
+    "paired": {
+      "gained": [
+        "indifference",
+        "reported_distrust"
+      ],
+      "lost": [
+        "mixed_emotions",
+        "possible_not_decided"
+      ]
+    }
+  },
+  "extended_labels": {
+    "targets": 14,
+    "valid_targets": 13,
+    "technical_failed_targets": 1,
+    "object_covered": 12,
+    "topic_covered": 2,
+    "scope_covered": 12,
+    "time_covered": 12,
+    "joint_covered": 2,
+    "predictions": 12,
+    "excluded_predictions": 0,
+    "unmatched_predictions": 10,
+    "schema_version": 1,
+    "metric": "declared_text_and_evidence_coverage",
+    "label_origin": "source_only_authored_before_new_run",
+    "cases": 16,
+    "evaluated_cases": 12,
+    "excluded_cases": 4,
+    "missing_result_cases": 0,
+    "technical_failed_cases": 1,
+    "excluded_case_predictions": 0,
+    "speech_act": {
+      "commitment": {
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 0.5,
+          "topic": 0.0,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.5,
+          "topic": 0.0,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.0
+        }
+      },
+      "indifference": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "reported_state": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "state": {
+        "targets": 6,
+        "valid_targets": 6,
+        "technical_failed_targets": 0,
+        "object_covered": 6,
+        "topic_covered": 1,
+        "scope_covered": 6,
+        "time_covered": 6,
+        "joint_covered": 1,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.16666666666666666,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.16666666666666666
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.16666666666666666,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.16666666666666666
+        }
+      },
+      "trust": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "unresolved_choice": {
+        "targets": 3,
+        "valid_targets": 2,
+        "technical_failed_targets": 1,
+        "object_covered": 2,
+        "topic_covered": 1,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 1,
+        "strict_rates": {
+          "object": 0.6666666666666666,
+          "topic": 0.3333333333333333,
+          "scope": 0.6666666666666666,
+          "time": 0.6666666666666666,
+          "joint": 0.3333333333333333
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.5,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.5
+        }
+      }
+    },
+    "case_scores": [
+      {
+        "id": "emotion_positive",
+        "source_sha256": "88878fd2f3c825f05713059ee24634f0dd2c38893d71d9b5ccb06f0566361883",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 1,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 1,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ]
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 1,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 1,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        }
+      },
+      {
+        "id": "emotion_negative",
+        "source_sha256": "05e5b843889071728d41b398f4561a7380445fef0f6fcf4c00e97f7c2d4fbcbc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "relief_cause",
+        "source_sha256": "1223acd6f12d65642db04df12e5dbd6c4863545b560c4c56d90179a81e271dbd",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "mixed_emotions",
+        "source_sha256": "4a8ff43f330da5224cc6cfb0de8284e06bcad2f32dc41b94281498370c2ca56e",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 2,
+        "topic_covered": 0,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "predictions": 2,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 2,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 2,
+            "valid_targets": 2,
+            "technical_failed_targets": 0,
+            "object_covered": 2,
+            "topic_covered": 0,
+            "scope_covered": 2,
+            "time_covered": 2,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "undecided",
+        "source_sha256": "49a07bfd68c619a0ca7220a9345df4862894d1a1655a6f79d735adee40c5fdcb",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "possible_not_decided",
+        "source_sha256": "a5c84fe2928dd37fad6591633b5a46a318050ab7427270610475434501ae7469",
+        "coverage": "partial_supplemental_targets",
+        "status": "technical_failure",
+        "native_ok": false,
+        "targets": 1,
+        "valid_targets": 0,
+        "technical_failed_targets": 1,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 0,
+            "technical_failed_targets": 1,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": null,
+              "topic": null,
+              "scope": null,
+              "time": null,
+              "joint": null
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "decided_decline",
+        "source_sha256": "a3fac12c3b0e495c029505a78ab0d4129d1845bd95958d9ebabf31019ad382cc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "decision_change",
+        "source_sha256": "5a9623f6aa9a12cd05d56873054f194aed3a50b3d18f7df58b3d9285c7366115",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 1,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 1,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ]
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          },
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 1,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 1,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.5,
+          "topic": 0.5,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.5
+        },
+        "valid_rates": {
+          "object": 0.5,
+          "topic": 0.5,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.5
+        }
+      },
+      {
+        "id": "indifference",
+        "source_sha256": "0b735df052388f370b1683fee05fc8131e5c19d257b21f383d589e8985ced409",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "indifference": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_contrast",
+        "source_sha256": "b20e4640b09198049ef7fb9f174306e9c1950e671a5e7e41c9abfc6f98a824bb",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "trust_target",
+        "source_sha256": "2fd327f8e5ad82c7ca2ece7646f0bb579e65be8fd60e77d7b903f23459f27435",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "trust": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "reported_distrust",
+        "source_sha256": "04277060cc442d85e9bad1ce2a25b29e2b39c3318e79c5f1435e9965fcd972b7",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "reported_state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_qualifiers",
+        "source_sha256": "39ef284d443e31a807b07dd6911e585c73d24f8606425bd5e6734c125dbafe90",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "negative_target_scope",
+        "source_sha256": "ca6135d6c5897af9bfc6de4e8426be4fc8bf3f17b35a2cbfbf65383de2b1ef8b",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "property_and_desire",
+        "source_sha256": "f33a054b1b9d84c7d742250ebc3224bc315ad25fa0ac003c2d5fa85ea543d26f",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "topic_reference",
+        "source_sha256": "f9bd6460f9ae497edb4d8c7f728167042f06d4c051339a69b2af980642fbe259",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      }
+    ],
+    "strict_rates": {
+      "object": 0.8571428571428571,
+      "topic": 0.14285714285714285,
+      "scope": 0.8571428571428571,
+      "time": 0.8571428571428571,
+      "joint": 0.14285714285714285
+    },
+    "valid_rates": {
+      "object": 0.9230769230769231,
+      "topic": 0.15384615384615385,
+      "scope": 0.9230769230769231,
+      "time": 0.9230769230769231,
+      "joint": 0.15384615384615385
+    }
+  },
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 14,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 44,
+        "pairwise_agreement": 0.9166666666666666
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 13,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 42,
+        "pairwise_agreement": 0.875
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "qa_stage_counts": [
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "baseline",
+      "error": "",
+      "stored_claims": 0,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 30
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "structured",
+      "error": "",
+      "stored_claims": 8,
+      "retrieved": 10,
+      "retrieved_claim_links": 3,
+      "eligible_scope_totals": 33
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "structured",
+      "error": "",
+      "stored_claims": 13,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 36
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "baseline",
+      "error": "",
+      "stored_claims": 0,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 30
+    }
+  ],
+  "errors": {
+    "native_failures": 10,
+    "base_failures": 0,
+    "evidence_failures": 0,
+    "base_semantics_changed": 0,
+    "invalid_judge_votes": 0,
+    "answer_failures": 0,
+    "retrieval_failures": 0
+  },
+  "base_semantics_preserved": true,
+  "qa_conclusion": {
+    "q1": {
+      "baseline": "0/3",
+      "structured": "0/3",
+      "linked": "0/3",
+      "full": "3/3"
+    },
+    "q9": {
+      "baseline": "0/3",
+      "structured": "0/3",
+      "linked": "0/3",
+      "full": "3/3"
+    },
+    "invalid_judge_votes": 0
+  },
+  "interpretation": {
+    "preference_rule_historical_changes": [
+      "preference_contrast",
+      "preference_qualifiers",
+      "negative_target_scope"
+    ],
+    "synthetic_gained": [
+      "indifference",
+      "reported_distrust"
+    ],
+    "synthetic_lost": [
+      "mixed_emotions",
+      "possible_not_decided"
+    ],
+    "technical_failure_summary": [
+      "duplicate JSON keys",
+      "admission JSON followed by explanatory text"
+    ],
+    "promotion_decision": "keep semantic_claim_contract disabled; do not run 1031-question full evaluation"
+  },
+  "promotion_ready": false
+}

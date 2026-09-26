@@ -1,0 +1,728 @@
+{
+  "说明": "新旧真实诊断、同响应原生解析重放与裁判波动分别报告；不修改冻结档案，不作全量质量或生产就绪声明。",
+  "sources": {
+    "build/socialmem_20260912_optimization_real_final": {
+      "manifest_sha256": "f09e8cbf2cec599b4b84ea9da969ecf24fa3e7e1eb45b51d9ca3020790951b77",
+      "verification_sha256": "8eba31b6247d255623ad90a0e7d3461e7ed496a3d1febef648e293ec9a5e79fa"
+    },
+    "build/socialmem_20260912_repair_real": {
+      "manifest_sha256": "ccb3d1f841ec9ab2d3417afbc045ececf974cb230ccf6f15d1c55c1b029a1e3b",
+      "verification_sha256": "0cbe6abeda232ed78b318d3ab647707bf9a3ec1ed3149fb17906646bfb24086b"
+    }
+  },
+  "before": {
+    "controls": {
+      "cases": 64,
+      "expected_positive": 32,
+      "correct": 61,
+      "true_positives": 30,
+      "true_negatives": 31,
+      "false_accepts": 0,
+      "false_rejects": 2,
+      "technical_failures": 1
+    },
+    "synthetic": {
+      "frozen": {
+        "cases": 16,
+        "majority": 13,
+        "invalid_votes": 0
+      },
+      "contract": {
+        "cases": 16,
+        "majority": 4,
+        "invalid_votes": 0
+      },
+      "paired": {
+        "gained": [],
+        "lost": [
+          "emotion_positive",
+          "emotion_negative",
+          "relief_cause",
+          "possible_not_decided",
+          "decided_decline",
+          "decision_change",
+          "indifference",
+          "trust_target",
+          "topic_reference"
+        ]
+      }
+    },
+    "p1": {
+      "baseline": {
+        "counts": {
+          "holder": [
+            60,
+            29,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            33,
+            15
+          ],
+          "predicate": [
+            63,
+            26,
+            8
+          ],
+          "object": [
+            63,
+            26,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7499999999999999,
+          "holder_perspective": 0.6999999999999998,
+          "predicate": 0.7875000000000001,
+          "object": 0.7875000000000001,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      },
+      "combined": {
+        "counts": {
+          "holder": [
+            60,
+            33,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            37,
+            15
+          ],
+          "predicate": [
+            63,
+            30,
+            8
+          ],
+          "object": [
+            63,
+            30,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7317073170731706,
+          "holder_perspective": 0.6829268292682926,
+          "predicate": 0.7682926829268293,
+          "object": 0.7682926829268293,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      }
+    },
+    "errors": {
+      "native_failures": 16,
+      "base_failures": 0,
+      "evidence_failures": 0,
+      "base_semantics_changed": 0,
+      "invalid_judge_votes": 0,
+      "answer_failures": 0,
+      "retrieval_failures": 0
+    },
+    "gates": {
+      "controls": false,
+      "synthetic": false,
+      "p1": false,
+      "technical": false,
+      "base_preserved": true
+    },
+    "promotion_ready": false
+  },
+  "after": {
+    "controls": {
+      "cases": 64,
+      "expected_positive": 32,
+      "correct": 59,
+      "true_positives": 31,
+      "true_negatives": 28,
+      "false_accepts": 0,
+      "false_rejects": 1,
+      "technical_failures": 4
+    },
+    "synthetic": {
+      "frozen": {
+        "cases": 16,
+        "majority": 12,
+        "invalid_votes": 1,
+        "valid_cases": 15,
+        "valid_majority": 12,
+        "semantic_accuracy": 0.8
+      },
+      "contract": {
+        "cases": 16,
+        "majority": 8,
+        "invalid_votes": 0,
+        "valid_cases": 16,
+        "valid_majority": 8,
+        "semantic_accuracy": 0.5
+      },
+      "paired": {
+        "gained": [],
+        "lost": [
+          "emotion_negative",
+          "mixed_emotions",
+          "undecided",
+          "possible_not_decided"
+        ]
+      }
+    },
+    "p1": {
+      "baseline": {
+        "counts": {
+          "holder": [
+            60,
+            29,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            33,
+            15
+          ],
+          "predicate": [
+            63,
+            26,
+            8
+          ],
+          "object": [
+            63,
+            26,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7499999999999999,
+          "holder_perspective": 0.6999999999999998,
+          "predicate": 0.7875000000000001,
+          "object": 0.7875000000000001,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      },
+      "combined": {
+        "counts": {
+          "holder": [
+            60,
+            37,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            41,
+            15
+          ],
+          "predicate": [
+            63,
+            34,
+            8
+          ],
+          "object": [
+            63,
+            34,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7142857142857142,
+          "holder_perspective": 0.6666666666666666,
+          "predicate": 0.7500000000000001,
+          "object": 0.7500000000000001,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      }
+    },
+    "errors": {
+      "native_failures": 8,
+      "base_failures": 0,
+      "evidence_failures": 0,
+      "base_semantics_changed": 0,
+      "invalid_judge_votes": 1,
+      "answer_failures": 0,
+      "retrieval_failures": 0
+    },
+    "gates": {
+      "controls": false,
+      "synthetic": false,
+      "p1": false,
+      "technical": false,
+      "base_preserved": true
+    },
+    "promotion_ready": false
+  },
+  "answers_before": [
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "baseline",
+      "acceptances": 3,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "structured",
+      "acceptances": 1,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "linked",
+      "acceptances": 1,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "full",
+      "acceptances": 3,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "baseline",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "structured",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "linked",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "full",
+      "acceptances": 3,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    }
+  ],
+  "answers_after": [
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "baseline",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "structured",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "linked",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "full",
+      "acceptances": 3,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "baseline",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "structured",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "linked",
+      "acceptances": 0,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "full",
+      "acceptances": 3,
+      "invalid_votes": 0,
+      "answer_error": "",
+      "context_error": ""
+    }
+  ],
+  "parse_replay": {
+    "status": "verified",
+    "mode": "archived_response_native_parse_only",
+    "records": 140,
+    "changed_records": 17,
+    "technical_failures_before": 15,
+    "technical_failures_after": 5,
+    "model_calls": 0,
+    "changed_ids": [
+      "eval-005",
+      "eval-032",
+      "eval-034",
+      "eval-047",
+      "eval-048",
+      "emotion_positive",
+      "relief_cause",
+      "undecided",
+      "decided_decline",
+      "indifference",
+      "trust_target",
+      "topic_reference",
+      "Q1_a5s1c1_Jordan",
+      "Q1_a5s1c1_Marcus",
+      "Q9_a0b1c2d3_Marcus",
+      "zh_emotion_yes",
+      "new_zh_emotion_no"
+    ],
+    "candidates_before": 54,
+    "candidates_after": 68,
+    "quality_claim": false,
+    "before_manifest_sha256": "fcf6c7ba8725b1a87c701af5a17bfb34a99bd73e6ef347d5557f4288bc824be5",
+    "old_manifest_sha256": "f09e8cbf2cec599b4b84ea9da969ecf24fa3e7e1eb45b51d9ca3020790951b77",
+    "new_core_sha256": "394e2133bbd9786aaa10e9aedd3a52155bd01d4aef1a6c5838487256bc6097b3",
+    "artifacts": {
+      "parsed.json": "2bbf7d5dd9d9d07521863b111098db30cd646af40e53c068e74bb349aa79d293",
+      "changes.json": "7ce163c7f28bca473d4e96a85dadb5c69f7de6434dd010dd99c6debbebc9ec3b"
+    }
+  },
+  "control_failures": [
+    {
+      "id": "new_en_negation_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "invalid admission reason",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "id": "new_en_attribution_yes",
+      "expected_keep": true,
+      "outcome": "semantic_rejection",
+      "errors": []
+    },
+    {
+      "id": "new_en_time_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "invalid admission reason",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "id": "new_zh_emotion_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ]
+    },
+    {
+      "id": "new_zh_time_no",
+      "expected_keep": false,
+      "outcome": "technical_failure",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "invalid admission reason",
+          "kind": "schema_failure"
+        }
+      ]
+    }
+  ],
+  "native_error_details": {
+    "supplement requires nesting_depth 0": 1,
+    "topic must be null or a nonempty string": 3,
+    "invalid admission reason": 3,
+    "incomplete or trailing code fence": 1
+  },
+  "same_candidate_majority_flips": [
+    {
+      "id": "emotion_positive",
+      "arm": "frozen",
+      "same_prompt": true,
+      "before_votes": 2,
+      "after_votes": 1
+    },
+    {
+      "id": "undecided",
+      "arm": "frozen",
+      "same_prompt": true,
+      "before_votes": 0,
+      "after_votes": 3
+    },
+    {
+      "id": "decision_change",
+      "arm": "frozen",
+      "same_prompt": true,
+      "before_votes": 2,
+      "after_votes": 0
+    }
+  ],
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 14,
+        "invalid_votes": 1,
+        "mismatched_groups": 0,
+        "valid_pairs": 46,
+        "agreeing_pairs": 42,
+        "pairwise_agreement": 0.9130434782608695
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 15,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 46,
+        "pairwise_agreement": 0.9583333333333334
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "baseline_context_equal": {
+    "Q1_a5s1c1": true,
+    "Q9_a0b1c2d3": true
+  },
+  "synthetic_cases": [
+    {
+      "id": "emotion_positive",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    },
+    {
+      "id": "emotion_negative",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "explicit source marker missing: NEGATED"
+      ]
+    },
+    {
+      "id": "relief_cause",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    },
+    {
+      "id": "mixed_emotions",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": [
+        "topic is absent from source unit"
+      ]
+    },
+    {
+      "id": "undecided",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "topic is absent from source unit"
+      ]
+    },
+    {
+      "id": "possible_not_decided",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "object dropped explicit time qualifier"
+      ]
+    },
+    {
+      "id": "decided_decline",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    },
+    {
+      "id": "decision_change",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "FIRST_PERSON subject differs from holder",
+        "FIRST_PERSON subject differs from holder"
+      ]
+    },
+    {
+      "id": "indifference",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    },
+    {
+      "id": "preference_contrast",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "explicit source marker missing: NEGATED"
+      ]
+    },
+    {
+      "id": "trust_target",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    },
+    {
+      "id": "reported_distrust",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "QUOTED requires source holder attribution and REPORTED marker"
+      ]
+    },
+    {
+      "id": "preference_qualifiers",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "explicit source marker missing: NEGATED"
+      ]
+    },
+    {
+      "id": "negative_target_scope",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": [
+        "explicit source marker missing: NEGATED"
+      ]
+    },
+    {
+      "id": "property_and_desire",
+      "outcome": "semantic_rejection",
+      "stored_claims": 0,
+      "rejections": []
+    },
+    {
+      "id": "topic_reference",
+      "outcome": "admitted",
+      "stored_claims": 1,
+      "rejections": []
+    }
+  ],
+  "verification": {
+    "status": "verified",
+    "run_status": "complete_with_errors",
+    "execution_mode": "real",
+    "verified_at": "2026-09-12T05:12:48.502447+00:00",
+    "native_ingestion_replays": 140,
+    "databases": 144,
+    "extraction_calls": 76,
+    "fixed_injections": 64,
+    "admission_calls": 67,
+    "judge_votes": 120,
+    "qa_validation": "archived native receipt, source, database and answer-context integrity; no live embedding rerun",
+    "manifest_sha256": "ccb3d1f841ec9ab2d3417afbc045ececf974cb230ccf6f15d1c55c1b029a1e3b"
+  }
+}

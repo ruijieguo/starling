@@ -29,7 +29,11 @@ public:
     LLMResponse extract(std::string_view prompt,
                         std::string_view prompt_input_hash) override;
 
+    LLMResponse extract_with_contract(std::string_view prompt, std::string_view hash,
+                                     const StructuredOutputRequest& request) override;
+    const std::vector<StructuredOutputRequest>& structured_requests() const { return structured_requests_; }
 private:
+    std::vector<StructuredOutputRequest> structured_requests_;
     std::unordered_map<std::string, LLMResponse> responses_;
     std::optional<LLMResponse>                   default_response_;
     int                                          delay_ms_ = 0;

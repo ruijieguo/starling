@@ -51,6 +51,16 @@ add_executable(starling_tests
     test_fake_llm_adapter.cpp
     test_llm_adapter_stream.cpp
     test_json_parser.cpp
+    test_claim_contract.cpp
+    test_claim_batching.cpp
+    test_claim_batch_target_units.cpp
+    test_predicate_coverage_expansion.cpp
+    test_structured_memory_closure.cpp
+    test_source_turn_receipt.cpp
+    test_temporal_evidence.cpp
+    test_structured_output.cpp
+    test_structured_output_prompt.cpp
+    test_claim_evidence_storage.cpp
     test_statement_validator.cpp
     test_validation_policy.cpp
     test_statement_writer.cpp
@@ -153,6 +163,8 @@ add_executable(starling_tests
     test_abstention_gate.cpp
     test_context_pack.cpp
     test_retrieval_planner.cpp
+    test_source_retriever.cpp
+    test_evidence_answer.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp
     test_statement_store.cpp

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "starling/extractor/structured_output.hpp"
+#include "starling/net/http_post_json.hpp"
+
 #include <functional>
 #include <string>
 #include <string_view>
@@ -25,6 +28,15 @@ struct LLMResponse {
     int completion_tokens = 0;
     int total_tokens      = 0;
     int latency_ms        = 0;
+    OutputMode output_mode = OutputMode::Legacy;
+    OutputContractKind output_contract = OutputContractKind::Legacy;
+    std::string schema_sha256 = {};
+    std::string capability_evidence_id = {};
+    std::string finish_reason = {};
+    bool refusal = false;
+    std::string raw_completion = {};
+    std::string raw_http_response = {};
+    std::vector<net::HttpAttemptEvidence> http_attempts = {};
 };
 
 // Pluggable seam: anything that can turn a prompt + a stable input hash into
@@ -40,6 +52,16 @@ public:
     virtual LLMResponse extract(
         std::string_view prompt,
         std::string_view prompt_input_hash) = 0;
+
+    virtual LLMResponse extract_with_contract(std::string_view prompt,
+            std::string_view hash, const StructuredOutputRequest& request) {
+        if (request.mode == OutputMode::Legacy) return extract(prompt, hash);
+        LLMResponse out;
+        out.error = "structured_output_unsupported";
+        out.output_mode = request.mode;
+        out.output_contract = request.contract;
+        return out;
+    }
 
     // generate — free-form completion (a chat reply), for converse(). The base
     // default routes through extract(): for real chat adapters the HTTP path is

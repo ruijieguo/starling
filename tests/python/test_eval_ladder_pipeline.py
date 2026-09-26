@@ -103,6 +103,39 @@ def test_s_star_carries_context_pack_labels(rt):
     assert "[" in r["block"]                    # context_pack 带 [LABEL] 前缀
 
 
+def test_s_star_delegates_scope_discovery_and_fusion_to_native_observer():
+    source = _PIPE.read_text(encoding="utf-8")
+    assert "core.observer_holders(adapter, \"default\")" in source
+    assert "SELECT DISTINCT holder_id" not in source
+    assert "sorted(candidates" not in source
+
+
+@pytest.mark.parametrize("polarity,relation", [
+    ("neg", "NOT (permanence prefers permanence)"),
+    ("unknown", "UNKNOWN (permanence prefers permanence)"),
+])
+def test_planner_context_preserves_stored_polarity(rt, polarity, relation):
+    pipe.seed_gold_statements(str(rt.adapter.db_path), "polarity", [
+        {"holder": "Claudette", "subject": "permanence", "predicate": "prefers",
+         "object": "permanence", "modality": "desires", "polarity": polarity},
+    ])
+    emb, idx = _core.StubEmbeddingAdapter(8), _core.SqliteBlobVectorIndex()
+    pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
+    q = _core.PlannerQuery()
+    q.tenant_id, q.querier = "default", "Claudette"
+    q.text = "permanence prefers permanence"
+    q.as_of_iso8601 = "2026-06-01T00:00:00Z"
+    q.trace_id, q.query_id = "polarity", "polarity-q"
+    sr = _core.SemanticRetriever(rt.adapter, emb, idx)
+    result = _core.RetrievalPlanner(rt.adapter, sr).run(q)
+    assert not result.abstained
+    assert relation in result.context_pack
+    assert relation in _core.render_context_line(result.entries[0].row, result.entries[0].label)
+    recalled = pipe.recall_block(_core, "S_star", adapter=rt.adapter, embedder=emb,
+                                 index=idx, question=q.text, history=[], k=1)
+    assert relation in recalled["block"]
+
+
 def test_s_star_abstains_on_empty_store(rt):
     """空库时 S_star 结构化弃答——S_rag 无此能力,认识论诚实主张的地基。"""
     emb = _core.StubEmbeddingAdapter(8)
@@ -111,6 +144,84 @@ def test_s_star_abstains_on_empty_store(rt):
     r = pipe.recall_block(_core, "S_star", adapter=rt.adapter, embedder=emb,
                           index=idx, question=QUESTION, history=HISTORY, k=5)
     assert r["abstained"] is True
+
+
+def _multi_holder_pipeline(rt):
+    gold = [
+        {"holder": holder, "subject": "team", "predicate": "has_status",
+         "object": "expanding", "observed_at": "2026-05-01T10:00:00Z"}
+        for holder in ("Mei", "Leon")
+    ]
+    pipe.seed_gold_statements(str(rt.adapter.db_path), "multi", gold)
+    with sqlite3.connect(str(rt.adapter.db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.execute("SELECT * FROM statements WHERE id='multi-gold0'").fetchone())
+        row.update(tenant_id="private", holder_id="private-holder")
+        conn.execute(
+            f"INSERT INTO statements ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+            tuple(row.values()))
+    emb = _core.StubEmbeddingAdapter(8)
+    idx = _core.SqliteBlobVectorIndex()
+    pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
+    return emb, idx
+
+
+@pytest.mark.parametrize("stage", ["S_star", "S_star_oracle"])
+def test_planner_recalls_actual_holders_within_eval_tenant(rt, stage):
+    emb, idx = _multi_holder_pipeline(rt)
+    result = pipe.recall_block(
+        _core, stage, adapter=rt.adapter, embedder=emb, index=idx,
+        question="team has_status expanding", history=[], k=10)
+    assert result["abstained"] is False
+    assert "holder Mei" in result["block"]
+    assert "holder Leon" in result["block"]
+    assert "private-holder" not in result["block"]
+
+
+def test_planner_multi_holder_recall_keeps_total_k_budget(rt):
+    emb, idx = _multi_holder_pipeline(rt)
+    result = pipe.recall_block(
+        _core, "S_star", adapter=rt.adapter, embedder=emb, index=idx,
+        question="team has_status expanding", history=[], k=1)
+    assert result["abstained"] is False
+    assert len(result["labels"]) == 1
+    assert len(result["block"].splitlines()) == 1
+
+
+def test_planner_multi_holder_selects_later_holder_with_higher_score(rt):
+    emb, idx = _multi_holder_pipeline(rt)
+    with sqlite3.connect(str(rt.adapter.db_path)) as conn:
+        conn.execute("UPDATE statements SET salience=0.1 WHERE tenant_id='default' AND holder_id='Leon'")
+        conn.execute("UPDATE statements SET salience=0.9 WHERE tenant_id='default' AND holder_id='Mei'")
+    result = pipe.recall_block(
+        _core, "S_star", adapter=rt.adapter, embedder=emb, index=idx,
+        question="team has_status expanding", history=[], k=1)
+    assert "holder Mei" in result["block"]
+    assert "holder Leon" not in result["block"]
+
+
+def test_planner_keeps_successful_scope_when_another_holder_abstains(rt):
+    emb, idx = _multi_holder_pipeline(rt)
+    with sqlite3.connect(str(rt.adapter.db_path)) as conn:
+        conn.execute("UPDATE statements SET review_status='rejected' WHERE tenant_id='default' AND holder_id='Mei'")
+    result = pipe.recall_block(
+        _core, "S_star", adapter=rt.adapter, embedder=emb, index=idx,
+        question="team has_status expanding", history=[], k=10)
+    assert result["abstained"] is False
+    assert "holder Leon" in result["block"]
+    assert "holder Mei" not in result["block"]
+    assert {r["holder"]: r["abstained"] for r in result["receipts"]} == {
+        "Leon": False, "Mei": True}
+
+
+def test_planner_explicit_holder_does_not_expand_scope(rt):
+    emb, idx = _multi_holder_pipeline(rt)
+    result = pipe.recall_block(
+        _core, "S_star", adapter=rt.adapter, embedder=emb, index=idx,
+        question="team has_status expanding", history=[], holder="Mei", k=10)
+    assert "holder Mei" in result["block"]
+    assert "holder Leon" not in result["block"]
+    assert "private-holder" not in result["block"]
 
 
 def test_oracle_seed_bypasses_extractor(rt):
@@ -172,7 +283,8 @@ def test_embed_seeded_idempotent_second_call_is_noop(rt):
     pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
 
     again = pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")
-    assert again == {"embedded": 0, "failed": 0, "ticks": 1}
+    assert {k: again[k] for k in ('embedded', 'failed', 'ticks')} == {"embedded": 0, "failed": 0, "ticks": 1}
+    assert again['final_health']['complete'] is True and again['final_health']['embedded'] == 40
 
 
 def test_embed_seeded_fails_loud_when_not_drained(rt):
@@ -183,3 +295,36 @@ def test_embed_seeded_fails_loud_when_not_drained(rt):
     with pytest.raises(RuntimeError, match="仍未抽干"):
         pipe.embed_seeded(_core, rt.adapter, emb, idx,
                           "2026-06-01T00:00:00Z", max_ticks=1)
+
+
+def test_embed_seeded_recovers_without_erasing_failed_attempts(rt):
+    pipe.seed_history_statements(str(rt.adapter.db_path), "recover", _long_history(40))
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        row = c.execute('SELECT subject_id,predicate,object_value FROM statements LIMIT 1').fetchone()
+    emb = _core.StubEmbeddingAdapter(8)
+    emb.fail_next(' '.join(row))
+    result = pipe.embed_seeded(_core, rt.adapter, emb, _core.SqliteBlobVectorIndex(), "2026-06-01T00:00:00Z")
+    assert result['failed'] == 32
+    assert result['embedded'] == 40
+    assert result.get('final_health', {}).get('complete') is True
+    assert result['final_health']['embedded'] == 40
+
+
+def test_embed_seeded_rejects_exhausted_rows_even_after_idle_tick(rt):
+    pipe.seed_history_statements(str(rt.adapter.db_path), "exhaust", _long_history(1))
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        c.execute("INSERT INTO statement_vectors(stmt_id,tenant_id,dim,model,status,retry_count) "
+                  "SELECT id,tenant_id,8,'stub','failed',3 FROM statements")
+    with pytest.raises(RuntimeError, match='final embedding health'):
+        pipe.embed_seeded(_core, rt.adapter, _core.StubEmbeddingAdapter(8),
+                          _core.SqliteBlobVectorIndex(), "2026-06-01T00:00:00Z")
+
+
+@pytest.mark.parametrize('assignment', ["dim=9", "model='wrong'", "raw_embedding=x'00000000'",
+                                      "index_vector=zeroblob(32)", "retry_count=1"])
+def test_embed_seeded_rejects_corrupt_embedded_rows(rt, assignment):
+    emb, idx = _pipeline(rt)
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        c.execute('UPDATE statement_vectors SET '+assignment)
+    with pytest.raises(RuntimeError, match='final embedding health'):
+        pipe.embed_seeded(_core, rt.adapter, emb, idx, "2026-06-01T00:00:00Z")

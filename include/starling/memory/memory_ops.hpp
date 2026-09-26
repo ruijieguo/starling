@@ -8,6 +8,7 @@
 // accepted/idempotent 才抽取」的顺序规则——按边界判据(换绑定语言需重写)
 // 全部属核心语义。Python 仅剩签名归一(datetime→ISO)与绑定转发。
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,12 +37,21 @@ struct RememberParams {
 };
 
 struct RememberOutcome {
+    std::string holder_id;
     std::string engram_ref;                   // 空 = 未入库(no_store/rejected)
     std::vector<std::string> statement_ids;   // 本次新写入的语句
     std::string outcome;                      // accepted/idempotent/no_store/rejected
     bool extraction_failed = false;           // 证据已入库但抽取 LLM 失败(Extractor
                                               // 吞失败返回 FAILED 而非抛异常)——供
                                               // converse 区分「抽取失败」与「抽取空」。
+    std::string failure_category;
+    std::string catalog_version;
+    std::map<std::string, std::size_t> accepted_by_predicate;
+    std::map<std::string, std::size_t> rejected_by_predicate;
+    bool source_preserved = false;
+    bool structured_claims_persisted = false;
+    std::string failure_detail;
+    std::string receipt;                      // native three-channel receipt
 };
 
 // 方案2 三相拆分(2026-07-12,remember extraction 出锁):prepare(engram 写)/
@@ -112,6 +122,20 @@ RememberLlmBundle remember_extract_all(
     persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm,
     const RememberParams& params, const RememberPrompts& prompts,
     const extractor::ValidationPolicy& policy = {});
+
+// Serialize all lock-free extraction channels without exposing their opaque
+// C++ representation to language bindings.
+std::string remember_bundle_receipt(const RememberLlmBundle& extracted);
+
+// R3.5 native multi-holder orchestration. Each holder owns an independent
+// prepare/extract/commit boundary; a holder failure is returned in its result
+// and does not prevent later holders from running.
+std::vector<RememberOutcome> remember_holders(
+        persistence::SqliteAdapter& adapter,
+        extractor::LLMAdapter& llm,
+        const RememberPrompts& prompts,
+        const std::vector<RememberParams>& holders,
+        const extractor::ValidationPolicy& policy = {});
 
 RememberOutcome remember_commit_all(
     persistence::SqliteAdapter& adapter, extractor::LLMAdapter& llm,

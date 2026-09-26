@@ -1,0 +1,204 @@
+{
+  "run": "build/socialmem_20260912_chinese_unicode_real",
+  "manifest_sha256": "9d73e44d1f1ed8097804f28516f81a33d1be50591fb5dd3dd2a18f1799f313d0",
+  "status": "verified / complete_with_errors",
+  "controls": {
+    "cases": 64,
+    "expected_positive": 32,
+    "correct": 56,
+    "true_positives": 29,
+    "true_negatives": 27,
+    "false_accepts": 0,
+    "false_rejects": 3,
+    "technical_failures": 5
+  },
+  "synthetic": {
+    "frozen": {
+      "cases": 16,
+      "majority": 10,
+      "invalid_votes": 0,
+      "valid_cases": 16,
+      "valid_majority": 10,
+      "semantic_accuracy": 0.625
+    },
+    "contract": {
+      "cases": 16,
+      "majority": 8,
+      "invalid_votes": 0,
+      "valid_cases": 16,
+      "valid_majority": 8,
+      "semantic_accuracy": 0.5
+    },
+    "paired": {
+      "gained": [
+        "preference_qualifiers"
+      ],
+      "lost": [
+        "emotion_negative",
+        "undecided",
+        "possible_not_decided"
+      ]
+    }
+  },
+  "p1": {
+    "baseline": {
+      "counts": {
+        "holder": [
+          60,
+          29,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          33,
+          15
+        ],
+        "predicate": [
+          63,
+          26,
+          8
+        ],
+        "object": [
+          63,
+          26,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7499999999999999,
+        "holder_perspective": 0.6999999999999998,
+        "predicate": 0.7875000000000001,
+        "object": 0.7875000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    },
+    "combined": {
+      "counts": {
+        "holder": [
+          60,
+          38,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          42,
+          15
+        ],
+        "predicate": [
+          63,
+          35,
+          8
+        ],
+        "object": [
+          63,
+          35,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7100591715976331,
+        "holder_perspective": 0.6627218934911242,
+        "predicate": 0.7455621301775148,
+        "object": 0.7455621301775148,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    }
+  },
+  "errors": {
+    "native_failures": 8,
+    "base_failures": 0,
+    "evidence_failures": 0,
+    "base_semantics_changed": 0,
+    "invalid_judge_votes": 0,
+    "answer_failures": 0,
+    "retrieval_failures": 0
+  },
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 12,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 40,
+        "pairwise_agreement": 0.8333333333333334
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 16,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 48,
+        "pairwise_agreement": 1.0
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "answers": {
+    "Q1_a5s1c1/baseline": 0,
+    "Q1_a5s1c1/structured": 0,
+    "Q1_a5s1c1/linked": 0,
+    "Q1_a5s1c1/full": 3,
+    "Q9_a0b1c2d3/baseline": 0,
+    "Q9_a0b1c2d3/structured": 0,
+    "Q9_a0b1c2d3/linked": 0,
+    "Q9_a0b1c2d3/full": 3
+  },
+  "promotion_ready": false,
+  "conclusion": "中文职责/情绪混合句确定性误拒已消除，Unicode 空白由 C++ 覆盖；固定与 P1 波动下降，未达到晋升门槛。"
+}

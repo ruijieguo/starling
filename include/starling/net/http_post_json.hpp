@@ -1,10 +1,35 @@
 #pragma once
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace starling::net {
+
+enum class RetryPolicy {
+    LegacyCompatible,
+    ConnectOnly,
+};
+
+enum class ExecutionCertainty {
+    NotConnected,
+    ResponseReceived,
+    Unknown,
+};
+
+struct HttpAttemptEvidence {
+    std::size_t attempt = 0;
+    long http_status = 0;
+    int curl_code = 0;
+    std::string response_body;
+    std::size_t response_bytes = 0;
+    std::size_t streamed_bytes = 0;
+    std::int64_t elapsed_ms = 0;
+    RetryPolicy retry_policy = RetryPolicy::LegacyCompatible;
+    ExecutionCertainty execution_certainty = ExecutionCertainty::Unknown;
+};
 
 // Outcome of one JSON POST (after internal retries). Exactly one shape:
 //   ok=true                          → 2xx/3xx, `body` holds the response
@@ -17,14 +42,17 @@ struct HttpResult {
     long http_code = 0;
     std::string body;
     std::string error;
+    // Actual curl_easy_perform invocations, including bounded retries. Zero
+    // means no transport attempt occurred (e.g. curl initialization failed).
+    std::size_t attempt_count = 0;
+    std::vector<HttpAttemptEvidence> attempts;
 };
 
-// POST `body` as application/json with bounded exponential backoff (1s, 2s, …)
-// on transient failures: HTTP 429/5xx plus the curl transport errors where the
-// request demonstrably did NOT complete server-side (timeout / connect /
-// resolve / send / recv / got-nothing / partial). Everything else (TLS errors,
-// abort callbacks, …) is permanent, so an LLM call the server may already have
-// processed is never double-charged.
+// POST `body` as application/json with bounded exponential backoff. The
+// default preserves the legacy retry set. ConnectOnly retries only explicit
+// DNS/proxy-resolution or connection-establishment failures with no HTTP
+// response or response bytes. A zero-byte response is not evidence that the
+// server did not execute the request.
 //
 // `extra_headers` are full header lines ("x-api-key: …");
 // "Content-Type: application/json" is always added. Sets CURLOPT_NOSIGNAL and
@@ -41,16 +69,17 @@ HttpResult http_post_json(const std::string& url,
                           int timeout_ms,
                           int max_retries);
 
+HttpResult http_post_json(const std::string& url,
+                          const std::vector<std::string>& extra_headers,
+                          const std::string& body,
+                          int timeout_ms,
+                          int max_retries,
+                          RetryPolicy retry_policy);
+
 // Streaming POST: invokes on_chunk(bytes) for each response-body chunk as it
-// arrives (for SSE). Retry policy: the same retryable curl transport failures
-// as http_post_json (handshake / connect / resolve / …) get the same bounded
-// backoff, but ONLY while NO byte has been handed to on_chunk — a failure
-// before the first byte (e.g. CURLE_SSL_CONNECT_ERROR: the request never
-// reached the server) demonstrably streamed nothing, so a retry cannot
-// duplicate output. From the first delivered byte onward the original
-// single-attempt semantics apply: a torn stream surfaces as ok=false (the
-// caller emits a clean no-reply rather than replaying). HTTP 429/5xx are never
-// retried here — their error bodies stream to on_chunk.
+// arrives (for SSE). LegacyCompatible preserves retries for its transport
+// error set only until a byte reaches on_chunk. ConnectOnly applies the same
+// stricter boundary as the buffered path. HTTP 429/5xx are never retried here.
 // on_chunk MUST NOT throw (it runs inside libcurl's write callback); callers pass
 // a non-throwing sink (e.g. sse::StreamAccumulator::feed). `body` is empty on
 // return — the caller assembles the response via on_chunk. ok=true only for
@@ -62,5 +91,13 @@ HttpResult http_post_json_stream(const std::string& url,
                                  int timeout_ms,
                                  int max_retries,
                                  const std::function<void(std::string_view)>& on_chunk);
+
+HttpResult http_post_json_stream(const std::string& url,
+                                 const std::vector<std::string>& extra_headers,
+                                 const std::string& body,
+                                 int timeout_ms,
+                                 int max_retries,
+                                 const std::function<void(std::string_view)>& on_chunk,
+                                 RetryPolicy retry_policy);
 
 }  // namespace starling::net

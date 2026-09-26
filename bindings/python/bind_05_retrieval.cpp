@@ -7,12 +7,112 @@
 
 #include "starling/retrieval/basic_retriever.hpp"
 #include "starling/retrieval/retrieval_planner.hpp"
+#include "starling/retrieval/source_retriever.hpp"
+#include "starling/retrieval/source_selection.hpp"
+#include "starling/retrieval/evidence_answer.hpp"
+#include "starling/retrieval/structured_claim_retriever.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/store/sqlite_meta_store.hpp"
 
 namespace starling::bindings {
 
 void bind_05_retrieval(pybind11::module_& m) {
     using namespace pybind11::literals;
+    using SelectionResult=starling::retrieval::SourceSelectionResult;
+    py::class_<SelectionResult>(m,"SourceSelectionResult")
+        .def_readonly("ok",&SelectionResult::ok)
+        .def_readonly("invoked",&SelectionResult::invoked)
+        .def_readonly("budget_unknown",&SelectionResult::budget_unknown)
+        .def_readonly("error",&SelectionResult::error)
+        .def_readonly("prompt",&SelectionResult::prompt)
+        .def_readonly("recall_json",&SelectionResult::recall_json)
+        .def_readonly("response",&SelectionResult::response);
+    m.def("collect_selection_pool",&starling::retrieval::collect_selection_pool,
+          py::arg("observer"),py::arg("query"),py::call_guard<py::gil_scoped_release>());
+    m.def("source_selection_prompt",&starling::retrieval::source_selection_prompt,
+          py::arg("question"),py::arg("pool_json"),py::arg("k")=20,py::arg("max_context_bytes")=8000);
+    m.def("apply_source_selection",&starling::retrieval::apply_source_selection,
+          py::arg("question"),py::arg("pool_json"),py::arg("raw_plan"),py::arg("k")=20,py::arg("max_context_bytes")=8000);
+    m.def("select_sources",&starling::retrieval::select_sources,
+          py::arg("question"),py::arg("pool_json"),py::arg("llm"),py::arg("k")=20,py::arg("max_context_bytes")=8000,
+          py::call_guard<py::gil_scoped_release>());
+    m.def("select_sources_structured",&starling::retrieval::select_sources_structured,
+          py::arg("question"),py::arg("pool_json"),py::arg("llm"),py::arg("k")=20,py::arg("max_context_bytes")=8000,
+          py::call_guard<py::gil_scoped_release>());
+    m.def("grounded_memory_answer_packet", &starling::retrieval::grounded_memory_answer_packet,
+          py::arg("question"), py::arg("recall_json"));
+    m.def("grounded_memory_answer_prompt", &starling::retrieval::grounded_memory_answer_prompt,
+          py::arg("question"), py::arg("recall_json"));
+    m.def("compact_grounded_memory_answer_prompt",
+          &starling::retrieval::compact_grounded_memory_answer_prompt,
+          py::arg("question"), py::arg("recall_json"));
+
+    using EvidenceResult=starling::retrieval::EvidenceAnswerResult;
+    py::class_<EvidenceResult>(m,"EvidenceAnswerResult")
+        .def_readonly("evidence_response",&EvidenceResult::evidence_response)
+        .def_readonly("answer_response",&EvidenceResult::answer_response)
+        .def_readonly("evidence_prompt",&EvidenceResult::evidence_prompt)
+        .def_readonly("answer_prompt",&EvidenceResult::answer_prompt)
+        .def_readonly("validation_json",&EvidenceResult::validation_json)
+        .def_readonly("fallback",&EvidenceResult::fallback)
+        .def_readonly("budget_unknown",&EvidenceResult::budget_unknown)
+        .def_readonly("fallback_reason",&EvidenceResult::fallback_reason);
+    m.def("synthesis_source_answer_packet",&starling::retrieval::synthesis_source_answer_packet,
+          py::arg("question"),py::arg("source_block"));
+    m.def("synthesis_source_answer_prompt",&starling::retrieval::synthesis_source_answer_prompt,
+          py::arg("question"),py::arg("source_block"));
+    m.def("source_answer_ablation_prompt",&starling::retrieval::source_answer_ablation_prompt,
+          py::arg("question"),py::arg("source_block"),py::arg("representation"),py::arg("guidance"));
+    m.def("source_evidence_prompt",&starling::retrieval::source_evidence_prompt,
+          py::arg("question"),py::arg("source_block"));
+    m.def("verify_source_evidence",&starling::retrieval::verify_source_evidence,
+          py::arg("source_block"),py::arg("raw_plan"));
+    m.def("evidence_answer_prompt",&starling::retrieval::evidence_answer_prompt,
+          py::arg("question"),py::arg("source_block"),py::arg("raw_plan"));
+    m.def("answer_with_evidence",&starling::retrieval::answer_with_evidence,
+          py::arg("question"),py::arg("source_block"),py::arg("llm"),
+          py::call_guard<py::gil_scoped_release>());
+
+    m.def("grounded_source_answer_prompt", &starling::retrieval::grounded_source_answer_prompt,
+          py::arg("question"), py::arg("source_block"));
+    m.def("compact_source_answer_prompt", &starling::retrieval::compact_source_answer_prompt,
+          py::arg("question"), py::arg("source_block"));
+
+    m.def("retain_source_turns", &starling::retrieval::retain_source_turns,
+          py::arg("adapter"), py::arg("tenant_id"), py::arg("allowed_holders"),
+          py::arg("turns_json"), py::arg("created_at"), py::arg("preserve_invalid_time")=false,
+          py::call_guard<py::gil_scoped_release>());
+    m.def("observer_holders", &starling::retrieval::observer_holders,
+          py::arg("adapter"), py::arg("tenant_id"),
+          py::call_guard<py::gil_scoped_release>());
+    py::class_<starling::retrieval::ObserverQuery>(m, "ObserverQuery")
+        .def(py::init<>())
+        .def_readwrite("tenant_id", &starling::retrieval::ObserverQuery::tenant_id)
+        .def_readwrite("allowed_holders", &starling::retrieval::ObserverQuery::allowed_holders)
+        .def_readwrite("question", &starling::retrieval::ObserverQuery::question)
+        .def_readwrite("as_of_iso8601", &starling::retrieval::ObserverQuery::as_of_iso8601)
+        .def_readwrite("k", &starling::retrieval::ObserverQuery::k)
+        .def_readwrite("max_context_bytes", &starling::retrieval::ObserverQuery::max_context_bytes)
+        .def_readwrite("mode", &starling::retrieval::ObserverQuery::mode)
+        .def_readwrite("source_strategy", &starling::retrieval::ObserverQuery::source_strategy)
+        .def_readwrite("source_seed_k", &starling::retrieval::ObserverQuery::source_seed_k)
+        .def_readwrite("source_seed_max_context_bytes", &starling::retrieval::ObserverQuery::source_seed_max_context_bytes)
+        .def_readwrite("source_dialogue_radius", &starling::retrieval::ObserverQuery::source_dialogue_radius)
+        .def_readwrite("min_source_items", &starling::retrieval::ObserverQuery::min_source_items)
+        .def_readwrite("include_unknown_time", &starling::retrieval::ObserverQuery::include_unknown_time);
+    py::class_<starling::retrieval::ObserverRetriever>(m, "ObserverRetriever")
+        .def(py::init<starling::persistence::SqliteAdapter&,
+                      starling::retrieval::SemanticRetriever&>(),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>())
+        .def("run", &starling::retrieval::ObserverRetriever::run,
+             py::arg("query"), py::call_guard<py::gil_scoped_release>());
+
+    // Low-level tenant-scoped storage access for offline native rendering.
+    // Product visibility/eligibility decisions remain in the native retrievers.
+    m.def("get_statement_row", [](starling::persistence::SqliteAdapter& adapter,
+                                   const std::string& tenant_id, const std::string& statement_id) {
+        return starling::store::SqliteMetaStore(adapter.connection()).get_statement(statement_id, tenant_id);
+    }, py::arg("adapter"), py::arg("tenant_id"), py::arg("statement_id"));
 
     // ----- M0.6: retrieval bindings -----
 
@@ -52,7 +152,9 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readonly("dropped_by_time_anchor",
                       &starling::retrieval::RetrievalReceipt::CandidateCounts::dropped_by_time_anchor)
         .def_readonly("dropped_by_evidence_erasure",
-                      &starling::retrieval::RetrievalReceipt::CandidateCounts::dropped_by_evidence_erasure);
+                      &starling::retrieval::RetrievalReceipt::CandidateCounts::dropped_by_evidence_erasure)
+        .def_readonly("dropped_by_claim_evidence",
+                      &starling::retrieval::RetrievalReceipt::CandidateCounts::dropped_by_claim_evidence);
 
     // ----- P3.a1: planner DTO 前置(receipt 字段引用它们) -----
     py::class_<starling::retrieval::ScoreRow>(m, "ScoreRow")
@@ -94,6 +196,10 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readonly("fallback", &starling::retrieval::RetrievalReceipt::DegradedPath::fallback);
 
     py::class_<starling::retrieval::RetrievalReceipt>(m, "RetrievalReceipt")
+        .def_readonly("temporal_evidence_json", &starling::retrieval::RetrievalReceipt::temporal_evidence_json)
+        .def_readonly("evidence_links_json", &starling::retrieval::RetrievalReceipt::evidence_links_json)
+        .def_readonly("claim_exclusion_counts_json", &starling::retrieval::RetrievalReceipt::claim_exclusion_counts_json)
+        .def_readonly("source_time_fallback_count", &starling::retrieval::RetrievalReceipt::source_time_fallback_count)
         .def_readonly("trace_id",              &starling::retrieval::RetrievalReceipt::trace_id)
         .def_readonly("query_id",              &starling::retrieval::RetrievalReceipt::query_id)
         .def_readonly("filters_applied",       &starling::retrieval::RetrievalReceipt::filters_applied)
@@ -138,7 +244,9 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readonly("consolidation_state",    &starling::retrieval::StatementRow::consolidation_state)
         .def_readonly("review_status",          &starling::retrieval::StatementRow::review_status)
         .def_readonly("evidence_json",          &starling::retrieval::StatementRow::evidence_json)
-        .def_readonly("affect_json",            &starling::retrieval::StatementRow::affect_json);
+        .def_readonly("affect_json",            &starling::retrieval::StatementRow::affect_json)
+        .def_readonly("semantic_claim_json", &starling::retrieval::StatementRow::semantic_claim_json)
+        .def_readonly("source_spans_json", &starling::retrieval::StatementRow::source_spans_json);
 
     py::class_<starling::retrieval::BasicRetrieverParams>(m, "BasicRetrieverParams")
         .def(py::init<>())
@@ -173,6 +281,68 @@ void bind_05_retrieval(pybind11::module_& m) {
         .value("CONFLICT", starling::retrieval::ContextPackLabel::CONFLICT)
         .value("ABSTAIN",  starling::retrieval::ContextPackLabel::ABSTAIN);
 
+    {
+        using namespace starling::retrieval;
+        py::class_<TemporalEvidenceRequest>(m,"TemporalEvidenceRequest")
+            .def(py::init<>())
+            .def_readwrite("tenant_id",&TemporalEvidenceRequest::tenant_id)
+            .def_readwrite("actor_id",&TemporalEvidenceRequest::actor_id)
+            .def_readwrite("topic",&TemporalEvidenceRequest::topic)
+            .def_readwrite("ordered_session_ids",&TemporalEvidenceRequest::ordered_session_ids)
+            .def_readwrite("through_session_id",&TemporalEvidenceRequest::through_session_id)
+            .def_readwrite("limit",&TemporalEvidenceRequest::limit);
+        py::class_<TemporalEvidenceCandidate>(m,"TemporalEvidenceCandidate")
+            .def(py::init<>()).def_readwrite("row",&TemporalEvidenceCandidate::row)
+            .def_readwrite("score",&TemporalEvidenceCandidate::score);
+        py::class_<TemporalEvidenceRef>(m,"TemporalEvidenceRef")
+            .def_readonly("tenant_id",&TemporalEvidenceRef::tenant_id)
+            .def_readonly("statement_id",&TemporalEvidenceRef::statement_id)
+            .def_readonly("session_id",&TemporalEvidenceRef::session_id)
+            .def_readonly("turn_index",&TemporalEvidenceRef::turn_index);
+        py::class_<TemporalEvidenceView>(m,"TemporalEvidenceView")
+            .def_readonly("sufficient",&TemporalEvidenceView::sufficient)
+            .def_readonly("ambiguous",&TemporalEvidenceView::ambiguous)
+            .def_readonly("insufficiency_reason",&TemporalEvidenceView::insufficiency_reason)
+            .def_readonly("early",&TemporalEvidenceView::early)
+            .def_readonly("late",&TemporalEvidenceView::late)
+            .def_readonly("selected",&TemporalEvidenceView::selected)
+            .def("to_json",&temporal_evidence_json);
+        m.def("select_temporal_evidence",&select_temporal_evidence,py::arg("visible_candidates"),py::arg("request"));
+        m.def("temporal_evidence_json",&temporal_evidence_json);
+
+        py::class_<StructuredClaimRequest>(m, "StructuredClaimRequest")
+            .def(py::init<>())
+            .def_readwrite("tenant_id", &StructuredClaimRequest::tenant_id)
+            .def_readwrite("holder_id", &StructuredClaimRequest::holder_id)
+            .def_readwrite("subject_id", &StructuredClaimRequest::subject_id)
+            .def_readwrite("predicate", &StructuredClaimRequest::predicate)
+            .def_readwrite("topic", &StructuredClaimRequest::topic)
+            .def_readwrite("as_of_iso8601", &StructuredClaimRequest::as_of_iso8601)
+            .def_readwrite("limit", &StructuredClaimRequest::limit)
+            .def_readwrite("temporal", &StructuredClaimRequest::temporal);
+        py::class_<StructuredClaimView>(m, "StructuredClaimView")
+            .def_readonly("selected", &StructuredClaimView::selected)
+            .def_readonly("receipt_json", &StructuredClaimView::receipt_json)
+            .def_readonly("sufficient", &StructuredClaimView::sufficient)
+            .def_readonly("insufficiency_reason", &StructuredClaimView::insufficiency_reason)
+            .def_readonly("early", &StructuredClaimView::early)
+            .def_readonly("late", &StructuredClaimView::late)
+            .def_readonly("input_candidates", &StructuredClaimView::input_candidates)
+            .def_readonly("excluded_scope", &StructuredClaimView::excluded_scope)
+            .def_readonly("excluded_invalid_evidence", &StructuredClaimView::excluded_invalid_evidence)
+            .def_readonly("excluded_unknown_predicate", &StructuredClaimView::excluded_unknown_predicate)
+            .def_readonly("excluded_missing_order", &StructuredClaimView::excluded_missing_order);
+        m.def("select_structured_claims",
+              [](starling::persistence::SqliteAdapter& adapter,
+                 const std::vector<StatementRow>& candidates,
+                 const StructuredClaimRequest& request) {
+                  py::gil_scoped_release release;
+                  return select_structured_claims(adapter.connection(), candidates, request);
+              }, py::arg("adapter"), py::arg("candidates"), py::arg("request"));
+        m.def("structured_claim_view_json", &structured_claim_view_json,
+              py::arg("view"));
+    }
+
     py::class_<starling::retrieval::PlannerQuery>(m, "PlannerQuery")
         .def(py::init<>())
         .def_readwrite("tenant_id",     &starling::retrieval::PlannerQuery::tenant_id)
@@ -188,6 +358,7 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readwrite("trace_id",      &starling::retrieval::PlannerQuery::trace_id)
         .def_readwrite("query_id",      &starling::retrieval::PlannerQuery::query_id)
         .def_readwrite("runtime_health",&starling::retrieval::PlannerQuery::runtime_health)
+        .def_readwrite("temporal_evidence",&starling::retrieval::PlannerQuery::temporal_evidence)
         .def_readwrite("global_holder_filter",
                        &starling::retrieval::PlannerQuery::global_holder_filter);
 
@@ -195,6 +366,9 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readonly("row",   &starling::retrieval::PlannerEntryOut::row)
         .def_readonly("score", &starling::retrieval::PlannerEntryOut::score)
         .def_readonly("label", &starling::retrieval::PlannerEntryOut::label);
+
+    m.def("render_context_line", &starling::retrieval::render_line,
+          py::arg("row"), py::arg("label"));
 
     py::class_<starling::retrieval::PlannerResult>(m, "PlannerResult")
         .def_readonly("entries",      &starling::retrieval::PlannerResult::entries)

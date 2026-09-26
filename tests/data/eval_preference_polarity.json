@@ -1,0 +1,14 @@
+[
+  {"id":"pref_pos", "speaker":"Nora", "text":"I prefer tea.", "subject":"Nora", "objects":["tea"], "polarity":"pos"},
+  {"id":"pref_neg", "speaker":"Nora", "text":"I do not prefer tea.", "subject":"Nora", "objects":["tea"], "polarity":"neg"},
+  {"id":"negative_target_pos", "speaker":"Nora", "text":"I want a smoke-free room.", "subject":"Nora", "objects":["smoke-free room"], "polarity":"pos"},
+  {"id":"negative_target_neg", "speaker":"Nora", "text":"I do not want a smoke-free room.", "subject":"Nora", "objects":["smoke-free room"], "polarity":"neg"},
+  {"id":"qualifier_pos", "speaker":"Nora", "text":"I prefer fewer notifications.", "subject":"Nora", "objects":["fewer notifications", "fewer notification"], "polarity":"pos"},
+  {"id":"qualifier_neg", "speaker":"Nora", "text":"I do not want more meetings.", "subject":"Nora", "objects":["more meetings", "more meeting"], "polarity":"neg"},
+  {"id":"aversion", "speaker":"Nora", "text":"Noise bothers me. I dislike noise.", "subject":"Nora", "objects":["noise"], "polarity":"neg"},
+  {"id":"other_bearer", "speaker":"Ravi", "text":"I prefer tea.", "subject":"Ravi", "objects":["tea"], "polarity":"pos"},
+  {"id":"reported_bearer", "speaker":"Lena", "text":"Ravi told me he prefers tea.", "subject":"Ravi", "objects":["tea"], "polarity":"pos"},
+  {"id":"uncertainty", "speaker":"Nora", "text":"I am not sure whether I prefer tea.", "subject":"Nora", "objects":["tea"], "polarity":"unknown"},
+  {"id":"chinese_pos", "speaker":"Lin", "text":"我喜欢咖啡。", "subject":"Lin", "objects":["咖啡"], "polarity":"pos"},
+  {"id":"chinese_neg", "speaker":"Lin", "text":"我不喜欢咖啡。", "subject":"Lin", "objects":["咖啡"], "polarity":"neg"}
+]

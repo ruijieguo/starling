@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <thread>
 using namespace starling::embedding;
 
 TEST(OpenAIEmbeddingAdapter, FromEnvThrowsWithoutKey) {
@@ -97,4 +98,47 @@ TEST(OpenAIEmbeddingAdapter, FromEnvDefaultMaxBatch) {
     auto c = OpenAIEmbeddingAdapter::Config::from_env();
     EXPECT_EQ(c.max_batch_inputs, 10);
     unsetenv("OPENAI_API_KEY");
+}
+
+TEST(OpenAIEmbeddingAdapter, CountersSeparateApiCallsFromEmptyBatchAndRetries) {
+    OpenAIEmbeddingAdapter::Config cfg;
+    cfg.base_url = "http://127.0.0.1:1/v1";
+    cfg.timeout_ms = 100;
+    cfg.max_retries = 1;
+    OpenAIEmbeddingAdapter adapter(cfg);
+    EXPECT_EQ(adapter.request_count(), 0);
+    EXPECT_TRUE(adapter.embed_batch({}).empty());
+    EXPECT_EQ(adapter.batch_calls(), 1);
+    EXPECT_EQ(adapter.request_count(), 0);  // Empty batch performs no curl request.
+    EXPECT_THROW(adapter.embed("local connection failure"), EmbeddingError);
+    EXPECT_EQ(adapter.embed_calls(), 1);
+    EXPECT_EQ(adapter.request_count(), 2);  // Initial attempt and one retry.
+    EXPECT_EQ(adapter.batch_calls(), 1);
+}
+
+TEST(OpenAIEmbeddingAdapter, FailedBatchCountsOnlyAttemptedChunks) {
+    OpenAIEmbeddingAdapter::Config cfg;
+    cfg.base_url = "unsupported-starling-test://invalid";
+    cfg.max_retries = 3;
+    cfg.max_batch_inputs = 1;
+    OpenAIEmbeddingAdapter adapter(cfg);
+    EXPECT_THROW(adapter.embed_batch({"a", "b", "c"}), EmbeddingError);
+    EXPECT_EQ(adapter.batch_calls(), 1);
+    EXPECT_EQ(adapter.embed_calls(), 0);
+    EXPECT_EQ(adapter.request_count(), 1);  // No requests for unreached chunks.
+}
+
+TEST(OpenAIEmbeddingAdapter, SharedAdapterCountsConcurrentFailedCalls) {
+    OpenAIEmbeddingAdapter::Config cfg;
+    cfg.base_url = "unsupported-starling-test://invalid";
+    cfg.max_retries = 0;
+    OpenAIEmbeddingAdapter adapter(cfg);
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 8; ++i) workers.emplace_back([&adapter] {
+        try { (void)adapter.embed("offline"); } catch (const EmbeddingError&) {}
+    });
+    for (auto& worker : workers) worker.join();
+    EXPECT_EQ(adapter.embed_calls(), 8);
+    EXPECT_EQ(adapter.request_count(), 8);
+    EXPECT_EQ(adapter.batch_calls(), 0);
 }

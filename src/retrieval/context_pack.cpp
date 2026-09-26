@@ -1,4 +1,5 @@
 #include "starling/retrieval/context_pack.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <sstream>
 
@@ -39,12 +40,45 @@ ContextPackLabel classify(const StatementRow& row, const PackContext& ctx) {
 
 std::string render_line(const StatementRow& row, ContextPackLabel label) {
     std::ostringstream os;
-    os << "[" << to_string(label) << "] "
-       << row.subject_id << " " << row.predicate << " " << row.object_value;
+    os << "[" << to_string(label) << "] ";
+    const bool scoped_polarity = row.polarity == "neg" || row.polarity == "unknown";
+    if (row.polarity == "neg") os << "NOT (";
+    else if (row.polarity == "unknown") os << "UNKNOWN (";
+    os << row.subject_id << " " << row.predicate << " " << row.object_value;
+    if (scoped_polarity) os << ")";
     os.setf(std::ios::fixed); os.precision(2);
     os << " (conf " << row.confidence;
     if (!row.holder_id.empty()) os << ", holder " << row.holder_id;
     os << ")";
+    if (!row.semantic_claim_json.empty()) {
+        const auto claim = parse_claim_evidence(row);
+        if (claim.is_object()) {
+            // JSON serialization escapes control characters, keeping each claim
+            // in one context line. No raw source text is fetched or rendered.
+            os << " {scope " << claim.value("assertion_scope", "UNKNOWN");
+            os << ", scope_markers " << claim.value("scope_markers", nlohmann::json::array()).dump();
+            os << ", actor " << claim.value("actor", nlohmann::json()).dump();
+            if (claim.contains("topic") && claim["topic"].is_string())
+                os << ", topic " << claim["topic"].dump();
+            if (claim.contains("source_turn") && claim["source_turn"].is_object())
+                os << ", source_turn " << claim["source_turn"].dump();
+            if (claim.contains("attributed_to") && !claim["attributed_to"].is_null())
+                os << ", attributed_to " << claim["attributed_to"].dump();
+            const bool fallback = !claim.contains("event_time") || claim["event_time"].is_null();
+            os << ", event_time " << (fallback ? "UNKNOWN" : claim["event_time"].dump());
+            os << ", source_time " << claim.value("source_time", nlohmann::json()).dump();
+            os << ", time_basis " << (fallback ? "source_time_fallback" : "event_time");
+            if (claim.contains("predicate_catalog_version") &&
+                claim["predicate_catalog_version"].is_string())
+                os << ", predicate_catalog_version " << claim["predicate_catalog_version"].dump();
+            if (claim.contains("semantic_family") && claim["semantic_family"].is_string())
+                os << ", semantic_family " << claim["semantic_family"].dump();
+            if (claim.contains("time_text") && claim["time_text"].is_string() && !claim["time_text"].get_ref<const std::string&>().empty())
+                os << ", time_text " << claim["time_text"].dump();
+            os << ", clause " << claim.value("clause_id", nlohmann::json()).dump();
+            os << ", evidence " << claim.value("source_span", nlohmann::json()).dump() << "}";
+        }
+    }
     return os.str();
 }
 
@@ -61,6 +95,11 @@ std::string render_pack(const std::vector<PackEntry>& entries,
         os << entries[i].line;
     }
     return os.str();
+}
+
+std::string render_temporal_evidence(const TemporalEvidenceView& view) {
+    return "[EVIDENCE_ORDER] " + temporal_evidence_json(view) +
+        "\n仅表示可见候选内的来源顺序，不等于事件时间；变化判断须引用父来源并标注推断。";
 }
 
 }  // namespace starling::retrieval

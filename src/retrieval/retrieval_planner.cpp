@@ -1,8 +1,11 @@
 #include "starling/retrieval/retrieval_planner.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <limits>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -15,7 +18,6 @@
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
-#include "starling/store/sqlite_meta_store.hpp"
 #include "starling/tom/common_ground.hpp"
 
 namespace starling::retrieval {
@@ -40,7 +42,7 @@ constexpr const char* kSelectCols =
     "subject_id, predicate, object_kind, object_value, canonical_object_hash, "
     "modality, polarity, confidence, observed_at, valid_from, valid_to, "
     "consolidation_state, review_status, evidence_json, affect_json, "
-    "salience, activation, provenance FROM statements ";
+    "salience, activation, provenance, semantic_claim_json, source_spans_json, nesting_depth FROM statements ";
 
 FetchedRow read_row(sqlite3_stmt* st) {
     auto txt = [&](int i) {
@@ -60,15 +62,19 @@ FetchedRow read_row(sqlite3_stmt* st) {
     f.salience = sqlite3_column_double(st, 20);
     f.activation = sqlite3_column_double(st, 21);
     f.provenance = txt(22);
+    r.provenance = f.provenance;
+    r.semantic_claim_json = txt(23); r.source_spans_json = txt(24);
+    r.nesting_depth = sqlite3_column_int(st, 25);
     return f;
 }
 
-// 稳定状态 + 审核过滤 + 时间窗,全部结构化路径共用的 WHERE 尾巴。
+// Stable visibility and [valid_from, valid_to) bounds are shared by every path.
+// SQL NULL and empty strings both represent an unbounded endpoint.
 constexpr const char* kStableTail =
     " AND consolidation_state IN ('consolidated','archived')"
     " AND review_status NOT IN ('rejected','pending_review')"
-    " AND (valid_from IS NULL OR valid_from <= ?9)"
-    " AND (valid_to   IS NULL OR valid_to   >  ?9) ";
+    " AND (valid_from IS NULL OR valid_from = '' OR valid_from <= ?9)"
+    " AND (valid_to   IS NULL OR valid_to   = '' OR valid_to   >  ?9) ";
 
 void push_filter(RetrievalScopeStep& step, std::string name, std::string value) {
     step.filters.emplace_back(std::move(name), std::move(value));
@@ -82,10 +88,15 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         throw std::invalid_argument(
             "RetrievalPlanner: tenant_id/querier/as_of/query_id are required");
     }
+    if(q.temporal_evidence && q.temporal_evidence->tenant_id!=q.tenant_id)
+        throw std::invalid_argument("RetrievalPlanner: temporal evidence tenant must match query tenant");
+    if(q.temporal_evidence && (q.k<=0 || q.k>std::numeric_limits<int>::max()/10))
+        throw std::invalid_argument("RetrievalPlanner: invalid temporal candidate budget");
     auto& conn = adapter_.connection();
     sqlite3* db = conn.raw();
 
     PlannerResult out;
+    std::optional<TemporalEvidenceView> temporal_view;
     auto& rc = out.receipt;
     rc.trace_id = q.trace_id; rc.query_id = q.query_id;
     rc.querier = q.querier;
@@ -225,7 +236,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         bind_sv(h.get(), 9, q.as_of_iso8601);
         while (sqlite3_step(h.get()) == SQLITE_ROW) fetched.push_back(read_row(h.get()));
     };
-    auto fetch_by_id = [&](const std::string& id) {
+    auto fetch_by_id = [&](const std::string& id, const SemanticScored* semantic_row=nullptr) {
         sqlite3_stmt* raw = nullptr;
         const std::string sql = std::string(kSelectCols) +
             "WHERE id = ?1 AND tenant_id = ?2" + kStableTail;
@@ -235,7 +246,16 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         bind_sv(h.get(), 1, id);
         bind_sv(h.get(), 2, q.tenant_id);
         bind_sv(h.get(), 9, q.as_of_iso8601);
-        if (sqlite3_step(h.get()) == SQLITE_ROW) fetched.push_back(read_row(h.get()));
+        if (sqlite3_step(h.get()) == SQLITE_ROW) {
+            auto f=read_row(h.get());
+            if (semantic_row) {
+                // Keep the semantic DTO and cosine score, but materialize only
+                // after the same visibility/time query used by structured paths.
+                f.row=semantic_row->row;
+                f.base=semantic_row->score;
+            }
+            fetched.push_back(std::move(f));
+        }
     };
     auto fetch_semantic = [&](const RetrievalScopeStep& step) {
         if (q.text.empty()) {
@@ -248,21 +268,12 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         sp.query_text = q.text; sp.k = step.max_candidates;
         sp.trace_id = q.trace_id; sp.query_id = q.query_id;
         const auto sr = semantic_.vector_recall(conn, sp);
+        for (const auto& [identity, reason] : sr.receipt.claim_exclusions)
+            record_claim_exclusion(rc, identity.first, identity.second, reason);
         if (sr.degraded)
             rc.degraded_paths.push_back({"semantic_index", "embedder_unavailable",
                                          "statement_main_only"});
-        for (const auto& s : sr.rows) {
-            FetchedRow f; f.row = s.row; f.base = s.score;
-            // salience/activation/provenance 语义路径不带列 → 点查补全。
-            // P3.b1 phase 3:补查收编进 MetaStore.get_statement。
-            store::SqliteMetaStore enrich_meta(conn);
-            if (const auto full = enrich_meta.get_statement(s.row.id, q.tenant_id)) {
-                f.salience   = full->salience;
-                f.activation = full->activation;
-                f.provenance = full->provenance;
-            }
-            fetched.push_back(std::move(f));
-        }
+        for (const auto& s : sr.rows) fetch_by_id(s.row.id,&s);
     };
     auto fetch_graph_supersedes = [&]() {
         // HISTORY 辅路:从已取行沿 supersedes 边补链上行。
@@ -310,7 +321,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         else if (step.scope == "container_view")  fetch_container_view();
         rc.scopes_searched.push_back(step.scope);
     }
-    rc.candidate_counts.fetched = static_cast<std::int64_t>(fetched.size());
+    rc.candidate_counts.fetched = static_cast<std::int64_t>(fetched.size()) + rc.candidate_counts.dropped_by_claim_evidence;
     rc.plan_steps.push_back({"fetch",
         "fetched=" + std::to_string(fetched.size())});
 
@@ -334,6 +345,15 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     }
     rc.frontier_masked_count = masked;
 
+    // Direct evidence eligibility is checked after tenant/perspective masking,
+    // before ranking; malformed certificates cannot become answer context.
+    fetched.erase(std::remove_if(fetched.begin(), fetched.end(), [&](const auto& f) {
+        const auto reason = claim_evidence_error(conn, f.row);
+        if (reason.empty()) return false;
+        record_claim_exclusion(rc, f.row.tenant_id, f.row.id, reason);
+        return true;
+    }), fetched.end());
+
     // ── 5. fuse:按 id 去重(保最高 base)→ Affect-aware rerank → 截断 k。──
     std::unordered_map<std::string, FetchedRow> dedup;
     for (auto& f : fetched) {
@@ -350,6 +370,25 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     }
     QuerierAffectState qa{};
     auto breakdown = rerank(cands, qa, q.as_of_iso8601);
+    if(q.temporal_evidence) {
+        auto request=*q.temporal_evidence;
+        request.limit=std::min(request.limit,q.k);
+        std::vector<TemporalEvidenceCandidate> visible_candidates;
+        visible_candidates.reserve(cands.size());
+        for(std::size_t i=0;i<cands.size();++i) visible_candidates.push_back({cands[i].row,breakdown[i].final_score});
+        temporal_view=select_temporal_evidence(visible_candidates,request);
+        rc.temporal_evidence_json=temporal_evidence_json(*temporal_view);
+        std::set<std::pair<std::string,std::string>> selected;
+        for(const auto& ref:temporal_view->selected) selected.emplace(ref.tenant_id,ref.statement_id);
+        std::vector<RerankCandidate> kept;
+        std::vector<ScoreRow> kept_scores;
+        for(std::size_t i=0;i<cands.size();++i) {
+            if(selected.contains({cands[i].row.tenant_id,cands[i].row.id})) {
+                kept.push_back(std::move(cands[i]));kept_scores.push_back(breakdown[i]);
+            }
+        }
+        cands=std::move(kept);breakdown=std::move(kept_scores);
+    }
     if (static_cast<int>(cands.size()) > q.k) {
         cands.resize(static_cast<std::size_t>(q.k));
         breakdown.resize(static_cast<std::size_t>(q.k));
@@ -413,6 +452,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (!rc.abstention_reason.empty()) {
         out.abstained = true;
         out.context_pack = render_pack({}, rc.abstention_reason);
+        if(temporal_view) out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
         rc.sufficiency_status = Sufficiency::ABSTAINED;
         rc.candidate_counts.returned = 0;
         return out;
@@ -423,13 +463,16 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             cands[i].row, pctx, provenance_by_id[cands[i].row.id]);
         entries.push_back({label, cands[i].row.id,
                            render_line(cands[i].row, label)});
+        record_claim_link(conn, rc, cands[i].row);
         out.entries.push_back({std::move(cands[i].row),
                                breakdown[i].final_score, label});
     }
     out.context_pack = render_pack(entries, "");
+    if(temporal_view) out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
     rc.candidate_counts.returned = static_cast<std::int64_t>(out.entries.size());
     rc.sufficiency_status = out.entries.empty() ? Sufficiency::MISSING_INFO
                                                 : Sufficiency::SUFFICIENT;
+    if(temporal_view && !temporal_view->sufficient) rc.sufficiency_status=Sufficiency::MISSING_INFO;
     {   // projection lag:outbox 头 − 最慢 checkpoint(无消费者按 0)。
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,

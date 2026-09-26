@@ -14,6 +14,7 @@
 #include "starling/crypto/sha256.hpp"
 #include "starling/extractor/extraction_span_key.hpp"
 #include "starling/extractor/extracted_statement.hpp"
+#include "starling/extractor/structured_output.hpp"
 #include "starling/schema/canonicalize.hpp"
 #include "starling/schema/normalize_theme.hpp"
 #include "starling/schema/statement_enums.hpp"
@@ -82,6 +83,9 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
     const std::string prompt_body = build_prompt(passage);
     const std::string prompt_input_hash = crypto::sha256_hex(prompt_body);
     const LLMResponse resp = adapter_.extract(prompt_body, prompt_input_hash);
+    out.prompt_body = prompt_body;
+    out.prompt_input_hash = prompt_input_hash;
+    out.response = resp;
     if (!resp.ok) {
         return out;  // best-effort：适配器失败即 ok=false、零事件。
     }
@@ -150,6 +154,21 @@ EpisodicLlmResult EpisodicExtractor::extract_llm(std::string_view passage) {
         out.events.push_back(std::move(event));
     }
     return out;
+}
+
+std::string episodic_extraction_receipt(const EpisodicLlmResult& result) {
+    auto response = nlohmann::json::parse(llm_response_evidence_json(result.response));
+    // Keep the legacy raw_xml spelling alongside the shared raw_response field
+    // so offline archives can be read without a provider-specific adapter.
+    response["raw_xml"] = result.response.raw_xml;
+    return nlohmann::json{
+        {"schema_version", 1},
+        {"prompt", result.prompt_body},
+        {"prompt_input_hash", result.prompt_input_hash},
+        {"response", std::move(response)},
+        {"ok", result.ok},
+        {"event_count", result.events.size()}
+    }.dump();
 }
 
 EpisodicExtractionResult EpisodicExtractor::persist(

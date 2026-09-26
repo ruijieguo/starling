@@ -5,6 +5,7 @@
 // (结构化路径 SQL 下推,语义路径 rerank 前按可见集遮蔽)。对外唯一副作用
 // 是 fire-and-forget emit statement.recalled(读副作用契约)。
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "starling/persistence/sqlite_adapter.hpp"
@@ -15,6 +16,7 @@
 #include "starling/retrieval/retrieval_receipt.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/retrieval/statement_row.hpp"
+#include "starling/retrieval/temporal_evidence.hpp"
 
 namespace starling::retrieval {
 
@@ -35,6 +37,7 @@ struct PlannerQuery {
     std::string global_holder_filter;    // 非空且与任一 step.holder_scope 不一致
                                          // → invalid_scope_filter_mix 拒绝
     AbstentionConfig abstention;
+    std::optional<TemporalEvidenceRequest> temporal_evidence; // 默认关闭，只读来源顺序视图。
 };
 
 struct PlannerEntryOut {

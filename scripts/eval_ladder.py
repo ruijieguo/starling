@@ -13,7 +13,7 @@ answer-prompt/judge/种子/语料 hash 相同)的前提下度量"这个数字是
 
 本文件是 **PR-1**:先只打通 fixture-mode(离线、确定性、CI 可跑)的 runner
 骨架——笛卡尔展开 (stage×backbone×seed)、多轮取中位数、Δ 计算、verdict 判定、
-单一 JSON 产物。**real-mode(接 S_rag=vector_recall / S_star=RetrievalPlanner)
+单一 JSON 产物。**real-mode(接 S_rag=vector_recall / S_star=ObserverRetriever)
 是 PR-3 的 gated 真跑**,此处只留 sound 的接线点,不行使网络/`_core`。
 
   python scripts/eval_ladder.py --benchmark longmemeval \
@@ -66,6 +66,16 @@ def corpus_hash(records: list[dict]) -> str:
     """
     blob = "\n".join(json.dumps(r, sort_keys=True, ensure_ascii=False) for r in records)
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_eval_time(value: str) -> str:
+    """Native replay/ranking consumes UTC clock fields, without offset conversion."""
+    from datetime import datetime, timezone
+
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("evaluation time must include a UTC offset")
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _ladder_prompt(record: dict, recalled: list[str]) -> str:
@@ -154,8 +164,8 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
       S_rand        → 全库随机 k 行(同一 seed)
       S_full        → 全 history 行拼接
       S_rag         → SemanticRetriever.vector_recall(k)  [防守对照物]
-      S_star_oracle → RetrievalPlanner.run,库里 statement 由 gold 喂入(绕开 Extractor)
-      S_star        → RetrievalPlanner.run,库里 statement 由真实 Extractor 抽出
+      S_star_oracle → ObserverRetriever(mode="statements"),库里 statement 由 gold 喂入(绕开 Extractor)
+      S_star        → ObserverRetriever(mode="statements"),库里 statement 由真实 Extractor 抽出
     然后按 answer_format 判分:MC→answerer 出下标做确定性 index 比对;自由文本→
     answerer 自然语言作答,交 config["judge"] 比对参考答案。
 
@@ -177,6 +187,7 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     真跑时未测的只剩 answerer/judge/Extractor 的网络部分。
     """
     import tempfile
+    import time
 
     from eval_longmemeval import _parse_option_index
     import eval_ladder_pipeline as pipe
@@ -185,11 +196,19 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     make_pipeline = config["make_pipeline"]
     answerer = config["answerer"]
     k = config.get("k", 10)
-    now_iso = config.get("now_iso", "2026-06-01T00:00:00Z")
+    now_iso = normalize_eval_time(config.get("now_iso", "2026-06-01T00:00:00Z"))
+    replay_mode = config.get("star_replay_mode", "immediate")
+    if replay_mode not in ("immediate", "sleep"):
+        raise ValueError(f"unknown star_replay_mode: {replay_mode!r}")
 
     tmpdir = tempfile.mkdtemp(prefix=f"ladder_{stage}_")
     db_path = f"{tmpdir}/ladder.db"
+    diagnostics = config.get("diagnostics")
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics["db_path"] = db_path
     adapter, embedder, index = make_pipeline(db_path)
+    ingest_start = time.perf_counter()
 
     # --- seed 库内容:S_star 走真 Extractor(带归属);oracle 用 gold;余用扁平 history ---
     if stage == "S_star":
@@ -199,20 +218,38 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
         # TypeError 误当"旧式签名"而静默重跑一次(掩盖 bug + 双花 API)。
         _ex = config["extract"]
         if _accepts_backbone_arg(_ex):
-            _ex(adapter, record, config.get("backbone", ""))
+            extraction = _ex(adapter, record, config.get("backbone", ""))
         else:
-            _ex(adapter, record)
+            extraction = _ex(adapter, record)
+        if diagnostics is not None:
+            diagnostics["extraction"] = extraction
     elif stage == "S_star_oracle":
         gold = record.get("gold_statements") or []
         pipe.seed_gold_statements(db_path, record["item_id"], gold)
     else:
-        pipe.seed_history_statements(db_path, record["item_id"], record.get("history", []))
+        pipe.seed_history_statements(
+            db_path, record["item_id"], record.get("history", []),
+            speaker_labels=stage == "S_rag" and config.get("rag_speaker_labels", False))
 
-    pipe.embed_seeded(core, adapter, embedder, index, now_iso)
+    replay = {"mode": replay_mode if stage == "S_star" else "not_applicable", "stats": {}}
+    if stage == "S_star" and replay_mode == "sleep":
+        # One native offline pass, with production defaults and no optional gist LLM.
+        stats = core.ReplayScheduler(adapter).run_sleep(now_iso)
+        replay["stats"] = {name: getattr(stats, name) for name in (
+            "sampled", "compressed", "abstracted", "gist_candidates", "gist_failed",
+            "gist_gated", "forced_consolidated", "ttl_archived", "replay_batch_id")}
+
+    embedding = pipe.embed_seeded(core, adapter, embedder, index, now_iso)
+    if diagnostics is not None:
+        diagnostics.update(embedding=embedding, replay=replay,
+                           ingest_seconds=time.perf_counter() - ingest_start)
 
     rb = pipe.recall_block(core, stage, adapter=adapter, embedder=embedder,
                            index=index, question=record["question"],
-                           history=record.get("history", []), k=k, seed=seed)
+                           history=record.get("history", []), k=k, seed=seed,
+                           now_iso=now_iso)
+    if diagnostics is not None:
+        diagnostics["recall"] = rb
 
     # 弃答题(is_abstain):planner 主动弃答且该题本无答案 → 记正确(认识论诚实)。
     if record.get("is_abstain"):
@@ -226,16 +263,26 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     #     (judge 的接受率不确定性由 eval_judge_audit 的 α_judge 度量,band=α_judge)。
     if record.get("answer_format", "multiple_choice") == "multiple_choice":
         prompt = _ladder_prompt(record, recalled)
+        if diagnostics is not None:
+            diagnostics["prompt"] = prompt
         resp = answerer(prompt, config.get("backbone", ""))
+        if diagnostics is not None:
+            diagnostics["response"] = resp
         try:
             pred = _parse_option_index(resp, len(record["options"]))
         except ValueError:
             return False
+        if diagnostics is not None:
+            diagnostics["prediction"] = pred
         return pred == int(record["answer"])
 
     # 自由文本:judge(question, reference, candidate, backbone) -> bool。
     prompt = _ladder_prompt_free(record, recalled)
+    if diagnostics is not None:
+        diagnostics["prompt"] = prompt
     candidate = answerer(prompt, config.get("backbone", ""))
+    if diagnostics is not None:
+        diagnostics["response"] = candidate
     judge = config["judge"]
     return bool(judge(record["question"], str(record["answer"]), candidate,
                       config.get("backbone", "")))
@@ -334,7 +381,10 @@ def _build_extract_llm(core, model: str, provider: str):
 
 
 def make_real_extract_fn(core, extract_model: str = "",
-                         extract_provider: str = "openai"):
+                         extract_provider: str = "openai",
+                         extraction_config=None,
+                         preserve_invalid_time: bool = False,
+                         holder_isolation: bool = False):
     """extract(adapter, record, backbone) -> None:S_star 台阶用**真 Extractor**从
     history 抽出带归属的 statement(与 oracle 的 gold 喂入相对,二者差=抽取税)。
 
@@ -351,11 +401,17 @@ def make_real_extract_fn(core, extract_model: str = "",
 
     from starling.extractor.config import ExtractionConfig
 
-    ex_cfg = ExtractionConfig()
+    # The default keeps historical extraction byte-for-byte compatible.  A
+    # structured-memory experiment must opt in through this native policy
+    # carrier; Python does not inspect predicates or rewrite evidence.
+    ex_cfg = extraction_config if extraction_config is not None else ExtractionConfig()
+    native_policy = ex_cfg.to_native_policy()
 
-    def _extract_one(adapter, llm, holder: str, convo: str) -> None:
+    def _extract_one(adapter, llm, holder: str, payload_text: str) -> dict:
         """以 holder 为记忆主跑一遍三相 remember(prepare→extract→commit)。"""
-        payload = convo.encode("utf-8")
+        # SourceTurn rendering is native: it preserves source-owned metadata
+        # and keeps Python from reimplementing evidence offsets or time rules.
+        payload = payload_text.encode("utf-8")
 
         # **三相,与 remember() 生产路径一致**(python/starling/_memory_core.py):
         #   prepare  → 建 engram + 决定 should_extract
@@ -366,21 +422,29 @@ def make_real_extract_fn(core, extract_model: str = "",
         # (2026-08 实测:extract_all 返回 25.5s 有 bundle,statements 仍是 0)。
         prepared = core.memory_remember_prepare(
             adapter, tenant_id="default", holder_id=holder, interlocutor="",
-            adapter_name="ladder", source_prefix="ladder",
+            # Reuse the engram registered by retain_source_turns.  A different
+            # adapter/prefix would create a duplicate engram for the same
+            # payload and make strict semantic source linking fail closed.
+            adapter_name="source_turns", source_prefix=f"source-{holder}-",
             created_at_iso8601="2026-06-01T00:00:00Z", payload=payload)
         if not prepared.should_extract:
-            return
+            return {"holder": holder, "outcome": prepared.outcome, "skipped": True}
         bundle = core.memory_remember_extract_all(
             adapter, llm,
             ex_cfg.belief_prompt,
             ex_cfg.episodic_prompt,
             ex_cfg.general_fact_prompt,
-            holder, payload)
-        core.memory_remember_commit_all(
+            holder, payload, policy=native_policy)
+        receipt = json.loads(core.memory_remember_bundle_receipt(bundle))
+        outcome = core.memory_remember_commit_all(
             adapter, llm, tenant_id="default", holder_id=holder,
-            interlocutor="", prepared=prepared, extracted=bundle)
+            interlocutor="", prepared=prepared, extracted=bundle,
+            policy=native_policy)
+        if outcome["extraction_failed"]:
+            raise RuntimeError(f"extraction failed after core retries for holder {holder!r}")
+        return {"holder": holder, "receipt": receipt, **outcome}
 
-    def _extract(adapter, record, backbone: str = "") -> None:
+    def _extract(adapter, record, backbone: str = "") -> list[dict]:
         """**按 speaker 分组**写入:每个说话人的发言合成一段,以该 speaker 为
         holder_id 各跑一遍三相 remember。
 
@@ -399,17 +463,58 @@ def make_real_extract_fn(core, extract_model: str = "",
         """
         model = extract_model or backbone
         llm = _build_extract_llm(core, model, extract_provider)
-        by_speaker: dict[str, list[str]] = {}
+        by_speaker: dict[str, list[dict]] = {}
         for turn in record.get("history", []):
             spk = str(turn.get("speaker") or "unknown").strip() or "unknown"
-            by_speaker.setdefault(spk, []).append(str(turn.get("text", "")))
+            # Keep only the native SourceTurn contract fields. Dataset answer
+            # and gold fields must never enter prompts or source receipts.
+            by_speaker.setdefault(spk, []).append({
+                "speaker": spk,
+                "text": str(turn.get("text", "")),
+                "session_id": (str(turn["session_index"])
+                               if turn.get("session_index") is not None
+                               else turn.get("session_id")),
+                "turn_id": turn.get("turn_id"),
+                "turn_index": turn.get("message_index", turn.get("turn_index")),
+                "observed_at": turn.get("observed_at"),
+            })
         if not by_speaker:
-            return
+            return []
         # 稳定顺序(可复现):按说话人名排序,不依赖 dict 插入序。
+        if holder_isolation:
+            holder_inputs = []
+            for spk in sorted(by_speaker):
+                turns_json = json.dumps(by_speaker[spk], ensure_ascii=False, separators=(",", ":"))
+                payload = core.claim_source_turn_payload(turns_json, preserve_invalid_time)
+                holder_inputs.append({
+                    "tenant_id": "default",
+                    "holder_id": spk,
+                    "interlocutor": "",
+                    # Keep extraction statements on the exact engram already
+                    # registered by retain_source_turns for this holder.
+                    "adapter_name": "source_turns",
+                    "source_prefix": f"source-{spk}-",
+                    "created_at_iso8601": "2026-06-01T00:00:00Z",
+                    "payload": payload.encode("utf-8"),
+                })
+            native_outcomes = core.memory_remember_holders(
+                adapter, llm, ex_cfg.belief_prompt, ex_cfg.episodic_prompt,
+                ex_cfg.general_fact_prompt, holder_inputs, policy=native_policy)
+            outcomes = []
+            for native in native_outcomes:
+                outcome = dict(native)
+                outcome["holder"] = outcome.pop("holder_id")
+                receipt = outcome.get("receipt")
+                if isinstance(receipt, str) and receipt:
+                    outcome["receipt"] = json.loads(receipt)
+                outcomes.append(outcome)
+            return outcomes
+        outcomes = []
         for spk in sorted(by_speaker):
-            # 每段仍带 "speaker: text" 前缀,让抽取看得到对话上下文形态。
-            convo = "\n".join(f"{spk}: {t}" for t in by_speaker[spk])
-            _extract_one(adapter, llm, spk, convo)
+            turns_json = json.dumps(by_speaker[spk], ensure_ascii=False, separators=(",", ":"))
+            payload = core.claim_source_turn_payload(turns_json, preserve_invalid_time)
+            outcomes.append(_extract_one(adapter, llm, spk, payload))
+        return outcomes
 
     return _extract
 
@@ -446,6 +551,8 @@ def build_real_config(core, k: int, seeds: list[int], router_gate: str,
         "judge": audit_mod.make_real_ladder_judge_fn(),
         "k": k,
         "now_iso": "2026-06-01T00:00:00Z",
+        "star_replay_mode": "immediate",
+        "rag_speaker_labels": False,
         "embedder": embedding_model,
         # 抽取层 provenance:抽取税是**该模型**的税,报告必须能读出来。
         "extract_model": extract_model or "(follows backbone)",
@@ -733,6 +840,12 @@ def main(argv=None) -> int:
     p.add_argument("--embedding-model", default="",
                    help="real-mode 的 embedder 模型名(记入产物;实际由 EMBEDDING_MODEL "
                         "env 驱动,此处只做 provenance 标注)。")
+    p.add_argument("--rag-speaker-labels", action="store_true",
+                   help="Retain speaker labels in S_rag embedding and recall text.")
+    p.add_argument("--star-replay-mode", choices=("immediate", "sleep"), default="immediate",
+                   help="S_star lifecycle: immediate recall or one native sleep replay.")
+    p.add_argument("--now-iso", default="2026-06-01T00:00:00Z",
+                   help="Fixed embedding/replay/query time; record it with the run.")
     p.add_argument("--judge-audit", type=Path, default=None,
                    help="judge 对抗审计 JSON(eval_judge_audit 产物):注入 α_judge,"
                         "使自由文本 subset 的不可解读带 band=max(alpha, α_judge)。")
@@ -826,6 +939,9 @@ def main(argv=None) -> int:
             extract_model=args.extract_model,
             extract_provider=args.extract_provider,
         )
+        config.update(rag_speaker_labels=args.rag_speaker_labels,
+                      star_replay_mode=args.star_replay_mode,
+                      now_iso=normalize_eval_time(args.now_iso))
         print(f"[real-run] {len(corpus)} 题 × {len(stages)} 台阶 × "
               f"{len(backbones)} backbone × {len(seeds)} seed = "
               f"{len(corpus) * len(stages) * len(backbones) * len(seeds)} cells",

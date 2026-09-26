@@ -55,6 +55,7 @@ OpenAIEmbeddingAdapter::Config OpenAIEmbeddingAdapter::Config::from_env() {
 }
 
 EmbeddingResult OpenAIEmbeddingAdapter::embed(std::string_view text) {
+    embed_calls_.fetch_add(1, std::memory_order_relaxed);
     nlohmann::json body = {
         {"model", cfg_.model},
         {"input", std::string(text)}
@@ -63,6 +64,7 @@ EmbeddingResult OpenAIEmbeddingAdapter::embed(std::string_view text) {
         cfg_.base_url + "/embeddings",
         {"Authorization: Bearer " + cfg_.api_key},
         body.dump(), cfg_.timeout_ms, cfg_.max_retries);
+    request_count_.fetch_add(static_cast<std::uint64_t>(r.attempt_count), std::memory_order_relaxed);
     throw_for_http_error(r);
     try {
         auto j = nlohmann::json::parse(r.body);
@@ -140,6 +142,7 @@ OpenAIEmbeddingAdapter::parse_embeddings_batch(const std::string& body,
 
 std::vector<EmbeddingResult>
 OpenAIEmbeddingAdapter::embed_batch(const std::vector<std::string>& texts) {
+    batch_calls_.fetch_add(1, std::memory_order_relaxed);
     std::vector<EmbeddingResult> out;
     out.reserve(texts.size());
     for (const auto& [start, end] : chunk_ranges(texts.size(), cfg_.max_batch_inputs)) {
@@ -149,6 +152,7 @@ OpenAIEmbeddingAdapter::embed_batch(const std::vector<std::string>& texts) {
             cfg_.base_url + "/embeddings",
             {"Authorization: Bearer " + cfg_.api_key},
             build_embeddings_request(cfg_.model, chunk), cfg_.timeout_ms, cfg_.max_retries);
+        request_count_.fetch_add(static_cast<std::uint64_t>(resp.attempt_count), std::memory_order_relaxed);
         throw_for_http_error(resp);
         auto vecs = parse_embeddings_batch(resp.body, static_cast<int>(end - start), cfg_.dim);
         for (auto& vec : vecs) {

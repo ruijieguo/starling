@@ -1,0 +1,488 @@
+{
+  "schema_version": 1,
+  "metric": "declared_text_and_evidence_coverage",
+  "label_origin": "source_only_authored_before_new_run",
+  "cases": [
+    {
+      "id": "emotion_positive",
+      "source_sha256": "88878fd2f3c825f05713059ee24634f0dd2c38893d71d9b5ccb06f0566361883",
+      "targets": [
+        {
+          "actor": "Nora",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "anxious",
+              "worried"
+            ],
+            [
+              "certification exam"
+            ]
+          ],
+          "topic_any": [
+            "certification exam"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "emotion_negative",
+      "source_sha256": "05e5b843889071728d41b398f4561a7380445fef0f6fcf4c00e97f7c2d4fbcbc",
+      "targets": [
+        {
+          "actor": "Omar",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "NEG",
+          "object_all": [
+            [
+              "anxious",
+              "worried"
+            ],
+            [
+              "certification exam"
+            ]
+          ],
+          "topic_any": [
+            "certification exam"
+          ],
+          "scope_options": [
+            [
+              "NEGATED"
+            ],
+            [
+              "ASSERTED",
+              "NEGATED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "relief_cause",
+      "source_sha256": "1223acd6f12d65642db04df12e5dbd6c4863545b560c4c56d90179a81e271dbd",
+      "targets": [
+        {
+          "actor": "Keiko",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "relieved",
+              "relief"
+            ],
+            [
+              "permit"
+            ],
+            [
+              "approved",
+              "approval"
+            ]
+          ],
+          "topic_any": [
+            "permit",
+            "permit was approved"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "mixed_emotions",
+      "source_sha256": "4a8ff43f330da5224cc6cfb0de8284e06bcad2f32dc41b94281498370c2ca56e",
+      "targets": [
+        {
+          "actor": "Arun",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "excited",
+              "excitement"
+            ],
+            [
+              "fellowship"
+            ]
+          ],
+          "topic_any": [
+            "fellowship"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        },
+        {
+          "actor": "Arun",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "sad"
+            ],
+            [
+              "colleagues"
+            ]
+          ],
+          "topic_any": [
+            "colleagues",
+            "leave my colleagues"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "undecided",
+      "source_sha256": "49a07bfd68c619a0ca7220a9345df4862894d1a1655a6f79d735adee40c5fdcb",
+      "targets": [
+        {
+          "actor": "Rosa",
+          "predicate": "uncertain_about",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "join",
+              "joining"
+            ],
+            [
+              "rowing club"
+            ]
+          ],
+          "topic_any": [
+            "rowing club"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "unresolved_choice"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "possible_not_decided",
+      "source_sha256": "a5c84fe2928dd37fad6591633b5a46a318050ab7427270610475434501ae7469",
+      "targets": [
+        {
+          "actor": "Victor",
+          "predicate": "uncertain_about",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "internship"
+            ]
+          ],
+          "topic_any": [
+            "internship"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "unresolved_choice"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "decided_decline",
+      "source_sha256": "a3fac12c3b0e495c029505a78ab0d4129d1845bd95958d9ebabf31019ad382cc",
+      "targets": [
+        {
+          "actor": "Hana",
+          "predicate": "decided_on",
+          "modality": "INTENDS",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "decline",
+              "declining"
+            ],
+            [
+              "invitation"
+            ]
+          ],
+          "topic_any": [
+            "invitation"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "commitment"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "decision_change",
+      "source_sha256": "5a9623f6aa9a12cd05d56873054f194aed3a50b3d18f7df58b3d9285c7366115",
+      "targets": [
+        {
+          "actor": "Elias",
+          "predicate": "uncertain_about",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "last week"
+            ],
+            [
+              "workshop"
+            ]
+          ],
+          "topic_any": [
+            "workshop"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "Last week",
+          "event_time": null,
+          "speech_act": "unresolved_choice"
+        },
+        {
+          "actor": "Elias",
+          "predicate": "decided_on",
+          "modality": "INTENDS",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "today"
+            ],
+            [
+              "attend"
+            ]
+          ],
+          "topic_any": [
+            "workshop"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "Today",
+          "event_time": null,
+          "speech_act": "commitment"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "indifference",
+      "source_sha256": "0b735df052388f370b1683fee05fc8131e5c19d257b21f383d589e8985ced409",
+      "targets": [
+        {
+          "actor": "Lila",
+          "predicate": "indifferent_to",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "green room"
+            ],
+            [
+              "red room"
+            ]
+          ],
+          "topic_any": [
+            "green room",
+            "red room"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "indifference"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "preference_contrast",
+      "source_sha256": "b20e4640b09198049ef7fb9f174306e9c1950e671a5e7e41c9abfc6f98a824bb",
+      "targets": [],
+      "coverage": "legacy_channel_only"
+    },
+    {
+      "id": "trust_target",
+      "source_sha256": "2fd327f8e5ad82c7ca2ece7646f0bb579e65be8fd60e77d7b903f23459f27435",
+      "targets": [
+        {
+          "actor": "Inez",
+          "predicate": "trusts",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "pavel"
+            ],
+            [
+              "medical details"
+            ],
+            [
+              "private"
+            ]
+          ],
+          "topic_any": [
+            "medical details"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "trust"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "reported_distrust",
+      "source_sha256": "04277060cc442d85e9bad1ce2a25b29e2b39c3318e79c5f1435e9965fcd972b7",
+      "targets": [
+        {
+          "actor": "Mina",
+          "predicate": "trusts",
+          "modality": "BELIEVES",
+          "polarity": "NEG",
+          "object_all": [
+            [
+              "ren"
+            ],
+            [
+              "keys"
+            ]
+          ],
+          "topic_any": [
+            "keys"
+          ],
+          "scope_options": [
+            [
+              "REPORTED",
+              "NEGATED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "reported_state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    },
+    {
+      "id": "preference_qualifiers",
+      "source_sha256": "39ef284d443e31a807b07dd6911e585c73d24f8606425bd5e6734c125dbafe90",
+      "targets": [],
+      "coverage": "legacy_channel_only"
+    },
+    {
+      "id": "negative_target_scope",
+      "source_sha256": "ca6135d6c5897af9bfc6de4e8426be4fc8bf3f17b35a2cbfbf65383de2b1ef8b",
+      "targets": [],
+      "coverage": "legacy_channel_only"
+    },
+    {
+      "id": "property_and_desire",
+      "source_sha256": "f33a054b1b9d84c7d742250ebc3224bc315ad25fa0ac003c2d5fa85ea543d26f",
+      "targets": [],
+      "coverage": "legacy_channel_only"
+    },
+    {
+      "id": "topic_reference",
+      "source_sha256": "f9bd6460f9ae497edb4d8c7f728167042f06d4c051339a69b2af980642fbe259",
+      "targets": [
+        {
+          "actor": "Fiona",
+          "predicate": "feels",
+          "modality": "BELIEVES",
+          "polarity": "POS",
+          "object_all": [
+            [
+              "annoyed",
+              "irritated"
+            ],
+            [
+              "noise"
+            ],
+            [
+              "upstairs"
+            ]
+          ],
+          "topic_any": [
+            "noise from upstairs",
+            "noise"
+          ],
+          "scope_options": [
+            [
+              "ASSERTED"
+            ]
+          ],
+          "time_text": "",
+          "event_time": null,
+          "speech_act": "state"
+        }
+      ],
+      "coverage": "partial_supplemental_targets"
+    }
+  ]
+}

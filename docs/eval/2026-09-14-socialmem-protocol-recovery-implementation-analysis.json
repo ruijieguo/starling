@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-14T06:34:45.862216+00:00",
+  "status": "local_implementation_verified_external_evaluation_blocked",
+  "source_changed_since_previous_final": [
+    "scripts/eval_socialmem_claim_contract.py",
+    "scripts/eval_socialmem_extraction.py",
+    "scripts/probe_socialmem_output_capability.py",
+    "scripts/verify_socialmem_claim_contract.py",
+    "src/extractor/claim_contract.cpp",
+    "tests/cpp/test_structured_output.cpp",
+    "tests/python/test_eval_socialmem_claim_contract.py",
+    "tests/python/test_probe_socialmem_output_capability.py"
+  ],
+  "tests": {
+    "cpp_passed": 1090,
+    "cpp_skipped": 0,
+    "python_passed": 1362,
+    "python_skipped": 15,
+    "cpp_focused_passed": 47,
+    "python_focused_passed": 50
+  },
+  "stages": {
+    "a": {
+      "path": "build/socialmem_20260914_protocol_recovery_a_offline",
+      "core_sha256": "79a0c3873ab68348797ae84c75c0ffed7dfcbc3f9a0903c3fe74455d1eca7e2e",
+      "smoke_manifest_sha256": "d3c138c5b2e6d71d5f64c2981902034a2b0db427530eff42853b2ed14b551dcb",
+      "request_preview_sha256": "a683615f7446d4450c58a177729f78b48892ab299032016e4ae1844f6a6a9007",
+      "verification_sha256": "7b52b2f5ed7b9c6abe90e97644d01c0fe6e00277bc07a0a1d1f8b5b080a9c2bb",
+      "source_count": 433,
+      "artifact_count": 600,
+      "replay_records": 140,
+      "replay_changes": 0,
+      "external_model_calls": 0,
+      "quality": null,
+      "identity_verification": {
+        "stage": "a",
+        "core_path": "/Users/jaredguo-mini/develop/memory/starling-web/build/socialmem_20260914_protocol_recovery_work/a/python/starling/_core.cpython-314-darwin.so",
+        "core_sha256": "79a0c3873ab68348797ae84c75c0ffed7dfcbc3f9a0903c3fe74455d1eca7e2e",
+        "own_report_verified_offline": true,
+        "cross_core_reports_rejected": {
+          "b": "capability native core drift",
+          "current": "capability native core drift"
+        },
+        "schemas_unchanged": true,
+        "freshness_checked": false,
+        "scope": "仅历史本机回环回执的身份核验，不能作为新真实探测能力报告",
+        "external_requests": 0
+      },
+      "preparation": {
+        "stage": "a",
+        "source_archive": "/Users/jaredguo-mini/develop/memory/starling-web/build/socialmem_20260913_capability_typed_smoke/source_archive",
+        "source_manifest_sha256": "cf2770dca6b94cef20888377325aea6a7c7e34a97ae34aa6a5f19f220ce78a27",
+        "common_patch_sha256": "2f4b40dce6e6df49574ae06053e9186c680dfec590bbda2aa1597e9632ddd104",
+        "added_support_sha256": {
+          "cmake/StarlingOptions.cmake": "24f4a06ef1b3f947347e26bfcde5d85575580baa18de8206977b069bb785bfc1",
+          "cmake/StarlingZvec.cmake": "2da5293d22481b47b6525d6f5c8ecf65045bf27f402518921181525535326106",
+          "bindings/python/CMakeLists.txt": "8b8714ff07c19e660af5536b285f4ea0ce3f483cf09afd002ff1ccfe274598ae",
+          "tests/cpp/test_structured_output.cpp": "730b1c862e96367fc87d369521aca12cb97da43932eeb4e6acc344feecb0337c",
+          "tests/cpp/test_openai_adapter.cpp": "7e8e2f4669f1a412e7538d43ff1ef518aea6d0c453b7646377178f2005d2a1ea",
+          "tests/cpp/test_http_post_json.cpp": "d288979abc000f57ea622281a8270262b13de9a0e80df56c5f12320396e863d9",
+          "tests/python/test_probe_socialmem_output_capability.py": "0b5c4dbdadeae5f35b0dda2dd236373f8014202741d7fcabaa39d9a458829c5b",
+          "tests/python/test_eval_socialmem_extraction.py": "3f9e253e3f81d986850780afff84fd129eb42be3f1a42dfe6a6920596c4b043f"
+        },
+        "stage_test_cmake_sha256": "ccf32513426ffe723b41f2666a32f6dba6429de58c792f82e0eafca0923b8e25",
+        "test_scope": "protocol/schema/HTTP only; not original full historical suite",
+        "changed_line_delta_sha256": "a9761159a5d80613c1c64b67e8851d29b3039084261c18e6cba3792498206abc",
+        "applied_patch_sha256": "6375ba31d2e934256642b5008e1559ddc24f5c9e470bf6967ade7086ae7120e1"
+      },
+      "cpp_focused_passed": 34
+    },
+    "b": {
+      "path": "build/socialmem_20260914_protocol_recovery_b_offline",
+      "core_sha256": "d4f2379fd9d86e29ee9fa438fc5b9136b6d7b919f5cdc8270d164974b0b68b8a",
+      "smoke_manifest_sha256": "442980df8895108ac33854538eaadaa200afc5b9ae71a7c35d835beba2a60168",
+      "request_preview_sha256": "30b71625872b71e87dcd1d84a62b4185e990eed34c309f610013777d0b797aa9",
+      "verification_sha256": "5e3433f3e32d0dc151069066ce70089c3a6a14bfdef976c505bc89c5ba9eda11",
+      "source_count": 433,
+      "artifact_count": 600,
+      "replay_records": 140,
+      "replay_changes": 0,
+      "external_model_calls": 0,
+      "quality": null,
+      "identity_verification": {
+        "stage": "b",
+        "core_path": "/Users/jaredguo-mini/develop/memory/starling-web/build/socialmem_20260914_protocol_recovery_work/b/python/starling/_core.cpython-314-darwin.so",
+        "core_sha256": "d4f2379fd9d86e29ee9fa438fc5b9136b6d7b919f5cdc8270d164974b0b68b8a",
+        "own_report_verified_offline": true,
+        "cross_core_reports_rejected": {
+          "a": "capability native core drift",
+          "current": "capability native core drift"
+        },
+        "schemas_unchanged": true,
+        "freshness_checked": false,
+        "scope": "仅历史本机回环回执的身份核验，不能作为新真实探测能力报告",
+        "external_requests": 0
+      },
+      "preparation": {
+        "stage": "b",
+        "source_archive": "/Users/jaredguo-mini/develop/memory/starling-web/build/socialmem_20260913_relation_boundary_typed_smoke/source_archive",
+        "source_manifest_sha256": "a50591db27a1352958d08bce6e38bed08ae34be9a415188874656fde1123f668",
+        "common_patch_sha256": "2f4b40dce6e6df49574ae06053e9186c680dfec590bbda2aa1597e9632ddd104",
+        "added_support_sha256": {
+          "cmake/StarlingOptions.cmake": "24f4a06ef1b3f947347e26bfcde5d85575580baa18de8206977b069bb785bfc1",
+          "cmake/StarlingZvec.cmake": "2da5293d22481b47b6525d6f5c8ecf65045bf27f402518921181525535326106",
+          "bindings/python/CMakeLists.txt": "8b8714ff07c19e660af5536b285f4ea0ce3f483cf09afd002ff1ccfe274598ae",
+          "tests/cpp/test_structured_output.cpp": "730b1c862e96367fc87d369521aca12cb97da43932eeb4e6acc344feecb0337c",
+          "tests/cpp/test_openai_adapter.cpp": "7e8e2f4669f1a412e7538d43ff1ef518aea6d0c453b7646377178f2005d2a1ea",
+          "tests/cpp/test_http_post_json.cpp": "d288979abc000f57ea622281a8270262b13de9a0e80df56c5f12320396e863d9",
+          "tests/python/test_probe_socialmem_output_capability.py": "0b5c4dbdadeae5f35b0dda2dd236373f8014202741d7fcabaa39d9a458829c5b",
+          "tests/python/test_eval_socialmem_extraction.py": "3f9e253e3f81d986850780afff84fd129eb42be3f1a42dfe6a6920596c4b043f"
+        },
+        "stage_test_cmake_sha256": "ccf32513426ffe723b41f2666a32f6dba6429de58c792f82e0eafca0923b8e25",
+        "test_scope": "protocol/schema/HTTP only; not original full historical suite",
+        "changed_line_delta_sha256": "a9761159a5d80613c1c64b67e8851d29b3039084261c18e6cba3792498206abc",
+        "applied_patch_sha256": "2f4b40dce6e6df49574ae06053e9186c680dfec590bbda2aa1597e9632ddd104"
+      },
+      "cpp_focused_passed": 34
+    },
+    "current": {
+      "path": "build/socialmem_20260914_protocol_recovery_current_offline",
+      "core_sha256": "af1b769fa5a83e19209461d0d944b8047cde6332c3f87590ff35c53e53e9d876",
+      "smoke_manifest_sha256": "201de6f3e835d0fdb8971fa0884b4bf6fc46fffe31ed197aaf0e942926700934",
+      "request_preview_sha256": "7e231b73096769a876b9c6e385503b59d98d8a441ba362aa4ddfe21522134339",
+      "verification_sha256": "7d1ec57c5218de70300c3a1e7630fa815867240d956f3724e453841fa3b525c7",
+      "source_count": 435,
+      "artifact_count": 602,
+      "replay_records": 140,
+      "replay_changes": 0,
+      "external_model_calls": 0,
+      "quality": null,
+      "identity_verification": {
+        "stage": "current",
+        "core_path": "/Users/jaredguo-mini/develop/memory/starling-web/.venv/lib/python3.14/site-packages/starling/_core.cpython-314-darwin.so",
+        "core_sha256": "af1b769fa5a83e19209461d0d944b8047cde6332c3f87590ff35c53e53e9d876",
+        "own_report_verified_offline": true,
+        "cross_core_reports_rejected": {
+          "a": "capability native core drift",
+          "b": "capability native core drift"
+        },
+        "schemas_unchanged": true,
+        "freshness_checked": false,
+        "scope": "仅历史本机回环回执的身份核验，不能作为新真实探测能力报告",
+        "external_requests": 0
+      }
+    }
+  },
+  "production_defaults": {
+    "semantic_claim_contract": false,
+    "claim_output_mode": "Legacy",
+    "temporal_evidence": null
+  },
+  "external_evaluation": {
+    "status": "approval_review_blocked",
+    "capability_state": "not_observed",
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "model": "qwen3.7-plus",
+    "planned_first_action": "A 阶段请求预览中的八条通用来源、提示、示例和 schema，零重试",
+    "reviewer_reason": "自动审批认为用户的继续不足以明确授权将内部提示词和结构化协议等具体载荷发送到外部 DashScope。",
+    "actual_probe_requests": 0,
+    "actual_cohort_requests": 0,
+    "actual_answer_requests": 0,
+    "actual_judge_requests": 0,
+    "actual_embedding_requests": 0,
+    "actual_temporal_qa_requests": 0,
+    "quality": null,
+    "promotion_ready": false
+  },
+  "evidence_boundary": "本机 HTTP 和 Fake/旧原文重放仅属工程验证；旧 DeepSeek 观测保留历史身份。",
+  "history_design_files_checked": 104
+}

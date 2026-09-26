@@ -100,15 +100,24 @@ target_sources(starling_core PRIVATE
     src/extractor/anthropic_adapter.cpp
     src/extractor/sse_stream.cpp
     src/extractor/json_parser.cpp
+    src/extractor/claim_contract.cpp
+    src/extractor/claim_scope.cpp
+    src/extractor/structured_output.cpp
     src/extractor/statement_validator.cpp
     src/extractor/extractor.cpp
     src/extractor/episodic_extractor.cpp
     src/retrieval/basic_retriever.cpp
+    src/retrieval/claim_evidence.cpp
+    src/retrieval/temporal_evidence.cpp
+    src/retrieval/structured_claim_retriever.cpp
     src/retrieval/semantic_retriever.cpp
     src/retrieval/affect_reranker.cpp
     src/retrieval/abstention.cpp
     src/retrieval/context_pack.cpp
     src/retrieval/retrieval_planner.cpp
+    src/retrieval/source_retriever.cpp
+    src/retrieval/source_selection.cpp
+    src/retrieval/evidence_answer.cpp
     src/cognizer/uuid5.cpp
     src/cognizer/alias_normalizer.cpp
     src/cognizer/name_resolver.cpp

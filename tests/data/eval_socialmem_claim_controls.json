@@ -1,0 +1,1934 @@
+[
+  {
+    "id": "en_emotion_yes",
+    "language": "en",
+    "category": "emotion",
+    "passage": "Mina: I feel sad about leaving the team.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "sad about leaving the team",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_emotion_no",
+    "language": "en",
+    "category": "emotion",
+    "passage": "Mina: I feel that Jules owns the deployment module.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "that Jules owns the deployment module",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_conditional_yes",
+    "language": "en",
+    "category": "conditional",
+    "passage": "Mina: The launch was cancelled. I am worried about my contract.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "worried about my contract",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_conditional_no",
+    "language": "en",
+    "category": "conditional",
+    "passage": "Mina: If the launch were cancelled, I would be worried about my contract.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "worried about my contract",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_trust_yes",
+    "language": "en",
+    "category": "trust",
+    "passage": "Mina: I trust Jules with the deployment keys.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "trusts",
+      "object": "Jules with the deployment keys",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_trust_no",
+    "language": "en",
+    "category": "trust",
+    "passage": "Mina: I believe Jules is responsible for deployments.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "trusts",
+      "object": "Jules with deployments",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_decision_yes",
+    "language": "en",
+    "category": "decision",
+    "passage": "Mina: I have decided to have the heater inspected tomorrow.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "decided_on",
+      "object": "have the heater inspected tomorrow",
+      "modality": "INTENDS",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "tomorrow",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_decision_no",
+    "language": "en",
+    "category": "decision",
+    "passage": "Mina: I want the heater inspected tomorrow, but I have not decided what to do.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "decided_on",
+      "object": "have the heater inspected tomorrow",
+      "modality": "INTENDS",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "tomorrow",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_negation_yes",
+    "language": "en",
+    "category": "negation",
+    "passage": "Mina: I am not angry about the delay.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "angry about the delay",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_negation_no",
+    "language": "en",
+    "category": "negation",
+    "passage": "Mina: I am not angry about the delay.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "not angry about the delay",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_report_yes",
+    "language": "en",
+    "category": "attribution",
+    "passage": "Mina: Jules told me that he is nervous about the interview.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Jules",
+      "subject_kind": "cognizer",
+      "holder_perspective": "QUOTED",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "nervous about the interview",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Jules",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED"
+        ],
+        "time_text": "",
+        "event_time": null,
+        "attributed_to": "Mina"
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_report_no",
+    "language": "en",
+    "category": "attribution",
+    "passage": "Mina: Jules told me that he is nervous about the interview.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "nervous about the interview",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_uncertainty_yes",
+    "language": "en",
+    "category": "uncertainty",
+    "passage": "Mina: I have not decided whether to accept the remote assignment.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "uncertain_about",
+      "object": "whether to accept the remote assignment",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_uncertainty_no",
+    "language": "en",
+    "category": "uncertainty",
+    "passage": "Mina: I have not decided whether to accept the remote assignment.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "UNKNOWN",
+      "nesting_depth": 0,
+      "predicate": "uncertain_about",
+      "object": "whether to accept the remote assignment",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_time_yes",
+    "language": "en",
+    "category": "time",
+    "passage": "Mina: Last month I was anxious about the move, but I am calm now.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "last month: anxious about the move",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "Last month",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "en_time_no",
+    "language": "en",
+    "category": "time",
+    "passage": "Mina: Last month I was anxious about the move, but I am calm now.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "anxious about the move",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_emotion_yes",
+    "language": "zh",
+    "category": "emotion",
+    "passage": "Mina: 想到要离开团队，我觉得很难过。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "因为要离开团队而难过",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_emotion_no",
+    "language": "zh",
+    "category": "emotion",
+    "passage": "Mina: 我觉得 Jules 负责部署模块。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "Jules 负责部署模块",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_conditional_yes",
+    "language": "zh",
+    "category": "conditional",
+    "passage": "Mina: 发布取消了。我很担心自己的合同。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "担心自己的合同",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_conditional_no",
+    "language": "zh",
+    "category": "conditional",
+    "passage": "Mina: 假如发布取消，我会担心自己的合同。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "担心自己的合同",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_trust_yes",
+    "language": "zh",
+    "category": "trust",
+    "passage": "Mina: 我信任 Jules 保管部署密钥。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "trusts",
+      "object": "Jules 保管部署密钥",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_trust_no",
+    "language": "zh",
+    "category": "trust",
+    "passage": "Mina: 我认为 Jules 负责部署。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "trusts",
+      "object": "Jules 负责部署",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_decision_yes",
+    "language": "zh",
+    "category": "decision",
+    "passage": "Mina: 我已经决定明天请人检查暖气。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "decided_on",
+      "object": "明天请人检查暖气",
+      "modality": "INTENDS",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "明天",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_decision_no",
+    "language": "zh",
+    "category": "decision",
+    "passage": "Mina: 我想明天请人检查暖气，但还没有决定怎么做。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "decided_on",
+      "object": "明天请人检查暖气",
+      "modality": "INTENDS",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "明天",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_negation_yes",
+    "language": "zh",
+    "category": "negation",
+    "passage": "Mina: 我并没有因为延期而生气。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "因为延期而生气",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_negation_no",
+    "language": "zh",
+    "category": "negation",
+    "passage": "Mina: 我并没有因为延期而生气。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "没有因为延期而生气",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_report_yes",
+    "language": "zh",
+    "category": "attribution",
+    "passage": "Mina: Jules 告诉我，他对面试很紧张。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Jules",
+      "subject_kind": "cognizer",
+      "holder_perspective": "QUOTED",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "对面试很紧张",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Jules",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED"
+        ],
+        "time_text": "",
+        "event_time": null,
+        "attributed_to": "Mina"
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_report_no",
+    "language": "zh",
+    "category": "attribution",
+    "passage": "Mina: Jules 告诉我，他对面试很紧张。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "对面试很紧张",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_uncertainty_yes",
+    "language": "zh",
+    "category": "uncertainty",
+    "passage": "Mina: 我还没有决定是否接受远程外派。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "uncertain_about",
+      "object": "是否接受远程外派",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_uncertainty_no",
+    "language": "zh",
+    "category": "uncertainty",
+    "passage": "Mina: 我还没有决定是否接受远程外派。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "UNKNOWN",
+      "nesting_depth": 0,
+      "predicate": "uncertain_about",
+      "object": "是否接受远程外派",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_time_yes",
+    "language": "zh",
+    "category": "time",
+    "passage": "Mina: 上个月我对搬家很焦虑，现在已经平静了。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "上个月对搬家很焦虑",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "上个月",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "zh_time_no",
+    "language": "zh",
+    "category": "time",
+    "passage": "Mina: 上个月我对搬家很焦虑，现在已经平静了。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "predicate": "feels",
+      "object": "对搬家很焦虑",
+      "modality": "BELIEVES",
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "archived",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_emotion_yes",
+    "language": "en",
+    "category": "emotion",
+    "passage": "Mina: I am relieved that Jules found the missing keys.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "relieved that Jules found the missing keys",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_emotion_no",
+    "language": "en",
+    "category": "emotion",
+    "passage": "Mina: I feel that the missing keys are in the kitchen.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "that the missing keys are in the kitchen",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_conditional_yes",
+    "language": "en",
+    "category": "conditional",
+    "passage": "Mina: If the ferry stops running, I would be anxious about getting home.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "would be anxious about getting home if the ferry stops running",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "CONDITIONAL",
+        "scope_markers": [
+          "CONDITIONAL"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_conditional_no",
+    "language": "en",
+    "category": "conditional",
+    "passage": "Mina: If the ferry stops running, I would be anxious about getting home.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "anxious about getting home",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_trust_yes",
+    "language": "en",
+    "category": "trust",
+    "passage": "Mina: I do not trust Jules to keep my address private.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "trusts",
+      "object": "Jules to keep my address private",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_trust_no",
+    "language": "en",
+    "category": "trust",
+    "passage": "Mina: Jules is assigned to keep the address list private.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "trusts",
+      "object": "Jules to keep my address private",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_decision_yes",
+    "language": "en",
+    "category": "decision",
+    "passage": "Mina: I have decided not to attend the retreat.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "decided_on",
+      "object": "not attend the retreat",
+      "modality": "INTENDS",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_decision_no",
+    "language": "en",
+    "category": "decision",
+    "passage": "Mina: I would like to skip the retreat, but no decision has been made.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "decided_on",
+      "object": "not attend the retreat",
+      "modality": "INTENDS",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_negation_yes",
+    "language": "en",
+    "category": "negation",
+    "passage": "Mina: I am not unhappy about the new schedule.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "unhappy about the new schedule",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_negation_no",
+    "language": "en",
+    "category": "negation",
+    "passage": "Mina: I am not unhappy about the new schedule.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "unhappy about the new schedule",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_attribution_yes",
+    "language": "en",
+    "category": "attribution",
+    "passage": "Mina: Jules said that if the ferry stopped running, he would not be worried about getting home.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Jules",
+      "subject_kind": "cognizer",
+      "holder_perspective": "QUOTED",
+      "predicate": "feels",
+      "object": "would be worried about getting home if the ferry stopped running",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Jules",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED",
+          "CONDITIONAL",
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null,
+        "attributed_to": "Mina"
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_attribution_no",
+    "language": "en",
+    "category": "attribution",
+    "passage": "Mina: Jules said that if the ferry stopped running, he would not be worried about getting home.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "would be worried about getting home if the ferry stopped running",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED",
+          "CONDITIONAL",
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_uncertainty_yes",
+    "language": "en",
+    "category": "uncertainty",
+    "passage": "Mina: I am unsure whether to study architecture or biology.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "uncertain_about",
+      "object": "whether to study architecture or biology",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_uncertainty_no",
+    "language": "en",
+    "category": "uncertainty",
+    "passage": "Mina: I am unsure whether to study architecture or biology.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "uncertain_about",
+      "object": "whether to study architecture or biology",
+      "modality": "BELIEVES",
+      "polarity": "UNKNOWN",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_time_yes",
+    "language": "en",
+    "category": "time",
+    "passage": "Mina: Yesterday I was upset about the cancellation; I am relieved today.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "Yesterday: upset about the cancellation",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "Yesterday",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_en_time_no",
+    "language": "en",
+    "category": "time",
+    "passage": "Mina: Yesterday I was upset about the cancellation; I am relieved today.",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "today: upset about the cancellation",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "today",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_emotion_yes",
+    "language": "zh",
+    "category": "emotion",
+    "passage": "Mina: 找到丢失的钥匙后，我感到如释重负。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "因找到丢失的钥匙而如释重负",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_emotion_no",
+    "language": "zh",
+    "category": "emotion",
+    "passage": "Mina: 我感觉丢失的钥匙在厨房里。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "丢失的钥匙在厨房里",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_conditional_yes",
+    "language": "zh",
+    "category": "conditional",
+    "passage": "Mina: 如果渡轮停航，我会担心怎么回家。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "如果渡轮停航会担心怎么回家",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "CONDITIONAL",
+        "scope_markers": [
+          "CONDITIONAL"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_conditional_no",
+    "language": "zh",
+    "category": "conditional",
+    "passage": "Mina: 如果渡轮停航，我会担心怎么回家。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "担心怎么回家",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_trust_yes",
+    "language": "zh",
+    "category": "trust",
+    "passage": "Mina: 我不信任 Jules 能为我的住址保密。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "trusts",
+      "object": "Jules 能为我的住址保密",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_trust_no",
+    "language": "zh",
+    "category": "trust",
+    "passage": "Mina: Jules 被安排负责住址名单的保密工作。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "trusts",
+      "object": "Jules 能为我的住址保密",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_decision_yes",
+    "language": "zh",
+    "category": "decision",
+    "passage": "Mina: 我已经决定不参加静修活动。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "decided_on",
+      "object": "不参加静修活动",
+      "modality": "INTENDS",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_decision_no",
+    "language": "zh",
+    "category": "decision",
+    "passage": "Mina: 我想不参加静修活动，但还没有作出决定。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "decided_on",
+      "object": "不参加静修活动",
+      "modality": "INTENDS",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_negation_yes",
+    "language": "zh",
+    "category": "negation",
+    "passage": "Mina: 对于新排班，我并没有不高兴。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "对于新排班不高兴",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_negation_no",
+    "language": "zh",
+    "category": "negation",
+    "passage": "Mina: 对于新排班，我并没有不高兴。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "对于新排班不高兴",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "NEGATED",
+        "scope_markers": [
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_attribution_yes",
+    "language": "zh",
+    "category": "attribution",
+    "passage": "Mina: Jules 说，如果渡轮停航，他不会担心怎么回家。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Jules",
+      "subject_kind": "cognizer",
+      "holder_perspective": "QUOTED",
+      "predicate": "feels",
+      "object": "如果渡轮停航会担心怎么回家",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Jules",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED",
+          "CONDITIONAL",
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null,
+        "attributed_to": "Mina"
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_attribution_no",
+    "language": "zh",
+    "category": "attribution",
+    "passage": "Mina: Jules 说，如果渡轮停航，他不会担心怎么回家。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "如果渡轮停航会担心怎么回家",
+      "modality": "BELIEVES",
+      "polarity": "NEG",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "REPORTED",
+        "scope_markers": [
+          "REPORTED",
+          "CONDITIONAL",
+          "NEGATED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_uncertainty_yes",
+    "language": "zh",
+    "category": "uncertainty",
+    "passage": "Mina: 我还拿不准应该学建筑还是生物。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "uncertain_about",
+      "object": "应该学建筑还是生物",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_uncertainty_no",
+    "language": "zh",
+    "category": "uncertainty",
+    "passage": "Mina: 我还拿不准应该学建筑还是生物。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "uncertain_about",
+      "object": "应该学建筑还是生物",
+      "modality": "BELIEVES",
+      "polarity": "UNKNOWN",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_time_yes",
+    "language": "zh",
+    "category": "time",
+    "passage": "Mina: 昨天我因活动取消而沮丧，今天已经释然了。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "昨天因活动取消而沮丧",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "昨天",
+        "event_time": null
+      }
+    },
+    "expected_keep": true,
+    "origin": "new",
+    "holder": "Mina"
+  },
+  {
+    "id": "new_zh_time_no",
+    "language": "zh",
+    "category": "time",
+    "passage": "Mina: 昨天我因活动取消而沮丧，今天已经释然了。",
+    "candidate": {
+      "holder": "Mina",
+      "subject": "Mina",
+      "subject_kind": "cognizer",
+      "holder_perspective": "FIRST_PERSON",
+      "predicate": "feels",
+      "object": "今天因活动取消而沮丧",
+      "modality": "BELIEVES",
+      "polarity": "POS",
+      "nesting_depth": 0,
+      "evidence": {
+        "clause_id": "c0",
+        "actor": "Mina",
+        "assertion_scope": "ASSERTED",
+        "scope_markers": [
+          "ASSERTED"
+        ],
+        "time_text": "今天",
+        "event_time": null
+      }
+    },
+    "expected_keep": false,
+    "origin": "new",
+    "holder": "Mina"
+  }
+]

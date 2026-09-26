@@ -1,0 +1,215 @@
+{
+  "run": "build/socialmem_20260912_json_mode_real",
+  "manifest_sha256": "3751a21b0e85cae9a7862d620a9f91bdda2ea40541825ae845a9debd735c668d",
+  "status": "verified / complete_with_errors",
+  "transport": {
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "deepseek-v3",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "timeout_ms": 60000,
+    "max_retries": 3,
+    "response_format": {
+      "type": "json_object"
+    },
+    "response_content": "verbatim"
+  },
+  "controls": {
+    "cases": 64,
+    "expected_positive": 32,
+    "correct": 61,
+    "true_positives": 31,
+    "true_negatives": 30,
+    "false_accepts": 0,
+    "false_rejects": 1,
+    "technical_failures": 2
+  },
+  "synthetic": {
+    "frozen": {
+      "cases": 16,
+      "majority": 10,
+      "invalid_votes": 2,
+      "valid_cases": 14,
+      "valid_majority": 9,
+      "semantic_accuracy": 0.6428571428571429
+    },
+    "contract": {
+      "cases": 16,
+      "majority": 6,
+      "invalid_votes": 1,
+      "valid_cases": 15,
+      "valid_majority": 6,
+      "semantic_accuracy": 0.4
+    },
+    "paired": {
+      "gained": [],
+      "lost": [
+        "emotion_negative",
+        "possible_not_decided",
+        "decided_decline",
+        "decision_change"
+      ]
+    }
+  },
+  "p1": {
+    "baseline": {
+      "counts": {
+        "holder": [
+          60,
+          29,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          33,
+          15
+        ],
+        "predicate": [
+          63,
+          26,
+          8
+        ],
+        "object": [
+          63,
+          26,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7499999999999999,
+        "holder_perspective": 0.6999999999999998,
+        "predicate": 0.7875000000000001,
+        "object": 0.7875000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    },
+    "combined": {
+      "counts": {
+        "holder": [
+          60,
+          36,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          40,
+          15
+        ],
+        "predicate": [
+          63,
+          33,
+          8
+        ],
+        "object": [
+          63,
+          33,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.718562874251497,
+        "holder_perspective": 0.6706586826347305,
+        "predicate": 0.7544910179640718,
+        "object": 0.7544910179640718,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    }
+  },
+  "errors": {
+    "native_failures": 6,
+    "base_failures": 0,
+    "evidence_failures": 0,
+    "base_semantics_changed": 0,
+    "invalid_judge_votes": 4,
+    "answer_failures": 0,
+    "retrieval_failures": 0
+  },
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 14,
+        "invalid_votes": 2,
+        "mismatched_groups": 0,
+        "valid_pairs": 44,
+        "agreeing_pairs": 41,
+        "pairwise_agreement": 0.9318181818181818
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 14,
+        "invalid_votes": 1,
+        "mismatched_groups": 0,
+        "valid_pairs": 46,
+        "agreeing_pairs": 42,
+        "pairwise_agreement": 0.9130434782608695
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 1,
+        "mismatched_groups": 0,
+        "valid_pairs": 4,
+        "agreeing_pairs": 4,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "answers": {
+    "Q1_a5s1c1/baseline": 0,
+    "Q1_a5s1c1/structured": 3,
+    "Q1_a5s1c1/linked": 0,
+    "Q1_a5s1c1/full": 2,
+    "Q9_a0b1c2d3/baseline": 0,
+    "Q9_a0b1c2d3/structured": 0,
+    "Q9_a0b1c2d3/linked": 0,
+    "Q9_a0b1c2d3/full": 3
+  },
+  "promotion_ready": false,
+  "conclusion": "JSON mode 请求参数与原文保真已验证；未提供 schema、枚举或语义保证，未证明解决谓词丰富度问题。"
+}

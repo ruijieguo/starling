@@ -1,6 +1,8 @@
 #include "starling/bus/statement_writer.hpp"
 
 #include "starling/affect/affect_vector.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
+#include <nlohmann/json.hpp>
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
@@ -9,6 +11,7 @@
 #include "starling/tom/nesting_depth_writer.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <iomanip>
 #include <random>
 #include <sstream>
@@ -57,7 +60,14 @@ std::string json_string(std::string_view s) {
 }
 
 std::string source_spans_json(const starling::extractor::ExtractedStatement& s,
-                              std::string_view engram_id) {
+                              std::string_view engram_id,
+                              const std::string& semantic_claim = "") {
+    if (!semantic_claim.empty()) {
+        auto span = nlohmann::json::parse(semantic_claim).at("source_span");
+        span["chunk_index"] = s.chunk_index;
+        span["observed_at"] = nlohmann::json::parse(semantic_claim).at("source_time");
+        return nlohmann::json::array({span}).dump();
+    }
     std::string out = "[{";
     out += "\"engram_ref\":";
     out += json_string(engram_id);
@@ -93,30 +103,44 @@ std::string perceived_by_json(const std::vector<std::string>& items) {
 // criteria. Returns the existing stmt_id if found, otherwise empty string.
 std::string find_existing_in_chunk(
         starling::persistence::Connection& conn,
-        std::string_view tenant_id,
-        std::string_view holder_id,
-        std::string_view predicate,
-        std::string_view canonical_object_hash,
-        std::string_view evidence_engram_id) {
+        const starling::extractor::ExtractedStatement& s,
+        std::string_view evidence_engram_id,
+        const std::string& semantic_claim) {
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db,
-        "SELECT id FROM statements "
+    std::string sql = "SELECT id FROM statements "
         "WHERE tenant_id = ? AND holder_id = ? "
-        "  AND predicate = ? AND canonical_object_hash = ? "
-        "  AND evidence_json LIKE ? "
-        "  AND review_status = 'approved' "
-        "ORDER BY created_at ASC LIMIT 1",
-        -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "find_existing_in_chunk: prepare");
+        "  AND predicate = ? AND canonical_object_hash = ? ";
+    if (semantic_claim.empty()) {
+        sql += " AND evidence_json LIKE ? ";
+    } else {
+        // The contract distinguishes mental-state bearer, relation polarity,
+        // reporting scope and exact source unit. Sharing an object hash in one
+        // Engram does not make different scoped propositions duplicates.
+        sql += " AND subject_kind = ? AND subject_id = ? AND holder_perspective = ? "
+               " AND modality = ? AND polarity = ? AND object_kind = ? "
+               " AND semantic_claim_json = ? ";
     }
+    sql += " AND review_status = 'approved' ORDER BY created_at ASC LIMIT 1";
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        throw make_sqlite_error(db, "find_existing_in_chunk: prepare");
     StmtHandle h(raw);
-    bind_sv(h.get(), 1, tenant_id);
-    bind_sv(h.get(), 2, holder_id);
-    bind_sv(h.get(), 3, predicate);
-    bind_sv(h.get(), 4, canonical_object_hash);
-    const std::string like_pat = std::string("%\"engram_ref\":\"") + std::string(evidence_engram_id) + "\"%";
-    bind_sv(h.get(), 5, like_pat);
+    bind_sv(h.get(), 1, s.holder_tenant_id);
+    bind_sv(h.get(), 2, s.holder_id);
+    bind_sv(h.get(), 3, s.predicate);
+    bind_sv(h.get(), 4, s.canonical_object_hash);
+    if (semantic_claim.empty()) {
+        const std::string like_pat = std::string("%\"engram_ref\":\"") + std::string(evidence_engram_id) + "\"%";
+        bind_sv(h.get(), 5, like_pat);
+    } else {
+        bind_sv(h.get(), 5, s.subject_kind);
+        bind_sv(h.get(), 6, s.subject_id);
+        bind_sv(h.get(), 7, schema::to_string(s.holder_perspective));
+        bind_sv(h.get(), 8, schema::to_string(s.modality));
+        bind_sv(h.get(), 9, schema::to_string(s.polarity));
+        bind_sv(h.get(), 10, s.object_kind);
+        bind_sv(h.get(), 11, semantic_claim);
+    }
     const int rc = sqlite3_step(h.get());
     if (rc == SQLITE_DONE) return "";
     if (rc != SQLITE_ROW) throw make_sqlite_error(db, "find_existing_in_chunk: step");
@@ -132,10 +156,11 @@ void insert_statement_row(
         schema::ReviewStatus effective_review_status,
         const std::string& derived_from_json,
         int derived_depth,
-        int nesting_depth) {
+        int nesting_depth,
+        const std::string& semantic_claim) {
     sqlite3* db = conn.raw();
     const std::string ts = iso8601_utc(std::chrono::system_clock::now());
-    const std::string spans = source_spans_json(s, evidence_engram_id);
+    const std::string spans = source_spans_json(s, evidence_engram_id, semantic_claim);
     const std::string evid  = evidence_json(evidence_engram_id, evidence_content_hash);
     const std::string perc  = perceived_by_json(s.perceived_by);
 
@@ -152,7 +177,7 @@ void insert_statement_row(
         "  consolidation_state, review_status,"
         "  derived_from_json, derived_depth,"
         "  nesting_depth,"
-        "  created_at, updated_at"
+        "  created_at, updated_at, semantic_claim_json, event_time_end"
         ") VALUES ("
         "  ?, ?, ?, ?,"
         "  ?, ?, ?, ?, ?,"
@@ -164,7 +189,7 @@ void insert_statement_row(
         "  'volatile', ?,"
         "  ?, ?,"
         "  ?,"
-        "  ?, ?"
+        "  ?, ?, ?, ?"
         ")",
         -1, &raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "StatementWriter::write: prepare INSERT statements");
@@ -195,7 +220,11 @@ void insert_statement_row(
     } else {
         sqlite3_bind_null(h.get(), i++);
     }
-    if (s.event_time_start.has_value()) {
+    if (!semantic_claim.empty()) {
+        const auto event = nlohmann::json::parse(semantic_claim).at("event_time");
+        if (event.is_null()) sqlite3_bind_null(h.get(), i++);
+        else bind_sv(h.get(), i++, event.at("start").get_ref<const std::string&>());
+    } else if (s.event_time_start.has_value()) {
         bind_sv(h.get(), i++, *s.event_time_start);
     } else {
         sqlite3_bind_null(h.get(), i++);
@@ -222,6 +251,15 @@ void insert_statement_row(
     sqlite3_bind_int(h.get(), i++, nesting_depth);
     bind_sv(h.get(), i++, ts);  // created_at
     bind_sv(h.get(), i++, ts);  // updated_at
+    if (semantic_claim.empty()) {
+        sqlite3_bind_null(h.get(), i++);
+        sqlite3_bind_null(h.get(), i++);
+    } else {
+        bind_sv(h.get(), i++, semantic_claim);
+        const auto event = nlohmann::json::parse(semantic_claim).at("event_time");
+        if (event.is_null() || event.at("end").is_null()) sqlite3_bind_null(h.get(), i++);
+        else bind_sv(h.get(), i++, event.at("end").get_ref<const std::string&>());
+    }
 
     if (sqlite3_step(h.get()) != SQLITE_DONE) {
         throw make_sqlite_error(db, "StatementWriter::write: step INSERT statements");
@@ -263,24 +301,15 @@ StatementWriteOutcome StatementWriter::write(
 
     const std::string stmt_id = random_id();
 
-    // §15.3.2 chunk-level duplicate check.
-    const std::string existing = find_existing_in_chunk(
-        conn_, s.holder_tenant_id, s.holder_id, s.predicate,
-        s.canonical_object_hash, evidence_engram_id);
-
-    schema::ReviewStatus effective = s.review_status;
-    if (!existing.empty()) {
-        effective = schema::ReviewStatus::REVIEW_REQUESTED;
-    }
-
     // For the evidence_json we need the engram's content_hash. Query for it
     // here rather than threading it through, so callers don't have to know.
     sqlite3* db = conn_.raw();
     std::string content_hash;
+    std::string source_time;
     {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
-                "SELECT content_hash FROM engrams WHERE id = ? AND tenant_id = ?",
+                "SELECT content_hash, created_at FROM engrams WHERE id = ? AND tenant_id = ?",
                 -1, &raw, nullptr) != SQLITE_OK) {
             throw make_sqlite_error(db, "StatementWriter::write: prepare engrams content_hash");
         }
@@ -289,8 +318,43 @@ StatementWriteOutcome StatementWriter::write(
         bind_sv(h.get(), 2, s.holder_tenant_id);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             content_hash = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
+            source_time = reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 1));
         }
     }
+
+    // New propositions keep their parent lineage, never a copied direct
+    // admission certificate. State-only consolidation does not enter this path.
+    std::string semantic_claim;
+    if (s.derived_from.empty() && s.provenance == schema::StatementProvenance::USER_INPUT
+        && !s.semantic_claim_json.empty()) {
+        retrieval::StatementRow claim_input;
+        claim_input.semantic_claim_json = s.semantic_claim_json;
+        auto claim = retrieval::parse_claim_evidence(claim_input);
+        if (!claim.is_object()) throw std::invalid_argument("StatementWriter: malformed_claim");
+        claim["source_time"] = source_time;
+        if (!claim.contains("source_span") ||
+            claim["source_span"].value("engram_ref", "") != evidence_engram_id ||
+            claim["source_span"].value("source_hash", "") != s.source_hash || source_time.empty())
+            throw std::invalid_argument("StatementWriter: inconsistent_claim source");
+        semantic_claim = claim.dump();
+        retrieval::StatementRow row;
+        row.tenant_id = s.holder_tenant_id; row.holder_id = s.holder_id;
+        row.holder_perspective = schema::to_string(s.holder_perspective);
+        row.subject_id = s.subject_id; row.subject_kind = s.subject_kind; row.predicate = s.predicate;
+        row.object_kind = s.object_kind; row.object_value = s.object_value;
+        row.nesting_depth = s.llm_nesting_depth;
+        row.modality = schema::to_string(s.modality);
+        row.polarity = schema::to_string(s.polarity);
+        row.semantic_claim_json = semantic_claim;
+        row.source_spans_json = source_spans_json(s, evidence_engram_id, semantic_claim);
+        const auto reason = retrieval::claim_evidence_error(conn_, row);
+        if (!reason.empty()) throw std::invalid_argument("StatementWriter: " + reason);
+    }
+
+    // Compare finalized source evidence, after trusted observation time is
+    // attached. Legacy rows retain the existing chunk-level duplicate rule.
+    const std::string existing = find_existing_in_chunk(conn_, s, evidence_engram_id, semantic_claim);
+    const auto effective = existing.empty() ? s.review_status : schema::ReviewStatus::REVIEW_REQUESTED;
 
     // Compute derived_from_json and derived_depth.
     int derived_depth = 0;
@@ -338,7 +402,7 @@ StatementWriteOutcome StatementWriter::write(
     const int nesting_depth = tom::nesting_depth_writer::compute_nesting_depth(conn_, s);
 
     insert_statement_row(conn_, stmt_id, s, evidence_engram_id, content_hash, effective,
-                         derived_from_json, derived_depth, nesting_depth);
+                         derived_from_json, derived_depth, nesting_depth, semantic_claim);
 
     // Build and append the bus_events row.
     const std::string canonical_key = std::string(extraction_span_key);

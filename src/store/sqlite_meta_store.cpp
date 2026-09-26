@@ -23,7 +23,7 @@ constexpr const char* kCols =
     "predicate, object_kind, object_value, canonical_object_hash, modality, "
     "polarity, confidence, observed_at, valid_from, valid_to, "
     "consolidation_state, review_status, evidence_json, affect_json, "
-    "salience, activation, provenance, nesting_depth";
+    "salience, activation, provenance, nesting_depth, semantic_claim_json, source_spans_json";
 
 retrieval::StatementRow read_row(sqlite3_stmt* h) {
     auto t = [&](int i) -> std::string {
@@ -43,6 +43,7 @@ retrieval::StatementRow read_row(sqlite3_stmt* h) {
     r.activation = sqlite3_column_double(h, 21);
     r.provenance = t(22);
     r.nesting_depth = sqlite3_column_int(h, 23);
+    r.semantic_claim_json = t(24); r.source_spans_json = t(25);
     return r;
 }
 

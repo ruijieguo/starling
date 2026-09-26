@@ -2,10 +2,53 @@
 
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/json_parser.hpp"
+#include "starling/schema/canonicalize.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <string>
 
 namespace starling::extractor {
+
+TEST(JsonParser, TextSurfaceOptInPreservesMeaningAndHashesStoredValue) {
+    for (const auto* surface : {"noise from upstairs", "Ren with the keys",
+                               "all three options", "some budgets", "both hands",
+                               "sad to leave my colleagues"}) {
+        SCOPED_TRACE(surface);
+        const auto raw = nlohmann::json::array({{
+            {"subject", "Nora"}, {"predicate", "feels"}, {"object", surface}
+        }}).dump();
+        const auto parsed = parse_extractor_json(raw, {}, true);
+        ASSERT_EQ(parsed.statements.size(), 1u);
+        EXPECT_EQ(parsed.statements[0].object_value, surface);
+        EXPECT_EQ(parsed.statements[0].canonical_object_hash,
+                  schema::canonicalize_object(schema::CanonicalInput{std::string(surface)}).sha256_hex);
+    }
+}
+
+TEST(JsonParser, ThemeNormalizationRemainsDefaultAndTextQuantifiersStayDistinct) {
+    auto parse = [](const char* surface, bool preserve = false) {
+        const auto raw = nlohmann::json::array({{
+            {"subject", "Nora"}, {"predicate", "prefers"}, {"object", surface}
+        }}).dump();
+        return parse_extractor_json(raw, {}, preserve).statements.at(0);
+    };
+    EXPECT_EQ(parse("the cabbages").object_value, "cabbage");
+    EXPECT_EQ(parse("the cabbages").canonical_object_hash, parse("cabbage").canonical_object_hash);
+    EXPECT_NE(parse("all budgets", true).canonical_object_hash,
+              parse("some budgets", true).canonical_object_hash);
+    EXPECT_EQ(parse("  All BUDGETS  ", true).canonical_object_hash,
+              parse("all budgets", true).canonical_object_hash);
+}
+
+TEST(JsonParser, TextSurfaceOptInRejectsBlankObjects) {
+    const auto raw = nlohmann::json::array({{
+        {"subject", "Nora"}, {"predicate", "feels"}, {"object", " \t\n "}
+    }}).dump();
+    const auto parsed = parse_extractor_json(raw, {}, true);
+    EXPECT_TRUE(parsed.errors.empty());
+    EXPECT_TRUE(parsed.statements.empty());
+}
 
 TEST(JsonParser, ParsesSemanticCoreAndFillsBookkeeping) {
     ExistingRefMap refs;

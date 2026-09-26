@@ -14,6 +14,10 @@ namespace starling::extractor {
 // no salience/affect. M0.7 adds derived_from (parent Statement.id list).
 // M0.5 will extend (or supersede) this when ConflictProbe + reconsolidation arrive.
 struct ExtractedStatement {
+    // Replay guards compare the entire write input, including fields omitted
+    // from the model-facing candidate projection. New fields join automatically.
+    bool operator==(const ExtractedStatement&) const = default;
+
     std::string                  holder_id;            // CognizerRef.id (UUID)
     std::string                  holder_tenant_id;     // for Statement.tenant_id derivation
     schema::Perspective          holder_perspective = schema::Perspective::INFERRED;
@@ -36,6 +40,7 @@ struct ExtractedStatement {
     std::optional<std::string>   event_time_start;     // ISO-8601 UTC, single-point (M0.5); end added M0.5+
 
     std::int32_t                 chunk_index    = 0;
+    std::string                  semantic_claim_json;  // empty for legacy; source-grounded evidence JSON
     std::string                  source_hash;          // chunk content hash; persisted to source_spans_json
     std::vector<std::string>     perceived_by;         // CognizerRef.id list
     std::vector<std::string>     scope_parties;        // grounding 参与方（sorted{self,interlocutor}）；空=私有。独立于 perceived_by。

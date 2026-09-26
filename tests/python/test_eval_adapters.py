@@ -84,6 +84,40 @@ def test_socialmembench_mc_normalizes_options_and_gold():
     assert g["object"] == "I own X."
     assert g["observed_at"] == "2025-04-01T10:00:00"
     assert g["_gold_level"] == "retrieval"
+    assert g["turn_id"] == "n1_s01_t001"
+    assert g["session_index"] == 1
+    assert rec["history"][0]["turn_id"] == "n1_s01_t001"
+    assert rec["history"][0]["session_index"] == 1
+    assert rec["history"][0]["message_index"] == 1
+    assert rec["source"]["network_id"] == "n1"
+    assert rec["source"]["reference_answer"] == qa[0]["answer"]
+    rec["evaluation_protocol"] = {"status": "include", "sessions": [1, 3]}
+    assert ad.adapt_passthrough([rec], benchmark="socialmem")[0] == rec
+
+
+def test_socialmem_anchor_timestamp_is_network_scoped():
+    qa = [{"qa_id": "q", "network_id": "n1", "query_type": "Q1",
+           "question": "what?", "answer": "owned", "answer_format": "long_form",
+           "options_json": "[]", "correct_option": "", "evidence_anchors_json": [
+               {"turn_id": "n1_s01_t001", "speaker_display_name": "Bob",
+                "message_excerpt": "I own X.", "session_index": 1}]}]
+    conversations = [*_SM_CONV, {**_SM_CONV[0], "network_id": "other",
+                                "timestamp": "2099-01-01T00:00:00"}]
+    rec = ad.adapt_socialmembench(qa, conversations)[0]
+    assert rec["gold_statements"][0]["observed_at"] == _SM_CONV[0]["timestamp"]
+
+
+def test_socialmem_duplicate_source_ids_remain_distinct_across_networks():
+    base = {"qa_id": "reused", "query_type": "Q1", "question": "what?", "answer": "owned",
+            "answer_format": "long_form", "options_json": "[]", "correct_option": "",
+            "evidence_anchors_json": "[]"}
+    qa = [{**base, "network_id": n} for n in ("n1", "n2")]
+    conversations = [*_SM_CONV, {**_SM_CONV[0], "network_id": "n2"}]
+    rows = ad.adapt_socialmembench(qa, conversations)
+    assert {r["item_id"] for r in rows} == {"n1/reused", "n2/reused"}
+    assert all(r["source"]["qa_id"] == "reused" for r in rows)
+    with pytest.raises(ad.AdapterError, match="duplicate"):
+        ad.adapt_socialmembench([qa[0], qa[0]], conversations)
 
 
 def test_socialmembench_mc_list_of_str_prefix_options():

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from typing import Any
 
 
@@ -101,6 +102,9 @@ def adapt_passthrough(rows: list[dict], *, benchmark: str) -> list[dict]:
             is_abstain=bool(r.get("is_abstain", False)),
             query_type=r.get("query_type"),
         ))
+        for key in ("source", "evaluation_protocol"):
+            if key in r:
+                out[-1][key] = r[key]
     return out
 
 
@@ -177,29 +181,40 @@ def _mc_options(opts_raw: Any, where: str) -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 def adapt_socialmembench(qa_rows: list[dict], conversation_rows: list[dict]) -> list[dict]:
     # 先按 network_id 聚合会话轮 → history;同时建 turn_id → 真实 timestamp 映射。
-    turn_ts: dict[str, str] = {}
+    turn_source: dict[tuple[str, str], dict] = {}
     by_net: dict[str, list[dict]] = {}
     for i, c in enumerate(conversation_rows):
         _require(c, ("network_id", "turn_id", "session_index", "message_index",
                      "speaker_display_name", "message", "timestamp"),
                  f"socialmem.conv[{i}]")
-        turn_ts[c["turn_id"]] = c["timestamp"]
+        key = (c["network_id"], c["turn_id"])
+        if key in turn_source:
+            raise AdapterError(f"duplicate SocialMemBench turn: {key}")
+        turn_source[key] = c
         by_net.setdefault(c["network_id"], []).append(c)
     for turns in by_net.values():
         turns.sort(key=lambda t: (int(t["session_index"]), int(t["message_index"])))
     history_of = {
         net: [{"speaker": t["speaker_display_name"], "text": t["message"],
-               "observed_at": t["timestamp"]}
+               "observed_at": t["timestamp"], "turn_id": t["turn_id"],
+               "session_index": int(t["session_index"]), "message_index": int(t["message_index"])}
               for t in turns]
         for net, turns in by_net.items()
     }
 
+    id_counts = Counter(str(q.get("qa_id")) for q in qa_rows)
+    seen_items = set()
     out = []
     for i, q in enumerate(qa_rows):
         _require(q, ("qa_id", "network_id", "query_type", "question", "answer",
                      "answer_format", "options_json", "correct_option",
                      "evidence_anchors_json"), f"socialmem.qa[{i}]")
         net = q["network_id"]
+        source_id = str(q["qa_id"])
+        item_id = f"{net}/{source_id}" if id_counts[source_id] > 1 else source_id
+        if item_id in seen_items:
+            raise AdapterError(f"duplicate SocialMemBench QA identity: {item_id}")
+        seen_items.add(item_id)
         if net not in history_of:
             raise AdapterError(f"socialmem.qa[{i}]: network_id={net} 无对应会话")
 
@@ -210,7 +225,11 @@ def adapt_socialmembench(qa_rows: list[dict], conversation_rows: list[dict]) -> 
             "subject": a.get("speaker_display_name", "unknown"),
             "predicate": "said",
             "object": a.get("message_excerpt", ""),
-            "observed_at": turn_ts.get(a.get("turn_id"), "1970-01-01T00:00:00Z"),
+            "observed_at": turn_source.get((net, a.get("turn_id")), {}).get(
+                "timestamp", "1970-01-01T00:00:00Z"),
+            "turn_id": a.get("turn_id"),
+            "session_index": turn_source.get((net, a.get("turn_id")), {}).get(
+                "session_index", a.get("session_index")),
             "_gold_level": "retrieval",  # 如实标注:检索级,非抽取级蒸馏
         } for a in anchors]
 
@@ -223,7 +242,7 @@ def adapt_socialmembench(qa_rows: list[dict], conversation_rows: list[dict]) -> 
                 raise AdapterError(
                     f"socialmem.qa[{i}]: correct_option={correct!r} 不在 {letters}")
             out.append(_canonical(
-                str(q["qa_id"]), "socialmem_mc", history_of[net],
+                item_id, "socialmem_mc", history_of[net],
                 q["question"], options, letters.index(correct),
                 answer_format="multiple_choice", gold_statements=gold or None,
                 query_type=q["query_type"],
@@ -231,13 +250,20 @@ def adapt_socialmembench(qa_rows: list[dict], conversation_rows: list[dict]) -> 
         elif fmt in ("long_form", "short_answer"):
             # 自由文本:answer=参考文本(judge 比对);correct_option 截断不可用。
             out.append(_canonical(
-                str(q["qa_id"]), "socialmem_free", history_of[net],
+                item_id, "socialmem_free", history_of[net],
                 q["question"], [], q["answer"],
                 answer_format=fmt, gold_statements=gold or None,
                 query_type=q["query_type"],
             ))
         else:
             raise AdapterError(f"socialmem.qa[{i}]: 未知 answer_format={fmt!r}")
+        out[-1]["source"] = {
+            "benchmark": "socialmembench", "network_id": net, "qa_id": q["qa_id"],
+            "reference_answer": q["answer"], "correct_option": q["correct_option"],
+            "evidence_anchors": anchors,
+            "temporal_anchors": _parse_json(q.get("temporal_anchors_json", "[]"),
+                                             f"socialmem.qa[{i}].temporal_anchors"),
+        }
     return out
 
 

@@ -34,6 +34,23 @@ def test_open_remember_close(tmp_path):
     mem.close()
 
 
+def test_remember_result_accepts_native_diagnostics():
+    result = starling.RememberResult(
+        engram_ref="engram-1",
+        outcome="accepted",
+        extraction_failed=False,
+        failure_category="",
+        failure_detail="",
+        catalog_version="claim-predicate-v3",
+        source_preserved=True,
+        structured_claims_persisted=True,
+        accepted_by_predicate={"prefers": 1},
+        rejected_by_predicate={},
+    )
+    assert result.catalog_version == "claim-predicate-v3"
+    assert result.accepted_by_predicate == {"prefers": 1}
+
+
 def test_remember_without_llm_raises(tmp_path):
     mem = starling.Memory.open(str(tmp_path / "m2.db"), agent="alice")  # no llm
     try:

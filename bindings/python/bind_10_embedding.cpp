@@ -19,6 +19,10 @@ namespace starling::bindings {
 
 void bind_10_embedding(pybind11::module_& m) {
     using namespace pybind11::literals;
+    m.def("embedding_health_json", [](const std::string& path, int dim, const std::string& model, int max_retry) {
+        return starling::embedding::frozen_embedding_health(path, dim, model, max_retry).to_json();
+    }, py::arg("database"), py::arg("dim"), py::arg("model"), py::arg("max_retry") = 3,
+       py::call_guard<py::gil_scoped_release>());
 
     // ── M0.9: Embedding / Vector / Worker / SemanticRetriever ─────────────
 
@@ -27,6 +31,7 @@ void bind_10_embedding(pybind11::module_& m) {
         // dim() 在基类暴露,使 set_embedder 对所有 embedder(stub/openai)可取维度
         // (向量后端工厂 zvec collection 需固定 dim)。
         .def("dim", &starling::embedding::EmbeddingAdapter::dim)
+        .def("model", &starling::embedding::EmbeddingAdapter::model)
         .def("embed",
              [](starling::embedding::EmbeddingAdapter& self, const std::string& text) {
                  return self.embed(text).vector;  // list[float]; len == dim. Real call → connectivity probe.
@@ -60,7 +65,10 @@ void bind_10_embedding(pybind11::module_& m) {
             .def_static("from_env",       &OpenAIEmbeddingAdapter::Config::from_env);
         py::class_<OpenAIEmbeddingAdapter, starling::embedding::EmbeddingAdapter>(
                 m, "OpenAIEmbeddingAdapter")
-            .def(py::init<OpenAIEmbeddingAdapter::Config>(), py::arg("config"));
+            .def(py::init<OpenAIEmbeddingAdapter::Config>(), py::arg("config"))
+            .def_property_readonly("request_count", &OpenAIEmbeddingAdapter::request_count)
+            .def_property_readonly("embed_calls", &OpenAIEmbeddingAdapter::embed_calls)
+            .def_property_readonly("batch_calls", &OpenAIEmbeddingAdapter::batch_calls);
     }
 
     py::class_<starling::vector::SqliteBlobVectorIndex,
@@ -89,6 +97,9 @@ void bind_10_embedding(pybind11::module_& m) {
                       starling::vector::VectorIndex&>(),
              py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
              py::arg("adapter"), py::arg("embedder"), py::arg("index"))
+        .def("health_json", [](starling::embedding::EmbeddingWorker& s) {
+            return s.health(s.connection()).to_json();
+        }, py::call_guard<py::gil_scoped_release>())
         .def("tick_one_batch",
              [](starling::embedding::EmbeddingWorker& s, std::string now) {
                  return s.tick_one_batch(s.connection(), now);
@@ -132,6 +143,7 @@ void bind_10_embedding(pybind11::module_& m) {
         .def_readonly("score", &starling::retrieval::SemanticScored::score);
 
     py::class_<starling::retrieval::SemanticResult>(m, "SemanticResult")
+        .def_readonly("receipt", &starling::retrieval::SemanticResult::receipt)
         .def_readonly("rows",     &starling::retrieval::SemanticResult::rows)
         .def_readonly("degraded", &starling::retrieval::SemanticResult::degraded);
 
@@ -189,6 +201,7 @@ void bind_10_embedding(pybind11::module_& m) {
         .def_readonly("activation", &starling::retrieval::CompletionScored::activation);
 
     py::class_<starling::retrieval::CompletionResult>(m, "CompletionResult")
+        .def_readonly("receipt", &starling::retrieval::CompletionResult::receipt)
         .def_readonly("rows",                 &starling::retrieval::CompletionResult::rows)
         .def_readonly("completion_truncated", &starling::retrieval::CompletionResult::completion_truncated)
         .def_readonly("degraded",             &starling::retrieval::CompletionResult::degraded);

@@ -33,6 +33,8 @@ struct StatementRow {
     double      activation{};        // statements.activation
     std::string provenance;          // statements.provenance
     int         nesting_depth{};     // statements.nesting_depth
+    std::string semantic_claim_json; // empty for legacy SQL NULL
+    std::string source_spans_json;   // compatibility source-span index
 };
 
 }  // namespace starling::retrieval

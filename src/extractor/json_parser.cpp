@@ -64,7 +64,8 @@ std::string_view extract_array(std::string_view raw) {
 
 ParseResult parse_extractor_json(
     std::string_view raw_json,
-    const ExistingRefMap& /*existing_ref_map*/) {
+    const ExistingRefMap& /*existing_ref_map*/,
+    bool preserve_text_objects) {
     ParseResult result;
 
     const std::string_view arr_text = extract_array(raw_json);
@@ -138,11 +139,14 @@ ParseResult parse_extractor_json(
             if (s.subject_id.empty() || s.predicate.empty() || s.object_value.empty()) {
                 continue;  // lenient: skip incomplete element
             }
-            // canonical_object_hash is COMPUTED C++-side (never trusted from LLM);
-            // normalize_theme runs before canonicalize_object (M8: str-kind theme).
-            s.object_value = schema::normalize_theme(s.object_value);
+            // Full clauses need their quantifiers, plural forms and names.
+            // Legacy theme grounding still normalizes before hashing by default.
+            if (!preserve_text_objects) {
+                s.object_value = schema::normalize_theme(s.object_value);
+            }
             const schema::CanonicalResult cr =
                 schema::canonicalize_object(schema::CanonicalInput{std::string(s.object_value)});
+            if (preserve_text_objects && cr.canonical.empty()) continue;
             s.canonical_object_hash = cr.sha256_hex;
             s.modality   = schema::modality_from_string(
                 normalize_modality(el.value("modality", std::string("believes"))));

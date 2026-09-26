@@ -1,0 +1,570 @@
+{
+  "schema_version": 2,
+  "scope": "独立工程来源用例，不并入固定 64 控制或真实评测分母",
+  "cases": [
+    {
+      "id": "single_action_en",
+      "holder": "Mina",
+      "passage": "Mina: I have not decided whether to take the pottery class.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "whether to take the pottery class; not decided",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "single_action_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我没有决定是否租用独木舟。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "是否租用独木舟，还没有决定",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "possibility_en",
+      "holder": "Mina",
+      "passage": "Mina: I might take the pottery class.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "taking the pottery class",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "possibility_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我可能会租用独木舟。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "是否租用独木舟",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "world_fact_en",
+      "holder": "Mina",
+      "passage": "Mina: I do not know whether the museum is open.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "whether the museum is open",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "world_fact_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我不知道展馆是否开放。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "展馆是否开放",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "question_en",
+      "holder": "Mina",
+      "passage": "Mina: Is the pottery class accepting students?",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "taking the pottery class",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "QUESTIONED",
+          "scope_markers": [
+            "QUESTIONED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "not_asserted"
+    },
+    {
+      "id": "question_zh",
+      "holder": "Mina",
+      "passage": "Mina: 有人知道展馆是否开放吗？",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "uncertain_about",
+        "object": "展馆是否开放",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "QUESTIONED",
+          "scope_markers": [
+            "QUESTIONED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "not_asserted"
+    },
+    {
+      "id": "incidental_routing_en",
+      "holder": "Mina",
+      "passage": "Mina: I'll forward venue questions to Bea.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "forward venue questions to Bea",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "incidental_routing_zh",
+      "holder": "Mina",
+      "passage": "Mina: 场地问题转给小宋处理，线索也顺便告诉她。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "场地问题转给小宋处理",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": false,
+      "reason": "wrong_relation"
+    },
+    {
+      "id": "settled_routing_en",
+      "holder": "Mina",
+      "passage": "Mina: I have decided to forward venue questions to Bea instead of the shared queue.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "forward venue questions to Bea instead of the shared queue",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "settled_routing_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我已经决定采用第二条升级路线，把场地问题交给小宋。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "采用第二条升级路线，把场地问题交给小宋",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "local_candidate_en",
+      "holder": "Mina",
+      "passage": "Mina: I have decided to join the choir. Forward equipment queries to Bea.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "join the choir",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "local_candidate_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我决定参加合唱团。器材问题转给小宋。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "decided_on",
+        "object": "参加合唱团",
+        "modality": "INTENDS",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "relation_negation_en",
+      "holder": "Mina",
+      "passage": "Mina: I do not feel annoyed about the delay.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "annoyed about the delay",
+        "modality": "BELIEVES",
+        "polarity": "NEG",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "NEGATED",
+          "scope_markers": [
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "relation_negation_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我并不为演出延期感到生气。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "为演出延期感到生气",
+        "modality": "BELIEVES",
+        "polarity": "NEG",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "NEGATED",
+          "scope_markers": [
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "negative_object_en",
+      "holder": "Mina",
+      "passage": "Mina: I feel sad about not winning the raffle.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "sad about not winning the raffle",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "negative_object_zh",
+      "holder": "Mina",
+      "passage": "Mina: 我为没有抽中奖品感到难过。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "FIRST_PERSON",
+        "subject": "Mina",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "为没有抽中奖品感到难过",
+        "modality": "BELIEVES",
+        "polarity": "POS",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Mina",
+          "assertion_scope": "ASSERTED",
+          "scope_markers": [
+            "ASSERTED"
+          ],
+          "time_text": "",
+          "event_time": null
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "reported_negation_en",
+      "holder": "Mina",
+      "passage": "Mina: Noor said she does not feel bitter about the rehearsal.",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "QUOTED",
+        "subject": "Noor",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "bitter about the rehearsal",
+        "modality": "BELIEVES",
+        "polarity": "NEG",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "Noor",
+          "assertion_scope": "REPORTED",
+          "scope_markers": [
+            "REPORTED",
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null,
+          "attributed_to": "Mina"
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    },
+    {
+      "id": "reported_negation_zh",
+      "holder": "Mina",
+      "passage": "Mina: 小宋说她并不为排练感到生气。",
+      "candidate": {
+        "holder": "Mina",
+        "holder_perspective": "QUOTED",
+        "subject": "小宋",
+        "subject_kind": "cognizer",
+        "predicate": "feels",
+        "object": "为排练感到生气",
+        "modality": "BELIEVES",
+        "polarity": "NEG",
+        "nesting_depth": 0,
+        "evidence": {
+          "clause_id": "c0",
+          "actor": "小宋",
+          "assertion_scope": "REPORTED",
+          "scope_markers": [
+            "REPORTED",
+            "NEGATED"
+          ],
+          "time_text": "",
+          "event_time": null,
+          "attributed_to": "Mina"
+        }
+      },
+      "expected_keep": true,
+      "reason": "supported"
+    }
+  ]
+}

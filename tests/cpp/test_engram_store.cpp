@@ -83,6 +83,16 @@ TEST(EngramStore, PutPersistsRowVisibleViaGet) {
               (std::vector<std::uint8_t>{'h','e','l','l','o'}));
 }
 
+TEST(EngramStore, DeclaredTransformationsRoundTripForClaimHashVerification) {
+    auto c = migrated_db();
+    auto input = sample_input();
+    input.declared_transformations = {"speaker_grouping", "line_endings_preserved"};
+    auto written = EngramStore::put(input, IngestPolicy::STORE, c);
+    auto fetched = EngramStore::get(written.id, "t1", c);
+    ASSERT_TRUE(fetched.has_value());
+    EXPECT_EQ(fetched->declared_transformations, input.declared_transformations);
+}
+
 TEST(EngramStore, GetReturnsNulloptForWrongTenant) {
     auto c = migrated_db();
     auto written = EngramStore::put(sample_input(), IngestPolicy::STORE, c);

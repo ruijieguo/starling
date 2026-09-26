@@ -1,7 +1,11 @@
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/extractor/claim_contract.hpp"
+#include <nlohmann/json.hpp>
 
 #include <functional>
+#include <cctype>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -29,8 +33,31 @@ bool in_extra_set(const std::vector<std::string>& extra, const std::string& pred
 
 }  // namespace
 
+void ValidationPolicy::validate() const {
+    if (claim_protocol_retry_budget < 0 || claim_protocol_retry_budget > 1) {
+        throw std::invalid_argument("claim_protocol_retry_budget must be 0 or 1");
+    }
+    if (claim_batch_size < 0 || claim_batch_size > 32) {
+        throw std::invalid_argument("claim_batch_size must be between 0 and 32");
+    }
+    if (claim_batch_size > 0 && !semantic_claim_contract) {
+        throw std::invalid_argument("claim_batch_size requires semantic_claim_contract=true");
+    }
+    if (claim_batch_target_units && (!semantic_claim_contract || claim_batch_size <= 0)) {
+        throw std::invalid_argument("claim_batch_target_units requires semantic_claim_contract=true and claim_batch_size>0");
+    }
+    if (!semantic_claim_contract) return;
+    if (!preserve_text_objects) {
+        throw std::invalid_argument("semantic_claim_contract requires preserve_text_objects=true");
+    }
+    if (attribute_first_order_mental_to_holder) {
+        throw std::invalid_argument("semantic_claim_contract requires attribute_first_order_mental_to_holder=false");
+    }
+}
+
 ValidationOutcome validate_extracted_statement(const ExtractedStatement& s,
                                                const ValidationPolicy& policy) {
+    policy.validate();
     ValidationOutcome out;
 
     auto missing = [&](const char* field) {
@@ -67,6 +94,49 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s,
         out.error_kind = "below_minimum_confidence";
         out.detail = "confidence < 0.3 — extractor drops per §15.3.2";
         return out;
+    }
+
+    if (policy.semantic_claim_contract && is_claim_predicate(s.predicate)) {
+        try {
+            if (s.semantic_claim_json.empty()) return {false, "missing_semantic_claim", "contract evidence required", std::nullopt};
+            auto claim = nlohmann::json::parse(s.semantic_claim_json);
+            if (s.subject_kind != "cognizer" || claim.at("actor") != s.subject_id
+                || (s.holder_perspective == schema::Perspective::FIRST_PERSON && s.subject_id != s.holder_id)) {
+                return {false, "scope_failure", "claim actor/holder mismatch", std::nullopt};
+            }
+            const auto* predicate_spec = find_claim_predicate(s.predicate);
+            if (predicate_spec == nullptr) {
+                return {false, "schema_failure", "predicate catalog lookup failed", std::nullopt};
+            }
+            const auto modality = std::string(schema::to_string(s.modality));
+            const auto polarity = std::string(schema::to_string(s.polarity));
+            const auto modality_allowed = std::find(
+                predicate_spec->allowed_modalities.begin(),
+                predicate_spec->allowed_modalities.end(),
+                [&] {
+                    std::string value = modality;
+                    std::transform(value.begin(), value.end(), value.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                    return value;
+                }());
+            const auto polarity_allowed = std::find(
+                predicate_spec->allowed_polarities.begin(),
+                predicate_spec->allowed_polarities.end(),
+                [&] {
+                    std::string value = polarity;
+                    std::transform(value.begin(), value.end(), value.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                    return value;
+                }());
+            if (modality_allowed == predicate_spec->allowed_modalities.end()
+                || polarity_allowed == predicate_spec->allowed_polarities.end()
+                || (s.predicate == "uncertain_about" && s.polarity != schema::Polarity::POS)) {
+                return {false, "schema_failure", "predicate/modality/polarity mismatch", std::nullopt};
+            }
+            if (!s.derived_from.empty()) return {false, "source_span_failure", "derived proposition cannot carry direct certificate", std::nullopt};
+        } catch (const std::exception& e) {
+            return {false, "schema_failure", e.what(), std::nullopt};
+        }
     }
 
     out.accepted = true;

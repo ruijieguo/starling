@@ -1,7 +1,10 @@
 #include "starling/memory/memory_ops.hpp"
 
 #include <optional>
+#include <set>
 #include <variant>
+
+#include <nlohmann/json.hpp>
 
 #include "starling/bus/bus.hpp"
 #include "starling/bus/outbox_dispatcher.hpp"
@@ -11,6 +14,7 @@
 #include "starling/evidence/engram.hpp"
 #include "starling/extractor/existing_ref_map.hpp"
 #include "starling/extractor/extractor.hpp"
+#include "starling/extractor/episodic_extractor.hpp"
 #include "starling/governance/tick_load_shedding.hpp"
 #include "starling/governance/write_gate.hpp"
 #include "starling/projection/projection_maintainer.hpp"
@@ -81,6 +85,7 @@ RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
                                 const extractor::ExtractionLlmResult& llm_result,
                                 const extractor::ValidationPolicy& policy) {
     RememberOutcome result;
+    result.holder_id = params.holder_id;
     result.outcome    = prepared.outcome;
     result.engram_ref = prepared.engram_ref;
     if (!prepared.should_extract) {
@@ -94,6 +99,20 @@ RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
                                   params.interlocutor, llm_result);
     result.statement_ids     = run.accepted_statement_ids;
     result.extraction_failed = (run.status == extractor::ExtractionRunResult::Status::FAILED);
+    result.source_preserved = !prepared.engram_ref.empty();
+    result.structured_claims_persisted = !result.statement_ids.empty();
+    result.failure_category = llm_result.failure_category;
+    result.catalog_version = llm_result.catalog_version;
+    result.accepted_by_predicate = llm_result.accepted_by_predicate;
+    result.rejected_by_predicate = llm_result.rejected_by_predicate;
+    result.failure_detail = llm_result.failure_detail;
+    if (result.extraction_failed && result.failure_category.empty())
+        result.failure_category = llm_result.persistence_error.empty()
+            ? "transport_failure" : "persistence_failure";
+    if (!llm_result.persistence_error.empty())
+        result.failure_category = "persistence_failure";
+    if (!llm_result.persistence_error.empty())
+        result.failure_detail = llm_result.persistence_error;
 
     // 写后泵(P2.o):生产语句写经 StatementWriter 不经 Bus::write,泵挂此处。
     // #6:用 prepared 的权威时戳(而非 params 另传的 created_at)——防 prepare/commit 漂移。
@@ -111,6 +130,7 @@ RememberOutcome remember(persistence::SqliteAdapter& adapter,
     const RememberPrepared prepared = remember_prepare(adapter, params);
     if (!prepared.should_extract) {
         RememberOutcome result;
+        result.holder_id = params.holder_id;
         result.outcome    = prepared.outcome;
         result.engram_ref = prepared.engram_ref;
         return result;
@@ -135,13 +155,32 @@ RememberLlmBundle remember_extract_all(
         gf_prompt.replace(pos, kSelf.size(), params.holder_id);
         pos += params.holder_id.size();
     }
-    out.general_fact = extract_llm(adapter, llm, gf_prompt, params, policy);
+    auto general_policy = policy;
+    general_policy.semantic_claim_contract = false;
+    general_policy.claim_batch_size = 0;
+    general_policy.claim_batch_target_units = false;
+    general_policy.claim_allow_code_fence = false;
+    out.general_fact = extract_llm(adapter, llm, gf_prompt, params, general_policy);
 
     extractor::EpisodicExtractor episodic(
         adapter.connection(), llm, adapter, prompts.episodic);
     const std::string passage(params.payload.begin(), params.payload.end());
     out.episodic = episodic.extract_llm(passage);
     return out;
+}
+
+std::string remember_bundle_receipt(const RememberLlmBundle& extracted) {
+    const auto belief = nlohmann::json::parse(extractor::claim_extraction_receipt(extracted.belief));
+    const auto general_fact = nlohmann::json::parse(extractor::claim_extraction_receipt(extracted.general_fact));
+    const auto episodic = nlohmann::json::parse(extractor::episodic_extraction_receipt(extracted.episodic));
+    return nlohmann::json{
+        {"schema_version", 1},
+        {"channels", {
+            {"belief", belief},
+            {"general_fact", general_fact},
+            {"episodic", episodic}
+        }}
+    }.dump();
 }
 
 RememberOutcome remember_commit_all(
@@ -152,6 +191,7 @@ RememberOutcome remember_commit_all(
         const RememberLlmBundle& extracted,
         const extractor::ValidationPolicy& policy) {
     RememberOutcome out;
+    out.holder_id = params.holder_id;
     out.outcome = prepared.outcome;
     out.engram_ref = prepared.engram_ref;
     if (!prepared.should_extract) return out;
@@ -179,11 +219,17 @@ RememberOutcome remember_commit_all(
         } catch (...) {}
     }
 
+    auto general_policy = policy;
+    general_policy.semantic_claim_contract = false;
+    general_policy.claim_batch_size = 0;
+    general_policy.claim_batch_target_units = false;
+    general_policy.claim_allow_code_fence = false;
     auto gf = remember_commit(
-        adapter, llm, params, prepared, extracted.general_fact, policy);
+        adapter, llm, params, prepared, extracted.general_fact, general_policy);
     out.statement_ids.insert(out.statement_ids.end(),
                              gf.statement_ids.begin(), gf.statement_ids.end());
     out.extraction_failed = out.extraction_failed || gf.extraction_failed;
+    if (out.failure_detail.empty()) out.failure_detail = gf.failure_detail;
     transaction.commit();
     return out;
 }
@@ -196,13 +242,81 @@ RememberOutcome remember_all(
         const extractor::ValidationPolicy& policy) {
     const auto prepared = remember_prepare(adapter, params);
     if (!prepared.should_extract) {
-        return {.engram_ref = prepared.engram_ref,
+        return {.holder_id = params.holder_id,
+                .engram_ref = prepared.engram_ref,
                 .statement_ids = {},
                 .outcome = prepared.outcome,
                 .extraction_failed = false};
     }
     const auto extracted = remember_extract_all(adapter, llm, params, prompts, policy);
     return remember_commit_all(adapter, llm, params, prepared, extracted, policy);
+}
+
+std::vector<RememberOutcome> remember_holders(
+        persistence::SqliteAdapter& adapter,
+        extractor::LLMAdapter& llm,
+        const RememberPrompts& prompts,
+        const std::vector<RememberParams>& holders,
+        const extractor::ValidationPolicy& policy) {
+    std::vector<RememberOutcome> results;
+    results.reserve(holders.size());
+    std::set<std::string> seen;
+    for (const auto& params : holders) {
+        RememberOutcome result;
+        result.holder_id = params.holder_id;
+        if (params.holder_id.empty() || !seen.insert(params.holder_id).second) {
+            result.outcome = "rejected";
+            result.extraction_failed = true;
+            result.failure_category = "holder_identity_failure";
+            result.failure_detail = "holder_id must be nonempty and unique";
+            results.push_back(std::move(result));
+            continue;
+        }
+        RememberPrepared prepared;
+        try {
+            prepared = remember_prepare(adapter, params);
+            result.engram_ref = prepared.engram_ref;
+            result.outcome = prepared.outcome;
+            if (!prepared.should_extract) {
+                results.push_back(std::move(result));
+                continue;
+            }
+        } catch (const std::exception& e) {
+            result.outcome = "rejected";
+            result.extraction_failed = true;
+            result.failure_category = "prepare_failure";
+            result.failure_detail = e.what();
+            result.receipt = remember_bundle_receipt({});
+            results.push_back(std::move(result));
+            continue;
+        }
+
+        RememberLlmBundle extracted;
+        try {
+            extracted = remember_extract_all(adapter, llm, params, prompts, policy);
+            result.receipt = remember_bundle_receipt(extracted);
+        } catch (const std::exception& e) {
+            result.extraction_failed = true;
+            result.failure_category = "extraction_failure";
+            result.failure_detail = e.what();
+            result.receipt = remember_bundle_receipt(extracted);
+            results.push_back(std::move(result));
+            continue;
+        }
+
+        try {
+            auto committed = remember_commit_all(adapter, llm, params, prepared, extracted, policy);
+            committed.holder_id = params.holder_id;
+            committed.receipt = result.receipt;
+            results.push_back(std::move(committed));
+        } catch (const std::exception& e) {
+            result.extraction_failed = true;
+            result.failure_category = "commit_failure";
+            result.failure_detail = e.what();
+            results.push_back(std::move(result));
+        }
+    }
+    return results;
 }
 
 std::string neutralize_recall_fence(std::string_view context_pack) {

@@ -23,3 +23,12 @@ class SourceSpanRef:
     source_speaker: CognizerRef | None = None
     observed_at: datetime
     source_hash: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SourceTurn:
+    """可选原始话轮元数据；缺失字段保持 None。"""
+    speaker: CognizerRef | None = None
+    session_id: str | None = None
+    turn_index: int | None = None
+    observed_at: datetime | None = None

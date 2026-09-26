@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <limits>
 
 using starling::embedding::EmbeddingWorker;
 using starling::embedding::StubEmbeddingAdapter;
@@ -86,6 +87,98 @@ private:
 };
 
 }  // namespace
+
+TEST(EmbeddingHealth, RecoveredFailuresAreCompleteWithoutMoreEmbeddingCalls) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_stmt(conn.raw(), "s1");
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker worker(*adapter, emb, idx);
+    EXPECT_EQ(worker.health(conn).missing, 1);
+    emb.fail_next("bob knows x");
+    EXPECT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:00Z").failed, 1);
+    auto failed = worker.health(conn);
+    EXPECT_FALSE(failed.complete());
+    EXPECT_EQ(failed.retryable_failed, 1);
+    EXPECT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:01Z").embedded, 1);
+    const int changes = sqlite3_total_changes(conn.raw());
+    auto recovered = worker.health(conn);
+    EXPECT_TRUE(recovered.complete());
+    EXPECT_EQ(recovered.total, 1);
+    EXPECT_EQ(recovered.embedded, 1);
+    EXPECT_EQ(sqlite3_total_changes(conn.raw()), changes);
+    EXPECT_EQ(count(conn.raw(), "SELECT COUNT(*) FROM statement_vectors WHERE last_attempt_at IS NOT NULL"), 1);
+}
+
+TEST(EmbeddingHealth, ExhaustionAndIdleAreDifferent) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection(); seed_stmt(conn.raw(), "s1");
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker worker(*adapter, emb, idx);
+    for (int i = 0; i < 3; ++i) {
+        emb.fail_next("bob knows x");
+        ASSERT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:00Z").failed, 1);
+    }
+    EXPECT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:01Z").failed, 0);
+    auto health = worker.health(conn);
+    EXPECT_FALSE(health.complete());
+    EXPECT_EQ(health.exhausted, 1);
+    EXPECT_EQ(health.retryable_failed, 0);
+}
+
+TEST(EmbeddingHealth, InvalidVectorsNeverCountAsComplete) {
+    for (const auto& change : {"dim=9", "model='foreign'", "raw_embedding=x'00000000'",
+                              "index_vector=zeroblob(32)", "retry_count=1"}) {
+        SCOPED_TRACE(change);
+        auto adapter = SqliteAdapter::open(":memory:");
+        auto& conn = adapter->connection(); seed_stmt(conn.raw(), "s1");
+        StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+        EmbeddingWorker worker(*adapter, emb, idx);
+        ASSERT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:00Z").embedded, 1);
+        conn.exec(std::string("UPDATE statement_vectors SET ") + change);
+        auto health = worker.health(conn);
+        EXPECT_FALSE(health.complete()); EXPECT_EQ(health.invalid, 1);
+    }
+}
+
+TEST(EmbeddingHealth, NonFiniteBlobIsRejectedAtCorrectLength) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection(); seed_stmt(conn.raw(), "s1");
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker worker(*adapter, emb, idx);
+    ASSERT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:00Z").embedded, 1);
+    for (float bad : {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        float values[8] = {bad, 1, 1, 1, 1, 1, 1, 1};
+        sqlite3_stmt* stmt = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(conn.raw(), "UPDATE statement_vectors SET raw_embedding=?", -1, &stmt, nullptr), SQLITE_OK);
+        sqlite3_bind_blob(stmt, 1, values, sizeof(values), SQLITE_TRANSIENT);
+        ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE); sqlite3_finalize(stmt);
+        EXPECT_EQ(worker.health(conn).invalid, 1);
+    }
+}
+
+TEST(EmbeddingHealth, TenantJoinCannotBorrowAnotherTenantsVector) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection(); seed_stmt(conn.raw(), "s1");
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker worker(*adapter, emb, idx);
+    ASSERT_EQ(worker.tick_one_batch(conn, "2026-09-26T00:00:00Z").embedded, 1);
+    conn.exec("PRAGMA foreign_keys=OFF");
+    conn.exec("UPDATE statement_vectors SET tenant_id='other'");
+    auto health = worker.health(conn);
+    EXPECT_FALSE(health.complete()); EXPECT_EQ(health.missing, 1);
+}
+
+TEST(EmbeddingHealth, ArchivedAndForgottenFollowWorkerScope) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_stmt(conn.raw(), "s1", "x", "archived");
+    seed_stmt(conn.raw(), "s2", "x", "forgotten");
+    StubEmbeddingAdapter emb(8); SqliteBlobVectorIndex idx;
+    EmbeddingWorker worker(*adapter, emb, idx);
+    EXPECT_EQ(worker.health(conn).total, 0);
+    EXPECT_TRUE(worker.health(conn).complete());
+}
 
 TEST(EmbeddingWorker, EmbedsPendingAndEmitsEvent) {
     auto adapter = SqliteAdapter::open(":memory:");

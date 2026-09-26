@@ -1,0 +1,10 @@
+[
+  {"track":"controls","id":"ack_only","holder":"Mina","passage":"Mina: Thank you for the update.","expected":[]},
+  {"track":"controls","id":"fact_only","holder":"Mina","passage":"Mina: The printer has two paper trays.","expected":[]},
+  {"track":"controls","id":"event_only","holder":"Mina","passage":"Mina placed the folder in the cabinet.","expected":[]},
+  {"track":"controls","id":"question_only","holder":"Mina","passage":"Mina: Are you anxious about the presentation?","expected":[]},
+  {"track":"controls","id":"conditional_only","holder":"Mina","passage":"Mina: If the route were cancelled, I would feel worried.","expected":[]},
+  {"track":"controls","id":"ordinary_preference","holder":"Mina","passage":"Mina: I prefer tea to coffee.","expected":[]},
+  {"track":"controls","id":"negative_feeling","holder":"Mina","passage":"Mina: I am not anxious about the presentation.","expected":[["Mina","feels","anxious about the presentation","neg"]]},
+  {"track":"controls","id":"scoped_trust","holder":"Mina","passage":"Mina: I trust Jules with both keys.","expected":[["Mina","trusts","Jules with both keys","pos"]]}
+]

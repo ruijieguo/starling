@@ -1,4 +1,5 @@
 #include "starling/retrieval/semantic_retriever.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <sqlite3.h>
 
@@ -52,14 +53,25 @@ SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
     store::SqliteMetaStore meta(conn);
     SemanticResult result;
     result.degraded = false;
+    result.receipt.trace_id = params.trace_id;
+    result.receipt.query_id = params.query_id;
     for (const auto& s : scored) {
         store::StatementFilter f;
         f.tenant_id = params.tenant_id;
         f.id_in = {s.stmt_id};
         const auto rows = meta.query_statements(f);
         if (rows.empty()) continue;
+        ++result.receipt.candidate_counts.fetched;
+        const auto reason = claim_evidence_error(conn, rows.front());
+        if (!reason.empty()) {
+            record_claim_exclusion(result.receipt, rows.front().tenant_id, rows.front().id, reason);
+            continue;
+        }
+        record_claim_link(conn, result.receipt, rows.front());
         result.rows.push_back(SemanticScored{rows.front(), s.score});
     }
+    result.receipt.candidate_counts.returned = static_cast<std::int64_t>(result.rows.size());
+    result.receipt.sufficiency_status = result.rows.empty() ? Sufficiency::MISSING_INFO : Sufficiency::SUFFICIENT;
     // search_topk already returns results in descending-score order.
     return result;
 }

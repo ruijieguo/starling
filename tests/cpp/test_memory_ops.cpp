@@ -49,6 +49,17 @@ RememberParams params(std::string_view text) {
     return p;
 }
 
+class HolderSelectiveLLMAdapter final : public extractor::LLMAdapter {
+public:
+    extractor::LLMResponse extract(std::string_view prompt,
+                                   std::string_view) override {
+        if (prompt.find("Bad") != std::string_view::npos) {
+            return {.raw_xml = "", .ok = false, .error = "forced holder failure"};
+        }
+        return {.raw_xml = "[]", .ok = true};
+    }
+};
+
 }  // namespace
 
 TEST(MemoryOps, RememberThenIdempotentRerun) {
@@ -90,6 +101,42 @@ TEST(MemoryOps, TickAllAdvancesEmbeddingAndReturnsShape) {
     EXPECT_EQ(t.broken, 0);
     EXPECT_EQ(t.auto_withdrawn, 0);
     EXPECT_EQ(row_count(a->connection(), "SELECT COUNT(*) FROM statement_vectors"), 1);
+}
+
+TEST(MemoryOps, HolderBatchIsolatesFailureAndContinues) {
+    auto adapter = make_adapter();
+    HolderSelectiveLLMAdapter llm;
+    const RememberPrompts prompts{
+        .belief = "BELIEF::{convo}",
+        .episodic = "EPISODIC::{passage}",
+        .general_fact = "GENERAL::{self}::{convo}",
+    };
+    const auto make_params = [](std::string holder, std::string text) {
+        RememberParams p;
+        p.tenant_id = "default";
+        p.holder_id = std::move(holder);
+        p.adapter_name = "r35-test";
+        p.source_prefix = "r35-test";
+        p.created_at_iso8601 = "2026-09-21T00:00:00Z";
+        p.payload.assign(text.begin(), text.end());
+        return p;
+    };
+
+    const auto results = remember_holders(
+        *adapter, llm, prompts,
+        std::vector<RememberParams>{make_params("Bad", "Bad source"),
+                                    make_params("Good", "Good source")},
+        extractor::ValidationPolicy{});
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].holder_id, "Bad");
+    EXPECT_TRUE(results[0].extraction_failed);
+    EXPECT_EQ(results[0].failure_category, "transport_failure");
+    EXPECT_EQ(results[0].failure_detail, "forced holder failure");
+    EXPECT_FALSE(results[0].receipt.empty());
+    EXPECT_EQ(results[1].holder_id, "Good");
+    EXPECT_FALSE(results[1].extraction_failed);
+    EXPECT_EQ(results[1].outcome, "accepted");
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM engrams"), 2);
 }
 
 // ── P2.o 运行时闭环 ──────────────────────────────────────────────────────────

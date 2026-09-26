@@ -34,3 +34,46 @@ class ExtractionConfig:
     # holder_id=Xiao Ming and mental_state_of(character) finds it. Threaded to the
     # C++ ValidationPolicy at the write boundary (see MemoryCore._build_policy).
     attribute_first_order_mental_to_holder: bool = False
+    # Preserve clause-valued objects through belief/general-fact ingestion.
+    # Keep this stable per corpus; existing normalized data is not migrated.
+    # Episodic entity themes retain their existing grounding normalization.
+    preserve_text_objects: bool = False
+    semantic_claim_contract: bool = False
+    claim_allow_code_fence: bool = False
+    claim_protocol_retry_budget: int = 0
+    claim_batch_size: int = 0
+    claim_batch_target_units: bool = False
+    # Structured claim requests use the native C++ output mode.  ``legacy``
+    # preserves historical behavior; evaluation arms may opt into
+    # ``json_object`` without adding parsing logic to this Python carrier.
+    claim_output_mode: str = "legacy"
+
+    def __post_init__(self):
+        self.to_native_policy()
+
+    def to_native_policy(self):
+        """Map configuration to the shared C++ policy and its validation."""
+        from starling import _core
+
+        policy = _core.ValidationPolicy()
+        policy.extra_core_predicates = list(self.extra_core_predicates)
+        policy.confidence_drop_floor = self.confidence_drop_floor
+        policy.weak_inference_floor = self.weak_inference_floor
+        policy.attribute_first_order_mental_to_holder = self.attribute_first_order_mental_to_holder
+        policy.preserve_text_objects = self.preserve_text_objects
+        policy.semantic_claim_contract = self.semantic_claim_contract
+        policy.claim_allow_code_fence = self.claim_allow_code_fence
+        policy.claim_protocol_retry_budget = self.claim_protocol_retry_budget
+        policy.claim_batch_size = self.claim_batch_size
+        policy.claim_batch_target_units = self.claim_batch_target_units
+        output_modes = {
+            "legacy": _core.OutputMode.Legacy,
+            "json_object": _core.OutputMode.JsonObject,
+            "json_schema_strict": _core.OutputMode.JsonSchemaStrict,
+        }
+        try:
+            policy.claim_output_mode = output_modes[self.claim_output_mode]
+        except KeyError as exc:
+            raise ValueError(f"unsupported claim_output_mode: {self.claim_output_mode!r}") from exc
+        policy.validate()
+        return policy

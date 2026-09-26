@@ -96,6 +96,114 @@ def test_wrong_answerer_scores_miss():
     assert _run_stage("S_rag", REC, answerer=lambda p, b: "0") is False
 
 
+def test_star_passes_speaker_owned_memories_to_answerer():
+    import eval_ladder_pipeline as pipe
+
+    def extract(adapter, record):
+        pipe.seed_gold_statements(str(adapter.db_path), record["item_id"], [
+            {"holder": "Mei", "subject": "team", "predicate": "has_status",
+             "object": "expanding", "observed_at": "2026-05-01T10:00:00Z"},
+        ])
+
+    def answerer(prompt, backbone):
+        return "1" if "holder Mei" in prompt else "0"
+
+    config = {**_cfg(answerer), "extract": extract}
+    record = dict(REC, question="team has_status expanding")
+    assert ladder._real_answer("S_star", record, 0, config) is True
+
+
+def test_real_answer_diagnostics_expose_memory_and_prediction():
+    trace = {}
+    config = {**_cfg(), "diagnostics": trace}
+    record = dict(REC, question="carol said Extractor-derived attributed statement")
+    assert ladder._real_answer("S_star", record, 0, config) is True
+    assert Path(trace["db_path"]).is_file()
+    assert trace["embedding"]["embedded"] == 1
+    assert trace["recall"]["receipts"][0]["holder"] == "alice"
+    assert trace["recall"]["abstained"] is False
+    assert "Extractor-derived attributed statement" in trace["prompt"]
+    assert trace["response"] == "1"
+    assert trace["prediction"] == 1
+    assert trace["ingest_seconds"] >= 0
+
+
+def test_query_time_normalizes_offset_for_native_core():
+    trace = {}
+    config = {**_cfg(), "diagnostics": trace, "now_iso": "2026-09-09T17:00:00+08:00"}
+    ladder._real_answer("S_star", REC, 0, config)
+    assert trace["recall"]["as_of_iso"] == "2026-09-09T09:00:00Z"
+
+
+@pytest.mark.parametrize("succeeds", [False, True])
+def test_real_extraction_checks_final_core_outcome(monkeypatch, tmp_path, succeeds):
+    rt = runtime._build_local_store_sqlite_runtime(tmp_path / "extract.db")
+    rt.start()
+    llm = _core.FakeLLMAdapter()
+    llm.set_default_response("[]", succeeds, "" if succeeds else "provider unavailable")
+    monkeypatch.setattr(ladder, "_build_extract_llm", lambda *args: llm)
+    extract = ladder.make_real_extract_fn(_core)
+    record = dict(REC, history=[{"speaker": "Mei", "text": "A synthetic utterance."}])
+    if succeeds:
+        receipts = extract(rt.adapter, record, "stub")
+        assert receipts[0]["holder"] == "Mei"
+        assert receipts[0]["extraction_failed"] is False
+    else:
+        with pytest.raises(RuntimeError, match="extraction failed.*Mei"):
+            extract(rt.adapter, record, "stub")
+
+
+def test_real_extract_factory_accepts_explicit_native_extraction_config():
+    """结构化实验必须能显式传入 ExtractionConfig；默认行为仍由旧调用保持。"""
+    import inspect
+
+    parameters = inspect.signature(ladder.make_real_extract_fn).parameters
+    assert "extraction_config" in parameters
+
+
+@pytest.mark.parametrize("with_speakers", [False, True])
+def test_rag_speaker_control_reaches_prompt(with_speakers):
+    trace = {}
+    record = dict(REC, history=[{"speaker": "Mei", "text": "I prefer the train."}])
+    config = {**_cfg(), "rag_speaker_labels": with_speakers, "diagnostics": trace}
+    assert ladder._real_answer("S_rag", record, 0, config) is True
+    assert "I prefer the train." in trace["prompt"]
+    assert ("Mei:" in trace["prompt"]) is with_speakers
+    assert len(trace["recall"]["statement_ids"]) == 1
+
+
+@pytest.mark.parametrize("mode,visible", [("immediate", False), ("sleep", True)])
+def test_star_sleep_exposes_volatile_but_preserves_review_guard(mode, visible):
+    import sqlite3
+    import eval_ladder_pipeline as pipe
+
+    def extract(adapter, record):
+        pipe.seed_gold_statements(str(adapter.db_path), record["item_id"], [
+            {"holder": "Mei", "subject": "train", "predicate": "has_status",
+             "object": "available"},
+            {"holder": "Mei", "subject": "train", "predicate": "has_status",
+             "object": "UNREVIEWED"},
+        ])
+        # Fixture initial conditions; lifecycle transitions below use the native scheduler.
+        with sqlite3.connect(str(adapter.db_path)) as conn:
+            conn.execute("UPDATE statements SET consolidation_state='volatile'")
+            conn.execute("UPDATE statements SET review_status='pending_review' WHERE id='r0-gold1'")
+
+    trace = {}
+    record = dict(REC, question="train has_status available")
+    config = {**_cfg(), "extract": extract, "star_replay_mode": mode,
+              "now_iso": "2026-09-09T09:00:00Z", "diagnostics": trace}
+    assert ladder._real_answer("S_star", record, 0, config) is True
+    assert ("available" in trace["recall"]["block"]) is visible
+    assert "UNREVIEWED" not in trace["recall"]["block"]
+    assert trace["recall"]["as_of_iso"] == config["now_iso"]
+    assert trace["replay"]["mode"] == mode
+    if visible:
+        assert trace["replay"]["stats"]["compressed"] == 2
+        with sqlite3.connect(trace["db_path"]) as conn:
+            assert conn.execute("SELECT review_status FROM statements WHERE id='r0-gold1'").fetchone()[0] == "pending_review"
+
+
 def test_star_oracle_seeds_gold_not_history():
     # oracle stage's recall block must reflect the gold-injected statement
     rb = ladder._real_answer  # sanity: callable

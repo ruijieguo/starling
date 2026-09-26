@@ -1,0 +1,2616 @@
+{
+  "status": "verified_complete_with_errors",
+  "created_at": "2026-09-14T14:01:10.205806+00:00",
+  "run": "build/socialmem_20260914_protocol_recovery_a_real",
+  "manifest_sha256": "addf1644081dd434eeb7ee3051f3fd51cc943167576a58311a93c01b13098155",
+  "core_sha256": "79a0c3873ab68348797ae84c75c0ffed7dfcbc3f9a0903c3fe74455d1eca7e2e",
+  "verification_sha256": "bd135f508a806886314c52c8dee680036eac3c463f2eb52515fe736375248f7c",
+  "source_input_mode": "source_turn_v1",
+  "base_memory_provenance": {
+    "source_manifest_sha256": "3bf4bb2c1ba07c8252ab5477808f63130e7a4f10e5f28683b1681029d724399b",
+    "core_sha256": "080c933c343519620b603b99fe0715c25218fe76c563b92554d68a3bf0b6e569",
+    "extract_transport": {
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "deepseek-v3",
+      "temperature": 0,
+      "max_tokens": 4096,
+      "timeout_ms": 60000,
+      "max_retries": 3
+    }
+  },
+  "extract_transport": {
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-plus",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "timeout_ms": 60000,
+    "max_retries": 3
+  },
+  "actual": {
+    "records": 140,
+    "extraction": 76,
+    "injected_controls": 64,
+    "admission": 69,
+    "answer": 8,
+    "judge": 120,
+    "embedding_adapter_counts": {
+      "request_count": 18,
+      "embed_calls": 16,
+      "batch_calls": 2
+    },
+    "probe": 8,
+    "structured_http_attempts": 145
+  },
+  "probe_accounting": {
+    "status": "execution_deviation",
+    "description": "前一轮应仅核验报告时误调用网络探测脚本，产生八次 DNS 失败；不得从累计尝试数中隐去。",
+    "approved_service_probe_requests": 16,
+    "additional_unplanned_dns_failed_attempts": 8,
+    "total_probe_attempts": 24,
+    "additional_service_responses": 0,
+    "attempt_certainty": "not_connected",
+    "report_sha256": "fb2137dce51323f771eb26c1cb0f147e2ec3cee3186f950098616ce1c94e088f",
+    "action": "不再追加探测；按已明确授权的有效刷新报告继续 A 诊断。"
+  },
+  "capability_at_start": {
+    "ready": true,
+    "reasons": [],
+    "evidence_ids": {
+      "claim_extraction_v2": "d130dd55e641cd73db5345a8d81c39300f3248c970ee71e6594b7ddf8eaa5b30",
+      "claim_admission_v1": "58638d2a66a665cb5eb6ed202241b9428499b7983cf1d9c061a821713320045f"
+    }
+  },
+  "channels": {
+    "extraction": {
+      "logical_calls": 76,
+      "actual_http_attempts": 76,
+      "native_wire_schema_pass": 61,
+      "first_attempt_schema_pass": 61,
+      "success_all_calls_rate": 0.8026315789473685,
+      "errors": {
+        "transport_error:Timeout was reached": 15
+      },
+      "wire_schema_errors": {
+        "no_completion": 15
+      },
+      "http_statuses": {
+        "200": 61,
+        "0": 15
+      },
+      "curl_codes": {
+        "0": 61,
+        "28": 15
+      },
+      "execution_certainty": {
+        "response_received": 61,
+        "unknown": 15
+      },
+      "response_models": {
+        "qwen3.7-plus": 61
+      },
+      "latency_ms": {
+        "min": 5777,
+        "median": 27490.0,
+        "max": 60012
+      },
+      "responses_with_reasoning_content": 61,
+      "reported_reasoning_tokens": {
+        "responses": 61,
+        "total": 97002,
+        "max": 3745
+      },
+      "failed_calls": [
+        {
+          "track": "p1",
+          "id": "eval-003",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-009",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-013",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-025",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-026",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-028",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-034",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-035",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-039",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "p1",
+          "id": "eval-044",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "scoped",
+          "id": "Q1_a5s1c1_Femi",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "scoped",
+          "id": "Q1_a5s1c1_Jordan",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "scoped",
+          "id": "Q1_a5s1c1_Marcus",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "scoped",
+          "id": "Q9_a0b1c2d3_Marcus",
+          "error": "transport_error:Timeout was reached"
+        },
+        {
+          "track": "scoped",
+          "id": "Q9_a0b1c2d3_Sandra",
+          "error": "transport_error:Timeout was reached"
+        }
+      ]
+    },
+    "admission": {
+      "logical_calls": 69,
+      "actual_http_attempts": 69,
+      "native_wire_schema_pass": 69,
+      "first_attempt_schema_pass": 69,
+      "success_all_calls_rate": 1.0,
+      "errors": {},
+      "wire_schema_errors": {},
+      "http_statuses": {
+        "200": 69
+      },
+      "curl_codes": {
+        "0": 69
+      },
+      "execution_certainty": {
+        "response_received": 69
+      },
+      "response_models": {
+        "qwen3.7-plus": 69
+      },
+      "latency_ms": {
+        "min": 4881,
+        "median": 9715,
+        "max": 35256
+      },
+      "responses_with_reasoning_content": 69,
+      "reported_reasoning_tokens": {
+        "responses": 69,
+        "total": 52666,
+        "max": 2217
+      },
+      "failed_calls": []
+    }
+  },
+  "tracks": {
+    "p1": {
+      "records": 50,
+      "outcomes": {
+        "empty": 11,
+        "technical_failure": 16,
+        "semantic_rejection": 19,
+        "admitted": 4
+      },
+      "new_stored_claims": 5
+    },
+    "synthetic": {
+      "records": 16,
+      "outcomes": {
+        "admitted": 11,
+        "empty": 4,
+        "semantic_rejection": 1
+      },
+      "new_stored_claims": 12
+    },
+    "scoped": {
+      "records": 10,
+      "outcomes": {
+        "admitted": 3,
+        "technical_failure": 6,
+        "semantic_rejection": 1
+      },
+      "new_stored_claims": 3
+    },
+    "fixed_controls": {
+      "records": 64,
+      "outcomes": {
+        "admitted": 30,
+        "semantic_rejection": 34
+      },
+      "new_stored_claims": 30
+    }
+  },
+  "native_track_summary": {
+    "p1": {
+      "records": 50,
+      "stored": 5,
+      "outcomes": {
+        "empty": 11,
+        "technical_failure": 16,
+        "semantic_rejection": 19,
+        "admitted": 4
+      },
+      "error_kinds": {
+        "schema_failure": 6,
+        "upstream_failure": 10
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 18
+      },
+      "deterministic_rejections": 18,
+      "model_rejections": 8
+    },
+    "synthetic": {
+      "records": 16,
+      "stored": 12,
+      "outcomes": {
+        "admitted": 11,
+        "empty": 4,
+        "semantic_rejection": 1
+      },
+      "error_kinds": {},
+      "semantic_rejection_kinds": {
+        "scope_failure": 1
+      },
+      "deterministic_rejections": 1,
+      "model_rejections": 0
+    },
+    "scoped": {
+      "records": 10,
+      "stored": 3,
+      "outcomes": {
+        "admitted": 3,
+        "technical_failure": 6,
+        "semantic_rejection": 1
+      },
+      "error_kinds": {
+        "upstream_failure": 5,
+        "schema_failure": 1
+      },
+      "semantic_rejection_kinds": {
+        "scope_failure": 1
+      },
+      "deterministic_rejections": 1,
+      "model_rejections": 0
+    },
+    "fixed_controls": {
+      "records": 64,
+      "stored": 30,
+      "outcomes": {
+        "admitted": 30,
+        "semantic_rejection": 34
+      },
+      "error_kinds": {},
+      "semantic_rejection_kinds": {
+        "scope_failure": 20
+      },
+      "deterministic_rejections": 20,
+      "model_rejections": 14
+    }
+  },
+  "native_error_counts": {
+    "schema_failure:primary scope absent from scope_markers evidence": 7,
+    "upstream_failure:transport_error:Timeout was reached": 15
+  },
+  "native_error_cases": [
+    {
+      "track": "p1",
+      "id": "eval-002",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-003",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-008",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-009",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-012",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-013",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-015",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-018",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-025",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-026",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-028",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-034",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-035",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-039",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "p1",
+      "id": "eval-044",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q1_a5s1c1_Femi",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q1_a5s1c1_Jordan",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q1_a5s1c1_Marcus",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Marcus",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Sandra",
+      "byte_offset": 0,
+      "detail": "transport_error:Timeout was reached",
+      "kind": "upstream_failure"
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Yuki",
+      "byte_offset": 0,
+      "detail": "primary scope absent from scope_markers evidence",
+      "kind": "schema_failure"
+    }
+  ],
+  "scope_mismatches": [
+    {
+      "track": "p1",
+      "id": "eval-002",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-002",
+      "candidate_index": 1,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Bob"
+    },
+    {
+      "track": "p1",
+      "id": "eval-008",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-008",
+      "candidate_index": 1,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-008",
+      "candidate_index": 2,
+      "assertion_scope": "CONDITIONAL",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Bob"
+    },
+    {
+      "track": "p1",
+      "id": "eval-012",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [
+        "REPORTED"
+      ],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Bob"
+    },
+    {
+      "track": "p1",
+      "id": "eval-015",
+      "candidate_index": 0,
+      "assertion_scope": "REPORTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Bob"
+    },
+    {
+      "track": "p1",
+      "id": "eval-015",
+      "candidate_index": 1,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-015",
+      "candidate_index": 2,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Charlie"
+    },
+    {
+      "track": "p1",
+      "id": "eval-015",
+      "candidate_index": 3,
+      "assertion_scope": "REPORTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-018",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Bob",
+      "subject": "Bob"
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "candidate_index": 1,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Alice"
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "candidate_index": 2,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Alice",
+      "subject": "Carol"
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "candidate_index": 3,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "decided_on",
+      "holder": "Alice",
+      "subject": "Carol"
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Yuki",
+      "candidate_index": 0,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "feels",
+      "holder": "Yuki",
+      "subject": "Yuki"
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Yuki",
+      "candidate_index": 1,
+      "assertion_scope": "ASSERTED",
+      "scope_markers": [],
+      "predicate": "uncertain_about",
+      "holder": "Yuki",
+      "subject": "Yuki"
+    }
+  ],
+  "controls": {
+    "cases": 64,
+    "expected_positive": 32,
+    "correct": 62,
+    "true_positives": 30,
+    "true_negatives": 32,
+    "false_accepts": 0,
+    "false_rejects": 2,
+    "technical_failures": 0
+  },
+  "control_errors": [
+    {
+      "id": "new_en_negation_yes",
+      "expected_keep": true,
+      "retained": false,
+      "outcome": "semantic_rejection",
+      "errors": [],
+      "admission": "{\"decisions\":[{\"index\":0,\"reason\":\"wrong_scope\",\"retain\":false}],\"schema_version\":1}"
+    },
+    {
+      "id": "new_zh_attribution_yes",
+      "expected_keep": true,
+      "retained": false,
+      "outcome": "semantic_rejection",
+      "errors": [],
+      "admission": "{\"decisions\":[{\"index\":0,\"reason\":\"wrong_scope\",\"retain\":false}],\"schema_version\":1}"
+    }
+  ],
+  "p1": {
+    "baseline": {
+      "counts": {
+        "holder": [
+          60,
+          29,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          33,
+          15
+        ],
+        "predicate": [
+          63,
+          26,
+          8
+        ],
+        "object": [
+          63,
+          26,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7499999999999999,
+        "holder_perspective": 0.6999999999999998,
+        "predicate": 0.7875000000000001,
+        "object": 0.7875000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    },
+    "combined": {
+      "counts": {
+        "holder": [
+          60,
+          34,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          38,
+          15
+        ],
+        "predicate": [
+          63,
+          31,
+          8
+        ],
+        "object": [
+          63,
+          31,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7272727272727273,
+        "holder_perspective": 0.6787878787878788,
+        "predicate": 0.7636363636363637,
+        "object": 0.7636363636363637,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    }
+  },
+  "synthetic": {
+    "frozen": {
+      "cases": 16,
+      "majority": 11,
+      "invalid_votes": 1,
+      "valid_cases": 15,
+      "valid_majority": 10,
+      "semantic_accuracy": 0.6666666666666666
+    },
+    "contract": {
+      "cases": 16,
+      "majority": 11,
+      "invalid_votes": 0,
+      "valid_cases": 16,
+      "valid_majority": 11,
+      "semantic_accuracy": 0.6875
+    },
+    "paired": {
+      "gained": [
+        "possible_not_decided",
+        "decision_change"
+      ],
+      "lost": [
+        "mixed_emotions",
+        "undecided"
+      ]
+    }
+  },
+  "qa": {
+    "Q1_a5s1c1": {
+      "target_actor": "Claudette",
+      "arms": {
+        "baseline": {
+          "stored_target_claims": 0,
+          "retrieved_target_claims": 0,
+          "target_objects": [],
+          "all_evidence_links": 0,
+          "error": ""
+        },
+        "structured": {
+          "stored_target_claims": 1,
+          "retrieved_target_claims": 1,
+          "target_objects": [
+            "objecting to no. 22 this morning"
+          ],
+          "all_evidence_links": 1,
+          "error": ""
+        }
+      },
+      "scoped": [
+        {
+          "id": "Q1_a5s1c1_Claudette",
+          "outcome": "admitted",
+          "new_claims": [
+            {
+              "holder": "Claudette",
+              "subject": "Claudette",
+              "predicate": "decided_on",
+              "object": "objecting to no. 22 this morning",
+              "source_evidence": {
+                "actor": "Claudette",
+                "assertion_scope": "ASSERTED",
+                "attributed_to": null,
+                "clause_id": "c0",
+                "event_time": null,
+                "relation_modality": "INTENDS",
+                "relation_polarity": "POS",
+                "schema_version": 1,
+                "scope_markers": [
+                  "ASSERTED"
+                ],
+                "source_span": {
+                  "engram_ref": "acc226d8-895a-4dee-88ef-ac0353a9f938",
+                  "source_hash": "c199c0e945c62ce1510fd586dcfc2ee26d82e93e787e955888b8b74956d314f2",
+                  "span_end": 310,
+                  "span_start": 0
+                },
+                "source_time": "2026-09-12T00:00:00Z",
+                "source_turn": {
+                  "observed_at": "2025-05-05T11:17:00",
+                  "session_id": null,
+                  "speaker": "Claudette",
+                  "turn_id": "grp_5e6f7a8b_s01_t001",
+                  "turn_index": 2
+                },
+                "time_text": "this morning",
+                "topic": "no. 22"
+              }
+            }
+          ]
+        },
+        {
+          "id": "Q1_a5s1c1_Femi",
+          "outcome": "technical_failure",
+          "new_claims": []
+        },
+        {
+          "id": "Q1_a5s1c1_Jordan",
+          "outcome": "technical_failure",
+          "new_claims": []
+        },
+        {
+          "id": "Q1_a5s1c1_Marcus",
+          "outcome": "technical_failure",
+          "new_claims": []
+        },
+        {
+          "id": "Q1_a5s1c1_Vera",
+          "outcome": "semantic_rejection",
+          "new_claims": []
+        }
+      ],
+      "answers": [
+        {
+          "arm": "baseline",
+          "answer_ok": true,
+          "acceptances": 0,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "Claudette seems inclined to object to the current proposal, but the memories don’t show that she is broadly anti-development or opposed to change on Maple Street. Her stance appears more specific and practical than simply resistant."
+        },
+        {
+          "arm": "structured",
+          "answer_ok": true,
+          "acceptances": 0,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "Claudette seems opposed to the specific development at no. 22 and is prepared to object to it. Beyond that, I don’t know whether she is broadly against change on Maple Street."
+        },
+        {
+          "arm": "linked",
+          "answer_ok": true,
+          "acceptances": 3,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "Claudette appears opposed to further development and change on Maple Street, particularly added building bulk."
+        },
+        {
+          "arm": "full",
+          "answer_ok": true,
+          "acceptances": 3,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "Claudette is resistant to development and broader change on Maple Street. She opposes added building bulk and links development to increased traffic and danger, while preferring the street’s traditional character and long-standing community arrangements. She may accept limited changes, such as a parking scheme trial, if they address problems without becoming permanent."
+        }
+      ]
+    },
+    "Q9_a0b1c2d3": {
+      "target_actor": "Marcus",
+      "arms": {
+        "baseline": {
+          "stored_target_claims": 0,
+          "retrieved_target_claims": 0,
+          "target_objects": [],
+          "all_evidence_links": 0,
+          "error": ""
+        },
+        "structured": {
+          "stored_target_claims": 0,
+          "retrieved_target_claims": 0,
+          "target_objects": [],
+          "all_evidence_links": 0,
+          "error": ""
+        }
+      },
+      "scoped": [
+        {
+          "id": "Q9_a0b1c2d3_Claire",
+          "outcome": "admitted",
+          "new_claims": [
+            {
+              "holder": "Claire",
+              "subject": "Claire",
+              "predicate": "uncertain_about",
+              "object": "not sure widening the pavement is worth losing parking over",
+              "source_evidence": {
+                "actor": "Claire",
+                "assertion_scope": "ASSERTED",
+                "attributed_to": null,
+                "clause_id": "c4",
+                "event_time": null,
+                "relation_modality": "BELIEVES",
+                "relation_polarity": "POS",
+                "schema_version": 1,
+                "scope_markers": [
+                  "ASSERTED"
+                ],
+                "source_span": {
+                  "engram_ref": "c93728f8-baca-40c7-8c2f-bfccb05d85df",
+                  "source_hash": "350311a462d3910d12627537ba8e5f29fa6be4610ae6eee598d4c34c1cc339d9",
+                  "span_end": 1271,
+                  "span_start": 1040
+                },
+                "source_time": "2026-09-12T00:00:00Z",
+                "source_turn": {
+                  "observed_at": "2025-10-19T11:06:00",
+                  "session_id": null,
+                  "speaker": "Claire",
+                  "turn_id": "grp_f4a5b6c7_s02_t001",
+                  "turn_index": 2
+                },
+                "time_text": "",
+                "topic": "widening the pavement"
+              }
+            }
+          ]
+        },
+        {
+          "id": "Q9_a0b1c2d3_Dev",
+          "outcome": "admitted",
+          "new_claims": [
+            {
+              "holder": "Dev",
+              "subject": "Dev",
+              "predicate": "indifferent_to",
+              "object": "fine either way about those spaces",
+              "source_evidence": {
+                "actor": "Dev",
+                "assertion_scope": "ASSERTED",
+                "attributed_to": null,
+                "clause_id": "c3",
+                "event_time": null,
+                "relation_modality": "BELIEVES",
+                "relation_polarity": "POS",
+                "schema_version": 1,
+                "scope_markers": [
+                  "ASSERTED"
+                ],
+                "source_span": {
+                  "engram_ref": "0f553a16-ec22-4e84-94af-64d37069d5b6",
+                  "source_hash": "b4ca5af88e5d4e09dccf0353d22a763e4f29ad1f72a4fadba35d012bf9b78ad4",
+                  "span_end": 1054,
+                  "span_start": 845
+                },
+                "source_time": "2026-09-12T00:00:00Z",
+                "source_turn": {
+                  "observed_at": "2025-10-19T11:11:00",
+                  "session_id": null,
+                  "speaker": "Dev",
+                  "turn_id": "grp_f4a5b6c7_s02_t004",
+                  "turn_index": 5
+                },
+                "time_text": "",
+                "topic": "those spaces"
+              }
+            }
+          ]
+        },
+        {
+          "id": "Q9_a0b1c2d3_Marcus",
+          "outcome": "technical_failure",
+          "new_claims": []
+        },
+        {
+          "id": "Q9_a0b1c2d3_Sandra",
+          "outcome": "technical_failure",
+          "new_claims": []
+        },
+        {
+          "id": "Q9_a0b1c2d3_Yuki",
+          "outcome": "technical_failure",
+          "new_claims": []
+        }
+      ],
+      "answers": [
+        {
+          "arm": "baseline",
+          "answer_ok": true,
+          "acceptances": 0,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "His last known emotional state was that he felt a bit nervous about starting over, though he believed staying in the flat was going nowhere after three years. Earlier, he presented himself more decisively and positively: he preferred Swindon, said yes to the job, and was “going for it.”"
+        },
+        {
+          "arm": "structured",
+          "answer_ok": true,
+          "acceptances": 0,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "His last known emotional state was cautiously nervous about starting over, but convinced the move was necessary because his flat situation had stagnated for three years. Earlier, he presented himself more decisively and positively, saying he was “going for it” and preferred Swindon."
+        },
+        {
+          "arm": "linked",
+          "answer_ok": true,
+          "acceptances": 0,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "His last known emotional state was mixed: he felt somewhat nervous about starting over, but believed staying in the flat situation meant remaining stuck. Earlier, he presented himself more confidently and decisively, saying yes to the Swindon job and that he was “going for it.”"
+        },
+        {
+          "arm": "full",
+          "answer_ok": true,
+          "acceptances": 3,
+          "invalid_votes": 0,
+          "context_error": "",
+          "answer": "Marcus’s last known state was cautiously positive but nervous: he thought the move was right, wanted a change, and felt ready to start over, though he acknowledged some anxiety. Earlier, he presented himself as more detached and noncommittal—saying it was “not my fight,” “whatever works,” and that he had not decided—so his later comments showed more personal engagement and mixed feelings."
+        }
+      ]
+    }
+  },
+  "extended_labels": {
+    "targets": 14,
+    "valid_targets": 14,
+    "technical_failed_targets": 0,
+    "object_covered": 12,
+    "topic_covered": 2,
+    "scope_covered": 12,
+    "time_covered": 11,
+    "joint_covered": 2,
+    "predictions": 12,
+    "excluded_predictions": 0,
+    "unmatched_predictions": 10,
+    "schema_version": 1,
+    "metric": "declared_text_and_evidence_coverage",
+    "label_origin": "source_only_authored_before_new_run",
+    "cases": 16,
+    "evaluated_cases": 12,
+    "excluded_cases": 4,
+    "missing_result_cases": 0,
+    "technical_failed_cases": 0,
+    "excluded_case_predictions": 0,
+    "speech_act": {
+      "commitment": {
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 2,
+        "topic_covered": 0,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "indifference": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "reported_state": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      "state": {
+        "targets": 6,
+        "valid_targets": 6,
+        "technical_failed_targets": 0,
+        "object_covered": 5,
+        "topic_covered": 2,
+        "scope_covered": 5,
+        "time_covered": 5,
+        "joint_covered": 2,
+        "strict_rates": {
+          "object": 0.8333333333333334,
+          "topic": 0.3333333333333333,
+          "scope": 0.8333333333333334,
+          "time": 0.8333333333333334,
+          "joint": 0.3333333333333333
+        },
+        "valid_rates": {
+          "object": 0.8333333333333334,
+          "topic": 0.3333333333333333,
+          "scope": 0.8333333333333334,
+          "time": 0.8333333333333334,
+          "joint": 0.3333333333333333
+        }
+      },
+      "trust": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "unresolved_choice": {
+        "targets": 3,
+        "valid_targets": 3,
+        "technical_failed_targets": 0,
+        "object_covered": 3,
+        "topic_covered": 0,
+        "scope_covered": 3,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 0.6666666666666666,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 0.6666666666666666,
+          "joint": 0.0
+        }
+      }
+    },
+    "case_scores": [
+      {
+        "id": "emotion_positive",
+        "source_sha256": "88878fd2f3c825f05713059ee24634f0dd2c38893d71d9b5ccb06f0566361883",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 1,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 1,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ]
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 1,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 1,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        }
+      },
+      {
+        "id": "emotion_negative",
+        "source_sha256": "05e5b843889071728d41b398f4561a7380445fef0f6fcf4c00e97f7c2d4fbcbc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 1,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 1,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ]
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 1,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 1,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        }
+      },
+      {
+        "id": "relief_cause",
+        "source_sha256": "1223acd6f12d65642db04df12e5dbd6c4863545b560c4c56d90179a81e271dbd",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "mixed_emotions",
+        "source_sha256": "4a8ff43f330da5224cc6cfb0de8284e06bcad2f32dc41b94281498370c2ca56e",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 2,
+            "valid_targets": 2,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.5,
+              "topic": 0.0,
+              "scope": 0.5,
+              "time": 0.5,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.5,
+              "topic": 0.0,
+              "scope": 0.5,
+              "time": 0.5,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.5,
+          "topic": 0.0,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.5,
+          "topic": 0.0,
+          "scope": 0.5,
+          "time": 0.5,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "undecided",
+        "source_sha256": "49a07bfd68c619a0ca7220a9345df4862894d1a1655a6f79d735adee40c5fdcb",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "possible_not_decided",
+        "source_sha256": "a5c84fe2928dd37fad6591633b5a46a318050ab7427270610475434501ae7469",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "decided_decline",
+        "source_sha256": "a3fac12c3b0e495c029505a78ab0d4129d1845bd95958d9ebabf31019ad382cc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "decision_change",
+        "source_sha256": "5a9623f6aa9a12cd05d56873054f194aed3a50b3d18f7df58b3d9285c7366115",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 2,
+        "topic_covered": 0,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "predictions": 2,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 2,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          },
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "indifference",
+        "source_sha256": "0b735df052388f370b1683fee05fc8131e5c19d257b21f383d589e8985ced409",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "indifference": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_contrast",
+        "source_sha256": "b20e4640b09198049ef7fb9f174306e9c1950e671a5e7e41c9abfc6f98a824bb",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "trust_target",
+        "source_sha256": "2fd327f8e5ad82c7ca2ece7646f0bb579e65be8fd60e77d7b903f23459f27435",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "trust": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "reported_distrust",
+        "source_sha256": "04277060cc442d85e9bad1ce2a25b29e2b39c3318e79c5f1435e9965fcd972b7",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "reported_state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_qualifiers",
+        "source_sha256": "39ef284d443e31a807b07dd6911e585c73d24f8606425bd5e6734c125dbafe90",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "negative_target_scope",
+        "source_sha256": "ca6135d6c5897af9bfc6de4e8426be4fc8bf3f17b35a2cbfbf65383de2b1ef8b",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "property_and_desire",
+        "source_sha256": "f33a054b1b9d84c7d742250ebc3224bc315ad25fa0ac003c2d5fa85ea543d26f",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "topic_reference",
+        "source_sha256": "f9bd6460f9ae497edb4d8c7f728167042f06d4c051339a69b2af980642fbe259",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      }
+    ],
+    "strict_rates": {
+      "object": 0.8571428571428571,
+      "topic": 0.14285714285714285,
+      "scope": 0.8571428571428571,
+      "time": 0.7857142857142857,
+      "joint": 0.14285714285714285
+    },
+    "valid_rates": {
+      "object": 0.8571428571428571,
+      "topic": 0.14285714285714285,
+      "scope": 0.8571428571428571,
+      "time": 0.7857142857142857,
+      "joint": 0.14285714285714285
+    }
+  },
+  "gates": {
+    "controls": false,
+    "synthetic": false,
+    "p1": false,
+    "technical": false,
+    "base_preserved": true
+  },
+  "errors": {
+    "native_failures": 22,
+    "base_failures": 0,
+    "evidence_failures": 0,
+    "base_semantics_changed": 0,
+    "invalid_judge_votes": 1,
+    "answer_failures": 0,
+    "retrieval_failures": 0
+  },
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 14,
+        "invalid_votes": 1,
+        "mismatched_groups": 0,
+        "valid_pairs": 46,
+        "agreeing_pairs": 42,
+        "pairwise_agreement": 0.9130434782608695
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 16,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 48,
+        "pairwise_agreement": 1.0
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "base_semantics_preserved": true,
+  "promotion_ready": false,
+  "b_stage": "not_run",
+  "historical_comparison": {
+    "run": "build/socialmem_20260913_protocol_boundary_real",
+    "controls": {
+      "cases": 64,
+      "expected_positive": 32,
+      "correct": 56,
+      "true_positives": 30,
+      "true_negatives": 26,
+      "false_accepts": 0,
+      "false_rejects": 1,
+      "technical_failures": 7
+    },
+    "p1": {
+      "baseline": {
+        "counts": {
+          "holder": [
+            60,
+            29,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            33,
+            15
+          ],
+          "predicate": [
+            63,
+            26,
+            8
+          ],
+          "object": [
+            63,
+            26,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7499999999999999,
+          "holder_perspective": 0.6999999999999998,
+          "predicate": 0.7875000000000001,
+          "object": 0.7875000000000001,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      },
+      "combined": {
+        "counts": {
+          "holder": [
+            60,
+            33,
+            11
+          ],
+          "holder_perspective": [
+            56,
+            37,
+            15
+          ],
+          "predicate": [
+            63,
+            30,
+            8
+          ],
+          "object": [
+            63,
+            30,
+            8
+          ],
+          "nesting_depth_1": [
+            6,
+            6,
+            4
+          ]
+        },
+        "f1": {
+          "holder": 0.7317073170731706,
+          "holder_perspective": 0.6829268292682926,
+          "predicate": 0.7682926829268293,
+          "object": 0.7682926829268293,
+          "nesting_depth_1": 0.5454545454545454
+        }
+      }
+    },
+    "synthetic": {
+      "frozen": {
+        "cases": 16,
+        "majority": 11,
+        "invalid_votes": 0,
+        "valid_cases": 16,
+        "valid_majority": 11,
+        "semantic_accuracy": 0.6875
+      },
+      "contract": {
+        "cases": 16,
+        "majority": 11,
+        "invalid_votes": 0,
+        "valid_cases": 15,
+        "valid_majority": 11,
+        "semantic_accuracy": 0.7333333333333333
+      },
+      "paired": {
+        "gained": [
+          "indifference",
+          "reported_distrust"
+        ],
+        "lost": [
+          "mixed_emotions",
+          "possible_not_decided"
+        ]
+      }
+    },
+    "errors": {
+      "native_failures": 10,
+      "base_failures": 0,
+      "evidence_failures": 0,
+      "base_semantics_changed": 0,
+      "invalid_judge_votes": 0,
+      "answer_failures": 0,
+      "retrieval_failures": 0
+    },
+    "interpretation": "跨模型/模式/共同提示配置观察，不能归因于单项修复；新基础记忆仍来自旧 DeepSeek。"
+  },
+  "chat_transport_accounting": {
+    "answer_logical_calls": 8,
+    "judge_logical_calls": 120,
+    "configured_max_attempts_per_call": 4,
+    "confirmed_exhausted_calls": 1,
+    "http_attempts_exact": null,
+    "http_attempts_lower_bound": 131,
+    "http_attempts_upper_bound": 512,
+    "limitation": "既有回答/裁判 helper 只归档最终响应或终态异常；成功前的重试数不可恢复。上下界不是实际请求总数，不把 128 次逻辑调用冒充 128 次 HTTP。"
+  }
+}

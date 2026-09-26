@@ -14,6 +14,7 @@ struct ParseError {
     std::string kind;          // e.g. "not_json_array", "element_not_object"
     std::string detail;        // free text for human consumers
     std::size_t byte_offset;   // approximate; 0 if unknown
+    std::string field_path = {}; // deterministic schema path when known
 };
 
 struct ParseResult {
@@ -27,13 +28,14 @@ struct ParseResult {
 // still yields its good statements. Only a non-array / non-JSON top level
 // produces a ParseError (the orchestrator then retries the whole attempt).
 // LLM supplies the semantic core (holder_perspective/subject/predicate/object/
-// modality/polarity/nesting_depth); C++ fills bookkeeping (subject_kind=cognizer,
-// object_kind=str or "statement" when nesting_depth>=2, canonical_object_hash
+// modality/polarity/nesting_depth); C++ fills bookkeeping (object_kind=str,
+// subject_kind read with entity fallback, canonical_object_hash
 // computed, confidence from optional JSON field (default 0.7), observed_at=now).
 // The run() orchestrator fills
 // holder_id/holder_tenant_id/chunk_index/source_hash.
 ParseResult parse_extractor_json(
     std::string_view raw_json,
-    const ExistingRefMap& existing_ref_map);
+    const ExistingRefMap& existing_ref_map,
+    bool preserve_text_objects = false);
 
 }  // namespace starling::extractor

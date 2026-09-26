@@ -1,4 +1,5 @@
 #include "starling/retrieval/pattern_completor.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <sqlite3.h>
 #include <algorithm>
@@ -127,14 +128,25 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
     sp.query_id = params.query_id;
     auto seeds = seeds_.vector_recall(conn, sp);
     out.degraded = seeds.degraded;
+    out.receipt.trace_id = params.trace_id;
+    out.receipt.query_id = params.query_id;
+    out.receipt.candidate_counts.fetched = seeds.receipt.candidate_counts.fetched;
+    out.receipt.sufficiency_status = Sufficiency::MISSING_INFO;
+    for (const auto& [identity, reason] : seeds.receipt.claim_exclusions)
+        record_claim_exclusion(out.receipt, identity.first, identity.second, reason);
     if (seeds.rows.empty()) return out;  // no seeds → no walk
 
     // Step 2: activation init (seeds at 1.0).
     std::unordered_map<std::string, double> activation;
     std::unordered_set<std::string> visited;
+    std::unordered_map<std::string, bool> eligible;
+    for (const auto& exclusion : seeds.receipt.claim_exclusions) {
+        if (exclusion.first.first == params.tenant_id) eligible[exclusion.first.second] = false;
+    }
     for (const auto& s : seeds.rows) {
         activation[s.row.id] = 1.0;
         visited.insert(s.row.id);
+        eligible[s.row.id] = true;
     }
 
     // Step 3: spreading-activation walk（06_hippocampus.md §3）。
@@ -149,6 +161,22 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
             const double contrib =
                 activation[e.src_id] * edge_weight(e.edge_kind, e.weight) * params.decay;
             if (contrib < params.theta_propagate) continue;
+            auto checked = eligible.find(e.target_id);
+            if (checked == eligible.end()) {
+                const auto row = fetch_row(conn, e.target_id, params.tenant_id);
+                bool allowed = !row.id.empty();
+                if (allowed) {
+                    ++out.receipt.candidate_counts.fetched;
+                    const auto reason = claim_evidence_error(conn, row);
+                    allowed = reason.empty();
+                    if (!allowed)
+                        record_claim_exclusion(out.receipt, row.tenant_id, row.id, reason);
+                }
+                checked = eligible.emplace(e.target_id, allowed).first;
+            }
+            // Invalid source evidence must never enter activation: dropping it
+            // only from final output would still let it bridge to other rows.
+            if (!checked->second) continue;
             auto it = next.find(e.target_id);
             if (it == next.end() || contrib > it->second) next[e.target_id] = contrib;
         }
@@ -178,14 +206,21 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
     std::vector<std::pair<std::string, double>> ranked(activation.begin(), activation.end());
     std::sort(ranked.begin(), ranked.end(),
               [](const auto& a, const auto& b) { return a.second > b.second; });
-    if (static_cast<int>(ranked.size()) > params.result_k)
-        ranked.resize(static_cast<size_t>(params.result_k));
 
     for (const auto& [id, act] : ranked) {
         StatementRow row = fetch_row(conn, id, params.tenant_id);
         if (row.id.empty()) continue;  // vanished between walk and fetch
+        const auto reason = claim_evidence_error(conn, row);
+        if (!reason.empty()) {
+            record_claim_exclusion(out.receipt, row.tenant_id, row.id, reason);
+            continue;
+        }
+        if (static_cast<int>(out.rows.size()) >= params.result_k) break;
+        record_claim_link(conn, out.receipt, row);
         out.rows.push_back(CompletionScored{std::move(row), act});
     }
+    out.receipt.candidate_counts.returned = static_cast<std::int64_t>(out.rows.size());
+    out.receipt.sufficiency_status = out.rows.empty() ? Sufficiency::MISSING_INFO : Sufficiency::SUFFICIENT;
     return out;
 }
 

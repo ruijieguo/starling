@@ -7,6 +7,7 @@
 #include "starling/schema/enums.hpp"
 
 #include <iomanip>
+#include <nlohmann/json.hpp>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -229,8 +230,12 @@ std::optional<Engram> EngramStore::get(
     e.source.source_item_id  = reinterpret_cast<const char*>(sqlite3_column_text(sel.get(), 14));
     e.source.source_version  = reinterpret_cast<const char*>(sqlite3_column_text(sel.get(), 15));
     e.source.chunk_index     = sqlite3_column_int(sel.get(), 16);
-    // column 17 declared_transformations_json: P1 leaves the field unparsed
-    // on the Engram POD. content_hash already reflects the same vocabulary.
+    // Hash verification needs the same declared transformations as the write.
+    const auto* transformations = sqlite3_column_text(sel.get(), 17);
+    if (transformations != nullptr) {
+        e.declared_transformations = nlohmann::json::parse(
+            reinterpret_cast<const char*>(transformations)).get<std::vector<std::string>>();
+    }
     e.byte_preserving = sqlite3_column_int(sel.get(), 18) != 0;
     if (sqlite3_column_type(sel.get(), 19) != SQLITE_NULL) {
         e.redacted_content =

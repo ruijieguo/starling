@@ -1,0 +1,1982 @@
+{
+  "run": "build/socialmem_20260912_source_turn_real",
+  "status": "verified / complete_with_errors",
+  "manifest_sha256": "992a0e5d4a5379b4c1f5ff84da34df267f72d3c99e93217d8808ac902bc301ca",
+  "core_sha256": "45c2a2e0952c4433733d409f9d2a3391be4ba656f53a7cbe59103a500e012a5d",
+  "source_input_mode": "source_turn_v1",
+  "labels_sha256": "489e9fa8af6cbc5bfbe3814757d90a73c3cc8597c74ca57a7ab1d769c1101322",
+  "validation": {
+    "cpp_passed": 1052,
+    "python_passed": 1311,
+    "python_skipped": 15,
+    "offline_replays": 140,
+    "offline_databases": 144,
+    "real_replays": 140,
+    "real_databases": 144
+  },
+  "source_turns": {
+    "groups": 10,
+    "turns": 163,
+    "observed_at_preserved": 163,
+    "session_id_unknown": 163,
+    "stored_claims": 8,
+    "stored_turn_id": 8,
+    "stored_observed_at": 8,
+    "event_time_unknown": 8
+  },
+  "actual": {
+    "records": 140,
+    "extraction": 76,
+    "injected_controls": 64,
+    "admission": 63,
+    "answer": 8,
+    "judge": 120,
+    "embedding_adapter_counts": {
+      "request_count": 18,
+      "embed_calls": 16,
+      "batch_calls": 2
+    }
+  },
+  "controls": {
+    "cases": 64,
+    "expected_positive": 32,
+    "correct": 61,
+    "true_positives": 31,
+    "true_negatives": 30,
+    "false_accepts": 0,
+    "false_rejects": 1,
+    "technical_failures": 2
+  },
+  "p1": {
+    "baseline": {
+      "counts": {
+        "holder": [
+          60,
+          29,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          33,
+          15
+        ],
+        "predicate": [
+          63,
+          26,
+          8
+        ],
+        "object": [
+          63,
+          26,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7499999999999999,
+        "holder_perspective": 0.6999999999999998,
+        "predicate": 0.7875000000000001,
+        "object": 0.7875000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    },
+    "combined": {
+      "counts": {
+        "holder": [
+          60,
+          37,
+          11
+        ],
+        "holder_perspective": [
+          56,
+          41,
+          15
+        ],
+        "predicate": [
+          63,
+          34,
+          8
+        ],
+        "object": [
+          63,
+          34,
+          8
+        ],
+        "nesting_depth_1": [
+          6,
+          6,
+          4
+        ]
+      },
+      "f1": {
+        "holder": 0.7142857142857142,
+        "holder_perspective": 0.6666666666666666,
+        "predicate": 0.7500000000000001,
+        "object": 0.7500000000000001,
+        "nesting_depth_1": 0.5454545454545454
+      }
+    }
+  },
+  "synthetic": {
+    "frozen": {
+      "cases": 16,
+      "majority": 10,
+      "invalid_votes": 1,
+      "valid_cases": 15,
+      "valid_majority": 9,
+      "semantic_accuracy": 0.6
+    },
+    "contract": {
+      "cases": 16,
+      "majority": 8,
+      "invalid_votes": 0,
+      "valid_cases": 15,
+      "valid_majority": 8,
+      "semantic_accuracy": 0.5333333333333333
+    },
+    "paired": {
+      "gained": [
+        "mixed_emotions"
+      ],
+      "lost": [
+        "emotion_negative",
+        "decided_decline",
+        "negative_target_scope"
+      ]
+    }
+  },
+  "errors": {
+    "native_failures": 9,
+    "base_failures": 0,
+    "evidence_failures": 0,
+    "base_semantics_changed": 0,
+    "invalid_judge_votes": 1,
+    "answer_failures": 0,
+    "retrieval_failures": 0
+  },
+  "gates": {
+    "controls": false,
+    "synthetic": false,
+    "p1": false,
+    "technical": false,
+    "base_preserved": true
+  },
+  "promotion_ready": false,
+  "extended_labels": {
+    "targets": 14,
+    "valid_targets": 14,
+    "technical_failed_targets": 0,
+    "object_covered": 9,
+    "topic_covered": 1,
+    "scope_covered": 9,
+    "time_covered": 9,
+    "joint_covered": 1,
+    "predictions": 9,
+    "excluded_predictions": 0,
+    "unmatched_predictions": 8,
+    "schema_version": 1,
+    "metric": "declared_text_and_evidence_coverage",
+    "label_origin": "source_only_authored_before_new_run",
+    "cases": 16,
+    "evaluated_cases": 12,
+    "excluded_cases": 4,
+    "missing_result_cases": 0,
+    "technical_failed_cases": 0,
+    "excluded_case_predictions": 0,
+    "speech_act": {
+      "commitment": {
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      "indifference": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "reported_state": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      "state": {
+        "targets": 6,
+        "valid_targets": 6,
+        "technical_failed_targets": 0,
+        "object_covered": 5,
+        "topic_covered": 1,
+        "scope_covered": 5,
+        "time_covered": 5,
+        "joint_covered": 1,
+        "strict_rates": {
+          "object": 0.8333333333333334,
+          "topic": 0.16666666666666666,
+          "scope": 0.8333333333333334,
+          "time": 0.8333333333333334,
+          "joint": 0.16666666666666666
+        },
+        "valid_rates": {
+          "object": 0.8333333333333334,
+          "topic": 0.16666666666666666,
+          "scope": 0.8333333333333334,
+          "time": 0.8333333333333334,
+          "joint": 0.16666666666666666
+        }
+      },
+      "trust": {
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      "unresolved_choice": {
+        "targets": 3,
+        "valid_targets": 3,
+        "technical_failed_targets": 0,
+        "object_covered": 2,
+        "topic_covered": 0,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "strict_rates": {
+          "object": 0.6666666666666666,
+          "topic": 0.0,
+          "scope": 0.6666666666666666,
+          "time": 0.6666666666666666,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.6666666666666666,
+          "topic": 0.0,
+          "scope": 0.6666666666666666,
+          "time": 0.6666666666666666,
+          "joint": 0.0
+        }
+      }
+    },
+    "case_scores": [
+      {
+        "id": "emotion_positive",
+        "source_sha256": "88878fd2f3c825f05713059ee24634f0dd2c38893d71d9b5ccb06f0566361883",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "emotion_negative",
+        "source_sha256": "05e5b843889071728d41b398f4561a7380445fef0f6fcf4c00e97f7c2d4fbcbc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "relief_cause",
+        "source_sha256": "1223acd6f12d65642db04df12e5dbd6c4863545b560c4c56d90179a81e271dbd",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "mixed_emotions",
+        "source_sha256": "4a8ff43f330da5224cc6cfb0de8284e06bcad2f32dc41b94281498370c2ca56e",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 2,
+        "topic_covered": 0,
+        "scope_covered": 2,
+        "time_covered": 2,
+        "joint_covered": 0,
+        "predictions": 2,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 2,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 1
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 1
+            },
+            {
+              "target_index": 1,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "state": {
+            "targets": 2,
+            "valid_targets": 2,
+            "technical_failed_targets": 0,
+            "object_covered": 2,
+            "topic_covered": 0,
+            "scope_covered": 2,
+            "time_covered": 2,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "undecided",
+        "source_sha256": "49a07bfd68c619a0ca7220a9345df4862894d1a1655a6f79d735adee40c5fdcb",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "possible_not_decided",
+        "source_sha256": "a5c84fe2928dd37fad6591633b5a46a318050ab7427270610475434501ae7469",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "decided_decline",
+        "source_sha256": "a3fac12c3b0e495c029505a78ab0d4129d1845bd95958d9ebabf31019ad382cc",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "decision_change",
+        "source_sha256": "5a9623f6aa9a12cd05d56873054f194aed3a50b3d18f7df58b3d9285c7366115",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 2,
+        "valid_targets": 2,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "commitment": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          },
+          "unresolved_choice": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "indifference",
+        "source_sha256": "0b735df052388f370b1683fee05fc8131e5c19d257b21f383d589e8985ced409",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "indifference": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_contrast",
+        "source_sha256": "b20e4640b09198049ef7fb9f174306e9c1950e671a5e7e41c9abfc6f98a824bb",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "trust_target",
+        "source_sha256": "2fd327f8e5ad82c7ca2ece7646f0bb579e65be8fd60e77d7b903f23459f27435",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 0,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 0,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 1,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": []
+        },
+        "speech_act": {
+          "trust": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 0,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 0.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 0.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "reported_distrust",
+        "source_sha256": "04277060cc442d85e9bad1ce2a25b29e2b39c3318e79c5f1435e9965fcd972b7",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {
+          "reported_state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 0,
+            "topic_covered": 0,
+            "scope_covered": 0,
+            "time_covered": 0,
+            "joint_covered": 0,
+            "strict_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            },
+            "valid_rates": {
+              "object": 0.0,
+              "topic": 0.0,
+              "scope": 0.0,
+              "time": 0.0,
+              "joint": 0.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        },
+        "valid_rates": {
+          "object": 0.0,
+          "topic": 0.0,
+          "scope": 0.0,
+          "time": 0.0,
+          "joint": 0.0
+        }
+      },
+      {
+        "id": "preference_qualifiers",
+        "source_sha256": "39ef284d443e31a807b07dd6911e585c73d24f8606425bd5e6734c125dbafe90",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "negative_target_scope",
+        "source_sha256": "ca6135d6c5897af9bfc6de4e8426be4fc8bf3f17b35a2cbfbf65383de2b1ef8b",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": false,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "property_and_desire",
+        "source_sha256": "f33a054b1b9d84c7d742250ebc3224bc315ad25fa0ac003c2d5fa85ea543d26f",
+        "coverage": "legacy_channel_only",
+        "status": "excluded",
+        "native_ok": true,
+        "targets": 0,
+        "valid_targets": 0,
+        "technical_failed_targets": 0,
+        "object_covered": 0,
+        "topic_covered": 0,
+        "scope_covered": 0,
+        "time_covered": 0,
+        "joint_covered": 0,
+        "predictions": 0,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [],
+          "topic": [],
+          "scope": [],
+          "time": [],
+          "joint": []
+        },
+        "speech_act": {},
+        "strict_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        },
+        "valid_rates": {
+          "object": null,
+          "topic": null,
+          "scope": null,
+          "time": null,
+          "joint": null
+        }
+      },
+      {
+        "id": "topic_reference",
+        "source_sha256": "f9bd6460f9ae497edb4d8c7f728167042f06d4c051339a69b2af980642fbe259",
+        "coverage": "partial_supplemental_targets",
+        "status": "ok",
+        "native_ok": true,
+        "targets": 1,
+        "valid_targets": 1,
+        "technical_failed_targets": 0,
+        "object_covered": 1,
+        "topic_covered": 1,
+        "scope_covered": 1,
+        "time_covered": 1,
+        "joint_covered": 1,
+        "predictions": 1,
+        "excluded_predictions": 0,
+        "unmatched_predictions": 0,
+        "matches": {
+          "object": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "topic": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "scope": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "time": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ],
+          "joint": [
+            {
+              "target_index": 0,
+              "prediction_index": 0
+            }
+          ]
+        },
+        "speech_act": {
+          "state": {
+            "targets": 1,
+            "valid_targets": 1,
+            "technical_failed_targets": 0,
+            "object_covered": 1,
+            "topic_covered": 1,
+            "scope_covered": 1,
+            "time_covered": 1,
+            "joint_covered": 1,
+            "strict_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            },
+            "valid_rates": {
+              "object": 1.0,
+              "topic": 1.0,
+              "scope": 1.0,
+              "time": 1.0,
+              "joint": 1.0
+            }
+          }
+        },
+        "strict_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        },
+        "valid_rates": {
+          "object": 1.0,
+          "topic": 1.0,
+          "scope": 1.0,
+          "time": 1.0,
+          "joint": 1.0
+        }
+      }
+    ],
+    "strict_rates": {
+      "object": 0.6428571428571429,
+      "topic": 0.07142857142857142,
+      "scope": 0.6428571428571429,
+      "time": 0.6428571428571429,
+      "joint": 0.07142857142857142
+    },
+    "valid_rates": {
+      "object": 0.6428571428571429,
+      "topic": 0.07142857142857142,
+      "scope": 0.6428571428571429,
+      "time": 0.6428571428571429,
+      "joint": 0.07142857142857142
+    }
+  },
+  "judge_consistency": {
+    "synthetic": {
+      "frozen": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 15,
+        "invalid_votes": 1,
+        "mismatched_groups": 0,
+        "valid_pairs": 46,
+        "agreeing_pairs": 44,
+        "pairwise_agreement": 0.9565217391304348
+      },
+      "contract": {
+        "groups": 16,
+        "comparable_groups": 16,
+        "unanimous_groups": 15,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 48,
+        "agreeing_pairs": 46,
+        "pairwise_agreement": 0.9583333333333334
+      }
+    },
+    "qa": {
+      "baseline": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "structured": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "linked": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      },
+      "full": {
+        "groups": 2,
+        "comparable_groups": 2,
+        "unanimous_groups": 2,
+        "invalid_votes": 0,
+        "mismatched_groups": 0,
+        "valid_pairs": 6,
+        "agreeing_pairs": 6,
+        "pairwise_agreement": 1.0
+      }
+    }
+  },
+  "qa_stage_counts": [
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "baseline",
+      "error": "",
+      "stored_claims": 0,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 30
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "structured",
+      "error": "",
+      "stored_claims": 3,
+      "retrieved": 10,
+      "retrieved_claim_links": 2,
+      "eligible_scope_totals": 31
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "structured",
+      "error": "",
+      "stored_claims": 5,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 35
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "baseline",
+      "error": "",
+      "stored_claims": 0,
+      "retrieved": 10,
+      "retrieved_claim_links": 0,
+      "eligible_scope_totals": 30
+    }
+  ],
+  "technical_failure_cases": [
+    {
+      "track": "p1",
+      "id": "eval-000",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "supplement requires nesting_depth 0",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "p1",
+      "id": "eval-008",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "topic must be null or a nonempty string",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "p1",
+      "id": "eval-024",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ]
+    },
+    {
+      "track": "p1",
+      "id": "eval-029",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "topic must be null or a nonempty string",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "p1",
+      "id": "eval-038",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "topic must be null or a nonempty string",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "synthetic",
+      "id": "negative_target_scope",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "topic must be null or a nonempty string",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "scoped",
+      "id": "Q1_a5s1c1_Jordan",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "topic must be null or a nonempty string",
+          "kind": "schema_failure"
+        }
+      ]
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_en_time_no",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ]
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_zh_time_no",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ]
+    }
+  ],
+  "technical_failure_details": {
+    "supplement requires nesting_depth 0": 1,
+    "topic must be null or a nonempty string": 5,
+    "incomplete or trailing code fence": 3
+  },
+  "qa_votes": [
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "baseline",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "structured",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "linked",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q1_a5s1c1",
+      "arm": "full",
+      "acceptances": 3,
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "baseline",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "structured",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "linked",
+      "acceptances": 0,
+      "context_error": ""
+    },
+    {
+      "id": "Q9_a0b1c2d3",
+      "arm": "full",
+      "acceptances": 3,
+      "context_error": ""
+    }
+  ],
+  "scoped_semantic_rejections": [
+    {
+      "id": "Q1_a5s1c1_Claudette",
+      "stored": 2,
+      "rejections": [
+        {
+          "detail": "topic is absent from source unit",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 2,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 5,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source time missing",
+          "index": 6,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 7,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q1_a5s1c1_Femi",
+      "stored": 0,
+      "rejections": [
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 2,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 3,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 4,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q1_a5s1c1_Jordan",
+      "stored": 0,
+      "rejections": []
+    },
+    {
+      "id": "Q1_a5s1c1_Marcus",
+      "stored": 1,
+      "rejections": [
+        {
+          "detail": "object dropped explicit time qualifier",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 2,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q1_a5s1c1_Vera",
+      "stored": 0,
+      "rejections": [
+        {
+          "detail": "explicit source marker missing: CONDITIONAL",
+          "index": 0,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q9_a0b1c2d3_Claire",
+      "stored": 1,
+      "rejections": [
+        {
+          "detail": "topic is absent from source unit",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: CONDITIONAL",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 3,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 5,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 6,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: CONDITIONAL",
+          "index": 7,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 8,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q9_a0b1c2d3_Dev",
+      "stored": 4,
+      "rejections": [
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 1,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q9_a0b1c2d3_Marcus",
+      "stored": 0,
+      "rejections": [
+        {
+          "detail": "object dropped topic",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "object dropped topic",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "object dropped explicit time qualifier",
+          "index": 2,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "object dropped topic",
+          "index": 3,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "object dropped topic",
+          "index": 4,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q9_a0b1c2d3_Sandra",
+      "stored": 0,
+      "rejections": [
+        {
+          "detail": "topic is absent from source unit",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "object dropped explicit time qualifier",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 2,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 3,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 4,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: CONDITIONAL",
+          "index": 5,
+          "kind": "scope_failure"
+        }
+      ]
+    },
+    {
+      "id": "Q9_a0b1c2d3_Yuki",
+      "stored": 0,
+      "rejections": [
+        {
+          "detail": "topic is absent from source unit",
+          "index": 0,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: CONDITIONAL",
+          "index": 1,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 2,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "topic is absent from source unit",
+          "index": 3,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 4,
+          "kind": "scope_failure"
+        },
+        {
+          "detail": "explicit source marker missing: QUESTIONED",
+          "index": 5,
+          "kind": "scope_failure"
+        }
+      ]
+    }
+  ],
+  "conclusions_zh": [
+    "版本化话轮保留了 163 个消息观察时间，8 条已存声明保留来源元数据；未推断事件时间。",
+    "固定候选 61/64，synthetic 契约 8/16；质量门槛未通过。",
+    "扩展对象覆盖 9/14，主题及联合覆盖 1/14；覆盖代理不能解释为人工语义正确率。",
+    "Q9 Marcus 五条候选全部因对象缺少主题或时间限定被拒；无新增 Marcus 声明入库，结构化召回无新声明证据链接。",
+    "保持生产默认关闭；不启动 1,031 题全量。"
+  ]
+}

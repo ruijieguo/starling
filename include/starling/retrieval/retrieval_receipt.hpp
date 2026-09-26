@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -38,8 +40,16 @@ struct RetrievalReceipt {
         std::int64_t dropped_by_state{};
         std::int64_t dropped_by_time_anchor{};
         std::int64_t dropped_by_evidence_erasure{};
+        std::int64_t dropped_by_claim_evidence{};
     } candidate_counts;
 
+    std::string evidence_links_json{"[]"};
+    std::string temporal_evidence_json{"null"};
+    std::string claim_exclusion_counts_json{"{}"};
+    // Native merge ledger: one exclusion per (tenant_id, statement_id), even
+    // when a row is encountered in multiple recall scopes or graph hops.
+    std::map<std::pair<std::string, std::string>, std::string> claim_exclusions;
+    std::int64_t source_time_fallback_count{};
     std::int64_t evidence_erased_count{};
     // P2.a: count of rows filtered out by apply_frontier_filter. Zero when
     // apply_frontier_filter == false.

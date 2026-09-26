@@ -48,7 +48,16 @@ struct ParsedEpisodicEvent {
 struct EpisodicLlmResult {
     bool ok = false;
     std::vector<ParsedEpisodicEvent> events{};
+    // Native provenance for the lock-free extraction phase.  Python receives
+    // these fields only through episodic_extraction_receipt().
+    std::string prompt_body;
+    std::string prompt_input_hash;
+    LLMResponse response{};
 };
+
+// Stable JSON receipt for the episodic extraction channel.  It retains the
+// original response evidence even when parsing fails or produces no events.
+std::string episodic_extraction_receipt(const EpisodicLlmResult& result);
 
 class EpisodicExtractor {
 public:

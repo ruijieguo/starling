@@ -1,0 +1,178 @@
+{
+  "status": "read_only_archive_diagnosis",
+  "run": "build/socialmem_20260913_protocol_boundary_real",
+  "manifest_sha256": "47b71aa9538aa0bcb1f1a30882a4a68f719878464b93fb0d53bef8af685781d9",
+  "failures": [
+    {
+      "track": "p1",
+      "id": "eval-000",
+      "channel": "extraction",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "duplicate JSON key",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "fe205489f4db8a14bfa6a7a6be7d2d58199e541003aa9a6ec590bf7b182966cb",
+      "raw_prefix": "```json\n{\n  \"schema_version\": 2,\n  \"statements\":",
+      "raw_suffix": "Bob\",\n        \"clause_id\": \"c2\",\n        \"event_time\": null,\n        \"scope_markers\": [\"REPORTED\"],\n        \"topic\": \"billing\",\n        \"time_text\": \"\",\n        \"time_text\": \"\"\n      }\n    }\n  ]\n}\n```"
+    },
+    {
+      "track": "synthetic",
+      "id": "possible_not_decided",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "e810fab5b9c6452b6a790ae1313fa53a60ca8fbb2ba428c0b93390b9878102d4",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "cept the internship or pursue another job\"), then `uncertain_about` would be correct. In this case, the source only expresses indecision about a single option, so the predicate is not fully supported."
+    },
+    {
+      "track": "scoped",
+      "id": "Q9_a0b1c2d3_Marcus",
+      "channel": "extraction",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "duplicate JSON key",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "17f8a29e6290d255a45f166ee20e8389c4f73e1807698feae68bb4f43ce71080",
+      "raw_prefix": "```json\n{\n  \"schema_version\": 2,\n  \"statements\":",
+      "raw_suffix": "    \"clause_id\": \"c25\",\n        \"event_time\": null,\n        \"scope_markers\": [\"ASSERTED\"],\n        \"topic\": \"starting over\",\n        \"time_text\": \"\",\n        \"event_time\": null\n      }\n    }\n  ]\n}\n```"
+    },
+    {
+      "track": "fixed_controls",
+      "id": "en_decision_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "4a75505c10e893563f8eae7cd9721799e651e7ac69b1979b6d210ece1dde7f3b",
+      "raw_prefix": "```json\n{\n  \"schema_version\": 1,\n  \"decisions\": ",
+      "raw_suffix": "uncertain_about/BELIEVES with NEG polarity, but since we cannot modify candidates, we must reject it for wrong_relation. The \"want\" portion is correctly a preference (base path), not a decided action."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "en_report_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "d511c37bfdca420e3c974618d45ff254ff71f5fae5d3d049b92a23e43fe474d0",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "s is the one who is nervous (\"Jules told me that he is nervous about the interview\"). Therefore, the attribution is incorrect, and the candidate should be rejected with the reason \"wrong_attribution\"."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_en_trust_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "bc753a81c9a14513aae864f97aee7126436e71b34e27ab6144c1f267e4fb5ac5",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "s an assignment (\"is assigned to\"). This is a mismatch in the relation type. The source describes a factual assignment rather than a mental state of trust, so the candidate's predicate is unsupported."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_en_decision_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "7afaa546db46189107c3c31380bf97df7ba51230b9cb22d3a8540bf8865c4ade",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "ly contradicts the candidate's representation of a settled decision, making the reason \"not_asserted\" the correct rejection reason. The source does not support the claim that a decision has been made."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_en_attribution_yes",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "a8347fd16bc9cb0eff3365059fbca1fc83d7ff2149bcb5317bbdde34df56fa49",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "ity/scope mismatch. The correct representation would be `polarity:\"POS\"` with the emotion itself negated (e.g. \"not worried\"), but since we cannot modify candidates, we must reject it for wrong scope."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_zh_negation_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "ca4ae5d8ab2fa4e4ad129caf0921ffbd998d776da2e70c2601f41d83e9515585",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": "\" (I am not unhappy) expresses a negation of the feeling, so the candidate's polarity should be `NEG` to match the source's negation. This is a polarity/scope mismatch, hence the `wrong_scope` reason."
+    },
+    {
+      "track": "fixed_controls",
+      "id": "new_zh_time_no",
+      "channel": "admission",
+      "errors": [
+        {
+          "byte_offset": 0,
+          "detail": "incomplete or trailing code fence",
+          "kind": "envelope_failure"
+        }
+      ],
+      "raw_sha256": "252d350c772669ae722cf60834c7f7367cd2224a50cdef5e77e730dba910223e",
+      "raw_prefix": "```json\n{\"schema_version\":1,\"decisions\":[{\"index",
+      "raw_suffix": " NEG polarity for feeling upset today. The time_text=\"今天\" is correctly preserved, but the emotional state is opposite of what's asserted. Thus, the correct reason is \"wrong_scope\" (polarity mismatch)."
+    }
+  ],
+  "failure_channels": {
+    "extraction": 2,
+    "admission": 8
+  },
+  "p1_new_rows": {
+    "eval-032": [
+      "route login-related questions to him"
+    ],
+    "eval-034": [
+      "route the login questions to him"
+    ],
+    "eval-045": [
+      "排查登录问题时先找 Bob",
+      "同步缓存线索时再告诉他"
+    ]
+  },
+  "notes_zh": [
+    "10 条技术失败：2 条抽取重复键、8 条准入围栏后追加说明（其中固定候选 7 条）。",
+    "possible_not_decided 同时含准入语义错误与协议错误；官方仍只记技术失败。",
+    "P1 新增的 4 条 decided_on 与旧基础提示排除的操作性路由安排重叠；需独立正反例确认修复边界。"
+  ]
+}

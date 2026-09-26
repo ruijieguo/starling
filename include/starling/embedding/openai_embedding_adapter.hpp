@@ -1,7 +1,9 @@
 // include/starling/embedding/openai_embedding_adapter.hpp
 #pragma once
 #include "starling/embedding/embedding_adapter.hpp"
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +32,13 @@ public:
     int dim() const override { return cfg_.dim; }
     std::string model() const override { return cfg_.model; }
 
+    // Observability only: logical single/batch calls and actual curl attempts
+    // are distinct. Failed attempts/retries count; unreached chunks do not.
+    // Relaxed atomics support sharing an adapter across worker/query threads.
+    [[nodiscard]] std::uint64_t request_count() const { return request_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t embed_calls() const { return embed_calls_.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t batch_calls() const { return batch_calls_.load(std::memory_order_relaxed); }
+
     // Pure, offline-testable helpers (static — reachable from ctest, no network).
     [[nodiscard]] static std::string
         build_embeddings_request(const std::string& model,
@@ -40,6 +49,9 @@ public:
         chunk_ranges(std::size_t count, int max_inputs);
 private:
     Config cfg_;
+    std::atomic<std::uint64_t> request_count_{0};
+    std::atomic<std::uint64_t> embed_calls_{0};
+    std::atomic<std::uint64_t> batch_calls_{0};
 };
 
 }  // namespace starling::embedding

@@ -1,4 +1,5 @@
 #include "starling/retrieval/basic_retriever.hpp"
+#include "starling/retrieval/claim_evidence.hpp"
 
 #include <sqlite3.h>
 
@@ -66,7 +67,7 @@ constexpr const char* kSelectSqlBase =
     "       object_kind, object_value, canonical_object_hash, "
     "       modality, polarity, confidence, observed_at, "
     "       valid_from, valid_to, consolidation_state, review_status, "
-    "       evidence_json, affect_json "
+    "       evidence_json, affect_json, semantic_claim_json, source_spans_json, provenance, nesting_depth "
     "  FROM statements "
     " WHERE tenant_id = ?1 "
     "   AND holder_id = ?2 "
@@ -324,12 +325,22 @@ BasicRetrieveResult BasicRetriever::run(const BasicRetrieverParams& params) {
         row.review_status           = col_text(17);
         row.evidence_json           = col_text(18);
         row.affect_json             = col_text(19);
+        row.semantic_claim_json     = col_text(20);
+        row.source_spans_json       = col_text(21);
+        row.provenance              = col_text(22);
+        row.nesting_depth           = sqlite3_column_int(raw, 23);
 
         if (any_evidence_erased(conn, row.tenant_id, row.evidence_json)) {
             result.receipt.candidate_counts.dropped_by_evidence_erasure += 1;
             result.receipt.evidence_erased_count += 1;
             continue;
         }
+        const auto claim_error = claim_evidence_error(conn, row);
+        if (!claim_error.empty()) {
+            record_claim_exclusion(result.receipt, row.tenant_id, row.id, claim_error);
+            continue;
+        }
+        record_claim_link(conn, result.receipt, row);
         result.rows.push_back(std::move(row));
     }
 

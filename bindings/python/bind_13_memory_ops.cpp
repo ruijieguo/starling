@@ -105,7 +105,14 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return py::dict("engram_ref"_a = r.engram_ref,
                               "statement_ids"_a = r.statement_ids,
                               "outcome"_a = r.outcome,
-                              "extraction_failed"_a = r.extraction_failed);
+                              "extraction_failed"_a = r.extraction_failed,
+                              "failure_category"_a = r.failure_category,
+                              "failure_detail"_a = r.failure_detail,
+                              "catalog_version"_a = r.catalog_version,
+                              "source_preserved"_a = r.source_preserved,
+                              "structured_claims_persisted"_a = r.structured_claims_persisted,
+                              "accepted_by_predicate"_a = r.accepted_by_predicate,
+                              "rejected_by_predicate"_a = r.rejected_by_predicate);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("prompt_template"),
           py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
@@ -274,6 +281,64 @@ void bind_13_memory_ops(pybind11::module_& m) {
     py::class_<starling::extractor::ExtractionLlmResult>(m, "ExtractionLlmResult");
     py::class_<starling::memoryops::RememberLlmBundle>(m, "RememberLlmBundle");
 
+    m.def("memory_remember_bundle_receipt",
+          &starling::memoryops::remember_bundle_receipt,
+          py::arg("extracted"));
+
+    m.def("memory_remember_holders",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& belief_prompt,
+             const std::string& episodic_prompt,
+             const std::string& general_fact_prompt,
+             const py::list& holder_inputs,
+             const starling::extractor::ValidationPolicy& policy) {
+              std::vector<starling::memoryops::RememberParams> params;
+              params.reserve(holder_inputs.size());
+              for (const auto& item : holder_inputs) {
+                  const py::dict input = item.cast<py::dict>();
+                  starling::memoryops::RememberParams p;
+                  p.tenant_id = input["tenant_id"].cast<std::string>();
+                  p.holder_id = input["holder_id"].cast<std::string>();
+                  p.interlocutor = input["interlocutor"].cast<std::string>();
+                  p.adapter_name = input["adapter_name"].cast<std::string>();
+                  p.source_prefix = input["source_prefix"].cast<std::string>();
+                  p.created_at_iso8601 = input["created_at_iso8601"].cast<std::string>();
+                  const std::string raw = input["payload"].cast<py::bytes>();
+                  p.payload.assign(raw.begin(), raw.end());
+                  params.push_back(std::move(p));
+              }
+              const starling::memoryops::RememberPrompts prompts{
+                  belief_prompt, episodic_prompt, general_fact_prompt};
+              std::vector<starling::memoryops::RememberOutcome> outcomes;
+              {
+                  py::gil_scoped_release release;
+                  outcomes = starling::memoryops::remember_holders(adapter, llm, prompts, params, policy);
+              }
+              py::list result;
+              for (const auto& outcome : outcomes) {
+                  result.append(py::dict(
+                      "holder_id"_a = outcome.holder_id,
+                      "engram_ref"_a = outcome.engram_ref,
+                      "statement_ids"_a = outcome.statement_ids,
+                      "outcome"_a = outcome.outcome,
+                      "extraction_failed"_a = outcome.extraction_failed,
+                      "failure_category"_a = outcome.failure_category,
+                      "failure_detail"_a = outcome.failure_detail,
+                      "catalog_version"_a = outcome.catalog_version,
+                      "source_preserved"_a = outcome.source_preserved,
+                      "structured_claims_persisted"_a = outcome.structured_claims_persisted,
+                      "accepted_by_predicate"_a = outcome.accepted_by_predicate,
+                      "rejected_by_predicate"_a = outcome.rejected_by_predicate,
+                      "receipt"_a = outcome.receipt));
+              }
+              return result;
+          },
+          py::arg("adapter"), py::arg("llm"),
+          py::arg("belief_prompt"), py::arg("episodic_prompt"),
+          py::arg("general_fact_prompt"), py::arg("holder_inputs"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
+
     m.def("memory_remember_prepare",
           [](starling::persistence::SqliteAdapter& adapter,
              const std::string& tenant_id, const std::string& holder_id,
@@ -350,7 +415,14 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return py::dict("engram_ref"_a = result.engram_ref,
                               "statement_ids"_a = result.statement_ids,
                               "outcome"_a = result.outcome,
-                              "extraction_failed"_a = result.extraction_failed);
+                              "extraction_failed"_a = result.extraction_failed,
+                              "failure_category"_a = result.failure_category,
+                              "failure_detail"_a = result.failure_detail,
+                              "catalog_version"_a = result.catalog_version,
+                              "source_preserved"_a = result.source_preserved,
+                              "structured_claims_persisted"_a = result.structured_claims_persisted,
+                              "accepted_by_predicate"_a = result.accepted_by_predicate,
+                              "rejected_by_predicate"_a = result.rejected_by_predicate);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"), py::arg("holder_id"),
           py::arg("interlocutor"),
@@ -409,7 +481,14 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return py::dict("engram_ref"_a = result.engram_ref,
                               "statement_ids"_a = result.statement_ids,
                               "outcome"_a = result.outcome,
-                              "extraction_failed"_a = result.extraction_failed);
+                              "extraction_failed"_a = result.extraction_failed,
+                              "failure_category"_a = result.failure_category,
+                              "failure_detail"_a = result.failure_detail,
+                              "catalog_version"_a = result.catalog_version,
+                              "source_preserved"_a = result.source_preserved,
+                              "structured_claims_persisted"_a = result.structured_claims_persisted,
+                              "accepted_by_predicate"_a = result.accepted_by_predicate,
+                              "rejected_by_predicate"_a = result.rejected_by_predicate);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("tenant_id"),
           py::arg("holder_id"), py::arg("interlocutor"), py::arg("prepared"),
@@ -449,7 +528,14 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return py::dict("engram_ref"_a = result.engram_ref,
                               "statement_ids"_a = result.statement_ids,
                               "outcome"_a = result.outcome,
-                              "extraction_failed"_a = result.extraction_failed);
+                              "extraction_failed"_a = result.extraction_failed,
+                              "failure_category"_a = result.failure_category,
+                              "failure_detail"_a = result.failure_detail,
+                              "catalog_version"_a = result.catalog_version,
+                              "source_preserved"_a = result.source_preserved,
+                              "structured_claims_persisted"_a = result.structured_claims_persisted,
+                              "accepted_by_predicate"_a = result.accepted_by_predicate,
+                              "rejected_by_predicate"_a = result.rejected_by_predicate);
           },
           py::arg("adapter"), py::arg("llm"), py::arg("belief_prompt"),
           py::arg("episodic_prompt"), py::arg("general_fact_prompt"),

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "starling/retrieval/statement_row.hpp"
+#include "starling/retrieval/temporal_evidence.hpp"
 
 namespace starling::retrieval {
 
@@ -53,5 +54,6 @@ std::string render_line(const StatementRow& row, ContextPackLabel label);
 // 整包渲染;abstention_reason 非空时输出单行 "[ABSTAIN] 无可靠记忆(reason)"。
 std::string render_pack(const std::vector<PackEntry>& entries,
                         std::string_view abstention_reason);
+std::string render_temporal_evidence(const TemporalEvidenceView& view);
 
 }  // namespace starling::retrieval

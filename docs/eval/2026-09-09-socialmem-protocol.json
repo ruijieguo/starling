@@ -1,0 +1,34 @@
+{
+  "protocol_id": "socialmem-reviewed-diagnostic-v1",
+  "claim_level": "diagnostic_only",
+  "source_sha256": {
+    "qa.parquet": "98990f88a25df0d9a017488d39ca50e76f432b6554c67b2beafa5f9421ee3f5e",
+    "conversations.parquet": "f9ed5d10501cd8a46ca09bb914866ae3069136c259d99ee24dd175e30c90c88d"
+  },
+  "items": [
+    {
+      "item_id": "Q1_a5s1c1",
+      "network_id": "grp_5e6f7a8b",
+      "question": "What does Claudette's behavior suggest about her stance on development and change on Maple Street?",
+      "status": "include",
+      "sessions": null,
+      "reason": "No explicit temporal restriction. Retain the full conversation as a diagnostic control."
+    },
+    {
+      "item_id": "Q9_a0b1c2d3",
+      "network_id": "grp_f4a5b6c7",
+      "question": "Marcus left Maple Street at the end of November. Based only on what he said and did in Sessions 1 through 5, what was his last known emotional state regarding the move, and how did this compare to how he presented himself earlier in those same sessions?",
+      "status": "include",
+      "sessions": [1, 2, 3, 4, 5],
+      "reason": "The question explicitly allows only Sessions 1-5. Filter before extraction and all retrieval stages; do not reuse databases containing Sessions 6-8."
+    },
+    {
+      "item_id": "Q4_c0s2c2",
+      "network_id": "grp_0d1e2f3a",
+      "question": "Both Mei and Leon present themselves confidently in the group chat when discussing career. Who is projecting success they have not fully achieved, and who is reporting genuine accomplished progress?",
+      "status": "exclude",
+      "sessions": null,
+      "reason": "Question asks for two contrasting roles but each option is one name. Reference assigns projected success to Leon and accomplished progress to Mei; designated choice is Mei. Exclude from this adjusted diagnostic cohort, retain official data and historical scores."
+    }
+  ]
+}

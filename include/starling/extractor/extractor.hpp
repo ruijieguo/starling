@@ -1,6 +1,7 @@
 #pragma once
 
 #include "starling/extractor/existing_ref_map.hpp"
+#include "starling/extractor/claim_contract.hpp"
 #include "starling/extractor/json_parser.hpp"
 #include "starling/extractor/llm_adapter.hpp"
 #include "starling/extractor/statement_validator.hpp"
@@ -8,6 +9,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,14 +29,42 @@ struct ExtractionRunResult {
 // parse 有错才重试、parse 成功即止)纯由 LLM 响应决定,故 attempt 序列可无 DB
 // 完整确定,persist 忠实重放。
 struct ExtractionLlmAttempt {
-    int         attempt = 0;       // 1-based
+    int         attempt = 0;       // 1-based, globally increasing within holder
+    int         batch_index = -1;  // 0-based only when batching is enabled
+    std::vector<std::string> target_clause_ids;
+    std::string prompt_body;
+    std::string prompt_input_hash;
     LLMResponse resp;              // 该 attempt 的原始 LLM 响应
     bool        parsed = false;    // resp.ok 且跑过 parser
     ParseResult parse;             // 仅 parsed==true 有效
+    std::string claim_candidates; // unchanged pre-admission native candidates
+    bool        admission_called = false;
+    std::string admission_prompt;
+    std::string admission_prompt_hash;
+    LLMResponse admission_resp;
+    int         semantic_rejected = 0; // total deterministic + model rejections
+    std::vector<ClaimSemanticRejection> semantic_rejections; // deterministic row diagnostics
+    std::map<std::string, std::size_t> admission_rejected_by_predicate;
+    std::vector<ClaimRowDiagnostic> row_diagnostics; // original indexes, before admission filtering
     bool        terminal = false;  // parse 成功 → 该 attempt 结束重试循环
 };
 
 struct ExtractionLlmResult {
+    bool                              semantic_claim_contract = false;
+    int                               claim_batch_size = 0;
+    ValidationPolicy                  claim_batch_policy; // extraction-time snapshot
+    std::string                       claim_batch_plan;   // deterministic native JSON
+    std::string                       catalog_version;
+    std::string                       failure_category;
+    std::string                       failure_detail;
+    std::map<std::string, std::size_t> accepted_by_predicate;
+    std::map<std::string, std::size_t> rejected_by_predicate;
+    bool                              source_preserved = false;
+    bool                              structured_claims_persisted = false;
+    std::string                       source_payload;
+    std::string                       source_payload_hash;
+    std::string                       source_holder;
+    mutable std::string               persistence_error; // written only by persist; receipt remains inspectable
     std::string                       prompt_body;
     std::string                       prompt_input_hash;
     std::vector<ExtractionLlmAttempt> attempts;

@@ -35,4 +35,16 @@ LLMResponse FakeLLMAdapter::extract(std::string_view /*prompt*/,
     };
 }
 
+LLMResponse FakeLLMAdapter::extract_with_contract(std::string_view prompt, std::string_view hash,
+                                               const StructuredOutputRequest& request) {
+    structured_requests_.push_back(request);
+    auto response=extract(prompt,hash);
+    response.output_mode=request.mode;
+    response.output_contract=request.contract;
+    if (request.mode != OutputMode::Legacy) {
+        response.schema_sha256=structured_output_schema_sha256(request.contract);
+        if(response.raw_completion.empty()) response.raw_completion=response.raw_xml;
+    }
+    return response;
+}
 }  // namespace starling::extractor

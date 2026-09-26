@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <set>
 #include <string>
 
 namespace starling::retrieval {
@@ -223,6 +224,43 @@ TEST(RetrievalPlanner, UnhintedFactLookupGoesSemanticOnly) {
     ASSERT_EQ(r.receipt.scopes_searched.size(), 1u);
     EXPECT_EQ(r.receipt.scopes_searched[0], "semantic_index");
     EXPECT_TRUE(r.abstained);   // 无向量 → 语义零候选 → low_score
+}
+
+TEST(RetrievalPlanner, SemanticAndStructuredPathsShareHalfOpenStatementValidity) {
+    Rig rig;
+    auto& conn=rig.a->connection();
+    auto q=rig.q(QueryIntent::FACT_LOOKUP);
+    q.text="who owns the auth service";q.k=20;
+    const auto vector=rig.emb.embed(q.text).vector;
+    for(const auto* id:{"future","expired","end_equal","start_equal","current","unbounded","empty"}) {
+        insert_statement(conn,id,"cog-self","Bob","responsible_for","auth");
+        rig.idx.insert(conn,id,"default",vector);
+    }
+    // All seven real indexed statements must be reachable before applying bounds.
+    const auto unbounded=rig.planner.run(q);
+    ASSERT_EQ(unbounded.entries.size(),7u);
+    ASSERT_EQ(unbounded.receipt.candidate_counts.fetched,7);
+    conn.exec(R"SQL(
+        UPDATE statements SET valid_from='2027-01-01T00:00:00Z' WHERE id='future';
+        UPDATE statements SET valid_to='2026-06-11T00:00:00Z' WHERE id='expired';
+        UPDATE statements SET valid_to='2026-06-12T10:00:00Z' WHERE id='end_equal';
+        UPDATE statements SET valid_from='2026-06-12T10:00:00Z' WHERE id='start_equal';
+        UPDATE statements SET valid_from='2026-01-01T00:00:00Z',valid_to='2027-01-01T00:00:00Z' WHERE id='current';
+        UPDATE statements SET valid_from='',valid_to='' WHERE id='empty';
+        UPDATE statements SET observed_at='2027-01-01T00:00:00Z' WHERE id='unbounded';
+    )SQL");
+    for(bool semantic:{true,false}) {
+        SCOPED_TRACE(semantic?"semantic_index":"statement_main");
+        if(!semantic) {q.text.clear();q.subject_id="Bob";q.predicate="responsible_for";}
+        const auto result=rig.planner.run(q);
+        std::set<std::string> ids;
+        for(const auto& entry:result.entries) ids.insert(entry.row.id);
+        EXPECT_EQ(ids,(std::set<std::string>{"start_equal","current","unbounded","empty"}));
+        EXPECT_EQ(result.receipt.candidate_counts.fetched,4);
+        EXPECT_EQ(result.receipt.candidate_counts.returned,4);
+        ASSERT_FALSE(result.receipt.scopes_searched.empty());
+        EXPECT_EQ(result.receipt.scopes_searched.front(),semantic?"semantic_index":"statement_main");
+    }
 }
 
 TEST(RetrievalPlanner, RejectsScopeFilterMix) {

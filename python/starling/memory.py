@@ -106,6 +106,13 @@ class RememberResult:
     # add the field here too so this facade's RememberResult(**dict) forward
     # doesn't reject the new key (same landmine as TickStats/TickOutcome).
     extraction_failed: bool = False
+    failure_category: str = ""
+    failure_detail: str = ""
+    catalog_version: str = ""
+    source_preserved: bool = False
+    structured_claims_persisted: bool = False
+    accepted_by_predicate: dict = field(default_factory=dict)
+    rejected_by_predicate: dict = field(default_factory=dict)
 
 
 @dataclass

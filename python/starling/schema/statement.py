@@ -13,6 +13,7 @@ types that don't land until P2/P3. Cross-field validators live in T8.
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from starling.schema.affect import AffectVector
 from starling.schema.enums import (
@@ -22,7 +23,7 @@ from starling.schema.enums import (
 from starling.schema.refs import (
     CognizerRef, EntityRef, StatementRef, EngramRef,
 )
-from starling.schema.source import SourceSpanRef
+from starling.schema.source import SourceSpanRef, SourceTurn
 from starling.schema.temporal import TemporalAnchor, ConfidenceEvent
 
 
@@ -38,6 +39,34 @@ class EvidenceRef:
 class TimeRange:
     start: datetime | None = None
     end: datetime | None = None
+
+
+class AssertionScope(StrEnum):
+    ASSERTED = "ASSERTED"
+    CONDITIONAL = "CONDITIONAL"
+    HYPOTHETICAL = "HYPOTHETICAL"
+    QUESTIONED = "QUESTIONED"
+    REPORTED = "REPORTED"
+    NEGATED = "NEGATED"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SemanticClaimEvidence:
+    """Direct clause evidence; optional on legacy and absent on new derivations."""
+    source_span: SourceSpanRef
+    clause_id: str
+    actor: CognizerRef | EntityRef
+    assertion_scope: AssertionScope
+    relation_polarity: Polarity
+    relation_modality: Modality
+    source_time: datetime
+    schema_version: int = 1
+    attributed_to: CognizerRef | None = None
+    scope_markers: tuple[AssertionScope, ...] = ()
+    event_time: TimeRange | None = None
+    time_text: str = ""
+    topic: str | None = None
+    source_turn: SourceTurn | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,3 +115,4 @@ class Statement:
     visibility: tuple[CognizerRef, ...] = ()
     retention_policy: str | None = None
     canonical_object_hash_version: str = "v1"
+    semantic_claim_evidence: SemanticClaimEvidence | None = None

@@ -35,6 +35,16 @@ HOLDER vs SUBJECT (CRITICAL): holder is the SPEAKER who is asserting the claim i
 - "Alice: I read that Carol prefers Python" → holder=Alice, subject=Carol, perspective=HEARSAY
 NEVER set holder to the subject of the claim. The holder is the conversation participant who voiced the claim.
 
+PREFERENCE RELATIONS: for predicate=prefers, subject is the PERSON/COGNIZER whose preference or desire is described, and object is the desired or rejected target/state. Do not put the target in both subject and object. In a first-person preference the speaker is BOTH holder and subject; for a reported preference they may differ. The holder rule above must not force those roles to be different. Keep enough object wording to preserve the desired state, even when it is longer than a noun.
+- "Dana: I want a reversible rollout" -> subject=Dana, subject_kind=cognizer, predicate=prefers, object=reversible rollout, modality=DESIRES, polarity=POS.
+- "Dana: I heard that Omar prefers remote work" -> holder=Dana, subject=Omar, subject_kind=cognizer, predicate=prefers, object=remote work, holder_perspective=HEARSAY.
+
+POLARITY SCOPE: POS affirms the complete subject-predicate-object relation; NEG denies that relation; UNKNOWN means its truth is explicitly uncertain. Determine scope from the meaning of the sentence, not the presence of a negative word.
+- "Dana: I do not want a permanent rollout" -> subject=Dana, predicate=prefers, object=permanent rollout, modality=DESIRES, polarity=NEG. Do not also insert "not" into the object to express the same denial.
+- "Dana: I prefer no downtime" -> subject=Dana, predicate=prefers, object=no downtime, modality=DESIRES, polarity=POS. "No downtime" is the desired state, not a denial of the preference.
+- "Dana: I do not prefer no downtime" -> subject=Dana, predicate=prefers, object=no downtime, modality=DESIRES, polarity=NEG. Here the outer denial and the negative target have DIFFERENT scopes; retain both.
+- Preserve meaning-bearing object qualifiers such as no/without/fewer/less/more. OBJECT BREVITY never removes a qualifier that changes the preferred state. Do not infer a preference's opposite from indifference or uncertainty.
+
 SUBJECT_KIND (CRITICAL): decide whether the subject is a COGNIZER (something that can hold beliefs) or an ENTITY (something that cannot).
 - cognizer: a person (human), an AI agent (e.g. Claude / "the assistant" / a named bot), an organization or team (group), a role, OR the narrator themselves (self) when the subject refers back to the speaker/agent ("Alice thinks I am reliable" → subject="I" → self).
 - entity: technical things, products, libraries, devices, metrics, numbers, budgets, abstract concepts — anything that cannot hold a belief.
@@ -222,8 +232,8 @@ JSON array:
 (Multi-speaker depth-2: Carol introduces NEW content about Bob's said belief → Carol is the holder, perspective=HEARSAY. Alice's responsible_for is INFERRED — judged from the duty roster, not directly self-attributed.)
 
 WORKED EXAMPLE (non-belief attitudes — capture DESIRES / INTENDS / knowledge, not just beliefs):
-- "Li Hua: I want to spend the weekend outdoors" -> {"holder":"Li Hua","holder_perspective":"FIRST_PERSON","subject":"weekend","subject_kind":"entity","predicate":"prefers","object":"outdoors","modality":"DESIRES","polarity":"POS","nesting_depth":0}
-  (a WANT is modality=DESIRES; the predicate is the closest available for the want's target. subject "weekend" is a thing → entity, no cognizer_kind.)
+- "Li Hua: I want to spend the weekend outdoors" -> {"holder":"Li Hua","holder_perspective":"FIRST_PERSON","subject":"Li Hua","subject_kind":"cognizer","cognizer_kind":"human","predicate":"prefers","object":"spend the weekend outdoors","modality":"DESIRES","polarity":"POS","nesting_depth":0}
+  (a WANT is modality=DESIRES; subject is the desirer Li Hua, not the weekend. The object preserves the desired activity.)
 - "Mei: I'm going to finish the report tonight" -> {"holder":"Mei","holder_perspective":"FIRST_PERSON","subject":"report","subject_kind":"entity","predicate":"responsible_for","object":"report","modality":"INTENDS","polarity":"POS","nesting_depth":0}
   (a plan/INTENT is modality=INTENDS. subject "report" is a thing → entity.)
 - "Tom: I know the keys are in the drawer" -> {"holder":"Tom","holder_perspective":"FIRST_PERSON","subject":"keys","subject_kind":"entity","predicate":"knows","object":"drawer","modality":"BELIEVES","polarity":"POS","nesting_depth":0}
