@@ -27,6 +27,7 @@ def cohort(m):
     return corpus, split, old
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_selection_uses_only_new_development_networks():
     m = driver()
     records, groups, manifest = m.select_cohort(*cohort(m))
@@ -42,6 +43,7 @@ def test_fixed_selection_uses_only_new_development_networks():
     assert not set(manifest['networks']) & set(manifest['excluded_networks'])
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('change', ['reserved', 'duplicate', 'history', 'old_network'])
 def test_selection_rejects_contamination_and_drift(change):
     m = driver()
@@ -59,6 +61,7 @@ def test_selection_rejects_contamination_and_drift(change):
         m.select_cohort(corpus, split, old)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_record_group_identity_rejects_answer_drift():
     m = driver()
     records, groups, _ = m.select_cohort(*cohort(m))
@@ -139,6 +142,7 @@ def test_existing_output_is_refused_before_reading_inputs(tmp_path, stage):
         else: getattr(m, stage)(tmp_path / 'absent', out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_prepare_is_offline_and_binds_all_inputs(tmp_path, monkeypatch):
     m = driver()
     monkeypatch.setattr(m, 'frozen_modules', lambda *_: pytest.fail('prepare imported native runtime'))
@@ -156,6 +160,7 @@ def test_prepare_is_offline_and_binds_all_inputs(tmp_path, monkeypatch):
         m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('target', ['config', 'core', 'implementation', 'extra'])
 def test_resealed_identity_drift_rejected(tmp_path, target):
     m = driver()
@@ -272,6 +277,7 @@ def test_primary_gate_rejects_one_arm_below_95_percent_even_with_aggregate_above
     assert result['eligible_for_expanded_development'] is False
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_question_type_breakdown_uses_corpus_query_type():
     m = driver(); records, _, _ = m.select_cohort(*cohort(m))
     rows = [dict(item_id=r['item_id'], arm=a, status='ok', correct=False) for r in records for a in m.ARMS]
@@ -365,6 +371,7 @@ def offline_stage_adapters(m, monkeypatch):
     return fake_build
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_offline_stage_chain_has_266_retrieval_and_532_fresh_qa_terminals(tmp_path, monkeypatch):
     m = driver(); offline_stage_adapters(m, monkeypatch)
     prepared, built, retrieved, qa_out = [tmp_path / name for name in ('prepare', 'build', 'retrieve', 'qa')]
@@ -407,6 +414,7 @@ def test_full_offline_stage_chain_has_266_retrieval_and_532_fresh_qa_terminals(t
         m.check(qa_out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_partial_build_preserves_failed_seal_and_budget_and_blocks_followups(tmp_path, monkeypatch):
     m = driver(); fake_build = offline_stage_adapters(m, monkeypatch)
     original = m.frozen_modules
@@ -431,6 +439,7 @@ def test_partial_build_preserves_failed_seal_and_budget_and_blocks_followups(tmp
         m.build(prepared, built)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_failed_retrieval_preserves_terminals_and_charges_unknown_request_bound(tmp_path, monkeypatch):
     m = driver(); offline_stage_adapters(m, monkeypatch)
     original = m.ablation.query_one
@@ -467,6 +476,7 @@ def test_wal_formatted_frozen_database_health_is_repeatable_without_side_files(t
         assert not Path(str(database) + '-shm').exists()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_qa_summary_with_judge_flips_is_order_independent(monkeypatch):
     m = driver(); monkeypatch.setattr(m.qa_helpers, 'BOOTSTRAP_REPETITIONS', 20)
     records, _, _ = m.select_cohort(*cohort(m))
@@ -481,6 +491,7 @@ def test_qa_summary_with_judge_flips_is_order_independent(monkeypatch):
     assert forward == reverse
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_scope_archive_seal_survives_process_exit(tmp_path):
     import subprocess
     import sys

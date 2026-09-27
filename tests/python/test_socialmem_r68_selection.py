@@ -8,6 +8,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.historical_eval(reason='该实验模块导入时需要本轮 native-build.json 及固定原生身份')
+
 ROOT=Path(__file__).resolve().parents[2]
 SCRIPT=ROOT/'scripts/run_socialmem_r68_selection.py'
 

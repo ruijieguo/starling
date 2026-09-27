@@ -43,6 +43,7 @@ def recall_for(core,row,label):
         source_count=0,statement_count=1,context_bytes=len(block.encode())))
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('label',['FACT','BELIEF','HEARSAY','INFERRED','COMMON','TODO','CONFLICT'])
 def test_native_statement_context_passes_audit(native,statement,label):
     m,_=native;core,row=statement;receipt=recall_for(core,row,label)
@@ -51,6 +52,7 @@ def test_native_statement_context_passes_audit(native,statement,label):
     m.validate_context(core,{'question':'What does Ada prefer?'},receipt,{'holders':{}},{},lambda sid:row if sid==row.id else None)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['missing','text'])
 def test_native_statement_audit_rejects_missing_or_changed_rows(native,statement,fault):
     m,_=native;core,row=statement;receipt=recall_for(core,row,'FACT')

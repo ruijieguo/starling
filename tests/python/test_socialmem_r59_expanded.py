@@ -39,6 +39,7 @@ def test_existing_output_refused_before_inputs(tmp_path, stage):
         getattr(m, stage)(tmp_path / 'missing', out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_historical_cohort_identity_is_distinct_from_candidate_core():
     m = driver(); value = m.historical_inputs(m.DEFAULT_PARENT)
     assert len(value['records']) == 133 and len(value['groups']) == 8
@@ -69,6 +70,7 @@ def prepared(tmp_path_factory):
     return out
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_current_core_full_cohort_native_plans_and_qualification(prepared):
     m = driver(); plans = m.read(prepared / 'batch-plans.json')
     assert {k: plans[k] for k in ('holder_count', 'source_units', 'batches', 'belief_request_upper_bound',
@@ -85,6 +87,7 @@ def test_current_core_full_cohort_native_plans_and_qualification(prepared):
         assert (prepared / 'source' / name).is_file()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper', ['true_string', 'false', 'core', 'profile', 'source', 'summary', 'groups'])
 def test_resealed_prepare_drift_is_rejected(prepared, tmp_path, tamper):
     m = driver(); target = tmp_path / 'prepare'; shutil.copytree(prepared, target)
@@ -108,6 +111,7 @@ else:raise AssertionError('resealed prepare forgery accepted')
 """, target)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_read_only_check_does_not_need_current_source_match(prepared):
     run_code("""
 prepared=Path(sys.argv[1]);before=m.inventory(prepared)
@@ -120,6 +124,7 @@ else:raise AssertionError('live source mismatch accepted for build')
 """, prepared)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_second_frozen_runtime_root_is_rejected(prepared,tmp_path):
     target = tmp_path / 'copy'; shutil.copytree(prepared,target)
     run_code("""
@@ -204,6 +209,7 @@ ledger=runner.BudgetLedger(root/'request-ledger.sqlite',12000);scope=root/'scope
 '''
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_multibatch_scope_replays_nonempty_claims_and_allows_empty_holder(prepared,tmp_path):
     run_code(NATIVE_SETUP+r'''
 result=m.run_scope(checked,group,scope,ledger)
@@ -217,6 +223,7 @@ assert not list(scope.glob('*-wal')) and not list(scope.glob('*-shm'))
 ''',prepared,tmp_path/'native')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_legacy_default_clock_replays_across_seconds_without_mutating_evidence(prepared,tmp_path):
     run_code(NATIVE_SETUP+r'''
 import time
@@ -227,6 +234,7 @@ assert before==m.inventory(scope)
 ''',prepared,tmp_path/'clock')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_nonempty_native_episodic_event_coexists_with_claims_and_legacy_fact(prepared,tmp_path):
     run_code(NATIVE_SETUP+r'''
 event_time='2026-01-01T09:00:00Z'
@@ -256,6 +264,7 @@ assert m.scope_audit(scope,checked,group)['status']=='technical_failure'
 ''',prepared,tmp_path/'episodic')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_overlapping_episodic_and_legacy_events_keep_distinct_native_clock_provenance(prepared,tmp_path):
     run_code(NATIVE_SETUP+r'''
 legacy_prompt=next(digest for digest,text in prompts.items() if text.startswith('[{'))
@@ -287,6 +296,7 @@ assert audited['status']=='technical_failure' and audited['evidence_errors'],aud
 ''',prepared,tmp_path/'channel-clock')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['missing','duplicate','unknown'])
 def test_scope_receipt_holder_inventory_preserves_subtotal_but_marks_unknown(prepared,tmp_path,fault):
     run_code(NATIVE_SETUP+f'\nfault={fault!r}\n'+r'''
@@ -310,6 +320,7 @@ assert not cost['healthy_http'],cost
 ''',prepared,tmp_path/'holder-cost')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper',['missing_window','outside_window','span_disagrees','semantic_clock','commit_id'])
 def test_runtime_clock_and_commit_binding_cannot_hide_forged_evidence(prepared,tmp_path,tamper):
     run_code(NATIVE_SETUP+f'\ntamper={tamper!r}\n'+r'''
@@ -336,6 +347,7 @@ assert audited['status']=='technical_failure' and audited['evidence_errors'],aud
 ''',prepared,tmp_path/'clock-forgery')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('mode',['late_scope','truncated','missing_usage','admission_failure'])
 def test_native_failed_belief_stops_scope_but_keeps_independent_legacy_write(prepared,tmp_path,mode):
     run_code(NATIVE_SETUP+f'\nmode={mode!r}\n'+r'''
@@ -350,6 +362,7 @@ assert ledger.snapshot()['reserved']==0
 ''',prepared,tmp_path/'failed')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper',['nested_admission','predicate','object','source_time','source_spans','missing_claim',
                                   'confidence','canonical_hash','event_time','governance'])
 def test_native_scope_tampering_cannot_be_hidden_by_rewriting_analysis(prepared,tmp_path,tamper):
@@ -377,6 +390,7 @@ assert audited['evidence_errors'] or not audited['accounting']['healthy_http']
 ''',prepared,tmp_path/'tamper')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['adapters','native','archive','analysis','terminal','settlement'])
 def test_scope_interruptions_preserve_read_only_partial_evidence(prepared,tmp_path,fault):
     run_code(NATIVE_SETUP+f'\nfault={fault!r}\n'+r'''
@@ -402,6 +416,7 @@ else:assert result['accounting']['observed_native_requests']==len(calls)
 ''',prepared,tmp_path/'interrupted')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['empty','usage_mismatch','certainty','hidden_admission'])
 def test_raw_multichannel_cost_preserves_known_usage_and_unknown_consumption(prepared,tmp_path,fault):
     run_code(NATIVE_SETUP+f'\nfault={fault!r}\n'+r'''
@@ -422,6 +437,7 @@ else:
 ''',prepared,tmp_path/'cost')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('kind',['extraction','admission'])
 @pytest.mark.parametrize('mutation',['missing','coerced_type'])
 def test_belief_structured_evidence_requires_every_native_duplicate_field(prepared,tmp_path,kind,mutation):
@@ -486,6 +502,7 @@ assert summary['ledger']['reserved']==0 and summary['ledger']['committed']==851
     return root/'build'
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_eight_native_scopes_are_rechecked_without_provider_or_mutation(built):
     run_code("""
 out=Path(sys.argv[1]);before=m.inventory(out);result=m.check(out)
@@ -495,6 +512,7 @@ assert result['prepared']!=out and result['prepared'] in Path(result['modules'][
 """,built)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper',['id','id_type','upper','state','summary','missing_scope','extra_legacy',
                                   'derived_sources','duplicate_derived'])
 def test_resealed_build_cannot_forge_ledger_or_eight_healthy_scopes(built,tmp_path,tamper):
@@ -529,6 +547,7 @@ else:raise AssertionError('resealed forged build accepted')
 """,target)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['adapters','native','ledger','terminal','analysis','initialize','stage_summary','summary_write'])
 def test_build_stops_later_scopes_and_partial_check_preserves_unknown(prepared,tmp_path,fault):
     run_code(NATIVE_SETUP+f'\nfault={fault!r}\n'+r'''
@@ -555,6 +574,7 @@ before=m.inventory(out);assert m.check(out)['summary']==summary and before==m.in
 ''',prepared,tmp_path/'stage')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['copy','native_plan','summary_write'])
 def test_prepare_interruption_is_sealed_and_read_only_auditable(tmp_path,fault):
     run_code(f'\nfault={fault!r}\n'+r'''

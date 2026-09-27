@@ -1,5 +1,7 @@
 """通过实际C++核心验证binding和编排；不实现Python检索替身。"""
 import subprocess
+import json
+from socialmem_fixtures import source_config
 import sys
 from pathlib import Path
 import pytest
@@ -30,7 +32,7 @@ with tempfile.TemporaryDirectory() as tmp:
  db=Path(tmp)/'test.db';rt=runtime._build_local_store_sqlite_runtime(db);rt.start()
  runner.retain_history_sources(core,rt.adapter,history,'2026-06-01T00:00:00Z')
  embedder=core.StubEmbeddingAdapter(8)
- cfg=json.loads((root/'build/socialmem_20260918_answer_capacity_v2/config.json').read_text())
+ cfg=json.loads(sys.argv[3])
  cfg.update(source_strategy='focused_dialogue',source_seed_k=1,source_seed_max_context_bytes=1000,
             source_dialogue_radius=2,k=5,max_context_bytes=4000)
  if boundary=='runner':
@@ -51,5 +53,5 @@ with tempfile.TemporaryDirectory() as tmp:
  assert result['context_bytes']==len(result['block'].encode())<=4000
  if boundary=='runner':assert row['embedding_request_delta']==0
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),boundary],capture_output=True,text=True)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),boundary,json.dumps(source_config('capacity'))],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr

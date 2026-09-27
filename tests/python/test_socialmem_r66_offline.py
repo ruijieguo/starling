@@ -59,6 +59,7 @@ def prepared(tmp_path_factory):
     return m,out,data
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_prepared_runtime_pins_new_core_and_same_eight_databases(prepared):
     m,out,data=prepared;p=m.read(out/'plan.json')
     assert p['questions']==133 and p['tasks']==266
@@ -79,6 +80,7 @@ def offline(prepared,tmp_path_factory):
     return m,out,result
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_native_replay_and_baseline_byte_identity(offline):
     m,out,result=offline
     assert result['state']=='complete' and result['healthy_contexts']==266
@@ -93,6 +95,7 @@ def reseal(m,out):
     seal=m.read(out/'seal.json');files=m.inventory(out);files.pop('seal.json');seal['files']=files;m.write(out/'seal.json',seal)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['context','missing','core_identity','summary','database_identity'])
 def test_resealed_native_result_drift_rejected(offline,tmp_path,fault):
     m,source,_=offline;out=tmp_path/'copy';shutil.copytree(source,out)
@@ -112,6 +115,7 @@ def test_resealed_native_result_drift_rejected(offline,tmp_path,fault):
     with pytest.raises(ValueError):m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_resealed_native_binary_drift_rejected(prepared,tmp_path):
     m,source,_=prepared;out=tmp_path/'copy';shutil.copytree(source,out)
     p=next((out/'native-runtime/frozen/python/starling').glob('_core*.so'));p.write_bytes(p.read_bytes()+b'corruption')

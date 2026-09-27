@@ -17,6 +17,7 @@ def driver():
     return module
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_sources_are_bound_to_failed_r60_holder_and_full_payload():
     m = driver()
     inputs = m.fixed_inputs()
@@ -29,6 +30,7 @@ def test_sources_are_bound_to_failed_r60_holder_and_full_payload():
         assert len(source['original_plan']['batches']) == (3 if holder == 'Lionel' else 2)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_tasks_interleave_complete_holders_with_exact_native_bounds():
     m = driver()
     inputs = m.fixed_inputs()
@@ -66,6 +68,7 @@ def test_prepare_rejects_core_mismatch_and_old_core_as_candidate(tmp_path):
     assert not (tmp_path / 'same').exists()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_candidate_gate_requires_complete_nonempty_native_terminals():
     m = driver()
     tasks = m.fixed_tasks(m.fixed_inputs())
@@ -167,6 +170,7 @@ def native_case(code):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_two_isolated_native_cores_replay_scope_correction_and_reject_resealed_tampering():
     native_case(r'''
 out=root/'run';summary=m.run(prepared,out)
@@ -194,6 +198,7 @@ else:raise AssertionError('resealed false HTTP evidence accepted')
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_http_usage_stops_after_one_task_without_candidate_promotion():
     native_case(r'''
 behavior='missing_usage';out=root/'run';summary=m.run(prepared,out)
@@ -205,6 +210,7 @@ assert m.check(out)==summary
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_worker_failure_is_sealed_and_never_becomes_candidate_success():
     native_case(r'''
 def broken(*args,**kwargs):raise RuntimeError('injected worker failure before request')

@@ -29,6 +29,7 @@ def prepared(tmp_path_factory):
     return out
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_new_core_replays_both_historical_scopes_without_provider(prepared):
     run_code("""
 checked=m.check(Path(sys.argv[1]));q=checked['qualification_audit']['summary']
@@ -40,6 +41,7 @@ assert q['external_requests']==0
 """, prepared)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_recovery_preserves_original_failure_and_rejects_metadata_forgery(prepared,tmp_path):
     run_code("""
 checked=m.check(Path(sys.argv[1]));out=Path(sys.argv[2]);out.mkdir()
@@ -61,6 +63,7 @@ else:raise AssertionError('erased inherited failure accepted')
 """,prepared,tmp_path/'recovered')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_recovery_rejects_wrong_database_and_never_mutates_history(prepared,tmp_path):
     run_code("""
 checked=m.check(Path(sys.argv[1]));out=Path(sys.argv[2]);out.mkdir()
@@ -121,6 +124,7 @@ assert m.check(root/'build')['summary']==summary
     return root/'build'
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_recovered_build_and_independent_check(built):
     run_code("""
 path=Path(sys.argv[1]);before=m.inventory(path);result=m.check(path)

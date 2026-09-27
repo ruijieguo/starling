@@ -1,5 +1,7 @@
 """回答思考参数仅映射到回答角色；通过实际原生HTTP边界观察。"""
 import subprocess
+import json
+from socialmem_fixtures import source_config
 import sys
 from pathlib import Path
 
@@ -25,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
 server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
 thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
 try:
- cfg=json.loads((Path(sys.argv[1])/'build/socialmem_20260916_baseline/config.json').read_text())
+ cfg=json.loads(sys.argv[3])
  for role in ['extract','answer','embedding']:cfg[role+'_endpoint']=f'http://127.0.0.1:{server.server_port}/v1'
  os.environ['DASHSCOPE_API_KEY']='local-fixture'
  cfg['extract_enable_thinking']=False
@@ -40,5 +42,5 @@ try:
 finally:
  server.shutdown();server.server_close();thread.join()
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),value],capture_output=True,text=True,timeout=30)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),value,json.dumps(source_config('baseline'))],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr

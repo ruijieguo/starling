@@ -16,6 +16,7 @@ def driver():
     return module
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_historical_build_rechecks_with_original_failure_and_consumption():
     m = driver()
     result = m.run_frozen_check(
@@ -31,6 +32,7 @@ def test_historical_build_rechecks_with_original_failure_and_consumption():
     assert summary['scopes']['1c2838ef51b9983207436fc9']['native_replay']['verified'] is True
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_wrong_seal_rejected_before_launch():
     m = driver()
     with pytest.raises(ValueError, match='seal'):

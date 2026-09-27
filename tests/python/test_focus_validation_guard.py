@@ -20,6 +20,7 @@ def test_only_request_budget_changes():
  for field,value in [('core_sha256','b'*64),('source_strategy','focused'),('http_budget',535),('k',60)]:
   with pytest.raises(ValueError):m.validate_config(old,{**old,'http_budget':534,field:value})
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_all_reserved_questions_and_no_development_leakage():
  m=module();p=ROOT/'build/socialmem_20260917_baseline_recovered'
  records=[json.loads(l) for l in (p/'corpus.jsonl').read_text().splitlines()];split=json.loads((p/'network-split.json').read_text())

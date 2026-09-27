@@ -3,9 +3,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_frozen_native_answer_capacity_does_not_change_judge_or_extraction():
     program = r'''
 import importlib.util,json,os,sys,threading

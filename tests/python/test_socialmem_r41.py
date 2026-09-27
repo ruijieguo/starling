@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -11,7 +12,7 @@ def driver():
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
 def test_r41_uses_new_cpp_profile_and_preserves_budget():
-    d=driver();parent=json.loads((ROOT/'build/socialmem_20260921_structured_eval_hybrid_holder_isolation_r35_dashscope/config.json').read_text())
+    d=driver();parent=source_config('dialogue')
     cfg=d.candidate_config(parent,'a'*64)
     assert cfg['source_strategy']=='evidence_profile_v3'
     assert cfg['arm']=='r41_subject_topic_timeline'
@@ -19,7 +20,7 @@ def test_r41_uses_new_cpp_profile_and_preserves_budget():
     d.validate_config(parent,cfg)
 
 def test_r41_rejects_v2_or_answer_scope_drift():
-    d=driver();parent=json.loads((ROOT/'build/socialmem_20260921_structured_eval_hybrid_holder_isolation_r35_dashscope/config.json').read_text())
+    d=driver();parent=source_config('dialogue')
     cfg=d.candidate_config(parent,'b'*64)
     for key,value in [('source_strategy','evidence_profile_v2'),('answer_policy','grounded_memory_v1'),('http_budget',601)]:
         with pytest.raises(ValueError):d.validate_config(parent,{**cfg,key:value})
@@ -33,7 +34,7 @@ def test_r41_task_order_is_same_paired_contract():
 def test_r42_driver_selects_support_lane_without_changing_budget():
     spec=importlib.util.spec_from_file_location('r42_driver',ROOT/'scripts/run_socialmem_r42.py')
     d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
-    parent=json.loads((ROOT/'build/socialmem_20260921_structured_eval_hybrid_holder_isolation_r35_dashscope/config.json').read_text())
+    parent=source_config('dialogue')
     cfg=d.candidate_config(parent,'c'*64)
     assert cfg['source_strategy']=='evidence_profile_v4'
     assert cfg['arm']=='r42_support_lane' and cfg['http_budget']==600

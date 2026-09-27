@@ -54,7 +54,7 @@ def test_failed_source_scope_requires_all_affected_questions_to_be_terminal(tmp_
     m.verify_scope_states(tmp_path,[group],runner,fingerprint,{'failed_scopes':['bad'],'files':{'runs/bad/questions/fixed.json':'hash'}})
 
 
-def test_frozen_runner_can_be_dispatched_to_spawn_workers():
+def test_frozen_runner_can_be_dispatched_to_spawn_workers(tmp_path):
     import subprocess,sys
     root=Path(__file__).resolve().parents[2]
     code=r'''
@@ -64,9 +64,12 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location('entry',Path(sys.argv[1])/'scripts/run_socialmem_source_full.py')
 d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
 assert hasattr(d,'load_frozen_runner'),'spawn-safe frozen runner loader missing'
-r=d.load_frozen_runner(Path(sys.argv[1])/'build/socialmem_20260917_answer_off_comparison/sources')
+r=d.load_frozen_runner(Path(sys.argv[2]))
 with ProcessPoolExecutor(max_workers=2) as pool:
  assert pool.submit(r._stable_id,'source-full').result(timeout=20)==r._stable_id('source-full')
 '''
-    result=subprocess.run([sys.executable,'-c',code,str(root)],capture_output=True,text=True,timeout=30)
+    import shutil
+    scripts = tmp_path/'frozen/scripts'; scripts.mkdir(parents=True)
+    shutil.copyfile(root/'scripts/run_socialmem_baseline.py', scripts/'run_socialmem_baseline.py')
+    result=subprocess.run([sys.executable,'-c',code,str(root),str(tmp_path)],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr

@@ -27,7 +27,7 @@ single writer).
 
 Usage:
     .venv/bin/python scripts/seed_demo.py            # add to ~/.starling/dashboard.db
-    .venv/bin/python scripts/seed_demo.py --reset    # wipe this tenant first
+    .venv/bin/python scripts/seed_demo.py --reset    # delete the entire DB first
     .venv/bin/python scripts/seed_demo.py --db /path/to.db --tenant default
 """
 from __future__ import annotations
@@ -137,9 +137,13 @@ def main() -> None:
     eng._core.consolidation_llm = cons
 
     def remember(holder, subject, predicate, obj, *, polarity="POS",
-                 modality="BELIEVES", perspective="FIRST_PERSON", nesting=0):
+                 modality="BELIEVES", perspective="FIRST_PERSON", nesting=0,
+                 subject_kind="cognizer"):
+        # 人工样例显式标注类型；人物解析和注册仍走 C++ 写入链路。
         extractor.set_default_response(json.dumps([{
             "holder": holder, "holder_perspective": perspective, "subject": subject,
+            "subject_kind": subject_kind,
+            "cognizer_kind": "self" if subject == "self" else "human",
             "predicate": predicate, "object": obj, "modality": modality,
             "polarity": polarity, "nesting_depth": nesting}]), True, "")
         text = f"{subject} {predicate} {obj}".replace("self", holder)
@@ -152,8 +156,8 @@ def main() -> None:
 
     # ── conflicts: opposite-polarity pairs on the same (subject, predicate) ──
     for subject, predicate, obj, holder_pos, holder_neg in CONFLICTS:
-        remember(holder_pos, subject, predicate, obj, polarity="POS")
-        remember(holder_neg, subject, predicate, obj, polarity="NEG")
+        remember(holder_pos, subject, predicate, obj, polarity="POS", subject_kind="entity")
+        remember(holder_neg, subject, predicate, obj, polarity="NEG", subject_kind="entity")
 
     # ── commitments: fully end-to-end. remember() the commits-modality beliefs,
     # then DRAIN the outbox so the PolicyEngine materializes one ACTIVE commitment

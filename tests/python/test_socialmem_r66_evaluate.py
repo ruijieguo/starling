@@ -51,6 +51,7 @@ def prepared(tmp_path_factory):
     return m,out,data
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_same_1024_factory_paired_contexts_and_two_core_identities(prepared):
     m,out,data=prepared;tasks=data['tasks'];plan=m.read(out/'execution-plan.json')
     assert len(tasks)==len({(t['item_id'],t['arm']) for t in tasks})==266
@@ -68,6 +69,7 @@ def test_same_1024_factory_paired_contexts_and_two_core_identities(prepared):
     assert m.answer_config(data['checked'])['answer_max_tokens']==1024
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_gold_does_not_enter_answer_prompt(prepared):
     m,_,data=prepared;checked=dict(data['checked']);records=deepcopy(checked['records'])
     for r in records:r['answer']='GOLD_CANARY';r['source']['evidence_anchors']=[]
@@ -102,6 +104,7 @@ def localhost_qa(prepared,tmp_path_factory):
     return m,out,result,calls
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_native_factory_and_independent_accounting(localhost_qa):
     m,out,result,calls=localhost_qa
     assert result['state']=='complete' and result['terminal_count']==result['healthy_terminals']==266
@@ -120,6 +123,7 @@ def reseal(m,out):
     s=m.read(out/'seal.json');files=m.inventory(out);files.pop('seal.json');s['files']=files;m.write(out/'seal.json',s)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['answer','prompt','context','started','ledger','summary','core'])
 def test_resealed_qa_drift_rejected(localhost_qa,tmp_path,fault):
     m,source,_,_=localhost_qa;out=tmp_path/'copy';shutil.copytree(source,out)
@@ -141,6 +145,7 @@ def test_resealed_qa_drift_rejected(localhost_qa,tmp_path,fault):
     with pytest.raises(ValueError):m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_usage_retains_fixed_denominator(prepared,tmp_path,monkeypatch):
     m,source,data=prepared
     class Handler(BaseHTTPRequestHandler):
@@ -165,6 +170,7 @@ def test_missing_usage_retains_fixed_denominator(prepared,tmp_path,monkeypatch):
     assert all(a['correct']==0 and a['questions']==133 for a in result['arms'].values())
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_interruption_is_sealed_without_retries(prepared,tmp_path,monkeypatch):
     m,source,_=prepared;out=tmp_path/'interrupted'
     def stop(*a,**k):raise KeyboardInterrupt('fixture interruption before HTTP')

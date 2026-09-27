@@ -1,3 +1,7 @@
+<!-- regression-boundary-20260927:start -->
+> **回归验收边界（2026-09-27）**：日常回归与固定历史评测回放分开执行；默认跳过项须显式报告，历史封存、SHA 和失败断言保持有效。部分无有效提升产物已退役，旧文中的回放链接不保证仍可用。当前执行规则见[测试说明](../../tests/README.md)和[中文设计](../superpowers/specs/2026-09-27-python-regression-boundary-design.md)；这不产生新的准确率结论，产品核心仍由 C++ 实现。
+<!-- regression-boundary-20260927:end -->
+
 
 > **R6.2 最终状态合同（2026-09-26）**：`EmbeddingStats.failed` 与 `embed_seeded.failed` 是累计失败尝试数；空 tick 不代表所有向量健康。新增 C++ `EmbeddingWorker::health` 与只读 `frozen_embedding_health`，按活动声明、租户关联、模型、维度及有限非零 raw/index 向量检查最终状态；binding 只透传。已恢复的失败保留计数且可继续，耗尽或损坏仍阻断。历史封存协议保留，新恢复入口重新原生核验。
 <!-- r56-current-status:start -->

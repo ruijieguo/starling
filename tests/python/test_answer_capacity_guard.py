@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +19,7 @@ def module():
 
 
 def configs():
-    parent = json.loads((ROOT / 'build/socialmem_20260917_grounded_answer_v2/config.json').read_text())
+    parent = source_config('grounded')
     return parent, {**parent, 'answer_max_tokens': 1024}
 
 

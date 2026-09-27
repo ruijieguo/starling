@@ -17,6 +17,7 @@ def driver():
     return module.engine
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_identity_uses_isolated_candidate_core():
     m = driver()
     assert m.CORE_SHA256 == CANDIDATE and m.sha(m.current_core()) == CANDIDATE
@@ -27,6 +28,7 @@ def test_fixed_identity_uses_isolated_candidate_core():
     assert value['config']['core_sha256'] == CANDIDATE
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_historical_probe_is_not_candidate_qualification():
     m = driver()
     with pytest.raises(ValueError, match='seal'):
@@ -40,6 +42,7 @@ def test_existing_output_precedes_qualification(tmp_path, stage):
         getattr(m, stage)(tmp_path / 'missing', out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_wrong_core_is_rejected_before_output(tmp_path, monkeypatch):
     m = driver(); monkeypatch.setattr(m, 'CORE_SHA256', '0' * 64)
     with pytest.raises(ValueError, match='core'):
@@ -78,6 +81,7 @@ for _name, _test in vars(_shared).items():
         globals()['test_shared_' + _name[5:]] = _test
 
 
+@pytest.mark.historical_eval(reason='复用 prepared 夹具，依赖 R6.1 固定原生构建和封存语料；见 tests/README.md')
 def test_new_prepare_qualifies_same_core_and_all_native_plans(prepared):
     m = driver(); plans = m.read(prepared / 'batch-plans.json')
     assert {k: plans[k] for k in ('holder_count', 'source_units', 'batches', 'belief_request_upper_bound',

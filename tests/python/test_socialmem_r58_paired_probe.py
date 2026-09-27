@@ -24,6 +24,7 @@ def plans():
             for holder,bound in (('Mum',6),('Kwame',15))}
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_history_inputs_preserve_exact_mum_and_kwame_payloads():
     m=driver();inputs=m.fixed_inputs()
     assert inputs['Mum']['binding']['payload_bytes']==3807
@@ -57,6 +58,7 @@ def test_candidate_core_must_be_explicit_and_match_before_freezing(tmp_path):
     assert not (tmp_path/'missing-sha').exists() and not (tmp_path/'wrong-sha').exists()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_historical_seal_is_checked_before_payload_sql(monkeypatch):
     m=driver();wrong=deepcopy(m.HISTORY);wrong['Mum']['seal_sha256']='0'*64
     monkeypatch.setattr(m,'HISTORY',wrong)
@@ -188,6 +190,7 @@ def native_case(code):
     assert result.returncode==0,result.stdout+result.stderr
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_prepare_binds_new_core_profiles_and_fixed_source_units():
     native_case(r'''
 assert len(checked['tasks'])==6
@@ -206,6 +209,7 @@ else:raise AssertionError('resealed task order accepted')
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('behavior,executed,status',[
     ('success',6,'paired_probe_passed'),('control_protocol',6,'paired_probe_passed'),
     ('control_envelope',6,'paired_probe_passed'),('control_scope',6,'paired_probe_passed'),
@@ -239,6 +243,7 @@ else:raise AssertionError('resealed false summary accepted')
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['native','settlement','terminal_write','commit_write','backup','analysis','setup'])
 def test_stage_exceptions_preserve_partial_evidence_and_unknown_reservations(fault):
     native_case(f'fault={fault!r}\n'+r'''
@@ -273,6 +278,7 @@ if fault=='setup':assert summary['total_tokens']==0 and not summary['local_attem
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper',['predicate','object','source_time','source_proof','raw_response','nested_usage','admission_nested_usage','ledger'])
 def test_resealed_task_receipt_or_database_drift_cannot_pass_native_replay(tamper):
     native_case(f'tamper={tamper!r}\n'+r'''
@@ -311,6 +317,7 @@ else:raise AssertionError('resealed mutated evidence accepted')
 ''')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('field,partial',[
     ('id',False),('id_type',False),('upper_bound',False),('state',False),('id',True)])
 def test_resealed_start_reservation_must_match_exact_sqlite_ledger_row(field,partial):

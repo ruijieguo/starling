@@ -1,5 +1,7 @@
 """通过真实原生核心与本地库验证综合回答binding、路由与调用边界。"""
 import subprocess
+import json
+from socialmem_fixtures import source_config
 import sys
 from pathlib import Path
 import pytest
@@ -34,7 +36,7 @@ history=[{'speaker':name,'text':text,'session_id':session,'turn_index':index,'tu
 with tempfile.TemporaryDirectory() as tmp:
  db=Path(tmp)/'test.db';rt=runtime._build_local_store_sqlite_runtime(db);rt.start()
  runner.retain_history_sources(core,rt.adapter,history,'2026-06-01T00:00:00Z')
- config=json.loads((root/'build/socialmem_20260918_dialogue_expansion/config.json').read_text());config['answer_policy']='synthesis_v1'
+ config=json.loads(sys.argv[3]);config['answer_policy']='synthesis_v1'
  answer=ProviderBoundary('0' if answer_format=='multiple_choice' else 'A preferred tea.');judge=ProviderBoundary('YES')
  record={'item_id':'fixture','question':'What did A prefer?','history':history,'answer_format':answer_format,
  'answer':0 if answer_format=='multiple_choice' else 'GOLD_NOT_FOR_ANSWER_MODEL','options':['tea','coffee']}
@@ -57,5 +59,5 @@ with tempfile.TemporaryDirectory() as tmp:
   except ValueError:pass
   else:raise AssertionError('incompatible recall mode accepted')
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),answer_format],capture_output=True,text=True)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),answer_format,json.dumps(source_config('dialogue'))],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr

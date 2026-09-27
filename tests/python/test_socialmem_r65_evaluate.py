@@ -54,6 +54,7 @@ def prepared(tmp_path_factory):
     return m, out, data
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_prepare_is_full_fresh_paired_and_changes_only_capacity(prepared):
     m, out, data = prepared; tasks = data['tasks']; plan = m.read(out/'execution-plan.json')
     assert len(tasks) == len({(t['item_id'], t['arm']) for t in tasks}) == 266
@@ -72,6 +73,7 @@ def test_prepare_is_full_fresh_paired_and_changes_only_capacity(prepared):
     assert data['checked']['config']['answer_max_tokens'] == 512
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_gold_does_not_enter_answer_prompt(prepared):
     m, _, data = prepared; checked = dict(data['checked']); records = deepcopy(checked['records'])
     for r in records: r['answer'] = 'GOLD_CANARY'; r['source']['evidence_anchors'] = []
@@ -112,6 +114,7 @@ def localhost_qa(prepared, tmp_path_factory):
     return m, out, result, calls
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_factory_sends_both_capacities_and_unchanged_judge(localhost_qa):
     m, out, result, calls = localhost_qa
     assert result['state'] == 'complete' and result['terminal_count'] == result['healthy_terminals'] == 266
@@ -138,6 +141,7 @@ def reseal(m, out):
     seal['files'] = files; m.write(out/'seal.json', seal)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['answer', 'prompt', 'capacity', 'started', 'ledger', 'summary', 'config'])
 def test_resealed_drift_refused(localhost_qa, tmp_path, fault):
     m, source, _, _ = localhost_qa; out = tmp_path/'copy'; shutil.copytree(source, out)
@@ -159,6 +163,7 @@ def test_resealed_drift_refused(localhost_qa, tmp_path, fault):
     with pytest.raises(ValueError): m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_usage_stays_unknown_and_failure_keeps_denominator(prepared, tmp_path, monkeypatch):
     m, source, data = prepared
     # 缺usage与截断由本机HTTP发送，保留响应原文并重新走原生审计。
@@ -188,6 +193,7 @@ def test_missing_usage_stays_unknown_and_failure_keeps_denominator(prepared, tmp
     assert all(a['answer_truncated'] == 133 for a in result['arms'].values())
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_interruption_sealed_without_partial_score_or_resume(prepared, tmp_path, monkeypatch):
     m, source, _ = prepared
     monkeypatch.setattr(m, 'make_adapters', lambda *_: None)

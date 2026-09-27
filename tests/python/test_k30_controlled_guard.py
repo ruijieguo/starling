@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / "build/socialmem_20260917_baseline_recovered"
@@ -19,7 +20,7 @@ def module():
 
 
 def configs():
-    parent = json.loads((BASE / "config.json").read_text())
+    parent = source_config('baseline')
     return parent, {**parent, "k": 30, "http_budget": 1314}
 
 
@@ -47,6 +48,7 @@ def test_rejects_uncontrolled_configuration_before_requests(field, value):
         module().validate_config(parent, candidate)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_selects_all_development_questions_without_reserved_networks():
     records, split = selection()
     selected = module().select_records(records, split)
@@ -56,6 +58,7 @@ def test_selects_all_development_questions_without_reserved_networks():
     assert sum(r["answer_format"] == "multiple_choice" for r in selected) == 152
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_development_question_is_not_silently_dropped():
     records, split = selection()
     lost = next(r for r in records if r["source"]["network_id"] in split["development_networks"])
@@ -63,12 +66,14 @@ def test_missing_development_question_is_not_silently_dropped():
         module().select_records([r for r in records if r is not lost], split)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_duplicate_question_is_rejected():
     records, split = selection()
     with pytest.raises(ValueError):
         module().select_records(records + [records[0]], split)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_overlapping_split_is_rejected():
     records, split = selection()
     split["development_networks"][0] = split["reserved_networks"][0]

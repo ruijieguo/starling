@@ -312,6 +312,7 @@ def test_resealed_cost_or_terminal_claims_cannot_bypass_native_receipts(rig,what
     with pytest.raises(ValueError):c.m.check(c.out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_frozen_native_batches_commit_original_kwame_source_with_fake_llm():
     driver()
     code = r'''

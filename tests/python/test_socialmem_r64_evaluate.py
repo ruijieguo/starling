@@ -59,6 +59,7 @@ def prepared(tmp_path_factory):
     return m, out, data
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_prepare_binds_only_candidate_tasks_and_original_control(prepared):
     m, out, data = prepared; tasks = data['tasks']; plan = m.read(out/'execution-plan.json')
     assert len(tasks) == 266 and len({(t['item_id'], t['policy']) for t in tasks}) == 266
@@ -73,6 +74,7 @@ def test_prepare_binds_only_candidate_tasks_and_original_control(prepared):
     assert all(len(t['recall']['block'].encode()) <= 8000 for t in tasks)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['missing', 'duplicate', 'k10', 'holders', 'database', 'text', 'embedding'])
 def test_candidate_context_drift_is_rejected(prepared, fault):
     m, _, data = prepared; rows = deepcopy(data['candidate_rows'])
@@ -86,6 +88,7 @@ def test_candidate_context_drift_is_rejected(prepared, fault):
     with pytest.raises(ValueError): m.validate_candidate_rows(data['checked'], rows, data['modules'])
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_gold_changes_do_not_enter_candidate_answer_prompt(prepared):
     m, _, data = prepared; checked = dict(data['checked']); records = deepcopy(checked['records'])
     for record in records:
@@ -129,6 +132,7 @@ def localhost_qa(prepared, tmp_path_factory):
     return m, out, result, calls
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_candidate_stage_keeps_inherited_cost_out_of_new_ledger(localhost_qa):
     m, out, result, calls = localhost_qa
     assert result['state'] == 'complete' and result['terminal_count'] == result['healthy_terminals'] == 266
@@ -145,6 +149,7 @@ def test_native_candidate_stage_keeps_inherited_cost_out_of_new_ledger(localhost
     before = m.inventory(out); assert m.check(out)['summary'] == result; assert m.inventory(out) == before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['answer', 'prompt', 'context', 'started', 'ledger', 'summary'])
 def test_resealed_candidate_tampering_fails_independent_check(localhost_qa, tmp_path, fault):
     m, source, _, _ = localhost_qa; out = tmp_path/'copy'; shutil.copytree(source, out)
@@ -164,6 +169,7 @@ def test_resealed_candidate_tampering_fails_independent_check(localhost_qa, tmp_
     with pytest.raises(ValueError): m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_interrupted_stage_is_sealed_with_partial_cost_and_never_resumed(prepared, tmp_path, monkeypatch):
     m, source, _ = prepared
     monkeypatch.setattr(m.e, 'make_adapters', lambda *_: None)

@@ -18,6 +18,7 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(runner)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_select_scope_is_the_frozen_57_question_set():
     source = ROOT / "build/socialmem_20260917_source_speaker/corpus.jsonl"
     records = [json.loads(line) for line in source.read_text().splitlines() if line]

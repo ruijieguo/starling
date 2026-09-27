@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 ROOT=Path(__file__).resolve().parents[2]
 def module():
     path=ROOT/'scripts/run_socialmem_evidence_answer.py'
@@ -10,7 +11,7 @@ def module():
     spec=importlib.util.spec_from_file_location('evidence_driver',path)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260918_answer_capacity_v2/config.json').read_text())
+    parent=source_config('capacity')
     return parent,{**parent,'core_sha256':'a'*64,'answer_policy':'evidence_v1','http_budget':1895}
 def test_valid_candidate():module().validate_config(*configs())
 @pytest.mark.parametrize('key,value',[('judge_max_tokens',1024),('answer_model','other'),('answer_max_tokens',2048),

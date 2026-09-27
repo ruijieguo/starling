@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -53,7 +54,7 @@ def test_no_common_success_keeps_main_denominator():
 
 def test_config_rejects_model_budget_prompt_and_retry_changes():
     driver=load('run_socialmem_source_coverage')
-    old=json.loads((ROOT/'build/socialmem_20260918_answer_ablation/config.json').read_text())
+    old=source_config('dialogue')
     good={**old,'core_sha256':'a'*64,'http_budget':396,'answer_policy':'grounded_v1'}
     driver.validate_config(old,good)
     for key,value in [('answer_model','different'),('max_retries',1),('answer_max_tokens',512),

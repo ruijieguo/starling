@@ -2,6 +2,7 @@
 import importlib.util,json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 ROOT=Path(__file__).resolve().parents[2]
 def module():
     path=ROOT/'scripts/run_socialmem_development_full.py'
@@ -9,7 +10,7 @@ def module():
     spec=importlib.util.spec_from_file_location('development_full',path)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260917_source_full/config.json').read_text())
+    parent=source_config('source_full')
     return parent,{**parent,'recall_mode':'full','http_budget':101}
 def test_full_context_config_is_accepted():module().validate_config(*configs())
 @pytest.mark.parametrize('key,value',[('core_sha256','changed'),('answer_model','other'),('judge_max_tokens',512),('answer_enable_thinking',None),('http_budget',102)])

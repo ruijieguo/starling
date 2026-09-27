@@ -261,6 +261,7 @@ def test_resealed_ledger_drift_cannot_pass_output_verification(case):
         case.m.verify_output(case.out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_frozen_core_binds_exact_input_and_rejects_truncated_json_offline():
     driver()
     code = '''

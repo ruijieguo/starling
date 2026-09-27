@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -13,7 +14,7 @@ def module():
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
 
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260917_source_focus/config.json').read_text())
+    parent=source_config('focus')
     return parent,{**parent,'core_sha256':'a'*64,'answer_policy':'grounded_v1'}
 
 def test_valid_candidate():

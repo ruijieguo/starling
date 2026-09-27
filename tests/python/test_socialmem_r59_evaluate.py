@@ -39,6 +39,7 @@ def test_existing_output_refused_before_input_inspection(tmp_path, stage):
     with pytest.raises(ValueError, match='already exists'): getattr(m, stage)(tmp_path / 'missing', out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_canonical_cohort_arms_and_fixed_task_budgets():
     m = driver(); inputs = m.builder.historical_inputs(m.builder.DEFAULT_PARENT)
     assert m.validate_cohort(inputs['records'], inputs['groups']) == dict(
@@ -49,6 +50,7 @@ def test_canonical_cohort_arms_and_fixed_task_budgets():
         with pytest.raises(ValueError): m.validate_cohort(records, inputs['groups'])
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('problem', ['old_core', 'seven', 'true_string', 'profile', 'missing_database',
                                      'database_hash', 'sidecar', 'duplicate_question'])
 def test_invalid_build_identity_is_rejected_before_provider(tmp_path, monkeypatch, problem):
@@ -174,6 +176,7 @@ def synthetic_rows(m, checked):
     return rows
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_build_single_runtime_and_fixed_qa_task_inventory(native):
     m, checked, runner, modules = native
     assert checked['summary']['healthy_scopes'] == 8
@@ -184,6 +187,7 @@ def test_native_build_single_runtime_and_fixed_qa_task_inventory(native):
     assert sum(1 + int(t['record'].get('answer_format') != 'multiple_choice') for t in tasks) == 956
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['265', 'duplicate', 'degraded', 'bool_count', 'strategy', 'core', 'database'])
 def test_qa_gate_rejects_incomplete_or_forged_retrieval_inventory(native, fault):
     m, checked, _, _ = native; rows = synthetic_rows(m, checked); row = rows['baseline'][0]
@@ -197,6 +201,7 @@ def test_qa_gate_rejects_incomplete_or_forged_retrieval_inventory(native, fault)
     with pytest.raises(ValueError): m.retrieval_inventory(checked, rows, require_healthy=True)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_low_anchor_diagnostics_do_not_block_healthy_retrieval(native):
     m, checked, _, _ = native; rows = synthetic_rows(m, checked)
     m.retrieval_inventory(checked, rows, require_healthy=True)
@@ -212,6 +217,7 @@ def test_sqlite_reservation_rows_bind_strict_integer_values(tmp_path, field):
     with pytest.raises(ValueError): m.reconcile_ledger(path, 10, forged)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['choices', 'message', 'usage_copy'])
 def test_qa_verdict_chain_uses_local_raw_accounting(native, monkeypatch, fault):
     m, checked, runner, modules = native
@@ -262,6 +268,7 @@ def synthetic_contexts(native, tmp_path_factory):
     return out
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_retrieval_full_stage_is_immutable_and_low_anchor_gate_passes(native, synthetic_contexts, monkeypatch):
     m, checked, _, _ = native
     monkeypatch.setattr(m, 'validated_build', lambda *args, **kwargs: checked)
@@ -270,6 +277,7 @@ def test_retrieval_full_stage_is_immutable_and_low_anchor_gate_passes(native, sy
     assert before == m.inventory(synthetic_contexts) and result['audit_program_files']
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['missing_terminal', 'context', 'ledger', 'started', 'summary'])
 def test_qa_provider_gate_rechecks_resealed_retrieval_evidence(native, synthetic_contexts, tmp_path, monkeypatch, fault):
     m, checked, _, _ = native
@@ -299,6 +307,7 @@ def test_qa_provider_gate_rechecks_resealed_retrieval_evidence(native, synthetic
         for path, data in originals.items(): path.write_bytes(data)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_fresh_qa_rechecks_native_prompts_statistics_and_raw_cost(native, synthetic_contexts, tmp_path, monkeypatch):
     m, checked, _, _ = native
     monkeypatch.setattr(m, 'validated_build', lambda *args, **kwargs: checked)
@@ -338,6 +347,7 @@ def install_synthetic_providers(m, checked, monkeypatch):
     monkeypatch.setattr(m, 'make_adapters', lambda *args: (None, None, SyntheticAdapter('0'), SyntheticAdapter('yes')))
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('stage', ['retrieve', 'qa'])
 @pytest.mark.parametrize('fault', ['initialize', 'native', 'helper_write', 'settlement', 'summary', 'summary_write'])
 def test_stage_interruptions_are_sealed_and_raw_partial_cost_is_read_only_auditable(
@@ -369,6 +379,7 @@ def test_stage_interruptions_are_sealed_and_raw_partial_cost_is_read_only_audita
     assert {gid: m.sha(checked['built'] / 'runs' / gid / 'frozen.db') for gid in checked['databases']} == checked['databases']
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('stage', ['retrieve', 'qa'])
 def test_provider_construction_failure_is_known_zero_without_native_invocation(
         native, synthetic_contexts, tmp_path, monkeypatch, stage):
@@ -397,6 +408,7 @@ def test_source_only_native_failure_stays_known_zero():
     assert cost['total_tokens'] == 0 and not cost['local_attempt_count_unknown'] and not cost['remote_execution_unknown']
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['seal', 'missing_ledger', 'corrupt_ledger', 'missing_ledger_after_plan', 'started_write'])
 def test_additional_stage_failures_keep_costs_and_uncertainty(native, synthetic_contexts, tmp_path, monkeypatch, fault):
     m, checked, _, _ = native; install_synthetic_providers(m, checked, monkeypatch)
@@ -419,6 +431,7 @@ def test_additional_stage_failures_keep_costs_and_uncertainty(native, synthetic_
     before = m.inventory(out); assert m.check(out)['summary'] == result and m.inventory(out) == before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_current_source_drift_blocks_run_but_historical_check_stays_read_only(native, synthetic_contexts, tmp_path, monkeypatch):
     m, checked, _, _ = native
     monkeypatch.setattr(m, 'validated_build', lambda *args, **kwargs: checked)
@@ -491,6 +504,7 @@ def localhost_stages(native, tmp_path_factory):
     return root, calls
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_native_localhost_full_stages_and_independent_check(native, localhost_stages):
     m, checked, _, _ = native; root, calls = localhost_stages
     embeddings = [request for path, request in calls if path.endswith('/embeddings')]
@@ -521,6 +535,7 @@ def test_native_localhost_full_stages_and_independent_check(native, localhost_st
     assert {gid: m.sha(checked['built'] / 'runs' / gid / 'frozen.db') for gid in checked['databases']} == checked['databases']
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['source_text', 'source_ref', 'statement', 'prompt', 'judge_prompt', 'fresh', 'raw_binding'])
 def test_native_context_and_qa_tampering_is_rejected(native, localhost_stages, fault):
     m, checked, runner, modules = native; root, _ = localhost_stages
@@ -544,6 +559,7 @@ def test_native_context_and_qa_tampering_is_rejected(native, localhost_stages, f
         with pytest.raises(ValueError): m.validate_qa_terminal(task, row, modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault', ['null_native', 'null_xml', 'null_completion'])
 def test_malformed_native_metadata_is_technical_and_keeps_raw_cost(native, fault):
     m, checked, runner, modules = native
@@ -560,6 +576,7 @@ def test_malformed_native_metadata_is_technical_and_keeps_raw_cost(native, fault
     assert accounting['known_tokens'] == (0 if fault == 'null_native' else 12)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_joint_normalized_answer_tamper_is_rejected(native):
     m, checked, runner, modules = native
     rows = synthetic_rows(m, checked)
@@ -580,6 +597,7 @@ def test_joint_normalized_answer_tamper_is_rejected(native):
         m.validate_qa_terminal(task, row, modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_http_message_content_tamper_is_rejected(native):
     m, checked, runner, modules = native
     task = m.make_tasks(checked, synthetic_rows(m, checked), runner, modules)[0]
@@ -596,6 +614,7 @@ def test_http_message_content_tamper_is_rejected(native):
         m.validate_qa_terminal(task, row, modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_archived_source_manifest_cannot_drop_an_implementation_dependency(native, synthetic_contexts, monkeypatch):
     m, checked, _, _ = native; monkeypatch.setattr(m, 'validated_build', lambda *args, **kwargs: checked)
     dependency = synthetic_contexts / 'source/scripts/run_socialmem_r54_qa.py'
@@ -610,6 +629,7 @@ def test_archived_source_manifest_cannot_drop_an_implementation_dependency(nativ
         for path, value in originals.items(): path.write_bytes(value)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_second_runtime_root_is_rejected_before_embedding_construction(native, tmp_path, monkeypatch):
     m, checked, _, _ = native; other = dict(checked, prepared=tmp_path / 'other-prepare')
     shutil.copytree(checked['prepared'] / 'frozen', other['prepared'] / 'frozen')
@@ -618,6 +638,7 @@ def test_second_runtime_root_is_rejected_before_embedding_construction(native, t
     with pytest.raises((ValueError, RuntimeError), match='frozen|runtime|identity'): m.runtime_modules(other)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_parallel_embedding_factories_serialize_process_environment_changes(native, monkeypatch):
     m, checked, _, modules = native; counts = dict(active=0, maximum=0); lock = threading.Lock()
     def factory(*_):

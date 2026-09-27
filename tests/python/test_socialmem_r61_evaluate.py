@@ -27,6 +27,7 @@ def test_fixed_evaluator_identity_and_schema():
     assert m.FAILURE_SCHEMA == 'r61-evaluation-failure-v1'
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('problem', ['healthy', 'old_core', 'seven', 'true_string', 'profile',
                                      'missing_database', 'database_hash', 'sidecar', 'duplicate_question'])
 def test_build_gate_uses_actual_new_profile_before_reaching_provider(tmp_path, monkeypatch, problem):

@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 ROOT=Path(__file__).resolve().parents[2]
 P=ROOT/'build/socialmem_20260917_k30_controlled'
 
@@ -13,7 +14,7 @@ def module():
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 def config():
-    old=json.loads((P/'config.json').read_text())
+    old=source_config('k30')
     return old,{**old,'core_sha256':'a'*64,'source_strategy':'focused'}
 
 def test_valid_candidate():

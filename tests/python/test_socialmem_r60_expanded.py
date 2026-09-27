@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/run_socialmem_r60_expanded.py'
 EXPECTED_CORE = '600a17182d920d4a7379892eec5440dec4409516352c3fee4750f70706ceaf27'
@@ -24,6 +26,7 @@ def test_r60_identity_is_distinct_from_r59_and_uses_statement_first_profile():
     assert 'ead8046e4a28d257f3429d865523c1af1f6275fd0cb1ba98d8fa8023894d6fef' not in module.CORE_SHA256
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_r60_current_core_is_the_fresh_candidate():
     module = driver()
     core = module.current_core()

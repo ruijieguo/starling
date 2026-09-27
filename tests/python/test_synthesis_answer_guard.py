@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 ROOT=Path(__file__).resolve().parents[2]
 def module():
     p=ROOT/'scripts/run_socialmem_synthesis_answer.py'
@@ -13,7 +14,7 @@ def module():
     spec=importlib.util.spec_from_file_location('synthesis_driver',p)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260918_dialogue_expansion/config.json').read_text())
+    parent=source_config('dialogue')
     return parent,{**parent,'core_sha256':'a'*64,'answer_policy':'synthesis_v1'}
 def test_fixed_config():module().validate_config(*configs())
 @pytest.mark.parametrize('key,value',[('answer_policy','evidence_v1'),('judge_max_tokens',1024),('answer_model','other'),

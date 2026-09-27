@@ -25,4 +25,4 @@ cmake.args = ["-DSTARLING_BUILD_PYTHON=ON"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-addopts = "-ra -v"
+addopts = "-ra -v --strict-markers"

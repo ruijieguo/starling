@@ -1,3 +1,7 @@
+<!-- regression-boundary-20260927:start -->
+> **回归验收边界（2026-09-27）**：日常回归与固定历史评测回放分开执行；默认跳过项须显式报告，历史封存、SHA 和失败断言保持有效。部分无有效提升产物已退役，旧文中的回放链接不保证仍可用。当前执行规则见[测试说明](../../../tests/README.md)和[中文设计](2026-09-27-python-regression-boundary-design.md)；这不产生新的准确率结论，产品核心仍由 C++ 实现。
+<!-- regression-boundary-20260927:end -->
+
 # SocialMemBench R6.2：最终向量健康与可审计恢复
 
 <!-- r56-current-status:start -->

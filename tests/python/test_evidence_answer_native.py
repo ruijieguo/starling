@@ -1,5 +1,7 @@
 """真实C++绑定、本机HTTP与运行器账本边界；不请求外部模型。"""
 import subprocess
+import json
+from socialmem_fixtures import source_config
 import sys
 from pathlib import Path
 import pytest
@@ -21,8 +23,7 @@ native=importlib.util.module_from_spec(spec);sys.modules['starling._core']=nativ
 from starling import _core as core
 assert Path(core.__file__).resolve()==core_path.resolve(),core.__file__
 assert hasattr(core,'answer_with_evidence'), 'native evidence answer binding missing'
-parent=root/'build/socialmem_20260918_answer_capacity_v2'
-cfg=json.loads((parent/'config.json').read_text());cfg.update(answer_policy='evidence_v1',http_budget=1895)
+cfg=json.loads(sys.argv[3]);cfg.update(answer_policy='evidence_v1',http_budget=1895)
 from starling import runtime
 import eval_judge_audit as audit
 import eval_ladder as ladder
@@ -69,5 +70,5 @@ try:
 finally:
  server.shutdown();server.server_close();thread.join()
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),scenario],capture_output=True,text=True,timeout=45)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),scenario,json.dumps(source_config('capacity'))],capture_output=True,text=True,timeout=45)
     assert result.returncode==0,result.stdout+result.stderr

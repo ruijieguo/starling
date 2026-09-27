@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 ROOT=Path(__file__).resolve().parents[2]
 def module():
     p=ROOT/'scripts/run_socialmem_dialogue_expansion.py'
@@ -12,7 +13,7 @@ def module():
     spec=importlib.util.spec_from_file_location('dialogue_driver',p)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260918_answer_capacity_v2/config.json').read_text())
+    parent=source_config('capacity')
     return parent,{**parent,'core_sha256':'a'*64,'source_strategy':'focused_dialogue','k':60,'max_context_bytes':16000,
        'source_seed_k':30,'source_seed_max_context_bytes':8000,'source_dialogue_radius':2}
 def test_fixed_config():module().validate_config(*configs())

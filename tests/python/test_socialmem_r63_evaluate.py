@@ -29,6 +29,7 @@ def recovered(tmp_path_factory):
     return m,out,result
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_recovery_validates_all_real_contexts_without_requests(recovered):
     m,out,result=recovered;proof=m.engine.read(out/'recovery.json')
     assert result['state']=='complete' and result['healthy_terminals']==266
@@ -44,6 +45,7 @@ def test_existing_recovery_output_is_refused_before_reading_input(tmp_path):
     with pytest.raises(ValueError,match='already exists'):m.recover(tmp_path/'missing',out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_changed_origin_is_rejected_before_provider(tmp_path):
     m=driver();origin=tmp_path/'origin';shutil.copytree(ORIGIN,origin)
     path=next((origin/'baseline/recalls').glob('*.json'));path.write_bytes(path.read_bytes()+b' ')
@@ -51,6 +53,7 @@ def test_changed_origin_is_rejected_before_provider(tmp_path):
     assert not (tmp_path/'out').exists()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['context','started','ledger','recovery'])
 def test_resealed_recovery_tampering_is_rejected(recovered,tmp_path,fault):
     m,source,_=recovered;out=tmp_path/'copy';shutil.copytree(source,out)

@@ -27,8 +27,25 @@ export STARLING_DASH_CORS_ORIGINS=https://your-frontend.example
 ```
 建议置于 TLS 反代之后。
 
+## 离线样例与回归验证
+
+先停止使用目标数据库的 dashboard，再执行样例脚本；推荐始终指定独立样例库：
+
+```bash
+mkdir -p build/dashboard-demo
+.venv/bin/python scripts/seed_demo.py --db build/dashboard-demo/dashboard.db
+```
+
+脚本通过确定性 FakeLLM 和真实 C++ 写入、巩固、承诺及关系接口生成样例，不请求外部模型。人物样例显式提供 `subject_kind=cognizer`，发布计划与服务标注为 `entity`；缺失类型仍由核心安全默认为实体。验收包含八名具名人物、六条关系、五个承诺和两个 gist，契约回归位于 `tests/python/test_seed_demo.py`。
+
+样例 dashboard 应使用独立配置、端口和 `ingest_spool_path`，不绑定真实模型；设置 `tick_interval_s=0` 可保留固定样例时刻的承诺状态。正常主服务继续使用原数据库。`--reset` 会删除指定的**整个数据库及 WAL/SHM 文件**，并非只清空某个租户。
+
+设计与验收边界见 [样例契约修复设计](../docs/superpowers/specs/2026-09-27-dashboard-demo-contract-design.md)。浏览器验收必须确认样例内容和 API 返回，导航壳 smoke 不能替代数据检查。
+
+日常回归和历史评测回放的执行方式见[测试说明](../tests/README.md)，本次完整验收及后续修复见[回归报告](../docs/eval/2026-09-27-python-regression-boundary.md)。
+
 ## 安全姿态
-- **令牌仅经环境变量注入**（STARLING_DASH_TOKEN），绝不入库/log/前端硬编码/提交；服务端用恒定时间比较。
+- **令牌配置**：由权限为 `0600` 的统一配置保存，也可用 `STARLING_DASH_TOKEN` 覆盖；不写入记忆数据库或提交到代码库。启动器会输出带令牌的本地登录链接，启动日志须按敏感文件保管，不直接分享；服务端用恒定时间比较。
 - **绑定校验**：非 loopback host 且无 token 时拒绝启动（validate_bind）。
 - **WebSocket Origin 校验（防 CSWSH）**：跨源浏览器连接被拒；非浏览器客户端（无 Origin）放行；配置 CORS_ORIGINS 后按白名单；dev 默认仅允 loopback 浏览器。
 - **REST CORS**：配置 STARLING_DASH_CORS_ORIGINS 后启用白名单。

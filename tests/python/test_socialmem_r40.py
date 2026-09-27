@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 from starling import _core as core
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,7 +107,7 @@ def test_anchor_coverage_uses_source_identity_not_prompt_substrings():
 
 
 def test_config_rejects_model_budget_policy_or_scope_drift():
-    d=driver(); parent=json.loads((ROOT/'build/socialmem_20260921_structured_eval_hybrid_holder_isolation_r35_dashscope/config.json').read_text())
+    d=driver(); parent={**source_config('dialogue'), 'answer_max_tokens': 512}
     good=d.candidate_config(parent,'b'*64)
     d.validate_config(parent,good)
     for key,value in [('answer_model','different'),('http_budget',601),('k',20),('source_strategy','bm25'),('answer_max_tokens',1024)]:
@@ -135,6 +136,7 @@ def prepared(tmp_path_factory):
     return work
 
 
+@pytest.mark.historical_eval(reason='prepared 隐式读取 R3.5 固定题集与七个来源数据库；见 tests/README.md')
 def test_frozen_manifest_cannot_omit_sample(prepared):
     d=driver();path=prepared/'execution-plan.json';original=path.read_bytes()
     try:
@@ -143,6 +145,7 @@ def test_frozen_manifest_cannot_omit_sample(prepared):
     finally:path.write_bytes(original)
 
 
+@pytest.mark.historical_eval(reason='prepared 隐式读取 R3.5 固定题集与七个来源数据库；见 tests/README.md')
 def test_run_fingerprint_must_match_current_inputs(prepared):
     d=driver()
     assert hasattr(d,'verify_run_fingerprint'), '缺少运行开始指纹交叉核验'
@@ -172,6 +175,7 @@ def test_completion_seal_detects_result_change(tmp_path):
     with pytest.raises(ValueError,match='seal'):d.verify_completion_seal(tmp_path)
 
 
+@pytest.mark.historical_eval(reason='prepared 隐式读取 R3.5 固定题集与七个来源数据库；见 tests/README.md')
 def test_frozen_offline_pipeline_reaches_and_verifies_all_terminals(prepared):
     # 专用子进程导入冻结 core；只替换网络适配器，不替换检索、提示、账本或评分。
     script=r'''

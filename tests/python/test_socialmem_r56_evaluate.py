@@ -35,6 +35,7 @@ def test_existing_output_refused_before_input_inspection(tmp_path,stage):
     with pytest.raises(ValueError,match='already exists'):getattr(m,stage)(tmp_path/'missing',out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('problem',['partial','old_core','missing_database'])
 def test_unhealthy_build_rejected_before_provider(tmp_path,monkeypatch,problem):
     m=driver()
@@ -48,6 +49,7 @@ def test_unhealthy_build_rejected_before_provider(tmp_path,monkeypatch,problem):
     with pytest.raises(ValueError):m.retrieve(tmp_path/'build',tmp_path/'out')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_task_inventory_and_budgets():
     m=driver();records=m.read(m.builder.DEFAULT_PARENT/'sample.json');groups=m.read(m.builder.DEFAULT_PARENT/'groups.json')
     assert m.validate_cohort(records,groups)==dict(questions=133,scopes=8,holders=65,retrieval_budget=1336,qa_budget=956)
@@ -151,6 +153,7 @@ def native_task(native,free=True):
     return m.qa_helpers.build_task('source10','grounded_memory_v1',record,empty_recall(),runner,checked['config'],modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_failed_build_is_rejected_before_any_provider(tmp_path,monkeypatch):
     m=driver();built=ROOT/'build/socialmem_20260925_r56_expanded/build'
     assert m.read(built/'seal.json')['state']=='incomplete'
@@ -159,6 +162,7 @@ def test_real_failed_build_is_rejected_before_any_provider(tmp_path,monkeypatch)
     assert not (tmp_path/'retrieve').exists()
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('change',['answer_prompt','judge_prompt','correct','raw_answer'])
 def test_native_reconstructed_prompts_and_raw_verdict_reject_forgery(native,tmp_path,change):
     m,_,runner,modules=native;task=native_task(native)
@@ -173,6 +177,7 @@ def test_native_reconstructed_prompts_and_raw_verdict_reject_forgery(native,tmp_
     with pytest.raises(ValueError):m.validate_qa_terminal(task,row,modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_invalid_multiple_choice_is_zero_terminal_not_stage_exception(native,tmp_path):
     m,_,runner,modules=native;task=native_task(native,False);ledger=runner.BudgetLedger(tmp_path/'ledger.sqlite',956)
     row=m.execute_qa(task,tmp_path/'answers',runner,modules,ledger,(None,None,Adapter('cannot answer'),Adapter()))
@@ -181,6 +186,7 @@ def test_invalid_multiple_choice_is_zero_terminal_not_stage_exception(native,tmp
     m.validate_qa_terminal(task,row,modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_usage_and_judge_exception_preserve_raw_partial_cost(native,tmp_path):
     m,_,runner,modules=native;task=native_task(native)
     for name,answer,judge,want_unknown in [('usage',Adapter('calm',False),Adapter('yes'),False),
@@ -194,6 +200,7 @@ def test_missing_usage_and_judge_exception_preserve_raw_partial_cost(native,tmp_
         m.validate_qa_terminal(task,row,modules)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_true_native_fake_llm_does_not_count_as_http_success(native,tmp_path):
     m,_,runner,modules=native;core=modules[0];task=native_task(native)
     llm=core.FakeLLMAdapter();llm.set_default_response('yes');ledger=runner.BudgetLedger(tmp_path/'ledger.sqlite',956)
@@ -203,6 +210,7 @@ def test_true_native_fake_llm_does_not_count_as_http_success(native,tmp_path):
     assert ledger.snapshot()['charged_upper']==2
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_native_source10_uses_stub_without_embedding_and_binds_text(native,tmp_path):
     from contextlib import closing
     m,checked,runner,modules=native;core,runtime,_,_,pipeline,_=modules
@@ -259,6 +267,7 @@ def retrieval_stage_fixture(m,checked,tmp_path):
     return actual,out,rows
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('change',['missing','duplicate','holder','strategy','core','database','context_bytes'])
 def test_retrieval_inventory_binds_every_item_holder_strategy_and_database(native,tmp_path,change):
     m,checked,_,_=native;actual,out,rows=retrieval_stage_fixture(m,checked,tmp_path)
@@ -274,6 +283,7 @@ def test_retrieval_inventory_binds_every_item_holder_strategy_and_database(nativ
     with pytest.raises(ValueError):m.retrieval_inventory(actual,rows)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_sealed_retrieval_check_is_read_only_and_rejects_resealed_summary(native,tmp_path,monkeypatch):
     m,checked,_,_=native;actual,out,rows=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -287,6 +297,7 @@ def test_sealed_retrieval_check_is_read_only_and_rejects_resealed_summary(native
     with pytest.raises(ValueError,match='summary'):m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_fresh_qa_stage_rechecks_prompts_scores_and_ledger(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,contexts,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -317,6 +328,7 @@ def test_fixed_bounded_task_cannot_forge_blocked_reservation_without_ledger():
     with pytest.raises(ValueError):m.reservation_evidence(row,'a/p/q','answer_judge',2,0,False)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_retrieval_provider_construction_failures_seal_all_terminals_and_block_qa(native,tmp_path,monkeypatch):
     m,checked,_,_=native;actual,_,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -337,6 +349,7 @@ def test_native_reasoning_trace_removal_preserves_both_raw_representations():
     assert m.raw_accounting([value])['healthy_http'] is True
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_failed_recall_is_preserved_without_being_promoted_or_aborting_audit(native,tmp_path):
     m,checked,_,modules=native;actual,out,rows=retrieval_stage_fixture(m,checked,tmp_path)
     row=rows['baseline'][0];row.update(status='error',error='native receipt validation rejected context')
@@ -357,6 +370,7 @@ def test_retrieval_invocation_evidence_cannot_be_missing_or_contradictory(change
     with pytest.raises(ValueError):m.retrieval_accounting(row)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_frozen_stage_runtime_failure_has_read_only_zero_call_audit(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,_,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -374,6 +388,7 @@ def test_frozen_stage_runtime_failure_has_read_only_zero_call_audit(native,tmp_p
     with pytest.raises(ValueError,match='incomplete'):m.check(out,'retrieve')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['settlement','terminal_write','summary'])
 def test_stage_exception_preserves_receipts_ledger_and_missing_state(native,tmp_path,monkeypatch,fault):
     m,checked,runner,modules=native;actual,contexts,_=retrieval_stage_fixture(m,checked,tmp_path)
@@ -413,6 +428,7 @@ def test_stage_exception_preserves_receipts_ledger_and_missing_state(native,tmp_
     with pytest.raises(ValueError):m.check(out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('fault',['terminal_write','context'])
 def test_retrieval_stage_failure_audits_partial_and_invalid_context(native,tmp_path,monkeypatch,fault):
     m,checked,runner,modules=native;actual,_,fixture_rows=retrieval_stage_fixture(m,checked,tmp_path)
@@ -451,6 +467,7 @@ def test_retrieval_stage_failure_audits_partial_and_invalid_context(native,tmp_p
     assert m.inventory(out)==before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_failure_audit_preserves_unresolved_reservation_when_conservative_charge_fails(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,_,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -472,6 +489,7 @@ def test_failure_audit_preserves_unresolved_reservation_when_conservative_charge
     assert m.inventory(out)==before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('tamper',['prompt','score','ledger'])
 def test_failure_audit_cannot_hide_saved_terminal_contradictions(native,tmp_path,monkeypatch,tamper):
     import shutil
@@ -502,6 +520,7 @@ def test_failure_audit_cannot_hide_saved_terminal_contradictions(native,tmp_path
     assert m.main(['check','--input',str(out)])==1
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_unreadable_failure_ledger_cannot_claim_tasks_were_unstarted(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,_,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -519,6 +538,7 @@ def test_unreadable_failure_ledger_cannot_claim_tasks_were_unstarted(native,tmp_
     assert summary['total_tokens'] is None and m.inventory(out)==before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_failure_ledger_with_saved_receipts_is_unknown(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,out,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)
@@ -532,6 +552,7 @@ def test_missing_failure_ledger_with_saved_receipts_is_unknown(native,tmp_path,m
     assert summary['total_tokens'] is None and m.inventory(out)==before
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_failure_ledger_after_execution_plan_cannot_claim_zero_calls(native,tmp_path,monkeypatch):
     m,checked,runner,modules=native;actual,_,_=retrieval_stage_fixture(m,checked,tmp_path)
     monkeypatch.setattr(m,'validated_build',lambda *_:actual)

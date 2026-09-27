@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from socialmem_fixtures import source_config
 
 
 _RUNNER = Path(__file__).resolve().parents[2] / "scripts" / "run_socialmem_baseline.py"
@@ -143,6 +144,7 @@ def test_summary_reports_query_type_and_unexecuted_coverage():
     assert summary["by_query_type"]["Q2"]["unexecuted"] == 1
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_offline_native_smoke_keeps_frozen_snapshot_unchanged(tmp_path):
     work = Path(__file__).resolve().parents[2] / "build" / "socialmem_20260916_baseline"
 
@@ -188,6 +190,7 @@ def test_terminal_scope_missing_snapshot_does_not_restart_ingestion(tmp_path):
         runner.scope_state(scope, {"run": "one"})
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_baseline_uses_dashscope_for_every_model_role():
     work = Path(__file__).resolve().parents[2] / "build" / "socialmem_20260916_baseline"
     import json
@@ -225,7 +228,7 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 try:
-    config = json.loads((Path(sys.argv[1]).parents[1] / "build/socialmem_20260916_baseline/config.json").read_text())
+    config = json.loads(sys.argv[3]); config["extract_enable_thinking"] = None; config["answer_enable_thinking"] = None
     for role in ("extract", "answer", "embedding"):
         config[role + "_endpoint"] = f"http://127.0.0.1:{server.server_port}/v1"
     os.environ["DASHSCOPE_API_KEY"] = "local-fixture"
@@ -247,6 +250,6 @@ finally:
     server.server_close()
     thread.join()
 '''
-    completed = subprocess.run([sys.executable, "-c", program, str(_RUNNER), json.dumps(thinking)],
+    completed = subprocess.run([sys.executable, "-c", program, str(_RUNNER), json.dumps(thinking), json.dumps(source_config())],
                                capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stdout + completed.stderr

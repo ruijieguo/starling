@@ -24,6 +24,7 @@ def modules():
             importlib.import_module("run_socialmem_scope_latency"))
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_scope_selection_uses_native_errors_and_nearest_clean_same_track(modules):
     from starling import _core
 
@@ -48,6 +49,7 @@ def test_scope_selection_uses_native_errors_and_nearest_clean_same_track(modules
     assert controls["eval-038"]["native_semantic_rejections"]
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_timeout_sources_and_paired_schedules_are_fixed_and_alternate(modules, tmp_path):
     worker, runner = modules
     sources = worker.select_timeout_sources(

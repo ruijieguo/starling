@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import pytest
+from socialmem_fixtures import source_config
 
 ROOT=Path(__file__).resolve().parents[2]
 def module():
@@ -12,7 +13,7 @@ def module():
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 def configs():
-    parent=json.loads((ROOT/'build/socialmem_20260917_source_full/config.json').read_text())
+    parent=source_config('source_full')
     candidate={**parent,'core_sha256':'candidate','http_budget':101}
     return parent,candidate
 
@@ -21,6 +22,7 @@ def groups():
     records=[json.loads(x) for x in (ROOT/'build/socialmem_20260917_source_full/corpus.jsonl').read_text().splitlines()]
     return prepare_groups(records)
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_candidate_changes_only_native_core_and_subset_budget():
     m=module();m.validate_config(*configs(),'candidate')
     selected=m.select_groups(groups())
@@ -31,6 +33,7 @@ def test_config_drift_is_rejected(field,value):
     parent,candidate=configs();candidate[field]=value
     with pytest.raises(ValueError):module().validate_config(parent,candidate,'candidate')
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_missing_selected_scope_is_rejected():
     m=module();all_groups=groups()
     removed=next(g for g in all_groups if g['network_id']=='grp_0d1e2f3a')
@@ -45,6 +48,7 @@ def test_copied_entry_loads_before_frozen_dependency_import(tmp_path):
     result=subprocess.run([sys.executable,str(driver),'--help'],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_full_selected_run_uses_57_question_denominator():
     import run_socialmem_baseline as runner
     m=module();selected=m.select_groups(groups())
@@ -55,6 +59,7 @@ def test_full_selected_run_uses_57_question_denominator():
     outcomes[0]['results'].pop()
     assert m.summarize_selected(runner,selected,{'groups':outcomes,'ledger':{}})['state']=='partial'
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_answer_prompt_change_is_rejected_even_with_new_hash_manifest():
     m=module()
     parent=json.loads((ROOT/'build/socialmem_20260917_source_full/identity.json').read_text())

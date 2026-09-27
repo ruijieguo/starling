@@ -48,6 +48,7 @@ def test_refuse_existing_output_before_reading_inputs(tmp_path, stage):
         getattr(m, stage)(tmp_path / 'missing', out)
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_fixed_historical_seals_validate_without_current_source_gate():
     m = driver(); result = m.validate_parents(m.DEFAULT_PARENT, m.DEFAULT_PROBE)
     assert len(result['groups']) == 8 and len(result['records']) == 133
@@ -56,6 +57,7 @@ def test_fixed_historical_seals_validate_without_current_source_gate():
     assert result['config']['core_sha256'] == '4c5a7c39ae708a13d10065a0816a5c97a994929479cb0898f504c21e12b422f9'
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_historical_seal_rejects_added_file(tmp_path):
     m = driver(); parent = tmp_path / 'parent'
     parent.mkdir(); m.write(parent / 'seal.json', m.read(m.DEFAULT_PARENT / 'seal.json'))
@@ -79,6 +81,7 @@ assert result['external_requests']==0
     return out
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_prepare_freezes_current_runtime_and_native_851_bound(prepared):
     m = driver(); plans = m.read(prepared / 'batch-plans.json')
     assert plans['holder_count'] == 65 and plans['source_units'] == 1322
@@ -94,6 +97,7 @@ def test_prepare_freezes_current_runtime_and_native_851_bound(prepared):
     assert m.sha(frozen) == m.sha(ROOT / 'scripts/run_socialmem_baseline.py')
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('change', ['summary', 'config', 'core', 'source', 'parent', 'plan', 'target'])
 def test_resealed_prepare_forgery_rejected(prepared, tmp_path, change):
     m = driver(); out = tmp_path / 'prepare'; shutil.copytree(prepared, out)
@@ -197,6 +201,7 @@ def test_failure_snapshot_includes_committed_wal(tmp_path):
     assert not list(out.glob('*-wal')) and not list(out.glob('*-shm')) and not list(out.glob('network.db*'))
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_core_fake_llm_helper_batches_and_failed_build_are_auditable(prepared, tmp_path):
     driver()
     run_code(r'''
@@ -396,6 +401,7 @@ def test_budget_blocked_stage_has_auditable_terminal_without_fake_scope(tmp_path
     assert summary['build_failure']['category']=='budget_blocked'
 
 
+@pytest.mark.historical_eval(reason='固定封存语料、数据库或原生构建；见 tests/README.md 的历史回放说明')
 def test_real_native_helper_persists_multibatch_claims_matching_receipt(prepared,tmp_path):
     driver()
     run_code(r'''
