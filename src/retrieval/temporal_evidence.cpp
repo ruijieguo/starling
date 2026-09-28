@@ -114,7 +114,8 @@ TemporalEvidenceView select_temporal_evidence(const std::vector<TemporalEvidence
     return view;
 }
 std::string temporal_evidence_json(const TemporalEvidenceView& view) {
-    Json selected=Json::array();for(const auto& ref:view.selected) selected.push_back(reference(ref));
+    Json selected=Json::array();
+    for(const auto& ref:view.selected) { selected.push_back(reference(ref)); }
     return Json{{"schema_version",1},{"sufficient",view.sufficient},{"ambiguous",view.ambiguous},
         {"insufficiency_reason",view.insufficiency_reason},{"topic",view.topic},
         {"selection_scope","visible_bounded_candidates"},{"order_basis","request_session_order_then_turn_index"},
