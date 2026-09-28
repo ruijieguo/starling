@@ -32,7 +32,8 @@ void ensure_curl_global() {
 struct CurlHandle {
     CURL* h;
     CurlHandle() : h(curl_easy_init()) {}
-    ~CurlHandle() { if (h) curl_easy_cleanup(h); }
+    ~CurlHandle() { if (h) { curl_easy_cleanup(h); 
+}}
     CurlHandle(const CurlHandle&) = delete;
     CurlHandle& operator=(const CurlHandle&) = delete;
 };
@@ -173,7 +174,8 @@ HttpResult http_post_json(const std::string& url,
     ensure_curl_global();
     thread_local CurlHandle tls;
     CURL* curl = tls.h;
-    if (!curl) return {.ok = false, .http_code = 0, .body = {}, .error = "curl_init_failed"};
+    if (!curl) { return {.ok = false, .http_code = 0, .body = {}, .error = "curl_init_failed"};
+}
 
     std::chrono::milliseconds delay{1000};
     std::vector<HttpAttemptEvidence> attempts;

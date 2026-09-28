@@ -55,7 +55,8 @@ public:
 
     virtual LLMResponse extract_with_contract(std::string_view prompt,
             std::string_view hash, const StructuredOutputRequest& request) {
-        if (request.mode == OutputMode::Legacy) return extract(prompt, hash);
+        if (request.mode == OutputMode::Legacy) { return extract(prompt, hash);
+}
         LLMResponse out;
         out.error = "structured_output_unsupported";
         out.output_mode = request.mode;

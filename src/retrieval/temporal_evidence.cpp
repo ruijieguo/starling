@@ -24,7 +24,8 @@ bool blank(const std::string& value) {
     return value.empty() || std::all_of(value.begin(),value.end(),[](unsigned char c){return std::isspace(c);});
 }
 bool score_first(const OrderedCandidate& a,const OrderedCandidate& b) {
-    if(a.score!=b.score) return a.score>b.score;
+    if(a.score!=b.score) { return a.score>b.score;
+}
     return std::tie(a.ref.tenant_id,a.ref.statement_id)<std::tie(b.ref.tenant_id,b.ref.statement_id);
 }
 auto position(const OrderedCandidate& value) {return std::make_pair(value.session_order,value.ref.turn_index);}
@@ -57,12 +58,14 @@ TemporalEvidenceView select_temporal_evidence(const std::vector<TemporalEvidence
             const auto& span=claim.at("source_span");
             const auto spans=extractor::claim_strict_json(row.source_spans_json);
             bool matched=false;
-            if(spans.is_array()) for(const auto& ref:spans) {
+            if(spans.is_array()) { for(const auto& ref:spans) {
                 if(ref.is_object() && ref.contains("engram_ref") && ref.contains("source_hash") &&
                     ref.contains("span_start") && ref.contains("span_end") &&
                     ref["engram_ref"]==span.at("engram_ref") && ref["source_hash"]==span.at("source_hash") &&
-                    ref["span_start"]==span.at("span_start") && ref["span_end"]==span.at("span_end")) matched=true;
+                    ref["span_start"]==span.at("span_start") && ref["span_end"]==span.at("span_end")) { matched=true;
+}
             }
+}
             if(!matched) {++view.excluded_invalid_evidence;continue;}
             if(!claim.contains("topic") || !claim["topic"].is_string() || claim["topic"]!=request.topic) {
                 ++view.excluded_topic;continue;
@@ -84,15 +87,18 @@ TemporalEvidenceView select_temporal_evidence(const std::vector<TemporalEvidence
             OrderedCandidate value={{row.tenant_id,row.id,session,index},order->second,candidate.score};
             const auto identity=std::make_pair(row.tenant_id,row.id);
             auto [it,inserted]=unique.emplace(identity,value);
-            if(!inserted) {++view.duplicates;if(score_first(value,it->second)) it->second=std::move(value);}
+            if(!inserted) {++view.duplicates;if(score_first(value,it->second)) { it->second=std::move(value);
+}}
         } catch(const std::exception&) {++view.excluded_invalid_evidence;}
     }
     std::vector<OrderedCandidate> eligible;
-    for(const auto& [identity,value]:unique) eligible.push_back(value);
+    for(const auto& [identity,value]:unique) { eligible.push_back(value);
+}
     view.eligible_candidates=eligible.size();
     if(eligible.empty()) {view.insufficiency_reason="no_ordered_topic_evidence";return view;}
     std::sort(eligible.begin(),eligible.end(),[](const auto& a,const auto& b) {
-        if(position(a)!=position(b)) return position(a)<position(b);
+        if(position(a)!=position(b)) { return position(a)<position(b);
+}
         return score_first(a,b);
     });
     const auto early=eligible.front();
@@ -104,17 +110,22 @@ TemporalEvidenceView select_temporal_evidence(const std::vector<TemporalEvidence
     selected.emplace(late.ref.tenant_id,late.ref.statement_id);
     std::sort(eligible.begin(),eligible.end(),score_first);
     for(const auto& value:eligible) {
-        if(selected.size()>=static_cast<std::size_t>(request.limit)) break;
+        if(selected.size()>=static_cast<std::size_t>(request.limit)) { break;
+}
         selected.emplace(value.ref.tenant_id,value.ref.statement_id);
     }
-    for(const auto& value:eligible) if(selected.contains({value.ref.tenant_id,value.ref.statement_id}))
+    for(const auto& value:eligible) { if(selected.contains({value.ref.tenant_id,value.ref.statement_id})) {
         view.selected.push_back(value.ref);
+}
+}
     view.sufficient=position(early)!=position(late);
-    if(!view.sufficient) view.insufficiency_reason="no_distinct_ordered_sources";
+    if(!view.sufficient) { view.insufficiency_reason="no_distinct_ordered_sources";
+}
     return view;
 }
 std::string temporal_evidence_json(const TemporalEvidenceView& view) {
-    Json selected=Json::array();for(const auto& ref:view.selected) selected.push_back(reference(ref));
+    Json selected=Json::array();for(const auto& ref:view.selected) { selected.push_back(reference(ref));
+}
     return Json{{"schema_version",1},{"sufficient",view.sufficient},{"ambiguous",view.ambiguous},
         {"insufficiency_reason",view.insufficiency_reason},{"topic",view.topic},
         {"selection_scope","visible_bounded_candidates"},{"order_basis","request_session_order_then_turn_index"},

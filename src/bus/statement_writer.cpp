@@ -47,13 +47,14 @@ std::string json_string(std::string_view s) {
     out.reserve(s.size() + 2);
     out.push_back('"');
     for (char c : s) {
-        if      (c == '"')  out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else if (static_cast<unsigned char>(c) < 0x20) { /* skip control */ }
-        else                out.push_back(c);
+        if      (c == '"') {  out += "\\\"";
+        } else if (c == '\\') { out += "\\\\";
+        } else if (c == '\n') { out += "\\n";
+        } else if (c == '\r') { out += "\\r";
+        } else if (c == '\t') { out += "\\t";
+        } else if (static_cast<unsigned char>(c) < 0x20) { /* skip control */ }
+        else {                out.push_back(c);
+}
     }
     out.push_back('"');
     return out;
@@ -122,8 +123,9 @@ std::string find_existing_in_chunk(
                " AND semantic_claim_json = ? ";
     }
     sql += " AND review_status = 'approved' ORDER BY created_at ASC LIMIT 1";
-    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "find_existing_in_chunk: prepare");
+}
     StmtHandle h(raw);
     bind_sv(h.get(), 1, s.holder_tenant_id);
     bind_sv(h.get(), 2, s.holder_id);
@@ -142,8 +144,10 @@ std::string find_existing_in_chunk(
         bind_sv(h.get(), 11, semantic_claim);
     }
     const int rc = sqlite3_step(h.get());
-    if (rc == SQLITE_DONE) return "";
-    if (rc != SQLITE_ROW) throw make_sqlite_error(db, "find_existing_in_chunk: step");
+    if (rc == SQLITE_DONE) { return "";
+}
+    if (rc != SQLITE_ROW) { throw make_sqlite_error(db, "find_existing_in_chunk: step");
+}
     return reinterpret_cast<const char*>(sqlite3_column_text(h.get(), 0));
 }
 
@@ -222,8 +226,9 @@ void insert_statement_row(
     }
     if (!semantic_claim.empty()) {
         const auto event = nlohmann::json::parse(semantic_claim).at("event_time");
-        if (event.is_null()) sqlite3_bind_null(h.get(), i++);
-        else bind_sv(h.get(), i++, event.at("start").get_ref<const std::string&>());
+        if (event.is_null()) { sqlite3_bind_null(h.get(), i++);
+        } else { bind_sv(h.get(), i++, event.at("start").get_ref<const std::string&>());
+}
     } else if (s.event_time_start.has_value()) {
         bind_sv(h.get(), i++, *s.event_time_start);
     } else {
@@ -257,8 +262,9 @@ void insert_statement_row(
     } else {
         bind_sv(h.get(), i++, semantic_claim);
         const auto event = nlohmann::json::parse(semantic_claim).at("event_time");
-        if (event.is_null() || event.at("end").is_null()) sqlite3_bind_null(h.get(), i++);
-        else bind_sv(h.get(), i++, event.at("end").get_ref<const std::string&>());
+        if (event.is_null() || event.at("end").is_null()) { sqlite3_bind_null(h.get(), i++);
+        } else { bind_sv(h.get(), i++, event.at("end").get_ref<const std::string&>());
+}
     }
 
     if (sqlite3_step(h.get()) != SQLITE_DONE) {
@@ -330,12 +336,14 @@ StatementWriteOutcome StatementWriter::write(
         retrieval::StatementRow claim_input;
         claim_input.semantic_claim_json = s.semantic_claim_json;
         auto claim = retrieval::parse_claim_evidence(claim_input);
-        if (!claim.is_object()) throw std::invalid_argument("StatementWriter: malformed_claim");
+        if (!claim.is_object()) { throw std::invalid_argument("StatementWriter: malformed_claim");
+}
         claim["source_time"] = source_time;
         if (!claim.contains("source_span") ||
             claim["source_span"].value("engram_ref", "") != evidence_engram_id ||
-            claim["source_span"].value("source_hash", "") != s.source_hash || source_time.empty())
+            claim["source_span"].value("source_hash", "") != s.source_hash || source_time.empty()) {
             throw std::invalid_argument("StatementWriter: inconsistent_claim source");
+}
         semantic_claim = claim.dump();
         retrieval::StatementRow row;
         row.tenant_id = s.holder_tenant_id; row.holder_id = s.holder_id;
@@ -348,7 +356,8 @@ StatementWriteOutcome StatementWriter::write(
         row.semantic_claim_json = semantic_claim;
         row.source_spans_json = source_spans_json(s, evidence_engram_id, semantic_claim);
         const auto reason = retrieval::claim_evidence_error(conn_, row);
-        if (!reason.empty()) throw std::invalid_argument("StatementWriter: " + reason);
+        if (!reason.empty()) { throw std::invalid_argument("StatementWriter: " + reason);
+}
     }
 
     // Compare finalized source evidence, after trusted observation time is
@@ -363,7 +372,8 @@ StatementWriteOutcome StatementWriter::write(
         std::ostringstream oss;
         oss << "[";
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
-            if (k) oss << ",";
+            if (k) { oss << ",";
+}
             oss << json_string(s.derived_from[k]);
         }
         oss << "]";
@@ -372,7 +382,8 @@ StatementWriteOutcome StatementWriter::write(
         // Look up max(derived_depth) among parent rows in the current tenant.
         std::string in_clause;
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
-            if (k) in_clause += ",";
+            if (k) { in_clause += ",";
+}
             in_clause += "?";
         }
         const std::string depth_sql =
@@ -384,15 +395,17 @@ StatementWriteOutcome StatementWriter::write(
         }
         StmtHandle q(q_raw);
         bind_sv(q.get(), 1, s.holder_tenant_id);
-        for (size_t k = 0; k < s.derived_from.size(); ++k)
+        for (size_t k = 0; k < s.derived_from.size(); ++k) {
             sqlite3_bind_text(q.get(), static_cast<int>(k + 2),
                               s.derived_from[k].c_str(), -1, SQLITE_TRANSIENT);
+}
         int max_parent_depth = 0;
         // MAX() returns SQL NULL when no matching parent rows exist; sqlite3_column_int
         // reports NULL as 0, so the child gets depth=1. Orphan parents are tolerated
         // by design — they are not an error condition.
-        if (sqlite3_step(q.get()) == SQLITE_ROW)
+        if (sqlite3_step(q.get()) == SQLITE_ROW) {
             max_parent_depth = sqlite3_column_int(q.get(), 0);
+}
         derived_depth = max_parent_depth + 1;
     }
 

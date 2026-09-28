@@ -43,7 +43,8 @@ LLMResponse FakeLLMAdapter::extract_with_contract(std::string_view prompt, std::
     response.output_contract=request.contract;
     if (request.mode != OutputMode::Legacy) {
         response.schema_sha256=structured_output_schema_sha256(request.contract);
-        if(response.raw_completion.empty()) response.raw_completion=response.raw_xml;
+        if(response.raw_completion.empty()) { response.raw_completion=response.raw_xml;
+}
     }
     return response;
 }
