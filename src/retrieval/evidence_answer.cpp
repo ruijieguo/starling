@@ -251,7 +251,7 @@ std::string verify_source_evidence(const std::string& block,const std::string& r
     return verify(sources(block),raw).dump();
 }
 std::string evidence_answer_prompt(const std::string& question,const std::string& block,const std::string& raw) {
-    const auto base=grounded_source_answer_prompt(question,block);
+    auto base=grounded_source_answer_prompt(question,block);
     const auto checked=verify(sources(block),raw);
     if(checked["accepted"].empty()) {return base;
 }

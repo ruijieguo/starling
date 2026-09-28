@@ -19,11 +19,11 @@ int evidence_count(std::string_view evidence_json) {
 ContextPackLabel classify_with_provenance(const StatementRow& row,
                                           const PackContext& ctx,
                                           std::string_view provenance) {
-    if (ctx.todo_ids.count(row.id)) {     return ContextPackLabel::TODO;
+    if (static_cast<unsigned int>(ctx.todo_ids.contains(row.id)) != 0U) {     return ContextPackLabel::TODO;
 }
-    if (ctx.conflict_ids.count(row.id)) { return ContextPackLabel::CONFLICT;
+    if (static_cast<unsigned int>(ctx.conflict_ids.contains(row.id)) != 0U) { return ContextPackLabel::CONFLICT;
 }
-    if (ctx.common_ids.count(row.id)) {   return ContextPackLabel::COMMON;
+    if (static_cast<unsigned int>(ctx.common_ids.contains(row.id)) != 0U) {   return ContextPackLabel::COMMON;
 }
     if (!provenance.empty() && provenance != "user_input") {
         return ContextPackLabel::INFERRED;
@@ -107,7 +107,7 @@ std::string render_pack(const std::vector<PackEntry>& entries,
     }
     std::ostringstream os;
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (i) { os << "\n";
+        if (i != 0U) { os << "\n";
 }
         os << entries[i].line;
     }

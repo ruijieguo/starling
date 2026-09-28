@@ -372,7 +372,7 @@ StatementWriteOutcome StatementWriter::write(
         std::ostringstream oss;
         oss << "[";
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
-            if (k) { oss << ",";
+            if (k != 0U) { oss << ",";
 }
             oss << json_string(s.derived_from[k]);
         }
@@ -382,7 +382,7 @@ StatementWriteOutcome StatementWriter::write(
         // Look up max(derived_depth) among parent rows in the current tenant.
         std::string in_clause;
         for (size_t k = 0; k < s.derived_from.size(); ++k) {
-            if (k) { in_clause += ",";
+            if (k != 0U) { in_clause += ",";
 }
             in_clause += "?";
         }

@@ -26,7 +26,7 @@ std::string fold(std::string_view s) {
     return result;
 }
 bool contains(std::string_view s, std::initializer_list<std::string_view> values) {
-    return std::any_of(values.begin(), values.end(), [&](auto v) { return s.find(v) != s.npos; });
+    return std::any_of(values.begin(), values.end(), [&](auto v) { return s.find(v) != std::string_view::npos; });
 }
 std::vector<std::string> words(std::string_view s) {
     std::vector<std::string> result;
@@ -77,7 +77,7 @@ bool sentences(std::string_view s, std::size_t begin, std::vector<Sentence>& out
         if (s[start]=='\n' || s[start]=='\r') { return false;
 }
         const auto n=space_width(s,start);
-        if (!n) { break;
+        if (n == 0U) { break;
 }
         start+=n;
     }
@@ -95,11 +95,11 @@ bool sentences(std::string_view s, std::size_t begin, std::vector<Sentence>& out
         if (s[i]=='.' || s[i]=='!' || s[i]=='?') { width=1;
         } else if (rest.starts_with("。") || rest.starts_with("！") || rest.starts_with("？")) { width=3;
 }
-        if (!width) { ++i; continue; }
+        if (width == 0U) { ++i; continue; }
         if (i==start) { return false; // 连续标点或没有内容。
 }
         if (s[i]=='.') {
-            if ((i+1<s.size() && !space_width(s,i+1)) || (i>0 && digit(s[i-1]))) { return false;
+            if ((i+1<s.size() && (space_width(s,i+1) == 0U)) || (i>0 && digit(s[i-1]))) { return false;
 }
             std::size_t w=i;
             while (w>start && letter(s[w-1])) { --w;
@@ -113,8 +113,8 @@ bool sentences(std::string_view s, std::size_t begin, std::vector<Sentence>& out
         while (i<s.size()) {
             if (s[i]=='\n' || s[i]=='\r') { return false;
 }
-            const auto n=space_width(s,i); if (!n) { break; }
-            i+=n;
+            const auto gap=space_width(s,i); if (gap == 0U) { break; }
+            i+=gap;
         }
         start=i;
     }
@@ -124,7 +124,7 @@ bool sentences(std::string_view s, std::size_t begin, std::vector<Sentence>& out
     return !out.empty();
 }
 bool overlap(std::string_view question, std::string_view object) {
-    if (question.find(object)!=question.npos) { return true;
+    if (question.find(object)!=std::string_view::npos) { return true;
 }
     const auto qs=words(question);
     for (const auto& token:words(object))
@@ -148,7 +148,7 @@ ClaimScopeResolution resolve_claim_question_scope(
         evidence.at("scope_markers")!=nlohmann::json::array({"ASSERTED"})) { return fallback("ineligible_claim");
 }
     std::size_t begin=0;
-    while (begin<source.size() && space_width(source,begin)) {
+    while (begin<source.size() && (space_width(source,begin) != 0U)) {
         if (source[begin]=='\n' || source[begin]=='\r') { return fallback("ambiguous_boundary");
 }
         begin+=space_width(source,begin);
@@ -167,7 +167,7 @@ ClaimScopeResolution resolve_claim_question_scope(
     if (object.empty()) { return fallback("object_not_literal");
 }
     std::vector<std::size_t> matches;
-    for (auto p=source.find(object); p!=source.npos; p=source.find(object,p+1)) {
+    for (auto p=source.find(object); p!=std::string_view::npos; p=source.find(object,p+1)) {
         if (word(object.front()) && p>0 && word(source[p-1])) { continue;
 }
         if (word(object.back()) && p+object.size()<source.size() && word(source[p+object.size()])) { continue;
@@ -223,7 +223,7 @@ ClaimScopeResolution resolve_claim_question_scope(
             return fallback("context_dependency");
 }
         if (evidence.contains("topic") && evidence["topic"].is_string() &&
-            q.find(evidence["topic"].get<std::string>())!=q.npos) { return fallback("context_dependency");
+            q.find(evidence["topic"].get<std::string>())!=std::string_view::npos) { return fallback("context_dependency");
 }
         const auto tokens=words(q);
         const bool english=tokens.size()>=3 && tokens[1]=="you" &&

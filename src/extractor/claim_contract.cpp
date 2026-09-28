@@ -41,7 +41,7 @@ size_t unicode_space_width(std::string_view text, size_t offset) {
     if (offset >= text.size()) { return 0;
 }
     const auto c = static_cast<unsigned char>(text[offset]);
-    if (std::isspace(c)) { return 1;
+    if (std::isspace(c) != 0) { return 1;
 }
     if (offset + 1 < text.size() && c == 0xC2 &&
         static_cast<unsigned char>(text[offset + 1]) == 0xA0) { return 2; // NBSP
@@ -55,7 +55,7 @@ size_t unicode_space_width(std::string_view text, size_t offset) {
 std::string_view trim(std::string_view text) {
     while (!text.empty()) {
         const auto width = unicode_space_width(text, 0);
-        if (!width) { break;
+        if (width == 0U) { break;
 }
         text.remove_prefix(width);
     }
@@ -65,7 +65,7 @@ std::string_view trim(std::string_view text) {
         if (last == 0xA0 && text.size() >= 2 && static_cast<unsigned char>(text[text.size()-2]) == 0xC2) { width = 2;
         } else if (last == 0x80 && text.size() >= 3 && static_cast<unsigned char>(text[text.size()-3]) == 0xE3 &&
                  static_cast<unsigned char>(text[text.size()-2]) == 0x80) { width = 3;
-        } else if (!std::isspace(last)) { break;
+        } else if (std::isspace(last) == 0) { break;
 }
         text.remove_suffix(width);
     }
@@ -246,7 +246,7 @@ bool preference_object(std::string_view object, const std::string& actor) {
     const auto name=lower(actor);
     if (!name.empty() && object.starts_with(name) && object.size()>name.size()) {
         const auto next=static_cast<unsigned char>(object[name.size()]);
-        if (std::isspace(next) || next>=0x80) { object=trim(object.substr(name.size()));
+        if ((std::isspace(next) != 0) || next>=0x80) { object=trim(object.substr(name.size()));
 }
     }
     static const std::regex passive(R"(^preferred(?:(?:(?:[.!?]|。|！|？)\s*)*$|\s+(?:by|over|to)\b))",std::regex::icase);
@@ -257,9 +257,7 @@ bool preference_object(std::string_view object, const std::string& actor) {
 }
     for (const auto prefix : {"偏好","更偏好","不偏好","倾向于","更倾向于","不倾向于"})
         if (object.starts_with(prefix)) return true;
-    if (object.starts_with("对") && object.find("有偏好")!=std::string_view::npos) { return true;
-}
-    return false;
+    return object.starts_with("对") && object.find("有偏好")!=std::string_view::npos;
 }
 void scope_guards(const std::string& source, const Json& row, const Json& evidence, const std::set<std::string>& markers,
                   bool source_self_report, const ClaimScopeResolution& resolution) {
@@ -685,10 +683,10 @@ const PredicateSpec* find_claim_predicate(std::string_view name) {
     if (canonical.empty()) { return nullptr;
 }
     const auto& values = predicate_catalog().predicates;
-    const auto it = std::find_if(values.begin(), values.end(), [&](const auto& spec) {
+    const auto found = std::find_if(values.begin(), values.end(), [&](const auto& spec) {
         return spec.name == canonical;
     });
-    return it == values.end() ? nullptr : &*it;
+    return found == values.end() ? nullptr : &*found;
 }
 
 nlohmann::json claim_contract_catalog() {
@@ -772,7 +770,7 @@ std::string extraction_prompt(const Json& source_data, bool target_units=false) 
         "\n"+final_format_reminder;
 }
 std::string protocol_correction(std::string prompt, const std::vector<ParseError>* errors) {
-    if (errors) {
+    if (errors != nullptr) {
         Json summary=Json::array();
         for (const auto& error:*errors)
             summary.push_back({{"kind",error.kind},{"field_path",error.field_path},{"detail",error.detail}});
@@ -817,13 +815,13 @@ std::string claim_extraction_batch_prompt(std::string_view payload,std::string_v
         }
         prompt=extraction_prompt(Json{{"source_holder",holder},{"source",payload},{"source_role","context_only"},
             {"batch_index",batch_index},{"target_clause_ids",targets},{"source_units",selected}},true);
-        if (previous_errors) prompt=protocol_correction(std::move(prompt),previous_errors);
+        if (previous_errors != nullptr) prompt=protocol_correction(std::move(prompt),previous_errors);
         prompt += "\nNATIVE_BATCH_PROTOCOL: The complete source is context only. "
             "Generate claims only from the indexed target source units and cite only target_clause_ids below. "
             "Never renumber the global clause IDs or use non-target context as evidence. "
             "For an empty target list return an empty statements array.\nBATCH_TARGETS_JSON:\n";
     } else {
-        prompt=previous_errors ? claim_extraction_retry_prompt(payload,holder,*previous_errors)
+        prompt=previous_errors != nullptr ? claim_extraction_retry_prompt(payload,holder,*previous_errors)
                                : claim_extraction_prompt(payload,holder);
         prompt += "\nNATIVE_BATCH_PROTOCOL: Read the complete source and all indexed units for context. "
             "Emit statements only when evidence.clause_id belongs to target_clause_ids below. "
@@ -854,7 +852,7 @@ ClaimParseResult parse_claim_response(std::string_view raw,std::string_view payl
         fields(root,claim_contract_catalog()["root_fields"].get<std::set<std::string>>());
         require(root.contains("schema_version") && root["schema_version"].is_number_integer() && root["schema_version"]==2,"schema_failure","schema_version must be 2");
         require(root.contains("statements") && root["statements"].is_array(),"schema_failure","statements must be array");
-        if (target_clause_ids) {
+        if (target_clause_ids != nullptr) {
             // Inspect all wire rows before any semantic filtering. Even a row
             // with an unauthorized holder cannot hide an out-of-batch source.
             std::size_t index = 0;

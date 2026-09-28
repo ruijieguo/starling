@@ -338,7 +338,7 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
             || snapshot.claim_batch_size != result.claim_batch_size) {
             return fail("missing or inconsistent batch policy");
 }
-        if (policy && batch_policy_json(*policy) != batch_policy_json(snapshot)) {
+        if ((policy != nullptr) && batch_policy_json(*policy) != batch_policy_json(snapshot)) {
             return fail("claim batch policy changed between extraction and persist");
 }
         if (crypto::sha256_hex(result.source_payload) != result.source_payload_hash) {

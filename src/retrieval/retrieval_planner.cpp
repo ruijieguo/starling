@@ -47,7 +47,7 @@ constexpr const char* kSelectCols =
 FetchedRow read_row(sqlite3_stmt* st) {
     auto txt = [&](int i) {
         const auto* p = sqlite3_column_text(st, i);
-        return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+        return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
     };
     FetchedRow f;
     auto& r = f.row;
@@ -259,7 +259,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         bind_sv(h.get(), 9, q.as_of_iso8601);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             auto f=read_row(h.get());
-            if (semantic_row) {
+            if (semantic_row != nullptr) {
                 // Keep the semantic DTO and cosine score, but materialize only
                 // after the same visibility/time query used by structured paths.
                 f.row=semantic_row->row;
@@ -305,10 +305,10 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             std::vector<std::string> others;
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
-                if (p) others.emplace_back(reinterpret_cast<const char*>(p));
+                if (p != nullptr) others.emplace_back(reinterpret_cast<const char*>(p));
             }
             for (const auto& other : others) {
-                if (have.count(other)) continue;
+                if (have.contains(other) != 0u) continue;
                 fetch_by_id(other);
                 have.insert(other);
             }
@@ -422,7 +422,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             bind_sv(h.get(), 1, q.tenant_id);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
-                if (p) { pctx.todo_ids.insert(reinterpret_cast<const char*>(p));
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (p != nullptr) { pctx.todo_ids.insert(reinterpret_cast<const char*>(p));
 }
             }
         }
@@ -436,10 +437,12 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             bind_sv(h.get(), 1, q.tenant_id);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* a = sqlite3_column_text(h.get(), 0);
-                const auto* b = sqlite3_column_text(h.get(), 1);
-                if (a) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(a));
+                const auto* dst_text = sqlite3_column_text(h.get(), 1);
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (a != nullptr) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(a));
 }
-                if (b) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(b));
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (dst_text != nullptr) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(dst_text));
 }
             }
         }
@@ -457,9 +460,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (!cands.empty()) {
         bool all_recanted = true;
         for (const auto& c : cands)
-            if (!pctx.recanted_ids.count(c.row.id)) { all_recanted = false; break; }
+            if (pctx.recanted_ids.contains(c.row.id) == 0u) { all_recanted = false; break; }
         ab.only_recanted_evidence = all_recanted;
-        ab.unresolved_conflict = pctx.conflict_ids.count(cands.front().row.id) > 0;
+        ab.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
     }
     rc.abstention_reason = evaluate_abstention(ab, q.abstention);
     rc.plan_steps.push_back({"abstain",
@@ -500,9 +503,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             "COALESCE((SELECT MIN(last_dispatched_sequence) FROM consumer_checkpoints),"
             "(SELECT COALESCE(MAX(outbox_sequence),0) FROM bus_events))",
             -1, &raw, nullptr) == SQLITE_OK) {
-            StmtHandle h(raw);
-            if (sqlite3_step(h.get()) == SQLITE_ROW) {
-                rc.projection_lag_events = sqlite3_column_int64(h.get(), 0);
+            StmtHandle stmt(raw);
+            if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+                rc.projection_lag_events = sqlite3_column_int64(stmt.get(), 0);
 }
         }
     }

@@ -92,14 +92,15 @@ TemporalEvidenceView select_temporal_evidence(const std::vector<TemporalEvidence
         } catch(const std::exception&) {++view.excluded_invalid_evidence;}
     }
     std::vector<OrderedCandidate> eligible;
+    eligible.reserve(unique.size());
     for(const auto& [identity,value]:unique) { eligible.push_back(value);
 }
     view.eligible_candidates=eligible.size();
     if(eligible.empty()) {view.insufficiency_reason="no_ordered_topic_evidence";return view;}
-    std::sort(eligible.begin(),eligible.end(),[](const auto& a,const auto& b) {
-        if(position(a)!=position(b)) { return position(a)<position(b);
+    std::sort(eligible.begin(),eligible.end(),[](const auto& lhs,const auto& rhs) {
+        if(position(lhs)!=position(rhs)) { return position(lhs)<position(rhs);
 }
-        return score_first(a,b);
+        return score_first(lhs,rhs);
     });
     const auto early=eligible.front();
     const auto latest_position=position(eligible.back());

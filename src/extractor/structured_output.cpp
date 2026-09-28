@@ -240,7 +240,7 @@ std::string validate_capability_evidence_json(std::string_view raw) {
         if(crypto::sha256_hex(evidence.dump())!=evidence_id) { return "capability_evidence_hash_mismatch";
 }
         const auto& probes=evidence.at("probes");
-        if(!probes.is_array() || probes.size()!=2u) { return "capability_probe_count_mismatch";
+        if(!probes.is_array() || probes.size()!=2U) { return "capability_probe_count_mismatch";
 }
         std::size_t calls=0;
         bool unknown=false,unsupported=false,nonconformant=false;

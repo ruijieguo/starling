@@ -65,25 +65,25 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
             (!row.provenance.empty() && row.provenance != "user_input")) { return "inconsistent_claim";
 }
         const auto scope = j["assertion_scope"].get<std::string>();
-        if (!scopes.count(scope)) { return "unsupported_claim_scope";
+        if (static_cast<unsigned int>(scopes.contains(scope)) == 0U) { return "unsupported_claim_scope";
 }
         std::set<std::string> markers;
         for (const auto& marker : j["scope_markers"]) {
             if (!marker.is_string()) return "malformed_claim";
-            if (!scopes.count(marker.get<std::string>())) return "unsupported_claim_scope";
+            if (static_cast<unsigned int>(scopes.contains(marker.get<std::string>())) == 0U) return "unsupported_claim_scope";
             if (!markers.insert(marker.get<std::string>()).second) return "malformed_claim";
         }
-        if (!markers.count(scope) ||
-            (markers.count("ASSERTED") && (markers.count("CONDITIONAL") ||
-             markers.count("HYPOTHETICAL") || markers.count("QUESTIONED")))) { return "inconsistent_claim";
+        if ((static_cast<unsigned int>(markers.contains(scope)) == 0U) ||
+            ((static_cast<unsigned int>(markers.contains("ASSERTED")) != 0U) && ((static_cast<unsigned int>(markers.contains("CONDITIONAL")) != 0U) ||
+             (static_cast<unsigned int>(markers.contains("HYPOTHETICAL")) != 0U) || (static_cast<unsigned int>(markers.contains("QUESTIONED")) != 0U)))) { return "inconsistent_claim";
 }
         if (!j.contains("attributed_to") ||
             (!j["attributed_to"].is_null() && !j["attributed_to"].is_string()) ||
             !j.contains("time_text") || !j["time_text"].is_string()) { return "malformed_claim";
 }
         const auto perspective = upper(row.holder_perspective);
-        if ((perspective == "FIRST_PERSON" && (!j["attributed_to"].is_null() || markers.count("REPORTED"))) ||
-            (perspective == "QUOTED" && (!markers.count("REPORTED") || j["attributed_to"] != row.holder_id)) ||
+        if ((perspective == "FIRST_PERSON" && (!j["attributed_to"].is_null() || (static_cast<unsigned int>(markers.contains("REPORTED")) != 0U))) ||
+            (perspective == "QUOTED" && ((static_cast<unsigned int>(markers.contains("REPORTED")) == 0U) || j["attributed_to"] != row.holder_id)) ||
             (perspective != "FIRST_PERSON" && perspective != "QUOTED")) { return "inconsistent_claim";
 }
         const auto& span = j["source_span"];
@@ -100,7 +100,7 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
             (upper(row.holder_perspective) == "FIRST_PERSON" && row.subject_id != row.holder_id)) {
             return "inconsistent_claim";
 }
-        if (markers.count("REPORTED") && (!text(j, "attributed_to") || j["attributed_to"] != row.holder_id)) {
+        if ((static_cast<unsigned int>(markers.contains("REPORTED")) != 0U) && (!text(j, "attributed_to") || j["attributed_to"] != row.holder_id)) {
             return "inconsistent_claim";
 }
         if (!j["event_time"].is_null()) {
@@ -136,7 +136,7 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
 }
         auto col = [&](int i) {
             const auto* p = sqlite3_column_text(raw, i);
-            return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+            return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
         };
         if (col(1) != j["source_time"].get<std::string>() || !col(2).empty() || sqlite3_column_type(raw, 3) == SQLITE_NULL) {
             return "inconsistent_claim";

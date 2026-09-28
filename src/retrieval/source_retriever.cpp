@@ -69,7 +69,7 @@ using persistence::detail::make_sqlite_error;
 
 void scope(const std::string& tenant, const std::vector<std::string>& holders) {
     if (tenant.empty() || holders.empty() || std::any_of(holders.begin(),holders.end(),
-        [](const auto& h){return h.empty();})) {
+        [](const auto& holder){return holder.empty();})) {
         throw std::invalid_argument("tenant and explicit nonempty allowed_holders required");
 }
 }
@@ -82,7 +82,7 @@ StmtHandle prepare(sqlite3* db, const char* sql) {
 }
 std::string column(sqlite3_stmt* st,int i) {
     const auto* p=sqlite3_column_text(st,i);
-    return p?reinterpret_cast<const char*>(p):"";
+    return p != nullptr?reinterpret_cast<const char*>(p):"";
 }
 // ASCII words and individual UTF-8 code points: a deterministic, language-agnostic baseline.
 std::vector<std::string> terms(const std::string& text) {
@@ -175,7 +175,7 @@ std::vector<double> bm25_scores(const std::vector<Source>& sources,
         const auto& source=sources[i];
         for (const auto& term:query_terms) {
             const auto tf=std::count(source.tokens.begin(),source.tokens.end(),term);
-            if (!tf) continue;
+            if (tf == 0) continue;
             const double idf=std::log(1.0+(static_cast<double>(sources.size())-df[term]+0.5)/(df[term]+0.5));
             const double freq=static_cast<double>(tf);
             scores[i]+=idf*(freq*2.2)/(freq+1.2*(0.25+0.75*static_cast<double>(source.tokens.size())/std::max(avg,1.0)));
@@ -261,8 +261,8 @@ std::map<std::string, ClaimView> load_claim_views(
     std::set<std::string> wanted;
     std::map<std::string, const Source*> source_by_key;
     for (const auto& source : sources)
-        if (source.ref.value("engram_ref", "").size() &&
-            source.ref.value("clause_id", "").size())
+        if ((source.ref.value("engram_ref", "").size() != 0u) &&
+            (source.ref.value("clause_id", "").size() != 0u))
             {
                 const auto key=claim_key(source.ref["engram_ref"], source.ref["clause_id"]);
                 wanted.insert(key);
@@ -285,7 +285,7 @@ std::map<std::string, ClaimView> load_claim_views(
     persistence::StmtHandle stmt(raw);
     auto text_at = [](sqlite3_stmt* s, int i) {
         const auto* p = sqlite3_column_text(s, i);
-        return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+        return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
     };
     for (const auto& holder : q.allowed_holders) {
         sqlite3_reset(raw); sqlite3_clear_bindings(raw);
@@ -440,8 +440,8 @@ void focus_sources(std::vector<Source>& sources,const ObserverQuery& q,Json& dia
     size_t focused_count=0;
     for(size_t i=0;i<sources.size();++i) {
         global.push_back(i);
-        for(size_t p=0;p<names.size();++p) {if(sources[i].ref["speaker"]==names[p]) {
-            people[p].push_back(i);++focused_count;
+        for(size_t idx=0;idx<names.size();++idx) {if(sources[i].ref["speaker"]==names[idx]) {
+            people[idx].push_back(i);++focused_count;
         }
 }
         const auto& s=sources[i];const auto& session=s.ref["session_id"];
@@ -1080,7 +1080,7 @@ void profile_sources(std::vector<Source>& sources,const ObserverQuery& q,int sou
     auto lane=[&](std::deque<size_t>& queue,const char* name,int limit) {
         if(counts[name].get<int>()>=limit) {return false;
 }
-        while(!queue.empty()) {const auto i=queue.front();queue.pop_front();if(take(i,name)) {return true;
+        while(!queue.empty()) {const auto item=queue.front();queue.pop_front();if(take(item,name)) {return true;
 }}
         return false;
     };
@@ -1371,7 +1371,7 @@ std::string ObserverRetriever::run(const ObserverQuery& q) {
             while ((rc=sqlite3_step(st.get()))==SQLITE_ROW) {
                 const auto* bytes=static_cast<const char*>(sqlite3_column_blob(st.get(),3));
                 const auto length=sqlite3_column_bytes(st.get(),3);
-                if (!bytes || length<=0) {bump("filtered");continue;}
+                if ((bytes == nullptr) || length<=0) {bump("filtered");continue;}
                 const std::string payload(bytes,static_cast<size_t>(length));
                 const std::vector<std::uint8_t> raw(payload.begin(),payload.end());
                 if (evidence::compute_engram_content_hash(raw,{})!=column(st.get(),4)) {
@@ -1554,11 +1554,11 @@ std::string ObserverRetriever::run(const ObserverQuery& q) {
 }
         out["block"].get_ref<std::string&>()+=line;
         out["context_bytes"]=out["context_bytes"].get<size_t>()+bytes;
-        if(independent_sidecar) { out[source?"source_context_bytes":"statement_context_bytes"]=
-            out[source?"source_context_bytes":"statement_context_bytes"].get<size_t>()+bytes;
+        if(independent_sidecar) { out[source != nullptr?"source_context_bytes":"statement_context_bytes"]=
+            out[source != nullptr?"source_context_bytes":"statement_context_bytes"].get<size_t>()+bytes;
 }
-        if (source) {out["source_refs"].push_back(*source);out["source_count"]=out["source_count"].get<int>()+1;out["labels"].push_back("SOURCE");}
-        if (statement) {out["statement_ids"].push_back(statement->row.id);
+        if (source != nullptr) {out["source_refs"].push_back(*source);out["source_count"]=out["source_count"].get<int>()+1;out["labels"].push_back("SOURCE");}
+        if (statement != nullptr) {out["statement_ids"].push_back(statement->row.id);
             out["labels"].push_back(to_string(statement->label));out["statement_count"]=out["statement_count"].get<int>()+1;}
         return true;
     };
@@ -1645,7 +1645,7 @@ std::string ObserverRetriever::run(const ObserverQuery& q) {
                     if(source.ref.value("engram_ref","")==key->first && source.ref.value("clause_id","")==key->second) {
                         linked=&source;break;
                     }
-                if(!linked || linked->ref.value("speaker","")!=entry.row.holder_id)
+                if((linked == nullptr) || linked->ref.value("speaker","")!=entry.row.holder_id)
                     reason="source_span_not_in_authorized_pool";
             }
             if(reason.empty()) {
