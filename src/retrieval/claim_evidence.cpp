@@ -70,7 +70,7 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
         std::set<std::string> markers;
         for (const auto& marker : j["scope_markers"]) {
             if (!marker.is_string()) return "malformed_claim";
-            if (static_cast<unsigned int>(scopes.contains(marker.get<std::string>())) == 0U) return "unsupported_claim_scope";
+            if (static_cast<unsigned int>(scopes.contains(marker.get<std::string>())) == 0U) { return "unsupported_claim_scope"; }
             if (!markers.insert(marker.get<std::string>()).second) return "malformed_claim";
         }
         if ((static_cast<unsigned int>(markers.contains(scope)) == 0U) ||
@@ -136,6 +136,7 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
 }
         auto col = [&](int i) {
             const auto* p = sqlite3_column_text(raw, i);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
             return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
         };
         if (col(1) != j["source_time"].get<std::string>() || !col(2).empty() || sqlite3_column_type(raw, 3) == SQLITE_NULL) {

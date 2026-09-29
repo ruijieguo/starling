@@ -82,6 +82,7 @@ StmtHandle prepare(sqlite3* db, const char* sql) {
 }
 std::string column(sqlite3_stmt* st,int i) {
     const auto* p=sqlite3_column_text(st,i);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     return p != nullptr?reinterpret_cast<const char*>(p):"";
 }
 // ASCII words and individual UTF-8 code points: a deterministic, language-agnostic baseline.
@@ -175,7 +176,7 @@ std::vector<double> bm25_scores(const std::vector<Source>& sources,
         const auto& source=sources[i];
         for (const auto& term:query_terms) {
             const auto tf=std::count(source.tokens.begin(),source.tokens.end(),term);
-            if (tf == 0) continue;
+            if (tf == 0) { continue; }
             const double idf=std::log(1.0+(static_cast<double>(sources.size())-df[term]+0.5)/(df[term]+0.5));
             const double freq=static_cast<double>(tf);
             scores[i]+=idf*(freq*2.2)/(freq+1.2*(0.25+0.75*static_cast<double>(source.tokens.size())/std::max(avg,1.0)));
@@ -261,8 +262,8 @@ std::map<std::string, ClaimView> load_claim_views(
     std::set<std::string> wanted;
     std::map<std::string, const Source*> source_by_key;
     for (const auto& source : sources)
-        if ((source.ref.value("engram_ref", "").size() != 0u) &&
-            (source.ref.value("clause_id", "").size() != 0u))
+        if (!source.ref.value("engram_ref", "").empty() &&
+            !source.ref.value("clause_id", "").empty())
             {
                 const auto key=claim_key(source.ref["engram_ref"], source.ref["clause_id"]);
                 wanted.insert(key);
@@ -285,6 +286,7 @@ std::map<std::string, ClaimView> load_claim_views(
     persistence::StmtHandle stmt(raw);
     auto text_at = [](sqlite3_stmt* s, int i) {
         const auto* p = sqlite3_column_text(s, i);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
     };
     for (const auto& holder : q.allowed_holders) {
@@ -1645,8 +1647,9 @@ std::string ObserverRetriever::run(const ObserverQuery& q) {
                     if(source.ref.value("engram_ref","")==key->first && source.ref.value("clause_id","")==key->second) {
                         linked=&source;break;
                     }
-                if((linked == nullptr) || linked->ref.value("speaker","")!=entry.row.holder_id)
+                if((linked == nullptr) || linked->ref.value("speaker","")!=entry.row.holder_id) {
                     reason="source_span_not_in_authorized_pool";
+                }
             }
             if(reason.empty()) {
                 decision["source_ref"]=linked->ref;

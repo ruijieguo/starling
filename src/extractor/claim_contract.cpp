@@ -815,7 +815,7 @@ std::string claim_extraction_batch_prompt(std::string_view payload,std::string_v
         }
         prompt=extraction_prompt(Json{{"source_holder",holder},{"source",payload},{"source_role","context_only"},
             {"batch_index",batch_index},{"target_clause_ids",targets},{"source_units",selected}},true);
-        if (previous_errors != nullptr) prompt=protocol_correction(std::move(prompt),previous_errors);
+        if (previous_errors != nullptr) { prompt=protocol_correction(std::move(prompt),previous_errors); }
         prompt += "\nNATIVE_BATCH_PROTOCOL: The complete source is context only. "
             "Generate claims only from the indexed target source units and cite only target_clause_ids below. "
             "Never renumber the global clause IDs or use non-target context as evidence. "

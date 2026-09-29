@@ -26,7 +26,7 @@ std::string fold(std::string_view s) {
     return result;
 }
 bool contains(std::string_view s, std::initializer_list<std::string_view> values) {
-    return std::any_of(values.begin(), values.end(), [&](auto v) { return s.find(v) != std::string_view::npos; });
+    return std::any_of(values.begin(), values.end(), [&](auto val) { return s.find(val) != std::string_view::npos; });
 }
 std::vector<std::string> words(std::string_view s) {
     std::vector<std::string> result;
@@ -167,12 +167,12 @@ ClaimScopeResolution resolve_claim_question_scope(
     if (object.empty()) { return fallback("object_not_literal");
 }
     std::vector<std::size_t> matches;
-    for (auto p=source.find(object); p!=std::string_view::npos; p=source.find(object,p+1)) {
-        if (word(object.front()) && p>0 && word(source[p-1])) { continue;
+    for (auto pos=source.find(object); pos!=std::string_view::npos; pos=source.find(object,pos+1)) {
+        if (word(object.front()) && pos>0 && word(source[pos-1])) { continue;
 }
-        if (word(object.back()) && p+object.size()<source.size() && word(source[p+object.size()])) { continue;
+        if (word(object.back()) && pos+object.size()<source.size() && word(source[pos+object.size()])) { continue;
 }
-        matches.push_back(p);
+        matches.push_back(pos);
     }
     if (matches.empty()) { return fallback("object_not_literal");
 }

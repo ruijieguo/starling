@@ -47,6 +47,7 @@ constexpr const char* kSelectCols =
 FetchedRow read_row(sqlite3_stmt* st) {
     auto txt = [&](int i) {
         const auto* p = sqlite3_column_text(st, i);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
     };
     FetchedRow f;
@@ -305,10 +306,11 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             std::vector<std::string> others;
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
-                if (p != nullptr) others.emplace_back(reinterpret_cast<const char*>(p));
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (p != nullptr) { others.emplace_back(reinterpret_cast<const char*>(p)); }
             }
             for (const auto& other : others) {
-                if (have.contains(other) != 0u) continue;
+                if (!have.contains(other)) { continue; }
                 fetch_by_id(other);
                 have.insert(other);
             }
@@ -460,7 +462,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (!cands.empty()) {
         bool all_recanted = true;
         for (const auto& c : cands)
-            if (pctx.recanted_ids.contains(c.row.id) == 0u) { all_recanted = false; break; }
+            if (!pctx.recanted_ids.contains(c.row.id)) { all_recanted = false; break; }
         ab.only_recanted_evidence = all_recanted;
         ab.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
     }
