@@ -9,7 +9,7 @@ import pytest
 ROOT=Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize('scenario',['ok','planner_failure','final_truncation'])
-def test_native_flow_accounts_for_every_stage(scenario):
+def test_native_flow_accounts_for_every_stage(scenario,native_core_path):
     program=r'''
 import importlib.util,json,os,sys,threading,tempfile
 from pathlib import Path
@@ -17,7 +17,7 @@ from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 root=Path(sys.argv[1]);scenario=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
 import run_socialmem_baseline as runner
-core_path=root/'build/python/starling/_core.cpython-314-darwin.so'
+core_path=Path(sys.argv[4])
 spec=importlib.util.spec_from_file_location('starling._core',core_path)
 native=importlib.util.module_from_spec(spec);sys.modules['starling._core']=native;spec.loader.exec_module(native)
 from starling import _core as core
@@ -70,5 +70,5 @@ try:
 finally:
  server.shutdown();server.server_close();thread.join()
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),scenario,json.dumps(source_config('capacity'))],capture_output=True,text=True,timeout=45)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),scenario,json.dumps(source_config('capacity')),str(native_core_path)],capture_output=True,text=True,timeout=45)
     assert result.returncode==0,result.stdout+result.stderr

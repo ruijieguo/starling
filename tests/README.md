@@ -15,7 +15,7 @@ PYTHONDONTWRITEBYTECODE=1 STARLING_RUN_LLM_E2E= .venv/bin/python -m pytest tests
 
 ## 人工夹具与资源清理
 
-`python/socialmem_fixtures.py` 中的配置是人工协议样例，不是历史实跑证据。固定 SHA 字段仅用于输入验证器契约，不声称对应当前已安装核心；本机原生行为测试仍载入实际扩展并校验其路径，HTTP 端点由用例改为本机临时服务。模型名只是被测试的配置字段，不触发外部请求。
+`python/socialmem_fixtures.py` 中的配置是人工协议样例，不是历史实跑证据。固定 SHA 字段仅用于输入验证器契约，不声称对应当前已安装核心；本机原生行为测试仍载入实际扩展并校验其路径：路径由 `conftest.py` 的 `native_core_path` fixture 通过 `importlib.util.find_spec('starling._core')` 解析已安装扩展得到，随平台与解释器后缀变化，不得在测试里硬编码；HTTP 端点由用例改为本机临时服务。模型名只是被测试的配置字段，不触发外部请求。
 
 新增测试应明确关闭数据库连接；Python SQLite 的事务上下文不应被当作连接关闭。测试基础设施在 fixture teardown 完成后执行一次循环垃圾回收，释放已经不可达的连接环，避免长进程积累描述符使后续本机 HTTP 失败。它不关闭仍被使用的模块级 fixture，不改变产品资源管理，也不抑制原始测试异常。
 

@@ -1,4 +1,8 @@
-"""Bounded strict probe scheduling and sealed evidence; loopback HTTP only."""
+"""Bounded strict probe scheduling and sealed evidence; loopback HTTP only.
+
+混合文件:前两个用例自包含(替换 load_fixed / 自造 prepare),默认运行;其余经 run()→load_fixed()
+读取固定 R5.6 prepare(build/socialmem_20260925_r56_expanded/prepare),逐用例标记 historical_eval。
+"""
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -99,6 +103,7 @@ def success(tmp_path_factory):
     return out,endpoint,requests,summary
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 def test_four_native_http_fixtures_and_readonly_check(success):
     out,endpoint,requests,summary=success
     assert summary['state']=='complete' and summary['status']=='strict_fixture_passed'
@@ -119,6 +124,7 @@ assert m.check(Path(sys.argv[1]))['observed_requests']==4
 """,out,endpoint)
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('mode,state,tokens',[
     ('bad_admission','nonconformant',24),('unsupported','unsupported',None),
     ('missing_usage','observed_conformant',None),('length','nonconformant',24),
@@ -135,6 +141,7 @@ def test_admission_failure_stops_after_native_pair(tmp_path,mode,state,tokens):
     if tokens is None:assert summary['usage_complete'] is False and summary['missing_token_usage']==2
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 def test_native_exception_charges_reserved_pair_and_keeps_unknown(tmp_path):
     worker("""
 class Bomb:
@@ -148,6 +155,7 @@ assert m.check(out)==s
 """,tmp_path/'run')
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 def test_logical_success_without_http_cannot_advance(tmp_path):
     with server() as (endpoint,requests):
         worker("""
@@ -173,6 +181,7 @@ assert m.check(out)==s
     assert len(requests)==2
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 @pytest.mark.parametrize('change',['raw','summary','schema','config','ledger','fixture_prompt','source_copy'])
 def test_resealed_forgery_is_rejected(success,tmp_path,change):
     original,endpoint,_,_=success;out=tmp_path/'changed';shutil.copytree(original,out)
@@ -203,6 +212,7 @@ else:raise AssertionError('re-sealed forgery accepted: '+change)
 """,out,endpoint,change)
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 def test_internal_native_catch_preserves_partial_usage_and_charges_upper(tmp_path):
     with server() as (endpoint,requests):
         worker("""
@@ -229,6 +239,7 @@ assert m.check(out)==s
     assert len(requests)==2
 
 
+@pytest.mark.historical_eval(reason='固定 R5.6 prepare 与原生构建；见 tests/README.md 的历史回放说明')
 def test_source_change_during_run_cannot_seal_success(tmp_path):
     with server() as (endpoint,requests):
         worker("""

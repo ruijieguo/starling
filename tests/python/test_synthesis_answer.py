@@ -8,13 +8,13 @@ import pytest
 ROOT=Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize('answer_format',['short_answer','long_form','multiple_choice'])
-def test_real_native_packet_and_one_answer_request(answer_format):
+def test_real_native_packet_and_one_answer_request(answer_format,native_core_path):
     program=r'''
 import importlib.util,json,sys,tempfile
 from pathlib import Path
 root=Path(sys.argv[1]);answer_format=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
-p=root/'build/python/starling/_core.cpython-314-darwin.so'
+p=Path(sys.argv[4])
 spec=importlib.util.spec_from_file_location('starling._core',p)
 core=importlib.util.module_from_spec(spec);sys.modules['starling._core']=core;spec.loader.exec_module(core)
 assert Path(core.__file__).resolve()==p.resolve()
@@ -59,5 +59,5 @@ with tempfile.TemporaryDirectory() as tmp:
   except ValueError:pass
   else:raise AssertionError('incompatible recall mode accepted')
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),answer_format,json.dumps(source_config('dialogue'))],capture_output=True,text=True)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),answer_format,json.dumps(source_config('dialogue')),str(native_core_path)],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr

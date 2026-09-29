@@ -99,13 +99,14 @@ def test_resource_report_separates_timeout_truncation_and_empty_output():
     assert report['stage_outcomes']['judge']=={'timeout':1,'truncated':1,'empty':1}
     assert report['judge_truncated']==1
 
-def test_native_binding_keeps_both_historical_prompts():
+def test_native_binding_keeps_both_historical_prompts(native_core_path):
     program=r'''
 import importlib.util,sys
 from pathlib import Path
-root=Path(sys.argv[1]);p=root/'build/python/starling/_core.cpython-314-darwin.so'
+root=Path(sys.argv[1]);p=Path(sys.argv[2])
 spec=importlib.util.spec_from_file_location('starling._core',p)
 core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
+assert Path(core.__file__).resolve()==p.resolve()
 assert hasattr(core,'source_answer_ablation_prompt'),'missing native ablation binding'
 block='[SOURCE] {"speaker":"A","observed_at":null} text="6:30, not 7:30.\\n∆"'
 assert core.source_answer_ablation_prompt('When?',block,'source','grounded')==core.grounded_source_answer_prompt('When?',block)
@@ -114,7 +115,7 @@ try:core.source_answer_ablation_prompt('When?',block,'wrong','grounded')
 except ValueError:pass
 else:raise AssertionError('invalid factor reached provider boundary')
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT)],capture_output=True,text=True)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),str(native_core_path)],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr
 
 class Receipt:

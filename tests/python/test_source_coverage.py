@@ -155,13 +155,14 @@ def test_complete_budget_and_terminal_audit_rejects_mutation(tmp_path):
     with sqlite3.connect(tmp_path/'request-ledger.sqlite') as conn:conn.execute('UPDATE reservations SET actual=0 WHERE id=1')
     with pytest.raises(ValueError):driver.verify_terminal(tmp_path)
 
-def test_real_native_binding_routes_coverage_without_python_selection():
+def test_real_native_binding_routes_coverage_without_python_selection(native_core_path):
     program=r'''
 import importlib.util,json,sys,tempfile
 from pathlib import Path
 root=Path(sys.argv[1]);sys.path.insert(0,str(root/'scripts'))
-p=root/'build/python/starling/_core.cpython-314-darwin.so'
+p=Path(sys.argv[2])
 s=importlib.util.spec_from_file_location('starling._core',p);core=importlib.util.module_from_spec(s);sys.modules['starling._core']=core;s.loader.exec_module(core)
+assert Path(core.__file__).resolve()==p.resolve()
 from starling import runtime
 import run_socialmem_baseline as runner
 import eval_ladder_pipeline as pipe
@@ -176,5 +177,5 @@ with tempfile.TemporaryDirectory() as tmp:
  assert [x['turn_index'] for x in r['source_refs']]==[1,80]
  assert r['source_diagnostics']['coverage_added_sources']==1
 '''
-    p=subprocess.run([sys.executable,'-c',program,str(ROOT)],capture_output=True,text=True)
+    p=subprocess.run([sys.executable,'-c',program,str(ROOT),str(native_core_path)],capture_output=True,text=True)
     assert p.returncode==0,p.stdout+p.stderr
