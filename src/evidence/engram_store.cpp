@@ -24,8 +24,12 @@ std::string generate_uuid_v4() {
     const std::uint64_t a = rng();
     const std::uint64_t b = rng();
     std::uint8_t bytes[16];
-    for (int i = 0; i < 8; ++i) bytes[i]     = static_cast<std::uint8_t>((a >> (i * 8)) & 0xff);
-    for (int i = 0; i < 8; ++i) bytes[i + 8] = static_cast<std::uint8_t>((b >> (i * 8)) & 0xff);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index): loop bound 0-7 always within bytes[16]; hot path, .at() adds unneeded bounds-check overhead per byte.
+    for (int i = 0; i < 8; ++i) { bytes[i]     = static_cast<std::uint8_t>((a >> (i * 8)) & 0xff);
+}
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index): same as above.
+    for (int i = 0; i < 8; ++i) { bytes[i + 8] = static_cast<std::uint8_t>((b >> (i * 8)) & 0xff);
+}
     bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x40);  // version 4
     bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);  // variant 10xx
 
@@ -155,8 +159,9 @@ Engram EngramStore::put(
     const std::string transforms_json = transformations_json(e.declared_transformations);
     bind_sv(ins.get(), i++, transforms_json);
     sqlite3_bind_int(ins.get(), i++, e.byte_preserving ? 1 : 0);
-    if (e.redacted_content) bind_sv(ins.get(), i++, *e.redacted_content);
-    else                    sqlite3_bind_null(ins.get(), i++);
+    if (e.redacted_content) { bind_sv(ins.get(), i++, *e.redacted_content);
+    } else {                    sqlite3_bind_null(ins.get(), i++);
+}
 
     if (sqlite3_step(ins.get()) != SQLITE_DONE) {
         throw make_sqlite_error(db, "EngramStore::put: step INSERT");
@@ -190,9 +195,10 @@ std::optional<Engram> EngramStore::get(
     bind_sv(sel.get(), 1, id);
     bind_sv(sel.get(), 2, tenant_id);
 
-    const int rc = sqlite3_step(sel.get());
-    if (rc == SQLITE_DONE) return std::nullopt;
-    if (rc != SQLITE_ROW) {
+    const int step_rc = sqlite3_step(sel.get());
+    if (step_rc == SQLITE_DONE) { return std::nullopt;
+}
+    if (step_rc != SQLITE_ROW) {
         throw make_sqlite_error(db, "EngramStore::get: step SELECT");
     }
 

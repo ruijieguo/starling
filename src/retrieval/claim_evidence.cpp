@@ -25,7 +25,8 @@ std::string upper(std::string value) {
 // a syntactically ISO-shaped but impossible date cannot rank a memory.
 bool valid_utc_time(const std::string& value) {
     static const std::regex iso(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$)");
-    if (!std::regex_match(value, iso)) return false;
+    if (!std::regex_match(value, iso)) { return false;
+}
     const auto date = std::chrono::year_month_day{
         std::chrono::year{std::stoi(value.substr(0, 4))},
         std::chrono::month{static_cast<unsigned>(std::stoi(value.substr(5, 2)))},
@@ -48,7 +49,8 @@ nlohmann::json parse_claim_evidence(const StatementRow& row) {
 }
 
 std::string claim_evidence_error(persistence::Connection& conn, const StatementRow& row) {
-    if (row.semantic_claim_json.empty()) return {};
+    if (row.semantic_claim_json.empty()) { return {};
+}
     try {
         const auto j = parse_claim_evidence(row);
         if (!j.is_object() || !j.contains("schema_version") || !j["schema_version"].is_number_integer() || j["schema_version"] != 1 ||
@@ -60,47 +62,57 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
             return "malformed_claim";
         }
         if (!extractor::is_claim_predicate(row.predicate) || row.subject_kind != "cognizer" ||
-            (!row.provenance.empty() && row.provenance != "user_input")) return "inconsistent_claim";
+            (!row.provenance.empty() && row.provenance != "user_input")) { return "inconsistent_claim";
+}
         const auto scope = j["assertion_scope"].get<std::string>();
-        if (!scopes.count(scope)) return "unsupported_claim_scope";
+        if (static_cast<unsigned int>(scopes.contains(scope)) == 0U) { return "unsupported_claim_scope";
+}
         std::set<std::string> markers;
         for (const auto& marker : j["scope_markers"]) {
             if (!marker.is_string()) return "malformed_claim";
-            if (!scopes.count(marker.get<std::string>())) return "unsupported_claim_scope";
+            if (static_cast<unsigned int>(scopes.contains(marker.get<std::string>())) == 0U) { return "unsupported_claim_scope"; }
             if (!markers.insert(marker.get<std::string>()).second) return "malformed_claim";
         }
-        if (!markers.count(scope) ||
-            (markers.count("ASSERTED") && (markers.count("CONDITIONAL") ||
-             markers.count("HYPOTHETICAL") || markers.count("QUESTIONED")))) return "inconsistent_claim";
+        if ((static_cast<unsigned int>(markers.contains(scope)) == 0U) ||
+            ((static_cast<unsigned int>(markers.contains("ASSERTED")) != 0U) && ((static_cast<unsigned int>(markers.contains("CONDITIONAL")) != 0U) ||
+             (static_cast<unsigned int>(markers.contains("HYPOTHETICAL")) != 0U) || (static_cast<unsigned int>(markers.contains("QUESTIONED")) != 0U)))) { return "inconsistent_claim";
+}
         if (!j.contains("attributed_to") ||
             (!j["attributed_to"].is_null() && !j["attributed_to"].is_string()) ||
-            !j.contains("time_text") || !j["time_text"].is_string()) return "malformed_claim";
+            !j.contains("time_text") || !j["time_text"].is_string()) { return "malformed_claim";
+}
         const auto perspective = upper(row.holder_perspective);
-        if ((perspective == "FIRST_PERSON" && (!j["attributed_to"].is_null() || markers.count("REPORTED"))) ||
-            (perspective == "QUOTED" && (!markers.count("REPORTED") || j["attributed_to"] != row.holder_id)) ||
-            (perspective != "FIRST_PERSON" && perspective != "QUOTED")) return "inconsistent_claim";
+        if ((perspective == "FIRST_PERSON" && (!j["attributed_to"].is_null() || (static_cast<unsigned int>(markers.contains("REPORTED")) != 0U))) ||
+            (perspective == "QUOTED" && ((static_cast<unsigned int>(markers.contains("REPORTED")) == 0U) || j["attributed_to"] != row.holder_id)) ||
+            (perspective != "FIRST_PERSON" && perspective != "QUOTED")) { return "inconsistent_claim";
+}
         const auto& span = j["source_span"];
         if (!text(span, "engram_ref") || !text(span, "source_hash") ||
             !span.contains("span_start") || !span["span_start"].is_number_integer() ||
-            !span.contains("span_end") || !span["span_end"].is_number_integer())
+            !span.contains("span_end") || !span["span_end"].is_number_integer()) {
             return "malformed_claim";
+}
         const auto start = span["span_start"].get<std::int64_t>();
         const auto end = span["span_end"].get<std::int64_t>();
         if (start < 0 || end <= start || j["actor"] != row.subject_id ||
             upper(j["relation_polarity"].get<std::string>()) != upper(row.polarity) ||
             upper(j["relation_modality"].get<std::string>()) != upper(row.modality) ||
-            (upper(row.holder_perspective) == "FIRST_PERSON" && row.subject_id != row.holder_id))
+            (upper(row.holder_perspective) == "FIRST_PERSON" && row.subject_id != row.holder_id)) {
             return "inconsistent_claim";
-        if (markers.count("REPORTED") && (!text(j, "attributed_to") || j["attributed_to"] != row.holder_id))
+}
+        if ((static_cast<unsigned int>(markers.contains("REPORTED")) != 0U) && (!text(j, "attributed_to") || j["attributed_to"] != row.holder_id)) {
             return "inconsistent_claim";
+}
         if (!j["event_time"].is_null()) {
             const auto& event = j["event_time"];
             if (!event.is_object() || !text(event, "start") || !event.contains("end") ||
-                (!event["end"].is_null() && (!text(event, "end") || event["end"] < event["start"])))
+                (!event["end"].is_null() && (!text(event, "end") || event["end"] < event["start"]))) {
                 return "malformed_claim";
+}
             if (!valid_utc_time(event["start"].get<std::string>()) ||
-                (event["end"].is_string() && !valid_utc_time(event["end"].get<std::string>())))
+                (event["end"].is_string() && !valid_utc_time(event["end"].get<std::string>()))) {
                 return "malformed_claim";
+}
         }
         const auto compat = json::parse(row.source_spans_json, nullptr, false);
         bool matched = false;
@@ -110,32 +122,39 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
                 ref.contains("span_start") && ref["span_start"] == span["span_start"] &&
                 ref.contains("span_end") && ref["span_end"] == span["span_end"]) matched = true;
         }
-        if (!matched) return "inconsistent_claim";
+        if (!matched) { return "inconsistent_claim";
+}
         sqlite3_stmt* raw = nullptr;
         const char* sql = "SELECT content_hash,created_at,erased_at,payload_inline,declared_transformations_json FROM engrams WHERE id=? AND tenant_id=?";
-        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
             throw persistence::detail::make_sqlite_error(conn.raw(), "claim evidence source lookup");
+}
         persistence::StmtHandle stmt(raw);
         persistence::detail::bind_sv(raw, 1, span["engram_ref"].get_ref<const std::string&>());
         persistence::detail::bind_sv(raw, 2, row.tenant_id);
-        if (sqlite3_step(raw) != SQLITE_ROW) return "inconsistent_claim";
+        if (sqlite3_step(raw) != SQLITE_ROW) { return "inconsistent_claim";
+}
         auto col = [&](int i) {
             const auto* p = sqlite3_column_text(raw, i);
-            return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
         };
-        if (col(1) != j["source_time"].get<std::string>() || !col(2).empty() || sqlite3_column_type(raw, 3) == SQLITE_NULL)
+        if (col(1) != j["source_time"].get<std::string>() || !col(2).empty() || sqlite3_column_type(raw, 3) == SQLITE_NULL) {
             return "inconsistent_claim";
+}
         const auto* bytes = static_cast<const char*>(sqlite3_column_blob(raw, 3));
         const auto size = sqlite3_column_bytes(raw, 3);
-        if (size <= 0 || end > size) return "inconsistent_claim";
+        if (size <= 0 || end > size) { return "inconsistent_claim";
+}
         const std::string payload(bytes, static_cast<std::size_t>(size));
         const auto transforms = json::parse(col(4)).get<std::vector<std::string>>();
         const std::vector<std::uint8_t> payload_bytes(payload.begin(), payload.end());
         // SourceSpan hashes raw UTF-8; Engram.content_hash additionally covers
         // its versioned declared transformations. These are distinct hashes.
         if (crypto::sha256_hex(payload) != span["source_hash"].get<std::string>() ||
-            evidence::compute_engram_content_hash(payload_bytes, transforms) != col(0))
+            evidence::compute_engram_content_hash(payload_bytes, transforms) != col(0)) {
             return "inconsistent_claim";
+}
         bool source_unit_matches = false;
         bool typed_source_turn = false;
         std::string source_unit;
@@ -149,17 +168,21 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
                 source_unit = unit.value("utterance",unit["text"].get<std::string>());
             }
         }
-        if (!source_unit_matches) return "inconsistent_claim";
-        if (typed_source_turn && !j.contains("source_turn")) return "inconsistent_claim";
+        if (!source_unit_matches) { return "inconsistent_claim";
+}
+        if (typed_source_turn && !j.contains("source_turn")) { return "inconsistent_claim";
+}
         if (!j["event_time"].is_null()) {
             const auto& event = j["event_time"];
             if (source_unit.find(event["start"].get<std::string>()) == std::string::npos ||
-                (event["end"].is_string() && source_unit.find(event["end"].get<std::string>()) == std::string::npos))
+                (event["end"].is_string() && source_unit.find(event["end"].get<std::string>()) == std::string::npos)) {
                 return "inconsistent_claim";
+}
         }
         const auto time_text = j["time_text"].get<std::string>();
-        if (!time_text.empty() && source_unit.find(time_text) == std::string::npos)
+        if (!time_text.empty() && source_unit.find(time_text) == std::string::npos) {
             return "inconsistent_claim";
+}
         // Share the extractor's deterministic relation/scope contract. Merely
         // matching a certificate to a row would permit two consistently invalid
         // values (for example feels/INTENDS) through direct Bus writes. This
@@ -180,8 +203,9 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
             json{{"schema_version", 2}, {"statements", json::array({wire_row})}}.dump(),
             payload, row.holder_id);
         if (row.object_kind != "str" || !checked.errors.empty() ||
-            !checked.semantic_rejections.empty() || checked.statements.size() != 1)
+            !checked.semantic_rejections.empty() || checked.statements.size() != 1) {
             return "inconsistent_claim";
+}
         return {};
     } catch (const std::exception&) {
         return "malformed_claim";
@@ -190,7 +214,8 @@ std::string claim_evidence_error(persistence::Connection& conn, const StatementR
 
 void record_claim_exclusion(RetrievalReceipt& receipt, const std::string& tenant_id,
                             const std::string& statement_id, const std::string& reason) {
-    if (!receipt.claim_exclusions.emplace(std::make_pair(tenant_id, statement_id), reason).second) return;
+    if (!receipt.claim_exclusions.emplace(std::make_pair(tenant_id, statement_id), reason).second) { return;
+}
     ++receipt.candidate_counts.dropped_by_claim_evidence;
     auto counts = json::parse(receipt.claim_exclusion_counts_json);
     counts[reason] = counts.value(reason, std::int64_t{0}) + 1;
@@ -198,7 +223,8 @@ void record_claim_exclusion(RetrievalReceipt& receipt, const std::string& tenant
 }
 
 void record_claim_link(persistence::Connection& conn, RetrievalReceipt& receipt, const StatementRow& row) {
-    if (row.semantic_claim_json.empty()) return;
+    if (row.semantic_claim_json.empty()) { return;
+}
     auto link = parse_claim_evidence(row);
     link["statement_id"] = row.id;
     link["tenant_id"] = row.tenant_id;
@@ -211,22 +237,26 @@ void record_claim_link(persistence::Connection& conn, RetrievalReceipt& receipt,
     sqlite3_stmt* raw = nullptr;
     const char* sql = "SELECT substr(payload_inline,?,?) FROM engrams "
         "WHERE id=? AND tenant_id=? AND erased_at IS NULL AND payload_inline IS NOT NULL";
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK)
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
         throw persistence::detail::make_sqlite_error(conn.raw(), "selected claim excerpt lookup");
+}
     persistence::StmtHandle stmt(raw);
     sqlite3_bind_int64(raw, 1, start + 1);
     sqlite3_bind_int64(raw, 2, std::min(end - start, excerpt_limit + 4));
     persistence::detail::bind_sv(raw, 3, span.at("engram_ref").get_ref<const std::string&>());
     persistence::detail::bind_sv(raw, 4, row.tenant_id);
-    if (sqlite3_step(raw) != SQLITE_ROW)
+    if (sqlite3_step(raw) != SQLITE_ROW) {
         throw std::runtime_error("selected claim source became unavailable");
+}
     const auto* bytes = static_cast<const char*>(sqlite3_column_blob(raw, 0));
     const auto size = sqlite3_column_bytes(raw, 0);
-    if (size <= 0) throw std::runtime_error("selected claim source excerpt is empty");
+    if (size <= 0) { throw std::runtime_error("selected claim source excerpt is empty");
+}
     std::string excerpt(bytes, static_cast<std::size_t>(size));
     if (excerpt.size() > static_cast<std::size_t>(excerpt_limit)) {
         auto limit = static_cast<std::size_t>(excerpt_limit);
-        while (limit > 0 && (static_cast<unsigned char>(excerpt[limit]) & 0xc0) == 0x80) --limit;
+        while (limit > 0 && (static_cast<unsigned char>(excerpt[limit]) & 0xc0) == 0x80) { --limit;
+}
         excerpt.resize(limit);
     }
     link["source_excerpt"] = excerpt;
@@ -237,7 +267,8 @@ void record_claim_link(persistence::Connection& conn, RetrievalReceipt& receipt,
     const bool fallback = link["event_time"].is_null();
     link["event_time_status"] = fallback ? "UNKNOWN" : "EXPLICIT";
     link["time_basis"] = fallback ? "source_time_fallback" : "event_time";
-    if (fallback) ++receipt.source_time_fallback_count;
+    if (fallback) { ++receipt.source_time_fallback_count;
+}
     auto links = json::parse(receipt.evidence_links_json);
     links.push_back(std::move(link));
     receipt.evidence_links_json = links.dump();

@@ -18,8 +18,9 @@ struct Pool {
     std::vector<std::string> lines;
 };
 void limits(int k, int bytes) {
-    if (k <= 0 || k > 20 || bytes < 0 || bytes > 8000)
+    if (k <= 0 || k > 20 || bytes < 0 || bytes > 8000) {
         throw std::invalid_argument("invalid source selection limits");
+}
 }
 Pool parse_pool(const std::string& question, const std::string& raw) {
     try {
@@ -31,16 +32,19 @@ Pool parse_pool(const std::string& question, const std::string& raw) {
         if (r.at("statement_count") != 0 || !r.at("statement_ids").empty() ||
             p.sources.size() > pool_limit || block.size() > pool_bytes ||
             r.at("context_bytes") != block.size() ||
-            r.at("source_diagnostics").at("eligible_sources") != p.sources.size())
+            r.at("source_diagnostics").at("eligible_sources") != p.sources.size()) {
             throw std::invalid_argument("incomplete or invalid source selection pool");
+}
         std::istringstream stream(block);
         std::string line;
         while (std::getline(stream, line)) {
-            if (line.empty()) throw std::invalid_argument("blank source pool row");
+            if (line.empty()) { throw std::invalid_argument("blank source pool row");
+}
             p.lines.push_back(line);
         }
-        if (p.lines.size() != p.sources.size() || (!block.empty() && block.back() == '\n'))
+        if (p.lines.size() != p.sources.size() || (!block.empty() && block.back() == '\n')) {
             throw std::invalid_argument("source pool row count mismatch");
+}
         return p;
     } catch (const Json::exception&) {
         throw std::invalid_argument("invalid source selection pool JSON");
@@ -129,8 +133,9 @@ std::string apply_source_selection(const std::string& question, const std::strin
         return true;
     }, false);
     if (duplicate_key || !plan.is_object() || plan.size() != 1 || !plan.contains("source_ids") ||
-        !plan["source_ids"].is_array() || plan["source_ids"].size() > static_cast<size_t>(k))
+        !plan["source_ids"].is_array() || plan["source_ids"].size() > static_cast<size_t>(k)) {
         throw std::invalid_argument("invalid source selection plan");
+}
     std::set<size_t> selected;
     for (const auto& id : plan["source_ids"]) {
         if (!id.is_number_integer() || id < 1 || id > pool.sources.size())
@@ -139,8 +144,9 @@ std::string apply_source_selection(const std::string& question, const std::strin
             throw std::invalid_argument("duplicate source selection ID");
     }
     const auto out = render(pool, {selected.begin(), selected.end()});
-    if (out["context_bytes"].get<size_t>() > static_cast<size_t>(max_context_bytes))
+    if (out["context_bytes"].get<size_t>() > static_cast<size_t>(max_context_bytes)) {
         throw std::invalid_argument("source selection exceeds byte budget");
+}
     return out.dump();
 }
 

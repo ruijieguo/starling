@@ -46,7 +46,8 @@ void ValidationPolicy::validate() const {
     if (claim_batch_target_units && (!semantic_claim_contract || claim_batch_size <= 0)) {
         throw std::invalid_argument("claim_batch_target_units requires semantic_claim_contract=true and claim_batch_size>0");
     }
-    if (!semantic_claim_contract) return;
+    if (!semantic_claim_contract) { return;
+}
     if (!preserve_text_objects) {
         throw std::invalid_argument("semantic_claim_contract requires preserve_text_objects=true");
     }
@@ -98,7 +99,8 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s,
 
     if (policy.semantic_claim_contract && is_claim_predicate(s.predicate)) {
         try {
-            if (s.semantic_claim_json.empty()) return {false, "missing_semantic_claim", "contract evidence required", std::nullopt};
+            if (s.semantic_claim_json.empty()) { return {false, "missing_semantic_claim", "contract evidence required", std::nullopt};
+}
             auto claim = nlohmann::json::parse(s.semantic_claim_json);
             if (s.subject_kind != "cognizer" || claim.at("actor") != s.subject_id
                 || (s.holder_perspective == schema::Perspective::FIRST_PERSON && s.subject_id != s.holder_id)) {
@@ -133,7 +135,8 @@ ValidationOutcome validate_extracted_statement(const ExtractedStatement& s,
                 || (s.predicate == "uncertain_about" && s.polarity != schema::Polarity::POS)) {
                 return {false, "schema_failure", "predicate/modality/polarity mismatch", std::nullopt};
             }
-            if (!s.derived_from.empty()) return {false, "source_span_failure", "derived proposition cannot carry direct certificate", std::nullopt};
+            if (!s.derived_from.empty()) { return {false, "source_span_failure", "derived proposition cannot carry direct certificate", std::nullopt};
+}
         } catch (const std::exception& e) {
             return {false, "schema_failure", e.what(), std::nullopt};
         }
@@ -171,7 +174,8 @@ ValidationOutcome validate_for_write(
 {
     // Run base field + confidence rules first.
     auto base = validate_extracted_statement(s, policy);
-    if (!base.ok()) return base;
+    if (!base.ok()) { return base;
+}
 
     bool any_cross_tenant_with_protocol = false;
     for (const auto& parent_id : s.derived_from) {

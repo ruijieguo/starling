@@ -41,13 +41,20 @@ Json string_schema(bool nullable=false) {
 }
 Json enum_schema(const Json& values) { return {{"type","string"},{"enum",values}}; }
 bool type_matches(const Json& value, const std::string& type) {
-    if(type=="null") return value.is_null();
-    if(type=="object") return value.is_object();
-    if(type=="array") return value.is_array();
-    if(type=="string") return value.is_string();
-    if(type=="integer") return value.is_number_integer();
-    if(type=="number") return value.is_number();
-    if(type=="boolean") return value.is_boolean();
+    if(type=="null") { return value.is_null();
+}
+    if(type=="object") { return value.is_object();
+}
+    if(type=="array") { return value.is_array();
+}
+    if(type=="string") { return value.is_string();
+}
+    if(type=="integer") { return value.is_number_integer();
+}
+    if(type=="number") { return value.is_number();
+}
+    if(type=="boolean") { return value.is_boolean();
+}
     return false;
 }
 void validate_schema(const Json& value,const Json& schema) {
@@ -61,13 +68,17 @@ void validate_schema(const Json& value,const Json& schema) {
         const auto& type=schema["type"];
         bool valid=type.is_string() && type_matches(value,type.get<std::string>());
         if(type.is_array()) for(const auto& option:type) valid|=type_matches(value,option.get<std::string>());
-        if(!valid) throw std::runtime_error("schema_failure:type");
+        if(!valid) { throw std::runtime_error("schema_failure:type");
+}
     }
-    if(schema.contains("enum") && std::find(schema["enum"].begin(),schema["enum"].end(),value)==schema["enum"].end())
+    if(schema.contains("enum") && std::find(schema["enum"].begin(),schema["enum"].end(),value)==schema["enum"].end()) {
         throw std::runtime_error("schema_failure:enum");
+}
     if(value.is_number()) {
-        if(schema.contains("minimum") && value<schema["minimum"]) throw std::runtime_error("schema_failure:minimum");
-        if(schema.contains("maximum") && value>schema["maximum"]) throw std::runtime_error("schema_failure:maximum");
+        if(schema.contains("minimum") && value<schema["minimum"]) { throw std::runtime_error("schema_failure:minimum");
+}
+        if(schema.contains("maximum") && value>schema["maximum"]) { throw std::runtime_error("schema_failure:maximum");
+}
     }
     if(value.is_object()) {
         for(const auto& field:schema.at("required")) if(!value.contains(field.get<std::string>())) throw std::runtime_error("schema_failure:missing_field");
@@ -77,10 +88,12 @@ void validate_schema(const Json& value,const Json& schema) {
         }
     }
     if(value.is_array()) {
-        if(schema.contains("maxItems") && value.size()>schema.at("maxItems").get<std::size_t>())
+        if(schema.contains("maxItems") && value.size()>schema.at("maxItems").get<std::size_t>()) {
             throw std::runtime_error("schema_failure:maxItems");
-        if(schema.contains("minItems") && value.size()<schema.at("minItems").get<std::size_t>())
+}
+        if(schema.contains("minItems") && value.size()<schema.at("minItems").get<std::size_t>()) {
             throw std::runtime_error("schema_failure:minItems");
+}
         std::set<Json> unique_items;
         for(const auto& item:value) {
             validate_schema(item,schema.at("items"));
@@ -102,7 +115,8 @@ std::string structured_output_schema(OutputContractKind contract) {
             {"decisions",{{"type","array"},{"items",object_schema({
                 {"index",{{"type","integer"},{"minimum",0}}},{"retain",{{"type","boolean"}}},{"reason",enum_schema(reasons)}})}}}}).dump();
     }
-    if(contract!=OutputContractKind::ClaimExtractionV2) throw std::invalid_argument("legacy has no structured schema");
+    if(contract!=OutputContractKind::ClaimExtractionV2) { throw std::invalid_argument("legacy has no structured schema");
+}
     const auto event_time=object_schema({{"start",string_schema()},{"end",string_schema(true)}});
     const auto evidence=object_schema({{"clause_id",string_schema()},{"actor",string_schema()},
         {"attributed_to",string_schema(true)},{"assertion_scope",enum_schema(catalog["scopes"])},
@@ -116,7 +130,8 @@ std::string structured_output_schema(OutputContractKind contract) {
         {"nesting_depth",{{"type","integer"},{"enum",{0}}}},
         {"confidence",{{"type",Json::array({"number","null"})},{"minimum",0},{"maximum",1}}},{"evidence",evidence}};
     // Field inventory and local parser use the same native directory.
-    if(properties.size()!=catalog["statement_fields"].size()) throw std::logic_error("statement schema catalog mismatch");
+    if(properties.size()!=catalog["statement_fields"].size()) { throw std::logic_error("statement schema catalog mismatch");
+}
     for(const auto& field:catalog["statement_fields"]) if(!properties.contains(field.get<std::string>())) throw std::logic_error("statement schema catalog mismatch");
     return object_schema({{"schema_version",{{"type","integer"},{"enum",{2}}}},
         {"statements",{{"type","array"},{"items",object_schema(properties)}}}}).dump();
@@ -132,7 +147,8 @@ std::string structured_output_validation_error(std::string_view raw,OutputContra
             ParseResult candidates;
             candidates.statements.resize(parsed.at("decisions").size());
             auto result=apply_claim_admission(raw,candidates,false);
-            if(!result.errors.empty()) return result.errors.front().kind+":"+result.errors.front().detail;
+            if(!result.errors.empty()) { return result.errors.front().kind+":"+result.errors.front().detail;
+}
         }
         return {};
     } catch(const std::exception& e) {return e.what();}
@@ -165,22 +181,27 @@ CapabilityState structured_probe_state(const LLMResponse& response,const Structu
                 std::transform(message.begin(),message.end(),message.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
                 const bool named_format=message.find("response_format")!=std::string::npos || message.find("json_schema")!=std::string::npos || message.find("json_object")!=std::string::npos;
                 const bool rejects_support=message.find("not supported")!=std::string::npos || message.find("unsupported")!=std::string::npos || message.find("does not support")!=std::string::npos;
-                if(named_format && rejects_support) return CapabilityState::Unsupported;
+                if(named_format && rejects_support) { return CapabilityState::Unsupported;
+}
             } catch(const std::exception&) {}
         }
-        if(response.error=="completion_truncated" || response.error=="completion_refusal" || response.error=="malformed_response")
+        if(response.error=="completion_truncated" || response.error=="completion_refusal" || response.error=="malformed_response") {
             return CapabilityState::Nonconformant;
+}
         return CapabilityState::Unknown;
     }
     validation_error=structured_output_validation_error(response.raw_completion,request.contract);
     if(validation_error.empty() && request.contract==OutputContractKind::ClaimExtractionV2) {
         const auto parsed=parse_claim_response(response.raw_completion,"Nora: I feel cheerful about the community picnic.","Nora",false);
-        if(!parsed.errors.empty()) validation_error=parsed.errors.front().kind+":"+parsed.errors.front().detail;
+        if(!parsed.errors.empty()) { validation_error=parsed.errors.front().kind+":"+parsed.errors.front().detail;
+}
     }
-    if(validation_error.empty() && request.contract==OutputContractKind::ClaimAdmissionV1 && !claim_strict_json(response.raw_completion).at("decisions").empty())
+    if(validation_error.empty() && request.contract==OutputContractKind::ClaimAdmissionV1 && !claim_strict_json(response.raw_completion).at("decisions").empty()) {
         validation_error="schema_failure:probe requires an empty candidate decision list";
-    if(validation_error.empty() && request.contract==OutputContractKind::SourceSelectionV1 && !claim_strict_json(response.raw_completion).at("source_ids").empty())
+}
+    if(validation_error.empty() && request.contract==OutputContractKind::SourceSelectionV1 && !claim_strict_json(response.raw_completion).at("source_ids").empty()) {
         validation_error="schema_failure:probe requires an empty source selection";
+}
     return validation_error.empty() ? CapabilityState::ObservedConformant : CapabilityState::Nonconformant;
 }
 
@@ -197,24 +218,30 @@ std::string capability_evidence_json(const CapabilityEvidence& evidence) {
 std::string validate_capability_evidence_json(std::string_view raw) {
     try {
         auto evidence=claim_strict_json(raw);
-        if(evidence.at("schema_version")!=1 || evidence.at("probe_version")!="structured-capability-v1") return "capability_version_mismatch";
+        if(evidence.at("schema_version")!=1 || evidence.at("probe_version")!="structured-capability-v1") { return "capability_version_mismatch";
+}
         StructuredOutputRequest request;
         const auto mode=evidence.at("output_mode").get<std::string>();
         const auto contract=evidence.at("output_contract").get<std::string>();
-        if(mode=="json_object") request.mode=OutputMode::JsonObject;
-        else if(mode=="json_schema_strict") request.mode=OutputMode::JsonSchemaStrict;
-        else return "capability_mode_invalid";
-        if(contract=="claim_extraction_v2") request.contract=OutputContractKind::ClaimExtractionV2;
-        else if(contract=="claim_admission_v1") request.contract=OutputContractKind::ClaimAdmissionV1;
-        else if(contract=="source_selection_v1") request.contract=OutputContractKind::SourceSelectionV1;
-        else return "capability_contract_invalid";
+        if(mode=="json_object") { request.mode=OutputMode::JsonObject;
+        } else if(mode=="json_schema_strict") { request.mode=OutputMode::JsonSchemaStrict;
+        } else { return "capability_mode_invalid";
+}
+        if(contract=="claim_extraction_v2") { request.contract=OutputContractKind::ClaimExtractionV2;
+        } else if(contract=="claim_admission_v1") { request.contract=OutputContractKind::ClaimAdmissionV1;
+        } else if(contract=="source_selection_v1") { request.contract=OutputContractKind::SourceSelectionV1;
+        } else { return "capability_contract_invalid";
+}
         const auto schema_hash=structured_output_schema_sha256(request.contract);
-        if(evidence.at("schema_sha256")!=schema_hash) return "capability_schema_mismatch";
+        if(evidence.at("schema_sha256")!=schema_hash) { return "capability_schema_mismatch";
+}
         const auto evidence_id=evidence.at("evidence_id").get<std::string>();
         evidence["evidence_id"]="";
-        if(crypto::sha256_hex(evidence.dump())!=evidence_id) return "capability_evidence_hash_mismatch";
+        if(crypto::sha256_hex(evidence.dump())!=evidence_id) { return "capability_evidence_hash_mismatch";
+}
         const auto& probes=evidence.at("probes");
-        if(!probes.is_array() || probes.size()!=2u) return "capability_probe_count_mismatch";
+        if(!probes.is_array() || probes.size()!=2U) { return "capability_probe_count_mismatch";
+}
         std::size_t calls=0;
         bool unknown=false,unsupported=false,nonconformant=false;
         for(const auto& probe:probes) {
@@ -251,9 +278,11 @@ std::string validate_capability_evidence_json(std::string_view raw) {
                 return "capability_probe_classification_mismatch";
             unknown|=state==CapabilityState::Unknown;unsupported|=state==CapabilityState::Unsupported;nonconformant|=state==CapabilityState::Nonconformant;
         }
-        if(evidence.at("request_count")!=calls) return "capability_request_count_mismatch";
+        if(evidence.at("request_count")!=calls) { return "capability_request_count_mismatch";
+}
         const auto state=unknown ? CapabilityState::Unknown : unsupported ? CapabilityState::Unsupported : nonconformant ? CapabilityState::Nonconformant : CapabilityState::ObservedConformant;
-        if(evidence.at("state")!=to_string(state)) return "capability_state_mismatch";
+        if(evidence.at("state")!=to_string(state)) { return "capability_state_mismatch";
+}
         return {};
     } catch(const std::exception& error) {return std::string("invalid_capability_evidence:")+error.what();}
 }

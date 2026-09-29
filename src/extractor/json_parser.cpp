@@ -28,9 +28,12 @@ std::string to_lower(std::string s) {
 // modality_from_string throws (caught per-element).
 std::string normalize_modality(std::string m) {
     m = to_lower(m);
-    if (m == "enforces") return "norm_ought";
-    if (m == "forbids")  return "norm_forbid";
-    if (m == "observes") return "knows";
+    if (m == "enforces") { return "norm_ought";
+}
+    if (m == "forbids") {  return "norm_forbid";
+}
+    if (m == "observes") { return "knows";
+}
     return m;
 }
 

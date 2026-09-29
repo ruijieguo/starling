@@ -19,18 +19,25 @@ int evidence_count(std::string_view evidence_json) {
 ContextPackLabel classify_with_provenance(const StatementRow& row,
                                           const PackContext& ctx,
                                           std::string_view provenance) {
-    if (ctx.todo_ids.count(row.id))     return ContextPackLabel::TODO;
-    if (ctx.conflict_ids.count(row.id)) return ContextPackLabel::CONFLICT;
-    if (ctx.common_ids.count(row.id))   return ContextPackLabel::COMMON;
-    if (!provenance.empty() && provenance != "user_input")
+    if (static_cast<unsigned int>(ctx.todo_ids.contains(row.id)) != 0U) {     return ContextPackLabel::TODO;
+}
+    if (static_cast<unsigned int>(ctx.conflict_ids.contains(row.id)) != 0U) { return ContextPackLabel::CONFLICT;
+}
+    if (static_cast<unsigned int>(ctx.common_ids.contains(row.id)) != 0U) {   return ContextPackLabel::COMMON;
+}
+    if (!provenance.empty() && provenance != "user_input") {
         return ContextPackLabel::INFERRED;
+}
     const bool other_holder = !ctx.querier.empty() && row.holder_id != ctx.querier;
-    if (other_holder && evidence_count(row.evidence_json) <= 1)
+    if (other_holder && evidence_count(row.evidence_json) <= 1) {
         return ContextPackLabel::HEARSAY;
-    if (other_holder) return ContextPackLabel::BELIEF;
+}
+    if (other_holder) { return ContextPackLabel::BELIEF;
+}
     if ((row.modality == "BELIEVES" || row.modality == "ASSUMES" ||
-         row.modality == "DOUBTS") && row.confidence < 0.8)
+         row.modality == "DOUBTS") && row.confidence < 0.8) {
         return ContextPackLabel::BELIEF;
+}
     return ContextPackLabel::FACT;
 }
 
@@ -42,13 +49,16 @@ std::string render_line(const StatementRow& row, ContextPackLabel label) {
     std::ostringstream os;
     os << "[" << to_string(label) << "] ";
     const bool scoped_polarity = row.polarity == "neg" || row.polarity == "unknown";
-    if (row.polarity == "neg") os << "NOT (";
-    else if (row.polarity == "unknown") os << "UNKNOWN (";
+    if (row.polarity == "neg") { os << "NOT (";
+    } else if (row.polarity == "unknown") { os << "UNKNOWN (";
+}
     os << row.subject_id << " " << row.predicate << " " << row.object_value;
-    if (scoped_polarity) os << ")";
+    if (scoped_polarity) { os << ")";
+}
     os.setf(std::ios::fixed); os.precision(2);
     os << " (conf " << row.confidence;
-    if (!row.holder_id.empty()) os << ", holder " << row.holder_id;
+    if (!row.holder_id.empty()) { os << ", holder " << row.holder_id;
+}
     os << ")";
     if (!row.semantic_claim_json.empty()) {
         const auto claim = parse_claim_evidence(row);
@@ -58,23 +68,29 @@ std::string render_line(const StatementRow& row, ContextPackLabel label) {
             os << " {scope " << claim.value("assertion_scope", "UNKNOWN");
             os << ", scope_markers " << claim.value("scope_markers", nlohmann::json::array()).dump();
             os << ", actor " << claim.value("actor", nlohmann::json()).dump();
-            if (claim.contains("topic") && claim["topic"].is_string())
+            if (claim.contains("topic") && claim["topic"].is_string()) {
                 os << ", topic " << claim["topic"].dump();
-            if (claim.contains("source_turn") && claim["source_turn"].is_object())
+}
+            if (claim.contains("source_turn") && claim["source_turn"].is_object()) {
                 os << ", source_turn " << claim["source_turn"].dump();
-            if (claim.contains("attributed_to") && !claim["attributed_to"].is_null())
+}
+            if (claim.contains("attributed_to") && !claim["attributed_to"].is_null()) {
                 os << ", attributed_to " << claim["attributed_to"].dump();
+}
             const bool fallback = !claim.contains("event_time") || claim["event_time"].is_null();
             os << ", event_time " << (fallback ? "UNKNOWN" : claim["event_time"].dump());
             os << ", source_time " << claim.value("source_time", nlohmann::json()).dump();
             os << ", time_basis " << (fallback ? "source_time_fallback" : "event_time");
             if (claim.contains("predicate_catalog_version") &&
-                claim["predicate_catalog_version"].is_string())
+                claim["predicate_catalog_version"].is_string()) {
                 os << ", predicate_catalog_version " << claim["predicate_catalog_version"].dump();
-            if (claim.contains("semantic_family") && claim["semantic_family"].is_string())
+}
+            if (claim.contains("semantic_family") && claim["semantic_family"].is_string()) {
                 os << ", semantic_family " << claim["semantic_family"].dump();
-            if (claim.contains("time_text") && claim["time_text"].is_string() && !claim["time_text"].get_ref<const std::string&>().empty())
+}
+            if (claim.contains("time_text") && claim["time_text"].is_string() && !claim["time_text"].get_ref<const std::string&>().empty()) {
                 os << ", time_text " << claim["time_text"].dump();
+}
             os << ", clause " << claim.value("clause_id", nlohmann::json()).dump();
             os << ", evidence " << claim.value("source_span", nlohmann::json()).dump() << "}";
         }
@@ -91,7 +107,8 @@ std::string render_pack(const std::vector<PackEntry>& entries,
     }
     std::ostringstream os;
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (i) os << "\n";
+        if (i != 0U) { os << "\n";
+}
         os << entries[i].line;
     }
     return os.str();

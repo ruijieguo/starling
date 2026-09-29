@@ -106,13 +106,16 @@ RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
     result.accepted_by_predicate = llm_result.accepted_by_predicate;
     result.rejected_by_predicate = llm_result.rejected_by_predicate;
     result.failure_detail = llm_result.failure_detail;
-    if (result.extraction_failed && result.failure_category.empty())
+    if (result.extraction_failed && result.failure_category.empty()) {
         result.failure_category = llm_result.persistence_error.empty()
             ? "transport_failure" : "persistence_failure";
-    if (!llm_result.persistence_error.empty())
+}
+    if (!llm_result.persistence_error.empty()) {
         result.failure_category = "persistence_failure";
-    if (!llm_result.persistence_error.empty())
+}
+    if (!llm_result.persistence_error.empty()) {
         result.failure_detail = llm_result.persistence_error;
+}
 
     // 写后泵(P2.o):生产语句写经 StatementWriter 不经 Bus::write,泵挂此处。
     // #6:用 prepared 的权威时戳(而非 params 另传的 created_at)——防 prepare/commit 漂移。
@@ -194,7 +197,8 @@ RememberOutcome remember_commit_all(
     out.holder_id = params.holder_id;
     out.outcome = prepared.outcome;
     out.engram_ref = prepared.engram_ref;
-    if (!prepared.should_extract) return out;
+    if (!prepared.should_extract) { return out;
+}
 
     // The nested persists use SAVEPOINT-backed TransactionGuards. Any later
     // channel failure rolls back belief, episodic, general-fact, pump effects,
@@ -229,7 +233,8 @@ RememberOutcome remember_commit_all(
     out.statement_ids.insert(out.statement_ids.end(),
                              gf.statement_ids.begin(), gf.statement_ids.end());
     out.extraction_failed = out.extraction_failed || gf.extraction_failed;
-    if (out.failure_detail.empty()) out.failure_detail = gf.failure_detail;
+    if (out.failure_detail.empty()) { out.failure_detail = gf.failure_detail;
+}
     transaction.commit();
     return out;
 }

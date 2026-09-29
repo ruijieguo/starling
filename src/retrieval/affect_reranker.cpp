@@ -10,10 +10,12 @@ namespace starling::retrieval {
 
 namespace {
 double parse_iso_epoch(std::string_view iso) {
-    if (iso.empty()) return 0.0;
+    if (iso.empty()) { return 0.0;
+}
     std::tm tm{}; int y, mo, d, h, mi, s;
     if (std::sscanf(std::string(iso).c_str(), "%d-%d-%dT%d:%d:%d",
-                    &y, &mo, &d, &h, &mi, &s) != 6) return 0.0;
+                    &y, &mo, &d, &h, &mi, &s) != 6) { return 0.0;
+}
     tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
     tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s;
     return static_cast<double>(timegm(&tm));
@@ -23,14 +25,16 @@ double clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 
 double recency_factor(std::string_view observed_at_iso, std::string_view as_of_iso) {
     const double dt = parse_iso_epoch(as_of_iso) - parse_iso_epoch(observed_at_iso);
-    if (dt <= 0.0) return 1.0;
+    if (dt <= 0.0) { return 1.0;
+}
     return std::exp(-dt / (30.0 * 86400.0));
 }
 
 double activation_level(double activation) { return clamp01(activation); }
 
 double temporal_distance_penalty(const StatementRow& row, std::string_view as_of_iso) {
-    if (row.valid_to.empty()) return 0.0;
+    if (row.valid_to.empty()) { return 0.0;
+}
     return parse_iso_epoch(row.valid_to) <= parse_iso_epoch(as_of_iso) ? 0.3 : 0.0;
 }
 
@@ -63,10 +67,11 @@ std::vector<ScoreRow> rerank(std::vector<RerankCandidate>& cands,
             const auto claim = parse_claim_evidence(c.row);
             if (claim.is_object()) {
                 const auto event = claim.value("event_time", nlohmann::json());
-                if (event.is_object() && event.contains("start") && event["start"].is_string())
+                if (event.is_object() && event.contains("start") && event["start"].is_string()) {
                     recency_time = event["start"].get<std::string>();
-                else if (claim.contains("source_time") && claim["source_time"].is_string())
+                } else if (claim.contains("source_time") && claim["source_time"].is_string()) {
                     recency_time = claim["source_time"].get<std::string>();
+}
             }
         }
         s.recency            = recency_factor(recency_time, as_of_iso);

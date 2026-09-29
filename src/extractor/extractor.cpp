@@ -55,7 +55,8 @@ nlohmann::json batch_policy_json(const ValidationPolicy& p) {
         {"attribute_first_order_mental_to_holder",p.attribute_first_order_mental_to_holder},
         {"extra_core_predicates",p.extra_core_predicates},{"confidence_drop_floor",p.confidence_drop_floor},
         {"weak_inference_floor",p.weak_inference_floor}};
-    if (p.claim_batch_target_units) result["claim_batch_target_units"]=true;
+    if (p.claim_batch_target_units) { result["claim_batch_target_units"]=true;
+}
     return result;
 }
 bool truncated(const LLMResponse& response) {
@@ -64,7 +65,8 @@ bool truncated(const LLMResponse& response) {
 }
 
 std::string claim_failure_category(const ExtractionLlmResult& result) {
-    if (!result.persistence_error.empty()) return "persistence_failure";
+    if (!result.persistence_error.empty()) { return "persistence_failure";
+}
     // A protocol error recovered by a later terminal attempt is not a
     // technical failure of the extraction.  Admission failures remain
     // terminal failures because they are never retried by this policy.
@@ -84,9 +86,12 @@ std::string claim_failure_category(const ExtractionLlmResult& result) {
         const auto& attempt = *it;
         if (!attempt.parse.errors.empty()) {
             const auto& kind = attempt.parse.errors.front().kind;
-            if (kind == "envelope_failure") return "envelope_failure";
-            if (kind == "scope_failure" || kind == "source_span_failure") return "scope_failure";
-            if (kind == "schema_failure") return "schema_failure";
+            if (kind == "envelope_failure") { return "envelope_failure";
+}
+            if (kind == "scope_failure" || kind == "source_span_failure") { return "scope_failure";
+}
+            if (kind == "schema_failure") { return "schema_failure";
+}
             if (kind == "upstream_failure") {
                 const auto& error = attempt.admission_called && !attempt.admission_resp.ok
                     ? attempt.admission_resp.error : attempt.resp.error;
@@ -96,13 +101,15 @@ std::string claim_failure_category(const ExtractionLlmResult& result) {
             }
             return kind;
         }
-        if (complete && attempt.semantic_rejected > 0) return "semantic_rejection";
+        if (complete && attempt.semantic_rejected > 0) { return "semantic_rejection";
+}
     }
     return batched && !complete ? "batch_integrity_failure" : "";
 }
 
 std::string extraction_failure_detail(const ExtractionLlmResult& result) {
-    if (!result.persistence_error.empty()) return result.persistence_error;
+    if (!result.persistence_error.empty()) { return result.persistence_error;
+}
     for (auto it = result.attempts.rbegin(); it != result.attempts.rend(); ++it) {
         const auto& attempt = *it;
         if (attempt.admission_called && !attempt.admission_resp.ok &&
@@ -112,11 +119,14 @@ std::string extraction_failure_detail(const ExtractionLlmResult& result) {
         if (!attempt.parse.errors.empty()) {
             const auto& error = attempt.parse.errors.front();
             std::string detail = error.kind;
-            if (!error.field_path.empty()) detail += " at " + error.field_path;
-            if (!error.detail.empty()) detail += ": " + error.detail;
+            if (!error.field_path.empty()) { detail += " at " + error.field_path;
+}
+            if (!error.detail.empty()) { detail += ": " + error.detail;
+}
             return detail;
         }
-        if (!attempt.resp.ok && !attempt.resp.error.empty()) return attempt.resp.error;
+        if (!attempt.resp.ok && !attempt.resp.error.empty()) { return attempt.resp.error;
+}
         if (!attempt.semantic_rejections.empty() &&
             !attempt.semantic_rejections.front().detail.empty()) {
             return attempt.semantic_rejections.front().detail;
@@ -126,7 +136,8 @@ std::string extraction_failure_detail(const ExtractionLlmResult& result) {
 }
 
 void finalize_claim_result(ExtractionLlmResult& result) {
-    if (!result.semantic_claim_contract) return;
+    if (!result.semantic_claim_contract) { return;
+}
     result.catalog_version = claim_predicate_catalog().version;
     result.accepted_by_predicate.clear();
     result.rejected_by_predicate.clear();
@@ -220,7 +231,8 @@ std::string emit_extraction_event(
 // re-attributing holder to subject would be wrong.
 bool is_first_order_desire(schema::Modality m, std::string_view predicate) {
     if (predicate == "prefers" || predicate == "wants"
-            || predicate == "desires" || predicate == "intends") return true;
+            || predicate == "desires" || predicate == "intends") { return true;
+}
     switch (m) {
         case schema::Modality::DESIRES:
         case schema::Modality::INTENDS:
@@ -323,12 +335,15 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
         const auto& snapshot = result.claim_batch_policy;
         snapshot.validate();
         if (result.claim_batch_size <= 0 || !result.semantic_claim_contract
-            || snapshot.claim_batch_size != result.claim_batch_size)
+            || snapshot.claim_batch_size != result.claim_batch_size) {
             return fail("missing or inconsistent batch policy");
-        if (policy && batch_policy_json(*policy) != batch_policy_json(snapshot))
+}
+        if ((policy != nullptr) && batch_policy_json(*policy) != batch_policy_json(snapshot)) {
             return fail("claim batch policy changed between extraction and persist");
-        if (crypto::sha256_hex(result.source_payload) != result.source_payload_hash)
+}
+        if (crypto::sha256_hex(result.source_payload) != result.source_payload_hash) {
             return fail("batch source payload hash mismatch");
+}
         nlohmann::json expected;
         try {
             expected = nlohmann::json::parse(claim_extraction_batch_plan(result.source_payload, snapshot));
@@ -337,8 +352,9 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
             // has no plan. Prove that failure again from the immutable source;
             // a missing plan for a valid source still fails below.
             if (!result.claim_batch_plan.empty() || !result.prompt_body.empty()
-                || !result.prompt_input_hash.empty() || result.attempts.size() != 1)
+                || !result.prompt_input_hash.empty() || result.attempts.size() != 1) {
                 return fail("source validation failure state was changed");
+}
             const auto& rec = result.attempts.front();
             if (rec.attempt != 1 || rec.batch_index != -1 || !rec.target_clause_ids.empty()
                 || rec.terminal || !rec.parsed || !rec.parse.statements.empty()
@@ -349,8 +365,9 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
                 || !rec.claim_candidates.empty() || rec.admission_called || !rec.admission_prompt.empty()
                 || !rec.admission_prompt_hash.empty() || !rec.semantic_rejections.empty()
                 || !rec.row_diagnostics.empty() || rec.semantic_rejected != 0
-                || !rec.admission_rejected_by_predicate.empty())
+                || !rec.admission_rejected_by_predicate.empty()) {
                 return fail("source validation failure diagnostic was changed");
+}
             const auto no_provider_evidence = [](const LLMResponse& response) {
                 return response.raw_xml.empty() && response.error.empty()
                     && response.prompt_tokens == 0 && response.completion_tokens == 0
@@ -363,12 +380,14 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
                     && response.output_contract == OutputContractKind::Legacy;
             };
             if (!rec.resp.ok || rec.admission_resp.ok || !no_provider_evidence(rec.resp)
-                || !no_provider_evidence(rec.admission_resp))
+                || !no_provider_evidence(rec.admission_resp)) {
                 return fail("source validation failure contains provider evidence");
+}
             return {false,error.what(),true};
         }
-        if (nlohmann::json::parse(result.claim_batch_plan) != expected)
+        if (nlohmann::json::parse(result.claim_batch_plan) != expected) {
             return fail("batch plan differs from deterministic complete source partition");
+}
         std::size_t position = 0;
         for (const auto& batch : expected.at("batches")) {
             const int index = batch.at("batch_index").get<int>();
@@ -436,7 +455,8 @@ ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, con
             }
             if (!terminal) return fail("batch has no qualified terminal");
         }
-        if (position != result.attempts.size()) return fail("duplicate or unplanned batch attempts");
+        if (position != result.attempts.size()) { return fail("duplicate or unplanned batch attempts");
+}
         return {true,{},false};
     } catch (const std::exception& e) { return fail(e.what()); }
 }
@@ -507,7 +527,9 @@ ExtractionLlmResult Extractor::extract_llm(
                 const auto first = nlohmann::json::parse(out.claim_batch_plan).at("batches").at(0);
                 out.prompt_body = claim_extraction_batch_prompt(out.source_payload, holder_id, 0,
                     first.at("target_clause_ids").get<std::vector<std::string>>(), policy_);
-            } else out.prompt_body = build_prompt(holder_id, payload_bytes, existing_ref_map);
+            } else {
+                out.prompt_body = build_prompt(holder_id, payload_bytes, existing_ref_map);
+            }
             out.prompt_input_hash = compute_prompt_input_hash(out.prompt_body);
         } catch (const std::exception& e) {
             ExtractionLlmAttempt rec;
@@ -652,8 +674,9 @@ ExtractionRunResult Extractor::persist(
             if (batch_boundary) {
                 const auto integrity = claim_batch_integrity(checked, &policy_);
                 if (!integrity.complete) {
-                    if (integrity.extraction_failed) batch_failure = integrity.detail;
-                    else throw std::runtime_error(integrity.detail);
+                    if (integrity.extraction_failed) { batch_failure = integrity.detail;
+                    } else { throw std::runtime_error(integrity.detail);
+}
                 }
             }
             auto engram = evidence::EngramStore::get(engram_ref_id, holder_tenant_id, conn_);
@@ -695,7 +718,8 @@ ExtractionRunResult Extractor::persist(
                 batch_failure = failure;
             } else {
             ExtractionLlmAttempt failed;
-            if (!checked.attempts.empty()) failed = checked.attempts.front();
+            if (!checked.attempts.empty()) { failed = checked.attempts.front();
+}
             failed.attempt = 1; failed.resp.ok = true; failed.parsed = true; failed.terminal = false;
             failed.parse.statements.clear();
             failed.parse.errors = {{"persistence_failure", failure, 0}};
@@ -706,7 +730,8 @@ ExtractionRunResult Extractor::persist(
     }
 
     std::optional<starling::cognizer::CognizerHub> cog_hub;
-    if (store_adapter_ != nullptr) cog_hub.emplace(*store_adapter_);
+    if (store_adapter_ != nullptr) { cog_hub.emplace(*store_adapter_);
+}
 
     PipelineLedger ledger(conn_);
     const std::string run_id = ledger.start_run(holder_tenant_id, engram_ref_id, "{}");

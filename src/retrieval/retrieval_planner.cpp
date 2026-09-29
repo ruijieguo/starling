@@ -47,7 +47,8 @@ constexpr const char* kSelectCols =
 FetchedRow read_row(sqlite3_stmt* st) {
     auto txt = [&](int i) {
         const auto* p = sqlite3_column_text(st, i);
-        return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string();
     };
     FetchedRow f;
     auto& r = f.row;
@@ -88,10 +89,12 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         throw std::invalid_argument(
             "RetrievalPlanner: tenant_id/querier/as_of/query_id are required");
     }
-    if(q.temporal_evidence && q.temporal_evidence->tenant_id!=q.tenant_id)
+    if(q.temporal_evidence && q.temporal_evidence->tenant_id!=q.tenant_id) {
         throw std::invalid_argument("RetrievalPlanner: temporal evidence tenant must match query tenant");
-    if(q.temporal_evidence && (q.k<=0 || q.k>std::numeric_limits<int>::max()/10))
+}
+    if(q.temporal_evidence && (q.k<=0 || q.k>std::numeric_limits<int>::max()/10)) {
         throw std::invalid_argument("RetrievalPlanner: invalid temporal candidate budget");
+}
     auto& conn = adapter_.connection();
     sqlite3* db = conn.raw();
 
@@ -156,7 +159,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         case QueryIntent::FACT_LOOKUP:
             // 无结构化提示时 statement_main 没有选择性(等于按 holder 全量),
             // 主路改语义;有提示才结构化先行(progressive 低成本优先)。
-            if (has_hints) add_step("statement_main", q.querier, q.k * 5);
+            if (has_hints) { add_step("statement_main", q.querier, q.k * 5);
+}
             add_step("semantic_index", q.querier, q.k * 5);
             break;
         case QueryIntent::BELIEF_OF_OTHER:
@@ -191,7 +195,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             break;
         case QueryIntent::ABSTAIN_CHECK:
             // exhaustive:有提示带结构化路,语义必跑(不早停)。
-            if (has_hints) add_step("statement_main", q.querier, q.k * 5);
+            if (has_hints) { add_step("statement_main", q.querier, q.k * 5);
+}
             add_step("semantic_index", q.querier, q.k * 5);
             break;
     }
@@ -217,38 +222,45 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     auto fetch_statement_main = [&](const RetrievalScopeStep& step) {
         std::string sql = std::string(kSelectCols) +
             "WHERE tenant_id = ?1 AND holder_id = ?2 ";
-        if (!q.subject_id.empty()) sql += " AND subject_id = ?3 ";
-        if (!q.predicate.empty())  sql += " AND predicate  = ?4 ";
+        if (!q.subject_id.empty()) { sql += " AND subject_id = ?3 ";
+}
+        if (!q.predicate.empty()) {  sql += " AND predicate  = ?4 ";
+}
         sql += extra_where;
         sql += kStableTail;
         sql += (q.intent == QueryIntent::HISTORY)
                    ? " ORDER BY observed_at ASC LIMIT ?5"
                    : " ORDER BY observed_at DESC LIMIT ?5";
         sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
             throw make_sqlite_error(db, "planner: statement_main prepare");
+}
         StmtHandle h(raw);
         bind_sv(h.get(), 1, q.tenant_id);
         bind_sv(h.get(), 2, step.holder_scope);
-        if (!q.subject_id.empty()) bind_sv(h.get(), 3, q.subject_id);
-        if (!q.predicate.empty())  bind_sv(h.get(), 4, q.predicate);
+        if (!q.subject_id.empty()) { bind_sv(h.get(), 3, q.subject_id);
+}
+        if (!q.predicate.empty()) {  bind_sv(h.get(), 4, q.predicate);
+}
         sqlite3_bind_int(h.get(), 5, step.max_candidates);
         bind_sv(h.get(), 9, q.as_of_iso8601);
-        while (sqlite3_step(h.get()) == SQLITE_ROW) fetched.push_back(read_row(h.get()));
+        while (sqlite3_step(h.get()) == SQLITE_ROW) { fetched.push_back(read_row(h.get()));
+}
     };
     auto fetch_by_id = [&](const std::string& id, const SemanticScored* semantic_row=nullptr) {
         sqlite3_stmt* raw = nullptr;
         const std::string sql = std::string(kSelectCols) +
             "WHERE id = ?1 AND tenant_id = ?2" + kStableTail;
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
             return;
+}
         StmtHandle h(raw);
         bind_sv(h.get(), 1, id);
         bind_sv(h.get(), 2, q.tenant_id);
         bind_sv(h.get(), 9, q.as_of_iso8601);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             auto f=read_row(h.get());
-            if (semantic_row) {
+            if (semantic_row != nullptr) {
                 // Keep the semantic DTO and cosine score, but materialize only
                 // after the same visibility/time query used by structured paths.
                 f.row=semantic_row->row;
@@ -270,9 +282,10 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         const auto sr = semantic_.vector_recall(conn, sp);
         for (const auto& [identity, reason] : sr.receipt.claim_exclusions)
             record_claim_exclusion(rc, identity.first, identity.second, reason);
-        if (sr.degraded)
+        if (sr.degraded) {
             rc.degraded_paths.push_back({"semantic_index", "embedder_unavailable",
                                          "statement_main_only"});
+}
         for (const auto& s : sr.rows) fetch_by_id(s.row.id,&s);
     };
     auto fetch_graph_supersedes = [&]() {
@@ -293,10 +306,11 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             std::vector<std::string> others;
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
-                if (p) others.emplace_back(reinterpret_cast<const char*>(p));
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (p != nullptr) { others.emplace_back(reinterpret_cast<const char*>(p)); }
             }
             for (const auto& other : others) {
-                if (have.count(other)) continue;
+                if (!have.contains(other)) { continue; }
                 fetch_by_id(other);
                 have.insert(other);
             }
@@ -349,7 +363,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     // before ranking; malformed certificates cannot become answer context.
     fetched.erase(std::remove_if(fetched.begin(), fetched.end(), [&](const auto& f) {
         const auto reason = claim_evidence_error(conn, f.row);
-        if (reason.empty()) return false;
+        if (reason.empty()) { return false;
+}
         record_claim_exclusion(rc, f.row.tenant_id, f.row.id, reason);
         return true;
     }), fetched.end());
@@ -375,7 +390,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         request.limit=std::min(request.limit,q.k);
         std::vector<TemporalEvidenceCandidate> visible_candidates;
         visible_candidates.reserve(cands.size());
-        for(std::size_t i=0;i<cands.size();++i) visible_candidates.push_back({cands[i].row,breakdown[i].final_score});
+        for(std::size_t i=0;i<cands.size();++i) { visible_candidates.push_back({cands[i].row,breakdown[i].final_score});
+}
         temporal_view=select_temporal_evidence(visible_candidates,request);
         rc.temporal_evidence_json=temporal_evidence_json(*temporal_view);
         std::set<std::pair<std::string,std::string>> selected;
@@ -408,7 +424,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             bind_sv(h.get(), 1, q.tenant_id);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
-                if (p) pctx.todo_ids.insert(reinterpret_cast<const char*>(p));
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (p != nullptr) { pctx.todo_ids.insert(reinterpret_cast<const char*>(p));
+}
             }
         }
     }
@@ -421,9 +439,13 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             bind_sv(h.get(), 1, q.tenant_id);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* a = sqlite3_column_text(h.get(), 0);
-                const auto* b = sqlite3_column_text(h.get(), 1);
-                if (a) pctx.conflict_ids.insert(reinterpret_cast<const char*>(a));
-                if (b) pctx.conflict_ids.insert(reinterpret_cast<const char*>(b));
+                const auto* dst_text = sqlite3_column_text(h.get(), 1);
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (a != nullptr) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(a));
+}
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                if (dst_text != nullptr) { pctx.conflict_ids.insert(reinterpret_cast<const char*>(dst_text));
+}
             }
         }
     }
@@ -440,9 +462,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (!cands.empty()) {
         bool all_recanted = true;
         for (const auto& c : cands)
-            if (!pctx.recanted_ids.count(c.row.id)) { all_recanted = false; break; }
+            if (!pctx.recanted_ids.contains(c.row.id)) { all_recanted = false; break; }
         ab.only_recanted_evidence = all_recanted;
-        ab.unresolved_conflict = pctx.conflict_ids.count(cands.front().row.id) > 0;
+        ab.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
     }
     rc.abstention_reason = evaluate_abstention(ab, q.abstention);
     rc.plan_steps.push_back({"abstain",
@@ -452,7 +474,8 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (!rc.abstention_reason.empty()) {
         out.abstained = true;
         out.context_pack = render_pack({}, rc.abstention_reason);
-        if(temporal_view) out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
+        if(temporal_view) { out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
+}
         rc.sufficiency_status = Sufficiency::ABSTAINED;
         rc.candidate_counts.returned = 0;
         return out;
@@ -468,11 +491,13 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                                breakdown[i].final_score, label});
     }
     out.context_pack = render_pack(entries, "");
-    if(temporal_view) out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
+    if(temporal_view) { out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
+}
     rc.candidate_counts.returned = static_cast<std::int64_t>(out.entries.size());
     rc.sufficiency_status = out.entries.empty() ? Sufficiency::MISSING_INFO
                                                 : Sufficiency::SUFFICIENT;
-    if(temporal_view && !temporal_view->sufficient) rc.sufficiency_status=Sufficiency::MISSING_INFO;
+    if(temporal_view && !temporal_view->sufficient) { rc.sufficiency_status=Sufficiency::MISSING_INFO;
+}
     {   // projection lag:outbox 头 − 最慢 checkpoint(无消费者按 0)。
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
@@ -480,9 +505,10 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             "COALESCE((SELECT MIN(last_dispatched_sequence) FROM consumer_checkpoints),"
             "(SELECT COALESCE(MAX(outbox_sequence),0) FROM bus_events))",
             -1, &raw, nullptr) == SQLITE_OK) {
-            StmtHandle h(raw);
-            if (sqlite3_step(h.get()) == SQLITE_ROW)
-                rc.projection_lag_events = sqlite3_column_int64(h.get(), 0);
+            StmtHandle stmt(raw);
+            if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+                rc.projection_lag_events = sqlite3_column_int64(stmt.get(), 0);
+}
         }
     }
     // fire-and-forget recalled emit(键公式与 basic_retriever 一致;失败仅

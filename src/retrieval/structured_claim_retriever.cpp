@@ -26,7 +26,8 @@ Json ref_json(const TemporalEvidenceRef& ref) {
 }
 
 bool row_matches_topic(const StatementRow& row, const std::string& topic) {
-    if (topic.empty()) return true;
+    if (topic.empty()) { return true;
+}
     try {
         const auto claim = extractor::claim_strict_json(row.semantic_claim_json);
         return claim.contains("topic") && claim["topic"].is_string() &&
@@ -108,13 +109,16 @@ StructuredClaimView select_structured_claims(
 
     if (request.temporal) {
         auto temporal_request = *request.temporal;
-        if (temporal_request.tenant_id.empty()) temporal_request.tenant_id = request.tenant_id;
-        if (temporal_request.actor_id.empty()) temporal_request.actor_id = request.subject_id;
+        if (temporal_request.tenant_id.empty()) { temporal_request.tenant_id = request.tenant_id;
+}
+        if (temporal_request.actor_id.empty()) { temporal_request.actor_id = request.subject_id;
+}
         const auto temporal = select_temporal_evidence(temporal_candidates, temporal_request);
         view.early = temporal.early;
         view.late = temporal.late;
         view.insufficiency_reason = temporal.insufficiency_reason;
-        if (temporal.early && temporal.late && temporal.sufficient) view.sufficient = true;
+        if (temporal.early && temporal.late && temporal.sufficient) { view.sufficient = true;
+}
         view.excluded_missing_order += temporal.excluded_missing_order;
         std::map<std::string, StatementRow> by_id;
         for (const auto& row : eligible) by_id.emplace(row.id, row);
@@ -128,11 +132,13 @@ StructuredClaimView select_structured_claims(
             return std::tie(left.confidence, left.observed_at, left.id) >
                    std::tie(right.confidence, right.observed_at, right.id);
         });
-        if (eligible.size() > static_cast<std::size_t>(request.limit))
+        if (eligible.size() > static_cast<std::size_t>(request.limit)) {
             eligible.resize(static_cast<std::size_t>(request.limit));
+}
         view.selected = std::move(eligible);
         view.sufficient = !view.selected.empty();
-        if (!view.sufficient) view.insufficiency_reason = "no_candidates";
+        if (!view.sufficient) { view.insufficiency_reason = "no_candidates";
+}
     }
     view.receipt_json = structured_claim_view_json(view);
     return view;

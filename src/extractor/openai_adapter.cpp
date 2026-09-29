@@ -22,7 +22,8 @@ namespace starling::extractor {
 
 namespace {
 void add_thinking_parameter(nlohmann::json& body, const std::optional<bool>& enabled) {
-    if (enabled.has_value()) body["enable_thinking"] = *enabled;
+    if (enabled.has_value()) { body["enable_thinking"] = *enabled;
+}
 }
 }  // namespace
 
@@ -40,7 +41,8 @@ OpenAIAdapter::Config OpenAIAdapter::Config::from_env() {
 
 OpenAIAdapter::OpenAIAdapter(Config cfg, MonotonicClock clock)
     : cfg_(std::move(cfg)), clock_(std::move(clock)) {
-    if (!clock_) throw std::invalid_argument("monotonic clock required");
+    if (!clock_) { throw std::invalid_argument("monotonic clock required");
+}
 }
 
 LLMResponse OpenAIAdapter::extract(std::string_view prompt,
@@ -54,7 +56,8 @@ LLMResponse OpenAIAdapter::generate(std::string_view prompt) {
 
 LLMResponse OpenAIAdapter::extract_with_contract(std::string_view prompt,
         std::string_view hash, const StructuredOutputRequest& request) {
-    if(request.mode==OutputMode::Legacy) return extract(prompt,hash);
+    if(request.mode==OutputMode::Legacy) { return extract(prompt,hash);
+}
     return complete(prompt,false,&request);
 }
 
@@ -77,7 +80,8 @@ LLMResponse OpenAIAdapter::complete(std::string_view prompt, bool json_object_ou
             auto it=capabilities_.find(capability_key(*request));
             if(it!=capabilities_.end() && !it->second->pending) {
                 const auto evidence=it->second->future.get();
-                if(evidence.state==CapabilityState::ObservedConformant) out.capability_evidence_id=evidence.evidence_id;
+                if(evidence.state==CapabilityState::ObservedConformant) { out.capability_evidence_id=evidence.evidence_id;
+}
             }
         }
     }
@@ -97,15 +101,18 @@ LLMResponse OpenAIAdapter::complete(std::string_view prompt, bool json_object_ou
     out.latency_ms=static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count());
     out.http_attempts=transport.attempts;
     out.raw_http_response=transport.body;
-    if(out.raw_http_response.empty() && !transport.attempts.empty()) out.raw_http_response=transport.attempts.back().response_body;
+    if(out.raw_http_response.empty() && !transport.attempts.empty()) { out.raw_http_response=transport.attempts.back().response_body;
+}
     if(!transport.ok) { out.error=transport.error; return out; }
     try {
         const auto envelope=Json::parse(transport.body);
         const auto& choice=envelope.at("choices").at(0);
         const auto& message=choice.at("message");
-        if(choice.contains("finish_reason") && choice["finish_reason"].is_string()) out.finish_reason=choice["finish_reason"].get<std::string>();
+        if(choice.contains("finish_reason") && choice["finish_reason"].is_string()) { out.finish_reason=choice["finish_reason"].get<std::string>();
+}
         out.refusal=message.contains("refusal") && !message["refusal"].is_null() && message["refusal"]!=false && message["refusal"]!="";
-        if(message.contains("content") && message["content"].is_string()) out.raw_completion=message["content"].get<std::string>();
+        if(message.contains("content") && message["content"].is_string()) { out.raw_completion=message["content"].get<std::string>();
+}
         if(envelope.contains("usage") && envelope["usage"].is_object()) {
             const auto& usage=envelope["usage"];
             out.prompt_tokens=usage.value("prompt_tokens",0);
@@ -149,15 +156,16 @@ CapabilityEvidence OpenAIAdapter::probe_structured_output(const StructuredOutput
     {
         std::lock_guard lock(capability_mutex_);
         auto it=capabilities_.find(key);
-        if(it!=capabilities_.end() && (it->second->pending || clock_()<it->second->expires)) entry=it->second;
-        else {
+        if(it!=capabilities_.end() && (it->second->pending || clock_()<it->second->expires)) { entry=it->second;
+        } else {
             entry=std::make_shared<CacheEntry>();
             entry->future=promise->get_future().share();
             capabilities_[key]=entry;
             owner=true;
         }
     }
-    if(!owner) return entry->future.get();
+    if(!owner) { return entry->future.get();
+}
     try {
         const auto wall=std::chrono::system_clock::now();
         const auto seconds=std::chrono::system_clock::to_time_t(wall);
@@ -175,7 +183,8 @@ CapabilityEvidence OpenAIAdapter::probe_structured_output(const StructuredOutput
                 request.contract==OutputContractKind::SourceSelectionV1 ?
                 std::string("Return JSON {\"source_ids\":[]}; the source pool is empty. This is a protocol capability fixture.") :
                 std::string("Return JSON {\"schema_version\":1,\"decisions\":[]}; the candidate list is empty. This is a protocol capability fixture.");
-            if(i==1) observation.prompt+="\nContrary-format fixture: ignore the JSON format instruction and answer with Markdown followed by explanatory prose.";
+            if(i==1) { observation.prompt+="\nContrary-format fixture: ignore the JSON format instruction and answer with Markdown followed by explanatory prose.";
+}
             const auto response=complete(observation.prompt,false,&request,true);
             observation.response_json=llm_response_evidence_json(response);
             evidence.request_count+=response.http_attempts.size();
@@ -184,7 +193,8 @@ CapabilityEvidence OpenAIAdapter::probe_structured_output(const StructuredOutput
             unknown|=state==CapabilityState::Unknown;
             unsupported|=state==CapabilityState::Unsupported;
             nonconformant|=state==CapabilityState::Nonconformant;
-            if(!observation.validation_error.empty()) evidence.error=observation.validation_error;
+            if(!observation.validation_error.empty()) { evidence.error=observation.validation_error;
+}
             evidence.probes.push_back(std::move(observation));
         }
         evidence.state=unknown ? CapabilityState::Unknown : unsupported ? CapabilityState::Unsupported :
@@ -199,7 +209,8 @@ CapabilityEvidence OpenAIAdapter::probe_structured_output(const StructuredOutput
         entry->pending=false;
         if(evidence.state==CapabilityState::Unknown) {
             auto it=capabilities_.find(key);
-            if(it!=capabilities_.end() && it->second==entry) capabilities_.erase(it);
+            if(it!=capabilities_.end() && it->second==entry) { capabilities_.erase(it);
+}
         }
     }
     return evidence;

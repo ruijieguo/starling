@@ -25,7 +25,8 @@ struct ContractError : std::runtime_error {
 };
 void require(bool condition, std::string_view kind, std::string_view detail,
              std::string_view field_path = {}) {
-    if (!condition) throw ContractError(std::string(kind), std::string(detail), std::string(field_path));
+    if (!condition) { throw ContractError(std::string(kind), std::string(detail), std::string(field_path));
+}
 }
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {return static_cast<char>(std::tolower(c));});
@@ -37,29 +38,35 @@ std::string upper(std::string_view value) {
     return text;
 }
 size_t unicode_space_width(std::string_view text, size_t offset) {
-    if (offset >= text.size()) return 0;
+    if (offset >= text.size()) { return 0;
+}
     const auto c = static_cast<unsigned char>(text[offset]);
-    if (std::isspace(c)) return 1;
+    if (std::isspace(c) != 0) { return 1;
+}
     if (offset + 1 < text.size() && c == 0xC2 &&
-        static_cast<unsigned char>(text[offset + 1]) == 0xA0) return 2; // NBSP
+        static_cast<unsigned char>(text[offset + 1]) == 0xA0) { return 2; // NBSP
+}
     if (offset + 2 < text.size() && c == 0xE3 &&
         static_cast<unsigned char>(text[offset + 1]) == 0x80 &&
-        static_cast<unsigned char>(text[offset + 2]) == 0x80) return 3; // U+3000
+        static_cast<unsigned char>(text[offset + 2]) == 0x80) { return 3; // U+3000
+}
     return 0;
 }
 std::string_view trim(std::string_view text) {
     while (!text.empty()) {
         const auto width = unicode_space_width(text, 0);
-        if (!width) break;
+        if (width == 0U) { break;
+}
         text.remove_prefix(width);
     }
     while (!text.empty()) {
         size_t width = 1;
         const auto last = static_cast<unsigned char>(text.back());
-        if (last == 0xA0 && text.size() >= 2 && static_cast<unsigned char>(text[text.size()-2]) == 0xC2) width = 2;
-        else if (last == 0x80 && text.size() >= 3 && static_cast<unsigned char>(text[text.size()-3]) == 0xE3 &&
-                 static_cast<unsigned char>(text[text.size()-2]) == 0x80) width = 3;
-        else if (!std::isspace(last)) break;
+        if (last == 0xA0 && text.size() >= 2 && static_cast<unsigned char>(text[text.size()-2]) == 0xC2) { width = 2;
+        } else if (last == 0x80 && text.size() >= 3 && static_cast<unsigned char>(text[text.size()-3]) == 0xE3 &&
+                 static_cast<unsigned char>(text[text.size()-2]) == 0x80) { width = 3;
+        } else if (std::isspace(last) == 0) { break;
+}
         text.remove_suffix(width);
     }
     return text;
@@ -77,12 +84,13 @@ Json strict_json(std::string_view raw, bool allow_fence) {
     }
     std::vector<std::set<std::string>> keys;
     auto callback=[&](int, Json::parse_event_t event, Json& value) {
-        if (event==Json::parse_event_t::object_start) keys.emplace_back();
-        else if (event==Json::parse_event_t::key) {
+        if (event==Json::parse_event_t::object_start) { keys.emplace_back();
+        } else if (event==Json::parse_event_t::key) {
             const auto key = value.get<std::string>();
             require(!keys.empty() && keys.back().insert(key).second,
                     "envelope_failure", "duplicate JSON key", key);
-        } else if (event==Json::parse_event_t::object_end) keys.pop_back();
+        } else if (event==Json::parse_event_t::object_end) { keys.pop_back();
+}
         return true;
     };
     try { return Json::parse(raw,callback); }
@@ -115,7 +123,8 @@ bool valid_utc_time(const std::string& value);
 bool valid_observation_time(const std::string& value) {
     static const std::regex iso(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?$)");
     if (!std::regex_match(value, iso) || value.substr(0,4) == "0000" ||
-        !valid_utc_time(value.substr(0,19) + "Z")) return false;
+        !valid_utc_time(value.substr(0,19) + "Z")) { return false;
+}
     return value.size() != 25 || (std::stoi(value.substr(20,2)) < 24 && std::stoi(value.substr(23,2)) < 60);
 }
 Json source_turn(const Json& turn, bool preserve_invalid_time = false) {
@@ -158,10 +167,12 @@ Json units(std::string_view payload) {
     size_t begin=0;
     while (begin<payload.size()) {
         auto end=payload.find('\n',begin);
-        if (end==std::string_view::npos) end=payload.size();
+        if (end==std::string_view::npos) { end=payload.size();
+}
         // CR in CRLF is part of the transport newline, not the source turn.
         auto content_end=end;
-        if (content_end>begin && payload[content_end-1]=='\r') --content_end;
+        if (content_end>begin && payload[content_end-1]=='\r') { --content_end;
+}
         auto text=payload.substr(begin,content_end-begin);
         if (!trim(text).empty()) {
             Json unit={{"clause_id","c"+std::to_string(result.size())},
@@ -211,7 +222,8 @@ bool has(std::string_view text, std::initializer_list<std::string_view> words) {
 bool english(const std::string& text, const char* pattern) { return std::regex_search(text,std::regex(pattern,std::regex::icase)); }
 bool valid_utc_time(const std::string& value) {
     static const std::regex iso(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$)");
-    if (!std::regex_match(value, iso)) return false;
+    if (!std::regex_match(value, iso)) { return false;
+}
     const auto date = std::chrono::year_month_day{
         std::chrono::year{std::stoi(value.substr(0,4))},
         std::chrono::month{static_cast<unsigned>(std::stoi(value.substr(5,2)))},
@@ -227,22 +239,25 @@ bool preference_object(std::string_view object, const std::string& actor) {
     // from the leading word. These are syntactic cues, not an affect lexicon.
     static const std::regex compound(R"(\b(feel|feels|felt|feeling|make|makes|made|making|but|because|and|is|are|am|was|were)\b|(?:[,;.!?]|，|；|。)\s*\S)",std::regex::icase);
     if (std::regex_search(object.begin(),object.end(),compound) ||
-        has(object,{"感到","觉得","感觉","让我","令我","使我","但是","但","却","因为"})) return false;
+        has(object,{"感到","觉得","感觉","让我","令我","使我","但是","但","却","因为"})) { return false;
+}
     // Inspect the candidate's leading relation, never unrelated source words.
     // A named bearer may precede it, with whitespace or a Chinese predicate.
     const auto name=lower(actor);
     if (!name.empty() && object.starts_with(name) && object.size()>name.size()) {
         const auto next=static_cast<unsigned char>(object[name.size()]);
-        if (std::isspace(next) || next>=0x80) object=trim(object.substr(name.size()));
+        if ((std::isspace(next) != 0) || next>=0x80) { object=trim(object.substr(name.size()));
+}
     }
     static const std::regex passive(R"(^preferred(?:(?:(?:[.!?]|。|！|？)\s*)*$|\s+(?:by|over|to)\b))",std::regex::icase);
-    if (std::regex_search(object.begin(),object.end(),passive)) return false;
+    if (std::regex_search(object.begin(),object.end(),passive)) { return false;
+}
     static const std::regex preference(R"(^(?:(?:i|you|he|she|we|they)(?:'(?:d|ve|s))?\s+)?(?:(?:do|does|did|would|have|has|had)(?:n't)?\s+)?(?:not\s+)?prefer(?:s|red|ring)?\b|^(?:a\s+)?preference\s+for\b)",std::regex::icase);
-    if (std::regex_search(object.begin(),object.end(),preference)) return true;
+    if (std::regex_search(object.begin(),object.end(),preference)) { return true;
+}
     for (const auto prefix : {"偏好","更偏好","不偏好","倾向于","更倾向于","不倾向于"})
         if (object.starts_with(prefix)) return true;
-    if (object.starts_with("对") && object.find("有偏好")!=std::string_view::npos) return true;
-    return false;
+    return object.starts_with("对") && object.find("有偏好")!=std::string_view::npos;
 }
 void scope_guards(const std::string& source, const Json& row, const Json& evidence, const std::set<std::string>& markers,
                   bool source_self_report, const ClaimScopeResolution& resolution) {
@@ -665,12 +680,13 @@ std::string canonical_claim_predicate(std::string_view name) {
 
 const PredicateSpec* find_claim_predicate(std::string_view name) {
     const auto canonical = canonical_claim_predicate(name);
-    if (canonical.empty()) return nullptr;
+    if (canonical.empty()) { return nullptr;
+}
     const auto& values = predicate_catalog().predicates;
-    const auto it = std::find_if(values.begin(), values.end(), [&](const auto& spec) {
+    const auto found = std::find_if(values.begin(), values.end(), [&](const auto& spec) {
         return spec.name == canonical;
     });
-    return it == values.end() ? nullptr : &*it;
+    return found == values.end() ? nullptr : &*found;
 }
 
 nlohmann::json claim_contract_catalog() {
@@ -704,8 +720,9 @@ std::string claim_extraction_batch_plan(std::string_view payload, const Validati
         ? static_cast<std::size_t>(policy.claim_batch_size) : std::max<std::size_t>(1, inventory.size());
     for (std::size_t start = 0; start < inventory.size(); start += size) {
         Json targets = Json::array();
-        for (std::size_t i = start; i < std::min(start + size, inventory.size()); ++i)
+        for (std::size_t i = start; i < std::min(start + size, inventory.size()); ++i) {
             targets.push_back(inventory[i].at("clause_id"));
+}
         batches.push_back({{"batch_index", batches.size()}, {"target_clause_ids", targets}});
     }
     if (batches.empty()) batches.push_back({{"batch_index",0},{"target_clause_ids",Json::array()}});
@@ -714,7 +731,8 @@ std::string claim_extraction_batch_plan(std::string_view payload, const Validati
         {"source_payload_hash",crypto::sha256_hex(payload)}, {"source_units",inventory},
         {"batches",batches},
         {"belief_request_upper_bound",batches.size()*static_cast<std::size_t>(policy.claim_protocol_retry_budget+2)}};
-    if (policy.claim_batch_target_units) plan["claim_batch_prompt_profile"]=target_units_prompt_profile;
+    if (policy.claim_batch_target_units) { plan["claim_batch_prompt_profile"]=target_units_prompt_profile;
+}
     return plan.dump();
 }
 
@@ -752,7 +770,7 @@ std::string extraction_prompt(const Json& source_data, bool target_units=false) 
         "\n"+final_format_reminder;
 }
 std::string protocol_correction(std::string prompt, const std::vector<ParseError>* errors) {
-    if (errors) {
+    if (errors != nullptr) {
         Json summary=Json::array();
         for (const auto& error:*errors)
             summary.push_back({{"kind",error.kind},{"field_path",error.field_path},{"detail",error.detail}});
@@ -783,7 +801,8 @@ std::string claim_extraction_batch_prompt(std::string_view payload,std::string_v
     policy.validate();
     std::string prompt;
     if (policy.claim_batch_target_units) {
-        if (batch_index<0) throw std::invalid_argument("negative claim batch index");
+        if (batch_index<0) { throw std::invalid_argument("negative claim batch index");
+}
         const auto inventory=units(payload);
         Json selected=Json::array();std::set<std::string> seen;
         for (const auto& target:targets) {
@@ -796,13 +815,13 @@ std::string claim_extraction_batch_prompt(std::string_view payload,std::string_v
         }
         prompt=extraction_prompt(Json{{"source_holder",holder},{"source",payload},{"source_role","context_only"},
             {"batch_index",batch_index},{"target_clause_ids",targets},{"source_units",selected}},true);
-        if (previous_errors) prompt=protocol_correction(std::move(prompt),previous_errors);
+        if (previous_errors != nullptr) { prompt=protocol_correction(std::move(prompt),previous_errors); }
         prompt += "\nNATIVE_BATCH_PROTOCOL: The complete source is context only. "
             "Generate claims only from the indexed target source units and cite only target_clause_ids below. "
             "Never renumber the global clause IDs or use non-target context as evidence. "
             "For an empty target list return an empty statements array.\nBATCH_TARGETS_JSON:\n";
     } else {
-        prompt=previous_errors ? claim_extraction_retry_prompt(payload,holder,*previous_errors)
+        prompt=previous_errors != nullptr ? claim_extraction_retry_prompt(payload,holder,*previous_errors)
                                : claim_extraction_prompt(payload,holder);
         prompt += "\nNATIVE_BATCH_PROTOCOL: Read the complete source and all indexed units for context. "
             "Emit statements only when evidence.clause_id belongs to target_clause_ids below. "
@@ -833,7 +852,7 @@ ClaimParseResult parse_claim_response(std::string_view raw,std::string_view payl
         fields(root,claim_contract_catalog()["root_fields"].get<std::set<std::string>>());
         require(root.contains("schema_version") && root["schema_version"].is_number_integer() && root["schema_version"]==2,"schema_failure","schema_version must be 2");
         require(root.contains("statements") && root["statements"].is_array(),"schema_failure","statements must be array");
-        if (target_clause_ids) {
+        if (target_clause_ids != nullptr) {
             // Inspect all wire rows before any semantic filtering. Even a row
             // with an unauthorized holder cannot hide an out-of-batch source.
             std::size_t index = 0;
@@ -1049,8 +1068,8 @@ ClaimAdmissionResult apply_claim_admission(std::string_view raw,ParseResult& par
         }
         std::vector<ExtractedStatement> kept;
         for(size_t i=0;i<retain.size();++i) {
-            if(retain[i]) kept.push_back(parsed.statements[i]);
-            else {
+            if(retain[i]) { kept.push_back(parsed.statements[i]);
+            } else {
                 ++out.semantic_rejected;
                 ++out.rejected_by_predicate[parsed.statements[i].predicate];
             }
@@ -1119,8 +1138,9 @@ std::string claim_extraction_receipt(const ExtractionLlmResult& result) {
         {"attempts",attempts}};
     if (result.claim_batch_size > 0) {
         receipt["claim_batch_size"] = result.claim_batch_size;
-        if (result.claim_batch_policy.claim_batch_target_units)
+        if (result.claim_batch_policy.claim_batch_target_units) {
             receipt["claim_batch_prompt_profile"] = target_units_prompt_profile;
+}
         const auto plan = Json::parse(result.claim_batch_plan, nullptr, false);
         receipt["claim_batch_plan"] = plan.is_discarded() ? Json(nullptr) : plan;
         const auto integrity = claim_batch_integrity(result);

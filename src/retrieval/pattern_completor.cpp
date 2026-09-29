@@ -26,8 +26,10 @@ double kind_multiplier(const std::string& /*kind*/) { return 1.0; }
 // edge_weight = kind_multiplier × clamp(stored_weight, 0, 1)。
 double edge_weight(const std::string& kind, double stored_weight) {
     double w = stored_weight;
-    if (w < 0.0) w = 0.0;
-    if (w > 1.0) w = 1.0;
+    if (w < 0.0) { w = 0.0;
+}
+    if (w > 1.0) { w = 1.0;
+}
     return kind_multiplier(kind) * w;
 }
 
@@ -74,8 +76,9 @@ std::vector<EdgeHit> expand(persistence::Connection& conn,
         "   AND s.review_status NOT IN ('rejected','pending_review')";
     sqlite3* db = conn.raw();
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
         throw make_sqlite_error(db, "PatternCompletor::expand prepare");
+}
     StmtHandle h{raw};
     auto bind_txt = [raw](int i, const std::string& v) {
         sqlite3_bind_text(raw, i, v.c_str(), -1, SQLITE_TRANSIENT);
@@ -134,7 +137,8 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
     out.receipt.sufficiency_status = Sufficiency::MISSING_INFO;
     for (const auto& [identity, reason] : seeds.receipt.claim_exclusions)
         record_claim_exclusion(out.receipt, identity.first, identity.second, reason);
-    if (seeds.rows.empty()) return out;  // no seeds → no walk
+    if (seeds.rows.empty()) { return out;  // no seeds → no walk
+}
 
     // Step 2: activation init (seeds at 1.0).
     std::unordered_map<std::string, double> activation;
@@ -198,7 +202,8 @@ CompletionResult PatternCompletor::complete(persistence::Connection& conn,
         // 收敛:本步既无新节点也无激活抬升 → 达不动点即停。(设计的 max(activation)<θ
         //  被种子 1.0 支配永不触发;"无新节点且无抬升"才是 value-exact 收敛判据。激活
         //  单调递增且有上界 → 必收敛;budget 为兜底上限。)
-        if (!changed) break;
+        if (!changed) { break;
+}
     }
     out.completion_truncated = truncated;
 
