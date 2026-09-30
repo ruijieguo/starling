@@ -1,4 +1,6 @@
 import gc
+import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -41,3 +43,16 @@ def isolate_dashboard_ingest_spool(tmp_path, monkeypatch):
 def core():
     from starling import _core
     return _core
+
+
+@pytest.fixture(scope="session")
+def native_core_path():
+    """已安装 `starling._core` 扩展的实际文件路径（随平台/解释器后缀变化，不得硬编码）。
+
+    本机原生行为测试在子进程里用 spec_from_file_location 载入该文件并校验 `__file__`，
+    保证被测的是当前安装的扩展而非其它副本。
+    """
+    spec = importlib.util.find_spec("starling._core")
+    if spec is None or not spec.origin or not Path(spec.origin).is_file():
+        pytest.fail("starling._core 扩展未安装：先 `python scripts/configure_build.py --build --python-editable`")
+    return Path(spec.origin).resolve()

@@ -8,13 +8,13 @@ import pytest
 ROOT=Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize('boundary',['pipeline','runner','private_gap'])
-def test_native_dialogue_configuration_reaches_retrieval(boundary):
+def test_native_dialogue_configuration_reaches_retrieval(boundary,native_core_path):
     program=r'''
 import importlib.util,json,sys,tempfile
 from pathlib import Path
 root=Path(sys.argv[1]);boundary=sys.argv[2]
 sys.path.insert(0,str(root/'scripts'))
-path=root/'build/python/starling/_core.cpython-314-darwin.so'
+path=Path(sys.argv[4])
 spec=importlib.util.spec_from_file_location('starling._core',path)
 core=importlib.util.module_from_spec(spec);sys.modules['starling._core']=core;spec.loader.exec_module(core)
 assert Path(core.__file__).resolve()==path.resolve()
@@ -53,5 +53,5 @@ with tempfile.TemporaryDirectory() as tmp:
  assert result['context_bytes']==len(result['block'].encode())<=4000
  if boundary=='runner':assert row['embedding_request_delta']==0
 '''
-    result=subprocess.run([sys.executable,'-c',program,str(ROOT),boundary,json.dumps(source_config('capacity'))],capture_output=True,text=True)
+    result=subprocess.run([sys.executable,'-c',program,str(ROOT),boundary,json.dumps(source_config('capacity')),str(native_core_path)],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr
