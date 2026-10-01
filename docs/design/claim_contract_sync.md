@@ -312,3 +312,9 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 原生 `claim_extraction_batch_plan(payload, policy)` 给出计划与请求上界；分批回执保留全局attempt编号、batch_index、target_clause_ids和 `claim_batches_complete`。全部批成功才允许该holder分批claim写入；后批失败保留全部原始回执与成本，0条分批claim落库。持久化重新验证计划、policy与候选来源，批间写异常由事务回滚；跨分批大小重放保持幂等。完整上下文重复输入增加成本，有限来源单元不等于token硬上限。
 
 本轮本地验证已通过，真实同输入验收与扩大评测尚待完成；不把测试结果当QA增益。完整设计与当前证据见[R5.6中文设计](../superpowers/specs/2026-09-25-socialmem-r56-bounded-claim-design.md)，历史评测继续按各自冻结核心解释。
+
+## 抽取提示 prefers 主语语义修正补记（2026-09-27）
+
+`python/starling/extractor/prompts.py` 的 `EXTRACTION_PROMPT`（生产默认 `belief_prompt`）在 `5a945ca` 中修正了 `prefers` 谓词的主语语义：旧示例把被偏好的目标当主语（`"I want to spend the weekend outdoors"` → `subject="weekend"`, `subject_kind="entity"`），与同文件 `SUBJECT_KIND` 规则自相矛盾——偏好是态度，只能由 cognizer 持有。新版改为持有偏好的人作主语（`subject="Li Hua"`, `subject_kind="cognizer"`）。语义与 C++ `claim_contract.cpp` 中 `PredicateCatalog` 对 `prefers` 的 `mental_subjects={cognizer}` 定义一致。
+
+该改动属于产品默认行为变更，与 R5.3 检索 sidecar 实验无关，但随同一提交合入且当时未单独记录；本条为事后补记。真实模型对比（2026-09-28）确认行为改变：旧版抽取为 `weekend/entity`，新版为 `Alice/cognizer`；旧版行为使偏好类语句无法进入人物图谱、ToM 查询与社交推理，属修复而非语义漂移。静态守卫 `tests/python/test_preference_prompt_contract.py` 已能拦下旧版示例。episodic 与 general_fact 两条通道按设计不抽取偏好，不受影响。

@@ -111,6 +111,13 @@ std::string ascii_lower(std::string text) {
     for (auto& c:text) if (c>='A'&&c<='Z') c=static_cast<char>(c-'A'+'a');
     return text;
 }
+// EXPERIMENTAL SCORING HINTS -- not core semantics.
+// The marker tables below are a coarse, question-wording heuristic tuned on the
+// SocialMemBench development cohort. They are deliberately lexical: no calibrated
+// threshold, no learned model. Promote nothing into the default strategy on the
+// strength of them without validating on question wordings outside that cohort;
+// the R5.3 and R6.8 gates failed promotion and R5.6 acceptance is still pending,
+// so these remain opt-in only.
 bool asks_for_all_members(const std::string& question) {
     const auto lower=ascii_lower(question);
     for (const auto& marker: {
@@ -846,6 +853,9 @@ void profile_sources(std::vector<Source>& sources,const ObserverQuery& q,int sou
     for(auto i:eligible)if(relation&&paired[i])interaction.push_back(i);
     if(support_requested)for(auto i:eligible)
         if(!sources[i].subject_match&&involved[i])support.push_back(i);
+    // EXPERIMENTAL SCORING HINT (see header note near asks_for_all_members):
+    // substring cues stand in for "does this turn describe a state change".
+    // A wording that avoids these words is silently treated as having no state.
     const auto state_marker=[&](const Source& s) {
         if (v6||v7) return has_self_state_claim(s);
         const auto text=ascii_lower(s.text);
