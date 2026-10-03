@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "metric": "native_row_polarity_and_object_scope_coverage",
+  "label_origin": "source_text_authored_after_exploratory_observation",
+  "note": "Targets are derived from the source sentence and its reference answer in eval_socialmem_predicate_cases.json. They were written after a one-off exploratory extraction had been read, so they are not a blind pre-registration. The frozen extended-label file and its hash are intentionally untouched.",
+  "cases": [
+    {
+      "id": "negative_target_scope",
+      "source_sha256": "ca6135d6c5897af9bfc6de4e8426be4fc8bf3f17b35a2cbfbf65383de2b1ef8b",
+      "targets": [
+        {"actor": "Dana", "predicate": "prefers", "modality": "DESIRES", "polarity": "NEG",
+         "object_all": [["no downtime", "no-downtime", "zero downtime", "without downtime"]]}
+      ]
+    },
+    {
+      "id": "preference_contrast",
+      "source_sha256": "b20e4640b09198049ef7fb9f174306e9c1950e671a5e7e41c9abfc6f98a824bb",
+      "targets": [
+        {"actor": "Mateo", "predicate": "prefers", "modality": "DESIRES", "polarity": "NEG",
+         "object_all": [["green room"]]},
+        {"actor": "Mateo", "predicate": "prefers", "modality": "DESIRES", "polarity": "POS",
+         "object_all": [["red room"]]}
+      ]
+    }
+  ]
+}
