@@ -7,10 +7,11 @@
 - 在 `qwen3.8-27b`、生产默认 belief 提示下，`Dana: I do not prefer no downtime.` 连续 5 次都抽成 `prefers / "no downtime" / NEG / DESIRES`，原生落库后 `polarity=neg`。否定范围落在被偏好的选项上，没有被误存成对"停机"的正向偏好。
 - 对照用例 `preference_contrast` 5 次都抽成 `green room / NEG` 加 `red room / POS`。
 - 3 个标签目标 × 5 次共 15 个格子，15 个覆盖，0 个技术失败，0 条未匹配行。共 10 次请求、63615 tokens，全部 `finish_reason=stop`。
-- 2026-09-12 文档记录的该用例技术失败这次没有复现。该失败只出现在当天 source-turn 那一次运行，之后 generation、protocol-boundary、recovery-a 三轮的 `native_ok` 都是 `true`。当时的提示和核心与现在不同，所以它只是旧结论，不是现行缺陷。
+- 2026-09-12 文档记录的该用例技术失败**本探针没有检验**。归档里那次失败是 claim 合同补充通道的 `schema_failure`，原因是 `topic must be null or a nonempty string`，校验在 `claim_contract.cpp`。本探针走的是生产默认 belief 提示，不是这条通道，所以 15/15 既不能证明它已修复，也不能证明它仍存在。归档里能确认的只有：source-turn 之后的 generation、protocol-boundary、recovery-a 三轮，这个用例的 `native_ok` 都是 `true`，而且 source-turn 那次的核心哈希与现行核心不同。
 
 ## 这个结果不能说明什么
 
+- 只覆盖生产默认 belief 提示这一条抽取通道，不覆盖 claim 合同补充通道（`claim_extraction_prompt`）。
 - 适配器把 `temperature` 固定为 0，5 次重复不是独立采样。它只说明该输入在该服务上输出稳定，不说明模型对否定范围整体可靠。
 - 样本只有 2 个用例、3 个目标。不能外推到其他措辞、其他语言或长对话。
 - 标签是读过一次探索性抽取之后才写的，不是盲预注册。覆盖率因此偏乐观，只适合当回归哨兵，不适合当能力证据。
@@ -18,7 +19,7 @@
 
 ## 为什么新增独立标签和打分，而不是改冻结标签
 
-冻结的 `eval_socialmem_extended_labels.json` 里这个用例是 `targets: []`、`legacy_channel_only`，所有历史统计都把它排除在分母外。直接补标签有两个问题：
+冻结的 `eval_socialmem_extended_labels.json` 里这个用例是 `targets: []`、`legacy_channel_only`，所有历史统计都把它排除在分母外。直接补标签有三个问题：
 
 1. 冻结打分器只认 `feels / uncertain_about / decided_on / indifferent_to / trusts` 五个补充谓词。离线核对显示 `prefers` 行会被计入 `excluded_predictions`，目标覆盖为 0，所以补了标签也打不出分。
 2. 历史 `legacy` 通道的落库行没有 `semantic_claim_json`，topic、scope、time 三个维度无法打分。
