@@ -6,10 +6,10 @@
 
 - **交付的改动只有一处。** 准入提示末尾加一句，要求闭合所有括号，完整响应是以 `}]}` 结尾的单个 JSON 对象，其后没有文字。改动在 `src/extractor/claim_contract.cpp` 的 `claim_admission_prompt`。抽取提示和固定参考示例逐字节不变，抽取提示与批计划的哈希钉点保持原值。
 - **它对 qwen3.8-27b 有效。** 同一批 36 格（6 用例 × 2 模式 × 3 次），legacy 模式下 2 候选的准入响应字面可解析从 1/9 升到 9/9（Fisher 精确检验双侧 p=0.0004），技术失败从 8 降到 0，终态 admitted 从 23 升到 32。json_object 模式本来就是 9/9，没有变化。
-- **撤回了另一项改动。** 在抽取提示的固定参考示例里加一条否定偏好示例，让 `negative_target_scope` 的入库从 7/12 升到 12/12（p=0.037）。但它在 json_object 模式下让 `preference_contrast` 的 NEG 声明带 `NEGATED` 的比例从 6/6 降到 0/6（新旧核心交错对照，p=0.002），在 deepseek-v3 上从 20/30 降到 15/30（差异不显著，p=0.29）。净效果不明确且有回归，所以不交付。
+- **撤回了另一项改动。** 在抽取提示的固定参考示例里加一条否定偏好示例，让 `negative_target_scope` 的入库从 7/12 升到 12/12（p=0.037）。但它在 json_object 模式下让 `preference_contrast` 的 NEG 声明带 `NEGATED` 的比例从 6/6 降到 0/6（新旧核心交错对照，p=0.002）。deepseek-v3 上的 20/30 到 15/30 不能算这条示例的回归：后来在 deepseek 上跑了抽取提示未改动的交付版本，同样是 15/30（见下文），这个下降是同一提示两次运行之间的漂移。撤回的依据只剩 qwen3.8-27b 的 json_object 对照。净效果不明确且有回归，所以不交付。
 - **"NEG 缺 `NEGATED`" 被拒的问题没有解决。** 交付版本下 `negative_target_scope` 在 legacy 模式 3 格里 1 格被拒，json_object 模式 3 格全部被拒。守卫保持原样，没有放宽。
 - **deepseek-v3 补测：旧的 topic `schema_failure` 在 96 格里出现 0 次，但这不是对当年核心的检验。** 同模型、同传输参数、当前核心，冻结的全部 16 个用例 × 2 模式 × 3 次，没有出现 `topic must be null or a nonempty string`。2026-09-12 的核心不在 git 历史里（`claim_contract.cpp` 在 2026-09-27 才首次入库），无法运行。归档里能对照的只有先后顺序：前一轮 source-turn 有 5 个用例触发这条错误，其中包括 `negative_target_scope`；同日之后的 generation 轮报告写明在抽取提示里新增了主题逐字选取、空值与字段类型等规则，该轮分析里没有这条错误。这是历史归档的先后对照，不是重跑，而且两轮的模型输出都是重新生成的，不能把错误消失单独归因于提示规则。本机最早的冻结副本是 2026-09-15 的，其中 topic 规则句与当前源码逐字相同，所以这条规则的表述自 09-15 起没有变化。
-- **deepseek-v3 上另有 3 个围栏失败，已在修复前核心复现。** 3 格都是 `possible_not_decided`，准入响应在 ```json 围栏之后又写了一段解释，原生因此判为 `incomplete or trailing code fence`。示例加收尾句核心上这 3 格变成 0。这个组合不是交付版本，deepseek 上没有单独跑过交付版本，所以不能把这个改善归到收尾句。
+- **deepseek-v3 上另有 3 个围栏失败，已在修复前核心复现。** 3 格都是 `possible_not_decided`，准入响应在 ```json 围栏之后又写了一段解释，原生因此判为 `incomplete or trailing code fence`。示例加收尾句核心上这 3 格变成 0，后来单独跑的交付版本上也是 0（见下文）。但 3 格里只有 1 格的抽取原文与基线逐字节相同，准入响应围栏后另有文字的比例是 3/85 到 0/81（Fisher 精确检验双侧 p=0.246），没有证据说这个改善来自收尾句。
 
 ## 三个核心
 
@@ -87,10 +87,45 @@ NEG 声明带 `NEGATED`（两种模式合并）：
 
 deepseek-v3 的准入响应在 171 次里全部包在 ```json 围栏里，围栏被评测策略 `claim_allow_code_fence=True` 接受，所以围栏本身不是失败。171 次里没有目录外的理由名。准入单独回放里，只有在人为构造的错误极性对照上它才写 `wrong_polarity`（不加收尾句 5/5，加了 3/5），原生映射要求极性问题用 `wrong_scope`。2026-09-12 的 generation 轮报告也记录过同类现象（同样是 deepseek-v3）：3 个固定负候选的准入原因使用了未定义的 `wrong_polarity` 或 `wrong_time`，计为 schema 失败。不含这个对照时，不加收尾句 10 次里 1 次围栏后有文字，加了 0/10，样本太小，不能作为收尾句对 deepseek 有效的证据。
 
+### deepseek-v3 交付版本端到端（同传输）
+
+合并 #75 之后补跑：交付版本核心 `9b7bf154` 对 deepseek-v3，传输参数与上面相同，全部 16 个用例 × 2 模式 × 3 次，共 96 格。运行前断言核心副本确为交付版本，并核对了基线核心与交付核心在全部 16 个用例上的抽取提示逐字节相同。归档目录 `socialmem_20261004_claim_channel_deepseek_delivered`，177 次请求，1,105,725 tokens，runs.jsonl SHA-256 前 16 位 `0fbc91d693986ca0`，没有出现密钥。
+
+| 终态 | 基线 | 交付版本 | 示例加收尾句 |
+| --- | --- | --- | --- |
+| admitted | 80 | 75 | 80 |
+| semantic_rejection | 13 | 21 | 16 |
+| technical_failure | 3 | 0 | 0 |
+
+| 原因（按条数，只列结构错误和作用域守卫） | 基线 | 交付版本 |
+| --- | --- | --- |
+| 结构错误: incomplete or trailing code fence | 3 | 0 |
+| 语义拒收: explicit source marker missing: NEGATED | 10 | 15 |
+| 语义拒收: negative relation repeats object denial | 0 | 1 |
+| 语义拒收: topic is absent from source unit | 3 | 2 |
+
+- 逐格配对：变好 4、变差 6、不变 86。10 个终态不同的格里 9 个的抽取原文本身就不同，而两个核心的抽取提示逐字节相同，所以这是同一提示两次运行之间的漂移，不是收尾句的效果。
+- 唯一抽取原文逐字节相同而终态不同的格，是基线的一个围栏失败。准入响应围栏后另有文字的比例是 3/85 到 0/81（Fisher 精确检验双侧 p=0.246），没有证据说它来自收尾句。
+- 抽取原文逐字节相同、两边都调用了准入的 22 格里，准入决定完全相同。
+- 同一抽取提示的两次运行，deepseek-v3 只有 28/96 格的抽取原文逐字节相同，qwen3.8-27b 是 34/36。所以 deepseek 上的逐格比较噪声很大。
+- 交付版本新出现的 1 条 `negative relation repeats object denial` 来自 `emotion_negative` 的一次抽取：模型把否定同时写进了关系和对象。
+- NEG 声明带 `NEGATED`（两种模式合并，每用例 6 条）：
+
+| 用例 | 基线 | 交付版本 | 示例加收尾句 |
+| --- | --- | --- | --- |
+| `emotion_negative` | 6/6 | 6/6 | 6/6 |
+| `negative_target_scope` | 2/6 | 0/6 | 1/6 |
+| `preference_contrast` | 2/6 | 0/6 | 2/6 |
+| `preference_qualifiers` | 4/6 | 3/6 | 0/6 |
+| `reported_distrust` | 6/6 | 6/6 | 6/6 |
+| 合计 | 20/30 | 15/30 | 15/30 |
+
+基线与交付版本的抽取提示相同，两次运行之间就差了 5 条（20/30 对 15/30，p=0.295）。示例加收尾句核心的 15/30 对这两次合并的 35/60，p=0.504。所以前文说的 deepseek-v3 上 20/30 到 15/30，不能算示例的回归。逐用例的表是事后分组，一共 5 组，没有做多重比较校正，其中 `preference_qualifiers` 的 0/6 对合并的 7/12 单看 p=0.038，不作结论。
+
 ## 这些结果不能说明什么
 
 - 所有重复都是 `temperature` 固定为 0 的同一输入，重复不独立，p 值只描述这批格子。
-- 交付版本只在 qwen3.8-27b 上跑过端到端，deepseek-v3 上只有准入单独回放。
+- 交付版本在 qwen3.8-27b（36 格）和 deepseek-v3（96 格）上都跑过端到端。deepseek-v3 上交付版本与基线的差异几乎都来自抽取阶段的漂移，不能归到收尾句。
 - 36 格只有 6 个用例，其中只有 `negative_target_scope` 和 `preference_contrast` 涉及 `NEGATED`。
 - 没有标签、没有准确率。`admitted` 只表示通过了确定性守卫和准入调用。
 - 示例对 `json_object` 模式回归的原因没有证据，不下结论。
