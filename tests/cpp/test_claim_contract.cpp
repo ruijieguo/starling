@@ -917,6 +917,29 @@ TEST(ClaimContract, AdmissionReasonDirectoryProducesOnlyValidNativeDecisions) {
     EXPECT_EQ(data.at("candidates"),Json::parse(response()));
 }
 
+TEST(ClaimContract, FinalFormatCheckTiesNegativePolarityToTheNegatedMarker) {
+    const auto prompt=claim_extraction_prompt(source,"Mina");
+    const auto source_at=prompt.find("SOURCE_DATA_JSON:");
+    ASSERT_NE(source_at,std::string::npos);
+    const auto reminder=prompt.find("\nFINAL FORMAT CHECK:",source_at);
+    ASSERT_NE(reminder,std::string::npos) << "final format reminder must follow the source data";
+    EXPECT_NE(prompt.substr(reminder).find("If polarity is NEG, scope_markers must contain NEGATED"),std::string::npos)
+        << "final format reminder does not tie NEG polarity to the NEGATED marker";
+    // The reminder only teaches the combination; the guard itself is unchanged.
+    const std::string dana="Dana: I do not prefer no downtime.";
+    auto row=Json{{"holder","Dana"},{"holder_perspective","FIRST_PERSON"},{"subject","Dana"},
+        {"subject_kind","cognizer"},{"predicate","prefers"},{"object","no downtime"},
+        {"modality","PREFERS"},{"polarity","NEG"},{"nesting_depth",0},{"confidence",nullptr},
+        {"evidence",{{"clause_id","c0"},{"actor","Dana"},{"attributed_to",nullptr},
+            {"assertion_scope","ASSERTED"},{"scope_markers",Json::array({"ASSERTED"})},
+            {"time_text",""},{"topic","no downtime"},{"event_time",nullptr}}}};
+    const auto rejected=parse_claim_response(
+        Json{{"schema_version",2},{"statements",Json::array({row})}}.dump(),dana,"Dana");
+    EXPECT_TRUE(rejected.errors.empty());
+    EXPECT_TRUE(rejected.statements.empty());
+    ASSERT_EQ(rejected.semantic_rejections.size(),1u);
+    EXPECT_EQ(rejected.semantic_rejections[0].detail,"explicit source marker missing: NEGATED");
+}
 TEST(ClaimContract, AdmissionPromptDemandsOneCompleteClosedJsonObject) {
     const auto prompt=claim_admission_prompt(source,response());
     const std::string catalog="\nPREDICATE_CATALOG_JSON:\n";

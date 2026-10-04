@@ -426,6 +426,7 @@ const char* final_format_reminder=R"(FINAL FORMAT CHECK:
   {"holder":"HOLDER","holder_perspective":"PERSPECTIVE","subject":"SUBJECT","subject_kind":"cognizer","predicate":"PREDICATE","object":"OBJECT","modality":"MODALITY","polarity":"POS","nesting_depth":0,"confidence":null,"evidence":{"clause_id":"CLAUSE_ID","actor":"ACTOR","attributed_to":null,"assertion_scope":"SCOPE","scope_markers":["SCOPE"],"time_text":"","topic":null,"event_time":null}}
 - Each object key appears exactly once. In particular, write event_time:null once; do not append a second time_text or topic.
 - Do not emit Markdown, prose, source metadata or extra keys.
+- If polarity is NEG, scope_markers must contain NEGATED; a statement with polarity NEG and no NEGATED marker is rejected.
 )";
 
 const Json& generation_examples() {
