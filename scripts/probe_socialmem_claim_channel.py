@@ -26,6 +26,12 @@ DEFAULT_MODEL = "qwen3.8-27b"
 MODES = ("legacy", "json_object")
 DEFAULT_CASES = ("negative_target_scope", "preference_contrast", "emotion_negative",
                  "reported_distrust", "decision_change", "mixed_emotions")
+# 传输档位。deepseek-2026-09-12 复刻 2026-09-12 轮次记录的抽取传输（见 generation 分析 JSON 的
+# extract_transport）；json_object 由 --modes 选择，不在档位里。
+PROFILES = {
+    "default": {"max_tokens": 8192, "timeout_ms": 120000, "max_retries": 0, "enable_thinking": False},
+    "deepseek-2026-09-12": {"max_tokens": 4096, "timeout_ms": 60000, "max_retries": 3, "enable_thinking": None},
+}
 
 
 def sha256_text(text):
@@ -41,6 +47,14 @@ def load_cases(ids):
     if unknown:
         raise ValueError(f"unknown synthetic case ids: {unknown}")
     return [{**sources[name], "track": "synthetic"} for name in ids]
+
+
+def resolve_case_ids(ids):
+    """`all` 展开为冻结的全部 synthetic 用例；其余原样返回。"""
+    ids = list(ids)
+    if ids == ["all"]:
+        return tuple(case["id"] for case in pred.synthetic_cases())
+    return tuple(ids)
 
 
 def admission_shape(raw):
@@ -122,7 +136,7 @@ def summarize(records):
             "tokens": sum(r["tokens"] for r in records)}
 
 
-def run(core, llms, transports, out, *, case_ids=DEFAULT_CASES, repeats=3):
+def run(core, llms, transports, out, *, case_ids=DEFAULT_CASES, repeats=3, profile="default"):
     if repeats < 1:
         raise ValueError("repeats must be positive")
     modes = tuple(llms)
@@ -130,7 +144,7 @@ def run(core, llms, transports, out, *, case_ids=DEFAULT_CASES, repeats=3):
         raise ValueError("modes must be a nonempty subset of legacy/json_object with matching transports")
     cases = load_cases(case_ids)
     out.mkdir(parents=True, exist_ok=False)
-    manifest = {"status": "running", "claim_level": "claim_channel_protocol_probe",
+    manifest = {"status": "running", "claim_level": "claim_channel_protocol_probe", "profile": profile,
                 "started_at": datetime.now(timezone.utc).isoformat(), "repeats": repeats,
                 "cases": [c["id"] for c in cases], "modes": list(modes), "transports": transports,
                 "max_requests": repeats * len(cases) * len(modes) * 2,
@@ -138,7 +152,7 @@ def run(core, llms, transports, out, *, case_ids=DEFAULT_CASES, repeats=3):
                 "core_sha256": controls.digest(Path(core.__file__)),
                 "script_sha256": controls.digest(Path(__file__)),
                 "protocol": "Repeat-major, case, mode order, mode order alternates per repeat. One extraction and at "
-                            "most one admission per cell, no retries, no gold in prompts. Admission JSON validity is "
+                            "most one admission per cell, no content retries (transport retries follow the recorded transport), no gold in prompts. Admission JSON validity is "
                             "judged by a literal json.loads only; nothing is repaired or truncated. Technical "
                             "failures stay in the denominator. No accuracy is produced."}
     controls.dump(out / "manifest.json", manifest)
@@ -167,13 +181,16 @@ def main(argv=None):
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--cases", nargs="+", default=list(DEFAULT_CASES))
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="default")
     args = parser.parse_args(argv)
     from starling import _core
 
     llms, transports = {}, {}
     for mode in args.modes:
-        llms[mode], transports[mode] = base.build_llm(_core, args.model, json_object=(mode == "json_object"))
-    summary = run(_core, llms, transports, args.out, case_ids=args.cases, repeats=args.repeats)
+        llms[mode], transports[mode] = base.build_llm(_core, args.model, json_object=(mode == "json_object"),
+                                                           **PROFILES[args.profile])
+    summary = run(_core, llms, transports, args.out, case_ids=resolve_case_ids(args.cases),
+                  repeats=args.repeats, profile=args.profile)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
