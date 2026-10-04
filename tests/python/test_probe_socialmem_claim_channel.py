@@ -179,3 +179,32 @@ def test_build_llm_json_object_flag_reaches_transport_and_restores_env(core, mon
     assert transport["json_object_output"] is False
     assert SECRET not in json.dumps(transport)
     assert "OPENAI_API_KEY" not in os.environ and "OPENAI_BASE_URL" not in os.environ
+
+
+def test_resolve_case_ids_expands_all_to_every_synthetic_case(probe):
+    ids = probe.resolve_case_ids(["all"])
+    assert len(ids) == 16 and len(set(ids)) == 16 and "negative_target_scope" in ids
+    assert probe.resolve_case_ids(["negative_target_scope", "emotion_negative"]) == (
+        "negative_target_scope", "emotion_negative")
+
+
+def test_historical_profile_reproduces_the_recorded_transport_and_default_is_unchanged(probe, core, monkeypatch):
+    base = importlib.import_module("probe_socialmem_negation_scope")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET)
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://example.test/compatible-mode/v1")
+    _, old = base.build_llm(core, "deepseek-v3", json_object=True, **probe.PROFILES["deepseek-2026-09-12"])
+    assert (old["max_tokens"], old["timeout_ms"], old["max_retries"]) == (4096, 60000, 3)
+    assert old["enable_thinking"] is None and old["json_object_output"] is True
+    _, default = base.build_llm(core, "qwen3.8-27b", **probe.PROFILES["default"])
+    assert (default["max_tokens"], default["timeout_ms"], default["max_retries"]) == (8192, 120000, 0)
+    assert default["enable_thinking"] is False and default["json_object_output"] is False
+    assert SECRET not in json.dumps([old, default])
+
+
+def test_manifest_records_the_profile_and_states_that_transport_retries_follow_the_transport(probe, core, tmp_path):
+    out = tmp_path / "run"
+    probe.run(core, {"legacy": scripted(core, "negative_target_scope", [], decisions(0))}, TRANSPORT, out,
+              case_ids=("negative_target_scope",), repeats=1, profile="deepseek-2026-09-12")
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["profile"] == "deepseek-2026-09-12"
+    assert "no content retries" in manifest["protocol"] and "transport retries follow" in manifest["protocol"]

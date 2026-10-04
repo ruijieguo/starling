@@ -917,6 +917,19 @@ TEST(ClaimContract, AdmissionReasonDirectoryProducesOnlyValidNativeDecisions) {
     EXPECT_EQ(data.at("candidates"),Json::parse(response()));
 }
 
+TEST(ClaimContract, AdmissionPromptDemandsOneCompleteClosedJsonObject) {
+    const auto prompt=claim_admission_prompt(source,response());
+    const std::string catalog="\nPREDICATE_CATALOG_JSON:\n";
+    const auto end=prompt.find(catalog);
+    ASSERT_NE(end,std::string::npos);
+    const auto instruction=prompt.substr(0,end);
+    EXPECT_NE(instruction.find("Close every brace and bracket"),std::string::npos)
+        << "admission instruction does not tell the model to close its JSON object";
+    EXPECT_NE(instruction.find("ends with \"}]}\""),std::string::npos);
+    EXPECT_NE(instruction.find("Return exactly {\"schema_version\":1,\"decisions\":[{\"index\":0,\"retain\":true,\"reason\":\"supported\"}]}"),
+              std::string::npos);
+    EXPECT_NE(instruction.find("one decision per candidate in original index order"),std::string::npos);
+}
 TEST(ClaimContract, BothModelBoundariesReceiveSingleActionAndRoutingDistinctions) {
     const auto extraction=claim_extraction_prompt(source,"Mina");
     const auto admission=claim_admission_prompt(source,response());

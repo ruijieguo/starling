@@ -318,3 +318,15 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 `python/starling/extractor/prompts.py` 的 `EXTRACTION_PROMPT`（生产默认 `belief_prompt`）在 `5a945ca` 中修正了 `prefers` 谓词的主语语义：旧示例把被偏好的目标当主语（`"I want to spend the weekend outdoors"` → `subject="weekend"`, `subject_kind="entity"`），与同文件 `SUBJECT_KIND` 规则自相矛盾——偏好是态度，只能由 cognizer 持有。新版改为持有偏好的人作主语（`subject="Li Hua"`, `subject_kind="cognizer"`）。语义与 C++ `claim_contract.cpp` 中 `PredicateCatalog` 对 `prefers` 的 `mental_subjects={cognizer}` 定义一致。
 
 该改动属于产品默认行为变更，与 R5.3 检索 sidecar 实验无关，但随同一提交合入且当时未单独记录；本条为事后补记。真实模型对比（2026-09-28）确认行为改变：旧版抽取为 `weekend/entity`，新版为 `Alice/cognizer`；旧版行为使偏好类语句无法进入人物图谱、ToM 查询与社交推理，属修复而非语义漂移。静态守卫 `tests/python/test_preference_prompt_contract.py` 已能拦下旧版示例。episodic 与 general_fact 两条通道按设计不抽取偏好，不受影响。
+
+## claim 通道输出稳健性补记（2026-10-04）
+
+只改了准入提示：末尾加一句，要求闭合所有括号，完整响应是以 `}]}` 结尾的单个 JSON 对象，其后没有文字。改动在 `src/extractor/claim_contract.cpp`，只涉及准入提示。抽取提示和固定参考示例逐字节不变，所以抽取提示与批计划的哈希钉点保持原值。
+
+动机：qwen3.8-27b 在 legacy 模式下，2 个候选的准入响应 9 格里有 8 格少或多一个 `}`，被严格解析整条丢弃，两个候选都没入库。在 4 个固定候选夹具、每个 3 次的单独回放里，不加这句时 12 次里 6 次可解析，加了之后 12/12。
+
+没有放宽任何守卫或解析：畸形外壳仍是 `envelope_failure`，NEG 缺 `NEGATED` 仍被拒。`semantic_claim_contract` 仍默认关闭。
+
+曾试过另一项改动并撤回：在抽取提示的固定参考示例里增加一条 `prefers`/NEG 示例，希望模型对 "I do not prefer ..." 写出 `NEGATED`。它对 `negative_target_scope` 有效（qwen3.8-27b，legacy，12 次：带 `NEGATED` 的 NEG 声明 7/12 到 12/12），但在 json_object 模式下让 `preference_contrast` 的 NEG 声明全部丢了 `NEGATED`（6/6 到 0/6，新旧核心交错对照），deepseek-v3 上 NEG 声明带 `NEGATED` 也由 20/30 降到 15/30，差异不显著。净效果不明确且有回归，所以没有交付。"NEG 缺 `NEGATED`" 的拒收问题因此仍未解决，守卫保持原样。
+
+数据与局限见[评测记录](../eval/2026-10-04-socialmem-claim-channel-fix.md)，修复前的观察见[claim 通道探针](../eval/2026-10-03-socialmem-claim-channel-probe.md)。

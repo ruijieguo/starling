@@ -71,7 +71,8 @@ def score_rep(targets, rows, persisted):
             "unmatched_rows": len(rows) - len(assignment), "technical_failed": not persisted}
 
 
-def build_llm(core, model, *, json_object=False):
+def build_llm(core, model, *, json_object=False, max_tokens=8192, timeout_ms=120000, max_retries=0,
+              enable_thinking=False):
     """显式 DashScope 环境；密钥只在 from_env 快照，不写入任何归档。"""
     if not os.environ.get("DASHSCOPE_API_KEY"):
         raise ValueError("DASHSCOPE_API_KEY is required; provider fallback is not allowed")
@@ -83,12 +84,12 @@ def build_llm(core, model, *, json_object=False):
     with baseline._provider_environment("DASHSCOPE_API_KEY", endpoint):
         cfg = core.OpenAIAdapterConfig.from_env()
         cfg.model = model
-        cfg.max_tokens, cfg.timeout_ms, cfg.max_retries = 8192, 120000, 0
-        cfg.json_object_output, cfg.enable_thinking = json_object, False
+        cfg.max_tokens, cfg.timeout_ms, cfg.max_retries = max_tokens, timeout_ms, max_retries
+        cfg.json_object_output, cfg.enable_thinking = json_object, enable_thinking
         llm = core.OpenAIAdapter(cfg)
     return llm, {"endpoint": cfg.base_url, "model": cfg.model, "temperature": 0,
                  "max_tokens": cfg.max_tokens, "timeout_ms": cfg.timeout_ms,
-                 "max_retries": cfg.max_retries, "enable_thinking": False,
+                 "max_retries": cfg.max_retries, "enable_thinking": enable_thinking,
                  "json_object_output": json_object}
 
 
