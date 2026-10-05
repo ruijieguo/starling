@@ -92,13 +92,15 @@ int scalar(persistence::SqliteAdapter& db,const char* sql) {
 TEST(ClaimBatchTargetUnits, FalseRetainsHistoricalPromptRetryPlanAndReceiptShape) {
     ValidationPolicy defaults;EXPECT_FALSE(enabled(defaults));auto p=policy(false);p.claim_protocol_retry_budget=1;
     // Recorded against the frozen R56 4c5a7c39 core before modifying production code.
-    EXPECT_EQ(crypto::sha256_hex(claim_extraction_prompt(source,"Mina")),"1b57e41eeb55ea731555515273db48fe253ba435d4c9723cc2d58b8300cb9809");
+    // The prompt pins below were re-recorded on purpose on 2026-10-05, when the final format check gained
+    // the NEG/NEGATED reminder line. The batch-plan pin is unchanged.
+    EXPECT_EQ(crypto::sha256_hex(claim_extraction_prompt(source,"Mina")),"f0736f29fd8c5eebce36b9fedfd150255c936e145d4eca47162806f1fbd9852f");
     EXPECT_EQ(crypto::sha256_hex(claim_extraction_batch_plan(source,p)),"38691044ca106deee345d1dad67cd0680caf7fb52e91df6de5e2c987d4c9e092");
     auto db=persistence::SqliteAdapter::open(":memory:");Sequence llm;llm.responses={response("{}"),empty(),empty(),empty()};
     Extractor ex(db->connection(),llm,"",p);auto r=ex.extract_llm(params().payload,"Mina",{});
     ASSERT_EQ(llm.prompts.size(),4u);
-    EXPECT_EQ(crypto::sha256_hex(llm.prompts[0]),"3b7f19fa4dba30038daef5cc5762777363e30c0a2dd407dd0e6b8bd6bfcae955");
-    EXPECT_EQ(crypto::sha256_hex(llm.prompts[1]),"971a879ebc506e3cc1ec61733094bc88f3b05b4d9994ad7e2a0fca2436b25287");
+    EXPECT_EQ(crypto::sha256_hex(llm.prompts[0]),"7206e5322308a96515aacc63d7bfbbf862eb6806704322b028dc4cb377a56f2c");
+    EXPECT_EQ(crypto::sha256_hex(llm.prompts[1]),"33b270e40d473e22a053c6eebe6cabc19532c9637acc70edc99a8e9a2da247c1");
     const auto receipt=Json::parse(claim_extraction_receipt(r));
     EXPECT_EQ(receipt.size(),19u);EXPECT_FALSE(receipt.contains("claim_batch_prompt_profile"));
     EXPECT_EQ(receipt.at("claim_batch_plan").size(),6u);EXPECT_EQ(receipt.at("claim_batch_plan").at("belief_request_upper_bound"),9);
@@ -147,7 +149,7 @@ TEST(ClaimBatchTargetUnits, TargetPromptUsesStatementFirstReferenceLayoutWithout
     EXPECT_EQ(crypto::sha256_hex(target.substr(0,ref_begin)),
               "f1a6e1735a4b007d92ef084349578b3215413b2acdff6c3e5c97a3908a6b5421");
     EXPECT_EQ(crypto::sha256_hex(target.substr(ref_end)),
-              "8c538a44b93feecf98600a86283f2f29bb440944ccc7f3941c333ab3893f9b61");
+              "6ac1b1efa81366ebc69e0d200e183dc7614e8cb8be1062fcc3fc36f255625d7c");
     const auto target_examples=OrderedJson::parse(reference_examples_bytes(target));
     const auto legacy_examples=OrderedJson::parse(reference_examples_bytes(legacy));
     ASSERT_TRUE(target_examples.is_array());ASSERT_EQ(target_examples.size(),15u);
@@ -170,7 +172,7 @@ TEST(ClaimBatchTargetUnits, TargetPromptUsesStatementFirstReferenceLayoutWithout
     }
     EXPECT_EQ(restored.dump(),reference_examples_bytes(legacy));
     EXPECT_EQ(crypto::sha256_hex(target.substr(0,ref_begin)+restored.dump()+target.substr(ref_end)),
-              "1e7cc8ef8a6e63500b4c6451508caf682a6b57c82acc24b6da991dc53e364b5b");
+              "9ce7bc6cf32f98a2ce332576886e79adf019f1cb736596846889014ae44abae4");
     // The historical false mode must keep its sorted wire layout; the
     // target copy is private to the target branch.
     EXPECT_NE(object_keys(legacy_examples.at(0).at("response").at("statements").at(0)),expected);

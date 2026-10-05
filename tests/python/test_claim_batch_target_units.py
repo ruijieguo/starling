@@ -26,7 +26,9 @@ def test_native_default_false_and_old_prompt_plan_byte_identity():
     assert hasattr(_core.ValidationPolicy(),'claim_batch_target_units'),'native target-unit policy missing'
     p=_core.ValidationPolicy();assert p.claim_batch_target_units is False
     p.semantic_claim_contract=p.preserve_text_objects=True;p.claim_batch_size=1;p.claim_protocol_retry_budget=1
-    assert hashlib.sha256(_core.claim_extraction_prompt(SOURCE,'Mina').encode()).hexdigest()=='1b57e41eeb55ea731555515273db48fe253ba435d4c9723cc2d58b8300cb9809'
+    # Re-recorded on purpose on 2026-10-05: the final format check gained the NEG/NEGATED reminder line.
+    # The batch-plan pin on the next line is unchanged.
+    assert hashlib.sha256(_core.claim_extraction_prompt(SOURCE,'Mina').encode()).hexdigest()=='f0736f29fd8c5eebce36b9fedfd150255c936e145d4eca47162806f1fbd9852f'
     assert hashlib.sha256(_core.claim_extraction_batch_plan(SOURCE,p).encode()).hexdigest()=='38691044ca106deee345d1dad67cd0680caf7fb52e91df6de5e2c987d4c9e092'
 
 

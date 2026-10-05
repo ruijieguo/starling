@@ -330,3 +330,14 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 曾试过另一项改动并撤回：在抽取提示的固定参考示例里增加一条 `prefers`/NEG 示例，希望模型对 "I do not prefer ..." 写出 `NEGATED`。它对 `negative_target_scope` 有效（qwen3.8-27b，legacy，12 次：带 `NEGATED` 的 NEG 声明 7/12 到 12/12），但在 json_object 模式下让 `preference_contrast` 的 NEG 声明全部丢了 `NEGATED`（6/6 到 0/6，新旧核心交错对照），deepseek-v3 上的 20/30 到 15/30 不能算这条示例的回归，抽取提示未改动的交付版本在 deepseek 上同样是 15/30（见评测记录）。撤回的依据是 qwen3.8-27b 的 json_object 对照，净效果不明确且有回归，所以没有交付。"NEG 缺 `NEGATED`" 的拒收问题因此仍未解决，守卫保持原样。
 
 数据与局限见[评测记录](../eval/2026-10-04-socialmem-claim-channel-fix.md)，修复前的观察见[claim 通道探针](../eval/2026-10-03-socialmem-claim-channel-probe.md)。
+
+
+## NEG 与 NEGATED 提醒行补记（2026-10-05）
+
+抽取提示末尾的格式检查块新增一行：polarity 为 NEG 时 `scope_markers` 必须含 `NEGATED`，否则该声明会被拒收。改动在 `src/extractor/claim_contract.cpp` 的 `final_format_reminder`，只涉及抽取提示；准入提示、批计划、作用域守卫、解析和读侧检查都没有改动，也不由 Python 补齐响应字段。
+
+动机：`qwen3.8-27b` 与 `deepseek-v3` 都会写出 polarity=NEG 但 `scope_markers` 只写 `ASSERTED` 的候选，被作用域守卫按 `explicit source marker missing: NEGATED` 拒收。指导段第 6 条本来就有同一句话，新增的是位置——放到来源数据之后的格式检查块里，离模型生成答案更近。为什么位置有效，没有证据，不下结论。
+
+判定按事先登记的规则（本机 `build/socialmem_20261004_claim_channel_fix/prereg_negated_variants.txt`，未入库）：qwen3.8-27b 预先登记的 24 条 NEG 声明里带 `NEGATED` 由 12/24 到 24/24，四个（用例，模式）分组没有一组倒退；回归检查在 `emotion_negative`、`reported_distrust` 两个天花板对照和 deepseek-v3 同传输上完成，逐格配对分别变好 4 变差 0 与变好 14 变差 2。同时登记的另一变体（把参考示例改成 `ASSERTED` 加 `[ASSERTED, NEGATED]` 的否定偏好示例）只到 18/24，未达门槛，已撤回。
+
+数据、两处变差格的取证与局限见[评测记录](../eval/2026-10-05-socialmem-negated-reminder.md)。
