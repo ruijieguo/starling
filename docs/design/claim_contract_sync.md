@@ -327,6 +327,6 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 
 没有放宽任何守卫或解析：畸形外壳仍是 `envelope_failure`，NEG 缺 `NEGATED` 仍被拒。`semantic_claim_contract` 仍默认关闭。
 
-曾试过另一项改动并撤回：在抽取提示的固定参考示例里增加一条 `prefers`/NEG 示例，希望模型对 "I do not prefer ..." 写出 `NEGATED`。它对 `negative_target_scope` 有效（qwen3.8-27b，legacy，12 次：带 `NEGATED` 的 NEG 声明 7/12 到 12/12），但在 json_object 模式下让 `preference_contrast` 的 NEG 声明全部丢了 `NEGATED`（6/6 到 0/6，新旧核心交错对照），deepseek-v3 上 NEG 声明带 `NEGATED` 也由 20/30 降到 15/30，差异不显著。净效果不明确且有回归，所以没有交付。"NEG 缺 `NEGATED`" 的拒收问题因此仍未解决，守卫保持原样。
+曾试过另一项改动并撤回：在抽取提示的固定参考示例里增加一条 `prefers`/NEG 示例，希望模型对 "I do not prefer ..." 写出 `NEGATED`。它对 `negative_target_scope` 有效（qwen3.8-27b，legacy，12 次：带 `NEGATED` 的 NEG 声明 7/12 到 12/12），但在 json_object 模式下让 `preference_contrast` 的 NEG 声明全部丢了 `NEGATED`（6/6 到 0/6，新旧核心交错对照），deepseek-v3 上的 20/30 到 15/30 不能算这条示例的回归，抽取提示未改动的交付版本在 deepseek 上同样是 15/30（见评测记录）。撤回的依据是 qwen3.8-27b 的 json_object 对照，净效果不明确且有回归，所以没有交付。"NEG 缺 `NEGATED`" 的拒收问题因此仍未解决，守卫保持原样。
 
 数据与局限见[评测记录](../eval/2026-10-04-socialmem-claim-channel-fix.md)，修复前的观察见[claim 通道探针](../eval/2026-10-03-socialmem-claim-channel-probe.md)。
