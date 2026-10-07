@@ -21,9 +21,13 @@
 namespace starling::extractor {
 
 namespace {
-void add_thinking_parameter(nlohmann::json& body, const std::optional<bool>& enabled) {
-    if (enabled.has_value()) { body["enable_thinking"] = *enabled;
-}
+void add_thinking_parameter(nlohmann::json& body, const OpenAIAdapter::Config& cfg) {
+    if (cfg.enable_thinking.has_value()) {
+        body["enable_thinking"] = *cfg.enable_thinking;
+    }
+    if (cfg.thinking_budget.has_value()) {
+        body["thinking_budget"] = *cfg.thinking_budget;
+    }
 }
 }  // namespace
 
@@ -43,6 +47,12 @@ OpenAIAdapter::OpenAIAdapter(Config cfg, MonotonicClock clock)
     : cfg_(std::move(cfg)), clock_(std::move(clock)) {
     if (!clock_) { throw std::invalid_argument("monotonic clock required");
 }
+    if (cfg_.thinking_budget.has_value() && *cfg_.thinking_budget <= 0) {
+        throw std::invalid_argument("thinking_budget must be positive");
+    }
+    if (cfg_.thinking_budget.has_value() && cfg_.enable_thinking.has_value() && !*cfg_.enable_thinking) {
+        throw std::invalid_argument("thinking_budget conflicts with enable_thinking=false");
+    }
 }
 
 LLMResponse OpenAIAdapter::extract(std::string_view prompt,
@@ -87,7 +97,7 @@ LLMResponse OpenAIAdapter::complete(std::string_view prompt, bool json_object_ou
     }
     Json body={{"model",cfg_.model},{"messages",Json::array({{{"role","user"},{"content",std::string(prompt)}}})},
                {"temperature",0},{"max_tokens",cfg_.max_tokens}};
-    add_thinking_parameter(body, cfg_.enable_thinking);
+    add_thinking_parameter(body, cfg_);
     if(request && request->mode==OutputMode::JsonSchemaStrict) {
         body["response_format"]={{"type","json_schema"},{"json_schema",{{"name",to_string(request->contract)},
             {"strict",true},{"schema",Json::parse(structured_output_schema(request->contract))}}}};
@@ -227,7 +237,7 @@ LLMResponse OpenAIAdapter::generate_stream(std::string_view prompt,
         {"stream",        true},
         {"stream_options", {{"include_usage", true}}}  // usage arrives in the final chunk
     };
-    add_thinking_parameter(body, cfg_.enable_thinking);
+    add_thinking_parameter(body, cfg_);
     sse::StreamAccumulator acc(sse::Provider::OpenAI, on_token);
     const auto started = std::chrono::steady_clock::now();
     const auto resp = net::http_post_json_stream(

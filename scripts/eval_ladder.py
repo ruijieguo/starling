@@ -349,7 +349,11 @@ def make_real_pipeline_fn(core):
     return _make
 
 
-def _build_extract_llm(core, model: str, provider: str):
+def _build_extract_llm(core, model: str, provider: str, *,
+                       thinking_budget: int | None = None,
+                       timeout_ms: int | None = None,
+                       max_tokens: int | None = None,
+                       max_retries: int | None = None):
     """构造抽取用 LLM adapter。
 
     provider="dashscope" 时**整体 env-swap** OPENAI_*→DASHSCOPE_* 再 from_env():
@@ -362,6 +366,17 @@ def _build_extract_llm(core, model: str, provider: str):
         cfg = core.OpenAIAdapterConfig.from_env()
         if model:
             cfg.model = model
+        # 三项为空时保持适配器默认值(timeout 60 秒、重试 3 次、max_tokens 4096)。
+        if timeout_ms is not None:
+            cfg.timeout_ms = int(timeout_ms)
+        if max_tokens is not None:
+            cfg.max_tokens = int(max_tokens)
+        if max_retries is not None:
+            cfg.max_retries = int(max_retries)
+        if thinking_budget is not None:
+            # 预算只在 thinking 开启时有意义;适配器拒绝「预算 + thinking 关」。
+            cfg.enable_thinking = True
+            cfg.thinking_budget = int(thinking_budget)
         return core.OpenAIAdapter(cfg)
 
     if provider != "dashscope" or not os.environ.get("DASHSCOPE_API_KEY"):
@@ -384,7 +399,11 @@ def make_real_extract_fn(core, extract_model: str = "",
                          extract_provider: str = "openai",
                          extraction_config=None,
                          preserve_invalid_time: bool = False,
-                         holder_isolation: bool = False):
+                         holder_isolation: bool = False,
+                         extract_thinking_budget: int | None = None,
+                         extract_timeout_ms: int | None = None,
+                         extract_max_tokens: int | None = None,
+                         extract_max_retries: int | None = None):
     """extract(adapter, record, backbone) -> None:S_star 台阶用**真 Extractor**从
     history 抽出带归属的 statement(与 oracle 的 gold 喂入相对,二者差=抽取税)。
 
@@ -462,7 +481,11 @@ def make_real_extract_fn(core, extract_model: str = "",
         代价:每题从 1 次抽取变成 N 次(N=说话人数,实测 4~6),成本涨 N 倍。
         """
         model = extract_model or backbone
-        llm = _build_extract_llm(core, model, extract_provider)
+        llm_options = {key: value for key, value in (
+            ("thinking_budget", extract_thinking_budget), ("timeout_ms", extract_timeout_ms),
+            ("max_tokens", extract_max_tokens), ("max_retries", extract_max_retries))
+            if value is not None}
+        llm = _build_extract_llm(core, model, extract_provider, **llm_options)
         by_speaker: dict[str, list[dict]] = {}
         for turn in record.get("history", []):
             spk = str(turn.get("speaker") or "unknown").strip() or "unknown"
@@ -536,7 +559,11 @@ def make_real_answerer_fn():
 def build_real_config(core, k: int, seeds: list[int], router_gate: str,
                       backbones: list[str], embedding_model: str,
                       extract_model: str = "",
-                      extract_provider: str = "openai") -> dict:
+                      extract_provider: str = "openai",
+                      extract_thinking_budget: int | None = None,
+                      extract_timeout_ms: int | None = None,
+                      extract_max_tokens: int | None = None,
+                      extract_max_retries: int | None = None) -> dict:
     """装配 real-mode 的 config(注入五个真工厂)。
 
     extract 不绑 backbone:它吃 (adapter, record, backbone),由 _real_answer 把当前
@@ -546,7 +573,11 @@ def build_real_config(core, k: int, seeds: list[int], router_gate: str,
     return {
         "core": core,
         "make_pipeline": make_real_pipeline_fn(core),
-        "extract": make_real_extract_fn(core, extract_model, extract_provider),
+        "extract": make_real_extract_fn(
+            core, extract_model, extract_provider,
+            extract_thinking_budget=extract_thinking_budget,
+            extract_timeout_ms=extract_timeout_ms, extract_max_tokens=extract_max_tokens,
+            extract_max_retries=extract_max_retries),
         "answerer": make_real_answerer_fn(),
         "judge": audit_mod.make_real_ladder_judge_fn(),
         "k": k,
@@ -557,6 +588,11 @@ def build_real_config(core, k: int, seeds: list[int], router_gate: str,
         # 抽取层 provenance:抽取税是**该模型**的税,报告必须能读出来。
         "extract_model": extract_model or "(follows backbone)",
         "extract_provider": extract_provider,
+        **{key: value for key, value in (
+            ("extract_thinking_budget", extract_thinking_budget),
+            ("extract_timeout_ms", extract_timeout_ms),
+            ("extract_max_tokens", extract_max_tokens),
+            ("extract_max_retries", extract_max_retries)) if value is not None},
         "router_gate": router_gate,
         "mode": "real",
         "seeds": seeds,
@@ -864,7 +900,23 @@ def main(argv=None) -> int:
                    help="抽取模型所在供应商。dashscope=构造抽取 adapter 时 env-swap "
                         "OPENAI_*→DASHSCOPE_*(chat Config 不向 Python 暴露 api_key,"
                         "只在 from_env() 那一刻从 env 快照,故必须整体切换),构造完还原。")
+    p.add_argument("--extract-thinking-budget", type=int, default=None, metavar="N",
+                   help="抽取模型的 thinking token 预算。给定时同时开启 thinking;"
+                        "留空=不设预算,保持服务端默认行为。必须为正整数。")
+    p.add_argument("--extract-timeout-ms", type=int, default=None, metavar="N",
+                   help="抽取单次请求超时(毫秒)。留空=适配器默认 60000。")
+    p.add_argument("--extract-max-tokens", type=int, default=None, metavar="N",
+                   help="抽取单次请求的 max_tokens。留空=适配器默认 4096。")
+    p.add_argument("--extract-max-retries", type=int, default=None, metavar="N",
+                   help="抽取请求的传输重试次数,0 表示不重试。留空=适配器默认 3。")
     args = p.parse_args(argv)
+    for flag, value, floor in (("--extract-thinking-budget", args.extract_thinking_budget, 1),
+                               ("--extract-timeout-ms", args.extract_timeout_ms, 1),
+                               ("--extract-max-tokens", args.extract_max_tokens, 1),
+                               ("--extract-max-retries", args.extract_max_retries, 0)):
+        if value is not None and value < floor:
+            print(f"ERROR: {flag} 必须 >= {floor}。", file=sys.stderr)
+            return 1
 
     stages = [s.strip() for s in args.stages.split(",") if s.strip()]
     unknown = [s for s in stages if s not in ALL_STAGES]
@@ -938,6 +990,10 @@ def main(argv=None) -> int:
                              or __import__("os").environ.get("EMBEDDING_MODEL", "")),
             extract_model=args.extract_model,
             extract_provider=args.extract_provider,
+            extract_thinking_budget=args.extract_thinking_budget,
+            extract_timeout_ms=args.extract_timeout_ms,
+            extract_max_tokens=args.extract_max_tokens,
+            extract_max_retries=args.extract_max_retries,
         )
         config.update(rag_speaker_labels=args.rag_speaker_labels,
                       star_replay_mode=args.star_replay_mode,
