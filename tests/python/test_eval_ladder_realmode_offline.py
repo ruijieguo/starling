@@ -384,3 +384,47 @@ def test_native_config_exposes_thinking_budget_and_rejects_contradictions(monkey
     cfg.thinking_budget = 0
     with pytest.raises(ValueError, match="thinking_budget"):
         _core.OpenAIAdapter(cfg)
+
+
+def test_extract_llm_transport_options_reach_config_and_default_is_untouched():
+    core, seen = _fake_core_capturing_adapter_cfg()
+    seen_cfg_defaults = {"timeout_ms": 60000, "max_tokens": 4096, "max_retries": 3}
+    original_from_env = core.OpenAIAdapterConfig.from_env
+
+    def from_env():
+        cfg = original_from_env()
+        for key, value in seen_cfg_defaults.items():
+            setattr(cfg, key, value)
+        return cfg
+
+    core.OpenAIAdapterConfig.from_env = from_env
+    ladder._build_extract_llm(core, "m", "openai")
+    assert (seen["cfg"].timeout_ms, seen["cfg"].max_tokens, seen["cfg"].max_retries) == (60000, 4096, 3)
+    ladder._build_extract_llm(core, "m", "openai", timeout_ms=240000, max_tokens=8192, max_retries=0)
+    assert (seen["cfg"].timeout_ms, seen["cfg"].max_tokens, seen["cfg"].max_retries) == (240000, 8192, 0)
+
+
+def test_extract_factory_forwards_transport_options_only_when_set(monkeypatch, tmp_path):
+    rt = runtime._build_local_store_sqlite_runtime(tmp_path / "transport.db")
+    rt.start()
+    llm = _core.FakeLLMAdapter()
+    llm.set_default_response("[]", True, "")
+    calls = []
+    monkeypatch.setattr(ladder, "_build_extract_llm", lambda *a, **k: calls.append((a, k)) or llm)
+    extract = ladder.make_real_extract_fn(
+        _core, "m", "dashscope", extract_thinking_budget=1024,
+        extract_timeout_ms=240000, extract_max_tokens=8192, extract_max_retries=0)
+    record = dict(REC, history=[{"speaker": "Mei", "text": "A synthetic utterance."}])
+    extract(rt.adapter, record, "stub")
+    assert calls[0][1] == {"thinking_budget": 1024, "timeout_ms": 240000,
+                           "max_tokens": 8192, "max_retries": 0}
+
+
+@pytest.mark.parametrize("flag,value", [("--extract-timeout-ms", "0"), ("--extract-max-tokens", "0"),
+                                        ("--extract-max-retries", "-1")])
+def test_cli_rejects_out_of_range_extract_transport_options(capsys, tmp_path, flag, value):
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text("{}\n")
+    rc = ladder.main(["--benchmark", "x", "--corpus", str(corpus), "--fixture-mode", flag, value])
+    assert rc == 1
+    assert flag in capsys.readouterr().err
