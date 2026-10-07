@@ -242,6 +242,7 @@ void bind_06_extractor(pybind11::module_& m) {
             .def_readwrite("max_tokens",   &OpenAIAdapter::Config::max_tokens)
             .def_readwrite("json_object_output", &OpenAIAdapter::Config::json_object_output)
             .def_readwrite("enable_thinking", &OpenAIAdapter::Config::enable_thinking)
+            .def_readwrite("thinking_budget", &OpenAIAdapter::Config::thinking_budget)
             .def_static("from_env",        &OpenAIAdapter::Config::from_env);
         py::class_<OpenAIAdapter, starling::extractor::LLMAdapter>(m, "OpenAIAdapter")
             .def(py::init<OpenAIAdapter::Config>())

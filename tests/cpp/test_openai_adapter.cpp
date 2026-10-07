@@ -207,6 +207,57 @@ TEST(OpenAIAdapterHttpTest, ExplicitThinkingValuesReachExtractionAndGeneration) 
     EXPECT_TRUE(server.body(1)["enable_thinking"].is_boolean());
 }
 
+TEST(OpenAIAdapterHttpTest, ThinkingBudgetReachesExtractionAndGenerationOnlyWhenSet) {
+    ChatServer server(completion("Hello"));
+    if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";
+    OpenAIAdapter plain(server.config(false));
+    EXPECT_TRUE(plain.extract("Extract", "hash").ok);
+    auto budgeted = server.config(false);
+    budgeted.enable_thinking = true;
+    budgeted.thinking_budget = 1024;
+    OpenAIAdapter adapter(budgeted);
+    EXPECT_TRUE(adapter.extract("Extract", "hash").ok);
+    EXPECT_TRUE(adapter.generate("Generate").ok);
+    server.stop();
+    ASSERT_EQ(server.requests().size(), 3u);
+    EXPECT_FALSE(server.body(0).contains("thinking_budget"));
+    for (std::size_t i = 1; i < 3; ++i) {
+        EXPECT_EQ(server.body(i)["thinking_budget"], 1024);
+        EXPECT_TRUE(server.body(i)["thinking_budget"].is_number_integer());
+        EXPECT_EQ(server.body(i)["enable_thinking"], true);
+    }
+}
+
+TEST(OpenAIAdapterHttpTest, ThinkingBudgetReachesStream) {
+    ChatServer server("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n");
+    if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";
+    auto cfg = server.config(false);
+    cfg.enable_thinking = true;
+    cfg.thinking_budget = 512;
+    OpenAIAdapter adapter(cfg);
+    EXPECT_TRUE(adapter.generate_stream("Generate", [](std::string_view) {}).ok);
+    server.stop();
+    ASSERT_EQ(server.requests().size(), 1u);
+    EXPECT_EQ(server.body()["thinking_budget"], 512);
+}
+
+TEST(OpenAIAdapterConfigTest, ThinkingBudgetMustBePositiveAndNotContradictThinkingOff) {
+    OpenAIAdapter::Config cfg;
+    cfg.base_url = "http://127.0.0.1:1/v1";
+    cfg.api_key = "test-key";
+    cfg.thinking_budget = 0;
+    EXPECT_THROW(OpenAIAdapter adapter(cfg), std::invalid_argument);
+    cfg.thinking_budget = -5;
+    EXPECT_THROW(OpenAIAdapter adapter(cfg), std::invalid_argument);
+    cfg.thinking_budget = 1024;
+    cfg.enable_thinking = false;
+    EXPECT_THROW(OpenAIAdapter adapter(cfg), std::invalid_argument);
+    cfg.enable_thinking = true;
+    EXPECT_NO_THROW(OpenAIAdapter adapter(cfg));
+    cfg.enable_thinking.reset();
+    EXPECT_NO_THROW(OpenAIAdapter adapter(cfg));
+}
+
 TEST(OpenAIAdapterHttpTest, ExplicitThinkingValueReachesStream) {
     ChatServer server("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n");
     if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";
