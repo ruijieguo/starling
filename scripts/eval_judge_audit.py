@@ -160,7 +160,9 @@ def _parse_judge_verdict(text: str) -> bool:
     return False
 
 
-def _chat_completion(prompt: str, backbone: str, max_tokens: int) -> str:
+def _chat_completion(prompt: str, backbone: str, max_tokens: int, *,
+                     system: str | None = None,
+                     enable_thinking: bool | None = None) -> str:
     """经 proven HTTP 路径发一次 chat completion(网络仅此处发生)。
 
     复用 eval_longmemeval 的形状:_core.OpenAIAdapterConfig.from_env() 验证与
@@ -177,12 +179,18 @@ def _chat_completion(prompt: str, backbone: str, max_tokens: int) -> str:
         cfg.model = backbone
     _core.OpenAIAdapter(cfg)  # 离线构造,校验配置装配;此处不发网络
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    payload = json.dumps({
+    messages = [{"role": "user", "content": prompt}]
+    if system is not None:
+        messages.insert(0, {"role": "system", "content": system})
+    body = {
         "model": cfg.model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "temperature": 0,
         "max_tokens": max_tokens,
-    }).encode("utf-8")
+    }
+    if enable_thinking is not None:     # 仅显式给出时才发送;默认请求体与此前逐字节相同
+        body["enable_thinking"] = bool(enable_thinking)
+    payload = json.dumps(body).encode("utf-8")
     # 瞬时网络故障必须重试:本机 Clash TUN 会间歇性掐断 TLS
     # (SSL: UNEXPECTED_EOF_WHILE_READING / transport EOF),按进程与时刻区别对待——
     # 大 payload 实测 40KB 也能 3s 通过,故不是体积问题而是抖动。归因阶梯一轮要发

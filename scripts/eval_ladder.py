@@ -40,6 +40,11 @@ ALL_STAGES = ("S0", "S_rand", "S_full", "S_rag", "S_star_oracle", "S_star")
 # 测出的"不可解读带"注入,见组合方案 §3 / impl-spec §3)。
 DEFAULT_ALPHA = 0.05
 
+# 官方口径(WP0):答题 max_tokens 取官方 answerer 的 1000;裁判与作答模型的差异见设计文档。
+OFFICIAL_ANSWER_MAX_TOKENS = 1000
+# build_real_config 在抽取模型留空时写入的 provenance 文字;缓存键据此判断抽取是否随 backbone 变化。
+_FOLLOWS_BACKBONE = "(follows backbone)"
+
 # fixture-mode 的每台阶"技能率":一个确定性 mock answerer 的期望正确率,
 # 刻意排成合理的阶梯形状,好让下游 Δ/verdict 逻辑有非平凡输入可咀嚼——
 # 这是**骨架自测**,不是任何真实能力声明。real-mode 下这张表不被使用。
@@ -156,6 +161,74 @@ def _accepts_backbone_arg(fn) -> bool:
     return len(positional) >= 3
 
 
+def _library_cache_key(stage: str, record: dict, config: dict, now_iso: str,
+                       replay_mode: str) -> str:
+    """网络级库缓存键 = 历史内容键 + 影响库内容的其余配置摘要。
+
+    S_rag:嵌入模型、说话人标签、查询时间;S_star 另加回放模式与抽取配置。抽取模型留空时抽取
+    随 backbone 变化,backbone 也并入键,否则两个 backbone 会无声共用同一份抽取。"""
+    import eval_ladder_pipeline as pipe
+
+    parts: dict = {"embedder": config.get("embedder", ""), "now_iso": now_iso}
+    if stage == "S_rag":
+        parts["speaker_labels"] = bool(config.get("rag_speaker_labels", False))
+    else:
+        parts["replay_mode"] = replay_mode
+        extract_model = config.get("extract_model")
+        follows = (not extract_model) or extract_model == _FOLLOWS_BACKBONE
+        parts["extract_model"] = config.get("backbone", "") if follows else extract_model
+        for name in ("extract_provider", "extract_thinking_budget", "extract_timeout_ms",
+                     "extract_max_tokens", "extract_max_retries", "extract_signature"):
+            if name in config:
+                parts[name] = config[name]
+    digest = hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:8]
+    return f"{pipe.history_key(record.get('history', []))}_{digest}"
+
+
+def _build_library(stage: str, record: dict, config: dict, core, adapter, embedder, index,
+                   db_path: str, *, seed_item_id: str, now_iso: str, replay_mode: str,
+                   diagnostics: dict | None = None) -> dict:
+    """往一个新库里灌内容并嵌入:S_star 走真抽取、oracle 灌金标、其余灌扁平历史;S_star 的
+    sleep 模式再跑一遍原生离线回放。返回 {extraction?, replay, embedding}。
+
+    抽取结果一得到就写进 diagnostics(嵌入阶段失败时现场仍在),缓存构建时 diagnostics 传 None、
+    产物全部进返回值,随库一起落盘。"""
+    import eval_ladder_pipeline as pipe
+
+    built: dict = {}
+    if stage == "S_star":
+        # extract 按 (adapter, record, backbone) 调用(S_star 抽取须随当前 backbone
+        # 变化,否则跨 backbone 同号退化成假独立复现)。旧式 2 参实现(离线 mock)
+        # 按**签名**判定回退——不用 try/except TypeError:那会把 extract 内部真实的
+        # TypeError 误当"旧式签名"而静默重跑一次(掩盖 bug + 双花 API)。
+        _ex = config["extract"]
+        if _accepts_backbone_arg(_ex):
+            extraction = _ex(adapter, record, config.get("backbone", ""))
+        else:
+            extraction = _ex(adapter, record)
+        built["extraction"] = extraction
+        if diagnostics is not None:
+            diagnostics["extraction"] = extraction
+    elif stage == "S_star_oracle":
+        gold = record.get("gold_statements") or []
+        pipe.seed_gold_statements(db_path, record["item_id"], gold)
+    else:
+        pipe.seed_history_statements(
+            db_path, seed_item_id, record.get("history", []),
+            speaker_labels=stage == "S_rag" and config.get("rag_speaker_labels", False))
+
+    replay = {"mode": replay_mode if stage == "S_star" else "not_applicable", "stats": {}}
+    if stage == "S_star" and replay_mode == "sleep":
+        # One native offline pass, with production defaults and no optional gist LLM.
+        stats = core.ReplayScheduler(adapter).run_sleep(now_iso)
+        replay["stats"] = {name: getattr(stats, name) for name in (
+            "sampled", "compressed", "abstracted", "gist_candidates", "gist_failed",
+            "gist_gated", "forced_consolidated", "ttl_archived", "replay_batch_id")}
+    built["replay"] = replay
+    built["embedding"] = pipe.embed_seeded(core, adapter, embedder, index, now_iso)
+    return built
+
+
 def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     """real-mode 一题一 cell:装配记忆块 → 问 backbone → 判分(PR-3)。
 
@@ -185,12 +258,37 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
         传确定性 mock。MC 题不调用。
     这样 `_real_answer` 的**装配逻辑**可离线测(见 test_eval_ladder_pipeline),
     真跑时未测的只剩 answerer/judge/Extractor 的网络部分。
+
+    **WP0 扩展(默认全部关闭,关闭时行为逐字节不变)**:
+      - `config["answer_style"]="official"`:按官方评测口径作答与判分——答题提示取官方模板
+        (选择题字母作答、开放题 0 到 1 分项裁判,阈值 0.7 记正确),分数写进 diagnostics["score"];
+        需要 `official_prompts`,开放题另需 `official_judge`;`judge_model` 给定时裁判改用该模型,
+        `strict_corun` 为真时再用旧的严格裁判跑一遍,结果记在 diagnostics["strict_verdict"];
+        `full_format="official"` 让 S_full 用官方全上下文模板与会话头写法。
+      - `config["library_cache"]`(LibraryCache):S_rag/S_star 同一历史内容的题共用一次建库,每题检出
+        独立副本再召回;S0/S_full 不建库。diagnostics["library"] 记 hit/miss 与缓存键。
     """
     import tempfile
     import time
 
     from eval_longmemeval import _parse_option_index
     import eval_ladder_pipeline as pipe
+
+    answer_style = config.get("answer_style", "ladder")
+    if answer_style not in ("ladder", "official"):
+        raise ValueError(f"unknown answer_style: {answer_style!r}")
+    full_format = config.get("full_format", "ladder")
+    if full_format not in ("ladder", "official"):
+        raise ValueError(f"unknown full_format: {full_format!r}")
+    official = answer_style == "official"
+    if full_format == "official" and not official:
+        raise ValueError("full_format='official' 需要 answer_style='official'")
+    is_mc = record.get("answer_format", "multiple_choice") == "multiple_choice"
+    if official:
+        if config.get("official_prompts") is None:
+            raise ValueError("answer_style='official' 需要 config['official_prompts']")
+        if not is_mc and not record.get("is_abstain") and config.get("official_judge") is None:
+            raise ValueError("answer_style='official' 的开放题需要 config['official_judge']")
 
     core = config["core"]
     make_pipeline = config["make_pipeline"]
@@ -200,49 +298,58 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     replay_mode = config.get("star_replay_mode", "immediate")
     if replay_mode not in ("immediate", "sleep"):
         raise ValueError(f"unknown star_replay_mode: {replay_mode!r}")
+    backbone = config.get("backbone", "")
+    cache = config.get("library_cache")
 
-    tmpdir = tempfile.mkdtemp(prefix=f"ladder_{stage}_")
-    db_path = f"{tmpdir}/ladder.db"
     diagnostics = config.get("diagnostics")
     if diagnostics is not None:
         diagnostics.clear()
-        diagnostics["db_path"] = db_path
-    adapter, embedder, index = make_pipeline(db_path)
     ingest_start = time.perf_counter()
 
-    # --- seed 库内容:S_star 走真 Extractor(带归属);oracle 用 gold;余用扁平 history ---
-    if stage == "S_star":
-        # extract 按 (adapter, record, backbone) 调用(S_star 抽取须随当前 backbone
-        # 变化,否则跨 backbone 同号退化成假独立复现)。旧式 2 参实现(离线 mock)
-        # 按**签名**判定回退——不用 try/except TypeError:那会把 extract 内部真实的
-        # TypeError 误当"旧式签名"而静默重跑一次(掩盖 bug + 双花 API)。
-        _ex = config["extract"]
-        if _accepts_backbone_arg(_ex):
-            extraction = _ex(adapter, record, config.get("backbone", ""))
-        else:
-            extraction = _ex(adapter, record)
+    if cache is not None and stage in ("S0", "S_full"):
+        # 这两个台阶的记忆块只来自历史文本,不需要库:不建库、不嵌入。
+        adapter = embedder = index = None
         if diagnostics is not None:
-            diagnostics["extraction"] = extraction
-    elif stage == "S_star_oracle":
-        gold = record.get("gold_statements") or []
-        pipe.seed_gold_statements(db_path, record["item_id"], gold)
+            diagnostics.update(db_path=None, embedding={"skipped": True},
+                               replay={"mode": "not_applicable", "stats": {}},
+                               ingest_seconds=time.perf_counter() - ingest_start)
+    elif cache is not None and stage in ("S_rag", "S_star"):
+        key = _library_cache_key(stage, record, config, now_iso, replay_mode)
+
+        def _build(path: str) -> dict:
+            b_adapter, b_embedder, b_index = make_pipeline(path)
+            build_start = time.perf_counter()
+            meta = _build_library(
+                stage, record, config, core, b_adapter, b_embedder, b_index, path,
+                seed_item_id=f"lib-{pipe.history_key(record.get('history', []))}",
+                now_iso=now_iso, replay_mode=replay_mode, diagnostics=None)
+            meta["build_seconds"] = time.perf_counter() - build_start
+            return meta
+
+        lib_path, status, built = cache.get_or_build(stage, key, _build)
+        tmpdir = tempfile.mkdtemp(prefix=f"ladder_{stage}_")
+        db_path = f"{tmpdir}/ladder.db"
+        cache.checkout(lib_path, db_path)       # 召回会写事件,所以每题用独立副本,共享库不被触碰
+        adapter, embedder, index = make_pipeline(db_path)
+        if diagnostics is not None:
+            diagnostics.update(db_path=db_path,
+                               library={"status": status, "key": key, "path": str(lib_path)},
+                               embedding=built["embedding"], replay=built["replay"],
+                               ingest_seconds=time.perf_counter() - ingest_start)
+            if "extraction" in built:
+                diagnostics["extraction"] = built["extraction"]
     else:
-        pipe.seed_history_statements(
-            db_path, record["item_id"], record.get("history", []),
-            speaker_labels=stage == "S_rag" and config.get("rag_speaker_labels", False))
-
-    replay = {"mode": replay_mode if stage == "S_star" else "not_applicable", "stats": {}}
-    if stage == "S_star" and replay_mode == "sleep":
-        # One native offline pass, with production defaults and no optional gist LLM.
-        stats = core.ReplayScheduler(adapter).run_sleep(now_iso)
-        replay["stats"] = {name: getattr(stats, name) for name in (
-            "sampled", "compressed", "abstracted", "gist_candidates", "gist_failed",
-            "gist_gated", "forced_consolidated", "ttl_archived", "replay_batch_id")}
-
-    embedding = pipe.embed_seeded(core, adapter, embedder, index, now_iso)
-    if diagnostics is not None:
-        diagnostics.update(embedding=embedding, replay=replay,
-                           ingest_seconds=time.perf_counter() - ingest_start)
+        tmpdir = tempfile.mkdtemp(prefix=f"ladder_{stage}_")
+        db_path = f"{tmpdir}/ladder.db"
+        if diagnostics is not None:
+            diagnostics["db_path"] = db_path
+        adapter, embedder, index = make_pipeline(db_path)
+        built = _build_library(stage, record, config, core, adapter, embedder, index, db_path,
+                               seed_item_id=record["item_id"], now_iso=now_iso,
+                               replay_mode=replay_mode, diagnostics=diagnostics)
+        if diagnostics is not None:
+            diagnostics.update(embedding=built["embedding"], replay=built["replay"],
+                               ingest_seconds=time.perf_counter() - ingest_start)
 
     rb = pipe.recall_block(core, stage, adapter=adapter, embedder=embedder,
                            index=index, question=record["question"],
@@ -257,15 +364,49 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
 
     recalled = [ln.lstrip("- ").strip() for ln in rb["block"].splitlines() if ln.strip()]
 
+    if official:
+        import eval_official_protocol as proto
+
+        prompts = config["official_prompts"]
+        if stage == "S_full" and full_format == "official":
+            prompt = proto.official_answer_prompt(
+                prompts, record, [proto.official_full_context(record.get("history", []))],
+                full_context=True)
+        else:
+            prompt = proto.official_answer_prompt(prompts, record, recalled)
+        if diagnostics is not None:
+            diagnostics["prompt"] = prompt
+        response = answerer(prompt, backbone)
+        if diagnostics is not None:
+            diagnostics["response"] = response
+        if is_mc:
+            correct = proto.official_mc_correct(response, record)
+            if diagnostics is not None:
+                diagnostics["prediction"] = proto.parse_official_mc(response)
+                diagnostics["score"] = 1.0 if correct else 0.0
+            return correct
+        reference = str(record["answer"])
+        verdict = config["official_judge"](record["question"], reference, response,
+                                           config.get("judge_model") or backbone)
+        if diagnostics is not None:
+            diagnostics.update(score=verdict["score"], judge_raw=verdict["raw"],
+                               judge_status=verdict["status"],
+                               judge_rationale=verdict["rationale"])
+        if config.get("strict_corun"):
+            strict = bool(config["judge"](record["question"], reference, response, backbone))
+            if diagnostics is not None:
+                diagnostics["strict_verdict"] = strict
+        return proto.official_is_correct(verdict["score"])
+
     # 打分岔路(按 answer_format):
     #   multiple_choice → answerer 出 MC 下标,确定性 index 比对(band=0.05)。
     #   long_form/short_answer → answerer 自然语言作答,交 judge 比对参考答案
     #     (judge 的接受率不确定性由 eval_judge_audit 的 α_judge 度量,band=α_judge)。
-    if record.get("answer_format", "multiple_choice") == "multiple_choice":
+    if is_mc:
         prompt = _ladder_prompt(record, recalled)
         if diagnostics is not None:
             diagnostics["prompt"] = prompt
-        resp = answerer(prompt, config.get("backbone", ""))
+        resp = answerer(prompt, backbone)
         if diagnostics is not None:
             diagnostics["response"] = resp
         try:
@@ -280,12 +421,11 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
     prompt = _ladder_prompt_free(record, recalled)
     if diagnostics is not None:
         diagnostics["prompt"] = prompt
-    candidate = answerer(prompt, config.get("backbone", ""))
+    candidate = answerer(prompt, backbone)
     if diagnostics is not None:
         diagnostics["response"] = candidate
     judge = config["judge"]
-    return bool(judge(record["question"], str(record["answer"]), candidate,
-                      config.get("backbone", "")))
+    return bool(judge(record["question"], str(record["answer"]), candidate, backbone))
 
 
 # --------------------------- real-mode 工厂(gated 真跑)---------------------------
@@ -542,16 +682,21 @@ def make_real_extract_fn(core, extract_model: str = "",
     return _extract
 
 
-def make_real_answerer_fn():
+def make_real_answerer_fn(max_tokens: int = 512, enable_thinking: bool | None = None):
     """answerer(prompt, backbone) -> str:问 backbone 作答。网络仅在调用时发生。
 
     复用 judge 审计里同一条 proven chat 路径(eval_judge_audit._chat_completion),
-    使 answerer/judge/干扰器三处的 HTTP 装配逐字节同源。max_tokens=512:推理模型
-    要留出可见答案空间;MC 由 _parse_option_index 取首个合法下标,多余文本无妨。"""
+    使 answerer/judge/干扰器三处的 HTTP 装配逐字节同源。默认 max_tokens=512:推理模型
+    要留出可见答案空间;MC 由 _parse_option_index 取首个合法下标,多余文本无妨。
+    官方口径用 max_tokens=1000;enable_thinking 为 None 时不发该字段(请求体与此前相同)。"""
     import eval_judge_audit as audit_mod
 
+    options: dict = {"max_tokens": max_tokens}
+    if enable_thinking is not None:
+        options["enable_thinking"] = bool(enable_thinking)
+
     def _answer(prompt: str, backbone: str) -> str:
-        return audit_mod._chat_completion(prompt, backbone, max_tokens=512)
+        return audit_mod._chat_completion(prompt, backbone, **options)
 
     return _answer
 
@@ -586,7 +731,7 @@ def build_real_config(core, k: int, seeds: list[int], router_gate: str,
         "rag_speaker_labels": False,
         "embedder": embedding_model,
         # 抽取层 provenance:抽取税是**该模型**的税,报告必须能读出来。
-        "extract_model": extract_model or "(follows backbone)",
+        "extract_model": extract_model or _FOLLOWS_BACKBONE,
         "extract_provider": extract_provider,
         **{key: value for key, value in (
             ("extract_thinking_budget", extract_thinking_budget),
@@ -611,11 +756,20 @@ def _journal_key(stage: str, backbone: str, seed: int, item_id: str) -> str:
     return f"{stage}|{backbone}|{seed}|{item_id}"
 
 
-def load_journal(path: Path) -> dict[str, bool]:
-    """读回已完成的判分:{key: ok}。坏行跳过(不让一行损坏毁掉整轮续跑)。
+class JournalDone(dict):
+    """`load_journal` 的返回值:本身就是 {key: ok},另带 `.scores` 保存已落盘的官方分数。
+    与普通 dict 比较时只看 {key: ok},旧调用方不受影响。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scores: dict[str, float] = {}
+
+
+def load_journal(path: Path) -> JournalDone:
+    """读回已完成的判分:{key: ok}(附 `.scores`)。坏行跳过(不让一行损坏毁掉整轮续跑)。
 
     只收 ok 是 bool 的行;error 行不计入 → 重启自动重试。"""
-    done: dict[str, bool] = {}
+    done = JournalDone()
     if not path.exists():
         return done
     for line in path.read_text().splitlines():
@@ -630,6 +784,11 @@ def load_journal(path: Path) -> dict[str, bool]:
         ok = row.get("ok")
         if isinstance(key, str) and isinstance(ok, bool):
             done[key] = ok
+            score = row.get("score")
+            if isinstance(score, (int, float)) and not isinstance(score, bool):
+                done.scores[key] = float(score)
+            else:
+                done.scores.pop(key, None)
     return done
 
 
@@ -644,6 +803,27 @@ def append_journal(path: Path, row: dict) -> None:
         os.fsync(fh.fileno())
 
 
+def _journal_row(key: str, stage: str, backbone: str, seed: int, item_id: str,
+                 ok: bool, trace: dict) -> dict:
+    """逐题落盘的一行:既有六个字段不变,其后追加留痕字段。按白名单从 trace 取,不带出任何配置值。"""
+    row = {"key": key, "stage": stage, "backbone": backbone, "seed": seed,
+           "item_id": item_id, "ok": bool(ok)}
+    recall = trace.get("recall")
+    has_recall = isinstance(recall, dict) and "block" in recall
+    row["recall_block"] = ([ln for ln in recall["block"].split("\n") if ln.strip()]
+                           if has_recall else None)
+    row["recall_abstained"] = bool(recall.get("abstained")) if has_recall else None
+    row["prompt"] = trace.get("prompt")
+    row["response"] = trace.get("response")
+    for name in ("score", "judge_raw", "judge_status", "strict_verdict"):
+        if name in trace:
+            row[name] = trace[name]
+    library = trace.get("library")
+    if isinstance(library, dict):
+        row["library"] = {name: library[name] for name in ("status", "key") if name in library}
+    return row
+
+
 def run_cell(stage: str, backbone: str, seed: int, corpus: list[dict],
              fixture_mode: bool, config: dict,
              journal: Path | None = None,
@@ -651,20 +831,29 @@ def run_cell(stage: str, backbone: str, seed: int, corpus: list[dict],
     """一个 (stage,backbone,seed) 单元:逐题判分,按 subset 聚合正确率。
 
     journal 给定时逐题落盘 + 跳过 done 里已完成的题(断点续跑);
-    抛错的题记 error 行并**排除出统计**(不计 0 分),重启后重试。"""
+    抛错的题记 error 行并**排除出统计**(不计 0 分),重启后重试。
+    至少有一题产出分数时(官方口径),cell 另带 mean_score 与按题型的 by_query_type;
+    续跑的题从 journal 恢复分数。"""
     per_subset: dict[str, list[int]] = {}
+    per_type: dict[str, list[float]] = {}
+    scores: list[float] = []
+    restored = getattr(done, "scores", {}) if done is not None else {}
     total_c = total_n = 0
     for rec in corpus:
         subset = rec.get("subset", "default")
         key = _journal_key(stage, backbone, seed, rec["item_id"])
+        score = None
         if done is not None and key in done:
             ok = done[key]                      # 续跑:直接采信已落盘的判分
+            score = restored.get(key)
         elif fixture_mode:
             ok = _fixture_correct(stage, rec["item_id"], seed)
         else:
             # 注入当前 backbone,answerer 才知用哪个模型(多 backbone 同号归因命脉)。
+            trace: dict = {}
             try:
-                ok = _real_answer(stage, rec, seed, {**config, "backbone": backbone})
+                ok = _real_answer(stage, rec, seed,
+                                  {**config, "backbone": backbone, "diagnostics": trace})
             except Exception as exc:            # noqa: BLE001 — 单题失败不毁整轮
                 if journal is not None:
                     append_journal(journal, {
@@ -675,18 +864,23 @@ def run_cell(stage: str, backbone: str, seed: int, corpus: list[dict],
                 print(f"  ! {key} FAILED: {type(exc).__name__}: {exc}",
                       file=sys.stderr, flush=True)
                 continue                        # 排除出统计,绝不当 0 分
+            score = trace.get("score")
             if journal is not None:
-                append_journal(journal, {
-                    "key": key, "stage": stage, "backbone": backbone,
-                    "seed": seed, "item_id": rec["item_id"], "ok": bool(ok),
-                })
+                append_journal(journal, _journal_row(
+                    key, stage, backbone, seed, rec["item_id"], ok, trace))
         per_subset.setdefault(subset, [0, 0])
         per_subset[subset][0] += int(ok)
         per_subset[subset][1] += 1
         total_c += int(ok)
         total_n += 1
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            scores.append(float(score))
+            bucket = per_type.setdefault(str(rec.get("query_type") or "unknown"), [0, 0, 0.0])
+            bucket[0] += 1
+            bucket[1] += int(ok)
+            bucket[2] += float(score)
     subset_scores = {s: (c / n if n else 0.0) for s, (c, n) in per_subset.items()}
-    return {
+    cell = {
         "stage": stage, "backbone": backbone, "seed": seed,
         "subset_scores": subset_scores,
         "overall": (total_c / total_n if total_n else 0.0),
@@ -695,6 +889,12 @@ def run_cell(stage: str, backbone: str, seed: int, corpus: list[dict],
         # 写入成本 real-mode 必填(MemDelta 警示);fixture 无成本。
         "ingest_cost": None,
     }
+    if scores:
+        cell["mean_score"] = sum(scores) / len(scores)
+        cell["by_query_type"] = {
+            qt: {"n": int(n), "correct": int(c), "mean_score": s / n}
+            for qt, (n, c, s) in sorted(per_type.items())}
+    return cell
 
 
 def aggregate(cells: list[dict], stages: list[str], backbones: list[str],
@@ -823,7 +1023,14 @@ def _serializable_config(config: dict) -> dict:
     所有 cell、API 已花光**之后才炸,是最坏的失败时机。故在此净化。"""
     out: dict = {}
     for key, val in config.items():
-        if callable(val) or hasattr(val, "__file__"):
+        if key == "official_prompts" and isinstance(val, dict):
+            # 提示文本不进产物:只记规范化 JSON 的摘要与段名(文件摘要另由 official_prompts_sha256 给出)。
+            out[key] = {"canonical_sha256": hashlib.sha256(json.dumps(
+                val, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+                "sections": sorted(val)}
+        elif type(val).__name__ == "LibraryCache":
+            out[key] = str(val.root)
+        elif callable(val) or hasattr(val, "__file__"):
             out[key] = getattr(val, "__name__", type(val).__name__)
         else:
             out[key] = val
@@ -909,6 +1116,21 @@ def main(argv=None) -> int:
                    help="抽取单次请求的 max_tokens。留空=适配器默认 4096。")
     p.add_argument("--extract-max-retries", type=int, default=None, metavar="N",
                    help="抽取请求的传输重试次数,0 表示不重试。留空=适配器默认 3。")
+    p.add_argument("--answer-style", choices=("ladder", "official"), default="ladder",
+                   help="ladder=既有口径(默认);official=官方评测口径(答题模板、字母选择题、"
+                        "0 到 1 分项裁判,分数大于等于 0.7 记正确)。需要 --real-run。")
+    p.add_argument("--official-prompts", type=Path, default=None,
+                   help="官方提示文件(yaml)。official 口径必填;文本不进产物,只记摘要。")
+    p.add_argument("--official-prompts-sha256", default=None,
+                   help="官方提示文件的 SHA-256;official 口径必填,不符则拒跑。")
+    p.add_argument("--judge-model", default="",
+                   help="官方裁判使用的模型;留空=与作答 backbone 相同。仅 official 口径。")
+    p.add_argument("--strict-corun", action="store_true",
+                   help="官方口径下同时用旧的严格裁判再判一遍,结果记入 journal 的 strict_verdict。")
+    p.add_argument("--library-cache", type=Path, default=None,
+                   help="网络级库缓存目录:S_rag/S_star 同一历史内容的题共用一次建库(需 --real-run)。")
+    p.add_argument("--full-format", choices=("ladder", "official"), default="ladder",
+                   help="S_full 的上下文写法;official=官方全上下文模板与会话头。仅 official 口径。")
     args = p.parse_args(argv)
     for flag, value, floor in (("--extract-thinking-budget", args.extract_thinking_budget, 1),
                                ("--extract-timeout-ms", args.extract_timeout_ms, 1),
@@ -917,6 +1139,30 @@ def main(argv=None) -> int:
         if value is not None and value < floor:
             print(f"ERROR: {flag} 必须 >= {floor}。", file=sys.stderr)
             return 1
+
+    official = args.answer_style == "official"
+    if official and args.official_prompts is None:
+        print("ERROR: --answer-style official 需要 --official-prompts PATH。", file=sys.stderr)
+        return 1
+    if official and not args.real_run:
+        print("ERROR: --answer-style official 只能与 --real-run 同用(官方口径要真实作答与裁判)。",
+              file=sys.stderr)
+        return 1
+    if official and args.official_prompts_sha256 is None:
+        print("ERROR: --answer-style official 需要 --official-prompts-sha256 HEX。", file=sys.stderr)
+        return 1
+    stray = [name for name, given in (
+        ("--official-prompts", args.official_prompts is not None),
+        ("--official-prompts-sha256", args.official_prompts_sha256 is not None),
+        ("--judge-model", bool(args.judge_model)),
+        ("--strict-corun", args.strict_corun),
+        ("--full-format official", args.full_format != "ladder")) if given and not official]
+    if stray:
+        print(f"ERROR: {', '.join(stray)} 仅用于 --answer-style official。", file=sys.stderr)
+        return 1
+    if args.library_cache is not None and not args.real_run:
+        print("ERROR: --library-cache 需要 --real-run。", file=sys.stderr)
+        return 1
 
     stages = [s.strip() for s in args.stages.split(",") if s.strip()]
     unknown = [s for s in stages if s not in ALL_STAGES]
@@ -998,6 +1244,26 @@ def main(argv=None) -> int:
         config.update(rag_speaker_labels=args.rag_speaker_labels,
                       star_replay_mode=args.star_replay_mode,
                       now_iso=normalize_eval_time(args.now_iso))
+        if args.library_cache is not None:
+            import eval_ladder_pipeline as pipe
+            config["library_cache"] = pipe.LibraryCache(args.library_cache)
+        if official:
+            import eval_judge_audit as audit_mod
+            import eval_official_protocol as proto
+            try:
+                prompts = proto.load_official_prompts(args.official_prompts,
+                                                      args.official_prompts_sha256)
+            except (OSError, ValueError, ImportError) as exc:
+                print(f"ERROR: 官方提示文件不可用: {exc}", file=sys.stderr)
+                return 1
+            config.update(
+                answer_style="official", official_prompts=prompts,
+                official_prompts_sha256=args.official_prompts_sha256,
+                official_judge=proto.make_official_judge_fn(audit_mod._chat_completion, prompts),
+                judge_model=args.judge_model, strict_corun=args.strict_corun,
+                full_format=args.full_format,
+                answerer=make_real_answerer_fn(
+                    max_tokens=OFFICIAL_ANSWER_MAX_TOKENS, enable_thinking=False))
         print(f"[real-run] {len(corpus)} 题 × {len(stages)} 台阶 × "
               f"{len(backbones)} backbone × {len(seeds)} seed = "
               f"{len(corpus) * len(stages) * len(backbones) * len(seeds)} cells",
