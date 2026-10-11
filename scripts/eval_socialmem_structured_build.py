@@ -7,6 +7,8 @@
   coverage  零请求:金标话轮被声明语句回链的覆盖诊断
   answer    对一个臂发出作答与判分请求(需 --real-run)
   report    零请求:汇总各臂的配对读数
+  isolation-precheck  零请求:去声明库复制与两个隔离臂的来源门(登记:隔离答题)
+  isolation-report    零请求:隔离臂对原 st_ctrl 日志的配对读数
 没有 --real-run 不发任何请求,也不创建输出目录。"""
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ import eval_socialmem_source_matrix as matrix  # noqa: E402
 import run_socialmem_baseline as base  # noqa: E402
 
 ARMS = ("st_ctrl", "st_hyb", "st_hyb_cov")
+ISOLATION_ARMS = ("st_ctrl_noclaim", "st_ctrl_repeat")   # 隔离答题:与 st_ctrl 同一设置,只换库或重复作答
 CONTROL_REFERENCE_ARM = "evidence_profile_v9|k30|b24000"
 NOW_ISO = "2026-12-08T00:00:00Z"
 HTTP_BUDGET = 12000
@@ -52,9 +55,10 @@ _SPECS = {
 
 
 def arm_spec(arm: str) -> dict:
-    if arm not in _SPECS:
-        raise ValueError(f"unknown arm: {arm!r}; valid={list(ARMS)}")
-    return dict(_SPECS[arm])
+    key = "st_ctrl" if arm in ISOLATION_ARMS else arm
+    if key not in _SPECS:
+        raise ValueError(f"unknown arm: {arm!r}; valid={list(ARMS) + list(ISOLATION_ARMS)}")
+    return dict(_SPECS[key])
 
 
 DEFAULT_PROFILES = Path(__file__).resolve().parent / "eval_socialmem_structured_profiles.json"
@@ -497,6 +501,187 @@ def build_report(records: list[dict], rows_by_arm: dict, *, seed: int = ans.BOOT
             "bootstrap": {"seed": seed, "draws": draws}}
 
 
+# ---------------------------- 隔离答题(登记:对照臂放在去掉声明的库上,对 28 题重答) ----------------------------
+
+ISOLATION_MIN_NET = 3             # 读法 1:选择题答对数净变化的下限
+ISOLATION_EXTRA_FLIPS = 2         # 读法 1:去声明库的翻转数至少比同输入重复多这么多
+READ_MC_VISIBLE = "来源选择认得声明对选择题有可见影响"
+READ_OPEN_VISIBLE = "来源选择认得声明对开放题有可见影响"
+READ_NO_DIFFERENCE = "无法区分"
+FLIP_DOWN, FLIP_UP = "答对变答错", "答错变答对"
+OPEN_FLIP_DOWN, OPEN_FLIP_UP = "达标变不达标", "未达标变达标"
+_NOCLAIM, _REPEAT = ISOLATION_ARMS
+
+
+def strip_claims(source, dest) -> dict:
+    """备份方式复制库(源库只读打开),在复制里把全部语句的 semantic_claim_json 置空。
+    源库不改;dest 已存在或源库不存在都直接拒绝,失败不留残件。"""
+    source, dest = Path(source), Path(dest)
+    if not source.is_file():
+        raise FileNotFoundError(str(source))
+    if dest.exists():
+        raise FileExistsError(str(dest))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    part.unlink(missing_ok=True)
+    try:
+        with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src, \
+                closing(sqlite3.connect(part)) as out:
+            src.backup(out)
+            total = out.execute("select count(*) from statements").fetchone()[0]
+            cleared = out.execute("select count(*) from statements "
+                                  "where semantic_claim_json is not null and semantic_claim_json != ''").fetchone()[0]
+            out.execute("update statements set semantic_claim_json = ''")
+            out.commit()
+            out.execute("pragma journal_mode=delete")        # 合并 WAL,复制是单个自含文件
+        part.replace(dest)
+    finally:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            Path(str(part) + suffix).unlink(missing_ok=True)
+    return {"statements": total, "claims_cleared": cleared}
+
+
+def load_item_list(path, records: list[dict]) -> list[str]:
+    """读题号名单(每行一个),按语料顺序返回。空名单、重复题号、语料里没有的题号都拒绝。"""
+    listed = [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not listed:
+        raise ValueError("题号名单为空")
+    if len(set(listed)) != len(listed):
+        raise ValueError("题号名单有重复")
+    known = {r["item_id"] for r in records}
+    unknown = [i for i in listed if i not in known]
+    if unknown:
+        raise ValueError(f"名单里有语料没有的题号: {unknown[:3]}")
+    want = set(listed)
+    return [r["item_id"] for r in records if r["item_id"] in want]
+
+
+def isolation_gate(arm: str, rows: list[dict], *, reference: list[dict], original: dict) -> dict:
+    """请求前门(登记):去声明库臂要求来源话轮序列与参考行逐题相同;重复臂要求区块哈希与原 st_ctrl 日志逐题相同。
+    另一项只报告。rows 每行含 item_id、turn_ids、block_sha256;original 是原 st_ctrl 日志按题号索引。"""
+    if arm not in ISOLATION_ARMS:
+        raise ValueError(f"not an isolation arm: {arm!r}")
+    ref = {r["item_id"]: r for r in reference if r.get("arm") == CONTROL_REFERENCE_ARM}
+    orig = {i: {"turn_ids": o.get("source_turn_ids"), "block_sha256": o.get("block_sha256")}
+            for i, o in original.items()}
+    turn_source, block_source = (ref, ref) if arm == _NOCLAIM else (orig, orig)
+    turns = sum(1 for r in rows if (turn_source.get(r["item_id"]) or {}).get("turn_ids") == r["turn_ids"])
+    blocks = sum(1 for r in rows if (block_source.get(r["item_id"]) or {}).get("block_sha256") == r["block_sha256"])
+    total = len(rows)
+    needed = turns if arm == _NOCLAIM else blocks
+    return {"arm": arm, "turn_ids_equal": turns, "block_equal": blocks, "of": total,
+            "ready": total > 0 and needed == total}
+
+
+def read_isolation_mc(net: int, flips_noclaim: int, flips_repeat: int) -> str:
+    """登记读法 1(选择题):净变化绝对值不少于 3,且去声明库的翻转数比同输入重复至少多 2。"""
+    if abs(net) >= ISOLATION_MIN_NET and flips_noclaim >= flips_repeat + ISOLATION_EXTRA_FLIPS:
+        return READ_MC_VISIBLE
+    return READ_NO_DIFFERENCE
+
+
+def read_isolation_open(noclaim_lo: float, noclaim_hi: float, repeat_lo: float, repeat_hi: float) -> str:
+    """登记读法 2(开放题):去声明库的区间不含 0,且同输入重复的区间含 0。"""
+    if (noclaim_lo > 0 or noclaim_hi < 0) and repeat_lo <= 0 <= repeat_hi:
+        return READ_OPEN_VISIBLE
+    return READ_NO_DIFFERENCE
+
+
+def build_isolation_report(records: list[dict], items: list[str], orig: dict, rows_by_arm: dict, *,
+                           seed: int = ans.BOOTSTRAP_SEED, draws: int = ans.BOOTSTRAP_DRAWS) -> dict:
+    """两个隔离臂各自对原 st_ctrl 日志,只看名单里的题。选择题翻转明细只含选择题;
+    裁判解析失败或正则兜底的开放题分数(任一侧)不进汇总,单列在 excluded。
+    between 的差值方向是去声明库臂减同输入重复臂,只描述,不设读法。"""
+    by_id = {r["item_id"]: r for r in records}
+    absent = [i for i in items if i not in by_id or i not in orig]
+    if absent:
+        raise ValueError(f"名单里的题缺语料或原日志行: {absent[:3]}")
+
+    def is_mc(item: str) -> bool:
+        return by_id[item].get("answer_format", "multiple_choice") == "multiple_choice"
+
+    def network(item: str) -> str:
+        return by_id[item]["source"]["network_id"]
+
+    def unreliable(row: dict) -> bool:
+        return row.get("judge_status") in ans.BAD_JUDGE_STATUSES
+
+    def boot(pairs):
+        return ans.paired_network_bootstrap(pairs, seed=seed, draws=draws) if pairs else None
+
+    mc_ids = [i for i in items if is_mc(i)]
+    open_ids = [i for i in items if not is_mc(i)]
+    arms = [a for a in ISOLATION_ARMS if a in rows_by_arm]
+    mc = {"n": len(mc_ids), "orig_correct": sum(1 for i in mc_ids if orig[i]["ok"])}
+    open_ = {"n": len(open_ids)}
+    flips, open_flips, missing, excluded, answered = {}, {}, {}, {}, {}
+    for arm in arms:
+        rows = rows_by_arm[arm]
+        missing[arm] = [i for i in items if i not in rows]
+        have_mc = [i for i in mc_ids if i in rows]
+        changed = [i for i in have_mc if bool(rows[i]["ok"]) != bool(orig[i]["ok"])]
+        mc[arm] = {"correct": sum(1 for i in have_mc if rows[i]["ok"]),
+                   "net": sum(1 for i in have_mc if rows[i]["ok"]) - sum(1 for i in have_mc if orig[i]["ok"]),
+                   "flips": len(changed)}
+        flips[arm] = {i: (FLIP_DOWN if orig[i]["ok"] else FLIP_UP) for i in changed}
+        usable = [i for i in open_ids if i in rows and not unreliable(rows[i]) and not unreliable(orig[i])]
+        excluded[arm] = [i for i in open_ids if i in rows and i not in usable]
+        open_[arm] = boot([(network(i), float(orig[i]["score"]), float(rows[i]["score"])) for i in usable])
+        open_flips[arm] = {i: (OPEN_FLIP_DOWN if orig[i]["ok"] else OPEN_FLIP_UP)
+                           for i in usable if bool(rows[i]["ok"]) != bool(orig[i]["ok"])}
+        answered[arm] = {"mc": len(have_mc), "open": sum(1 for i in open_ids if i in rows)}
+    complete = len(arms) == len(ISOLATION_ARMS) and not any(missing.values())
+    mc["read"] = (read_isolation_mc(mc[_NOCLAIM]["net"], mc[_NOCLAIM]["flips"], mc[_REPEAT]["flips"])
+                  if complete else None)
+    if complete and open_[_NOCLAIM] and open_[_REPEAT]:
+        open_["read"] = read_isolation_open(open_[_NOCLAIM]["lo"], open_[_NOCLAIM]["hi"],
+                                            open_[_REPEAT]["lo"], open_[_REPEAT]["hi"])
+    else:
+        open_["read"] = None
+    between = {}
+    if len(arms) == len(ISOLATION_ARMS):
+        rep, noc = rows_by_arm[_REPEAT], rows_by_arm[_NOCLAIM]
+        between = {"mc": boot([(network(i), float(rep[i]["ok"]), float(noc[i]["ok"]))
+                               for i in mc_ids if i in rep and i in noc]),
+                   "open": boot([(network(i), float(rep[i]["score"]), float(noc[i]["score"]))
+                                 for i in open_ids if i in rep and i in noc
+                                 and not unreliable(rep[i]) and not unreliable(noc[i])])}
+    return {"mc": mc, "open": open_, "flips": flips, "open_flips": open_flips, "missing": missing,
+            "excluded": excluded, "answered": answered, "between": between,
+            "bootstrap": {"seed": seed, "draws": draws}}
+
+
+def stripped_library_paths(libs: dict, out) -> dict:
+    """题号到去声明库副本的映射:每个组一个副本,放在 out/stripped/<组号>/frozen.db。"""
+    return {item: Path(out) / "stripped" / Path(lib).parent.name / "frozen.db" for item, lib in libs.items()}
+
+
+def isolation_precheck_problem(pre, arm: str, *, items_sha256: str, core_sha256: str) -> str | None:
+    """作答前核对隔离门文件:存在、名单与核心都对得上、该臂的门已通过。"""
+    if not isinstance(pre, dict):
+        return "缺少 isolation_precheck.json:先跑零请求的 isolation-precheck。"
+    if pre.get("items_sha256") != items_sha256:
+        return "isolation_precheck.json 对应的题号名单与本次 --items 不一致。"
+    if pre.get("core_sha256") != core_sha256:
+        return "isolation_precheck.json 记录的核心与当前加载的核心不一致。"
+    gate = (pre.get("gates") or {}).get(arm)
+    if not isinstance(gate, dict) or gate.get("ready") is not True:
+        return f"isolation_precheck.json 里 {arm} 的门没有通过。"
+    return None
+
+
+def isolation_library_problem(pre: dict, arm: str, libs: dict) -> str | None:
+    """作答前核对要用的每个库文件的哈希:去声明库臂对 stripped_sha256,重复臂对 source_sha256。"""
+    recorded = pre.get("stripped_sha256" if arm == _NOCLAIM else "source_sha256") or {}
+    for lib in sorted({Path(p) for p in libs.values()}):
+        group = lib.parent.name
+        if not lib.is_file():
+            return f"{arm} 的库文件不存在: {group}"
+        if recorded.get(group) != ans._sha256_file(lib):
+            return f"{arm} 的库 {group} 与 isolation_precheck.json 记录的哈希不一致。"
+    return None
+
+
 # ---------------------------- 建库 ----------------------------
 
 def _live_modules():
@@ -726,6 +911,11 @@ def _report(args) -> int:
 # ---------------------------- 作答 ----------------------------
 
 def _answer(args) -> int:
+    isolation = args.arm in ISOLATION_ARMS
+    if isolation and args.items is None:
+        return _fail("隔离臂必须给 --items 题号名单。")
+    if not isolation and args.items is not None:
+        return _fail("--items 只用于隔离臂;常规臂答 110 题全集。")
     if not args.real_run:
         return _fail("缺 --real-run:answer 会发出真实作答与裁判请求,拒绝误触网络。")
     core_sha, problem = _core_gate(args)
@@ -762,12 +952,33 @@ def _answer_impl(args, core_sha: str, config: dict) -> int:
     import eval_ladder as ladder
 
     records = ans._load_corpus(args.corpus)
+    isolation, items_sha = args.arm in ISOLATION_ARMS, None
+    if isolation:
+        try:
+            wanted = set(load_item_list(args.items, records))
+        except (OSError, ValueError) as exc:
+            return _fail(f"题号名单不可用: {exc}")
+        records = [r for r in records if r["item_id"] in wanted]
+        items_sha = ans._sha256_file(args.items)
     if args.limit > 0:
         records = records[:args.limit]
     libs = _libraries(args.builds, plan_groups(ans._load_corpus(args.corpus)))
     absent = [r["item_id"] for r in records if r["item_id"] not in libs]
     if absent:
         return _fail(f"{len(absent)} 道题没有可用的新库: {absent[:3]}")
+    if isolation:
+        iso_path = args.out / "isolation_precheck.json"
+        iso_pre = json.loads(iso_path.read_text(encoding="utf-8")) if iso_path.is_file() else None
+        problem = isolation_precheck_problem(iso_pre, args.arm, items_sha256=items_sha, core_sha256=core_sha)
+        if problem:
+            return _fail(problem)
+        chosen = {r["item_id"]: libs[r["item_id"]] for r in records}
+        if args.arm == _NOCLAIM:
+            chosen = stripped_library_paths(chosen, args.out)
+        problem = isolation_library_problem(iso_pre, args.arm, chosen)
+        if problem:
+            return _fail(problem)
+        libs = chosen
     embedder = (_core.StubEmbeddingAdapter(8) if arm_spec(args.arm)["mode"] == "sources"
                 else make_adapters(_core, config)[1])
     answerer = ladder.make_real_answerer_fn(max_tokens=ladder.OFFICIAL_ANSWER_MAX_TOKENS, enable_thinking=False)
@@ -782,6 +993,9 @@ def _answer_impl(args, core_sha: str, config: dict) -> int:
                 "questions": len(records), "libraries": {p.parent.name: ans._sha256_file(p) for p in used},
                 "build_config_sha256": ans._sha256_file(args.builds / "config.json"),
                 "code_sha256": {Path(__file__).name: ans._sha256_file(__file__)}}
+    if isolation:
+        manifest.update(items_sha256=items_sha, items=len(records),
+                        variant="claims_cleared" if args.arm == _NOCLAIM else "original_library")
     (out / f"manifest_{args.arm}.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                                    encoding="utf-8")
     work = out / f"scratch_{args.arm}"
@@ -801,6 +1015,89 @@ def _answer_impl(args, core_sha: str, config: dict) -> int:
         work.rmdir()
     print(json.dumps({"arm": args.arm, "answered": len(rows), "questions": len(records),
                       "errors": len(records) - len(rows)}, ensure_ascii=False))
+    return 0
+
+
+def _isolation_precheck(args) -> int:
+    stripped_root = args.out / "stripped"
+    if stripped_root.exists() and any(stripped_root.rglob("*")):
+        return _fail(f"{stripped_root} 已有内容,拒绝覆盖;先人工核对再处理。")
+    core_sha, problem = _core_gate(args)
+    if problem:
+        return _fail(problem)
+    from starling import _core
+
+    records = ans._load_corpus(args.corpus)
+    try:
+        items = load_item_list(args.items, records)
+    except (OSError, ValueError) as exc:
+        return _fail(f"题号名单不可用: {exc}")
+    libs = _libraries(args.builds, plan_groups(records))
+    absent = [i for i in items if i not in libs]
+    if absent:
+        return _fail(f"{len(absent)} 道题没有可用的新库: {absent[:3]}")
+    original = ans.load_rows(args.original_journal, "st_ctrl")
+    lacking = [i for i in items if i not in original]
+    if lacking:
+        return _fail(f"原 st_ctrl 日志缺 {len(lacking)} 道名单里的题: {lacking[:3]}")
+    reference = [json.loads(line) for line in args.reference_rows.read_text(encoding="utf-8").splitlines()
+                 if line.strip()]
+    by_id = {r["item_id"]: r for r in records}
+    chosen = {i: libs[i] for i in items}
+    used = sorted(set(chosen.values()))
+    before = {p.parent.name: ans._sha256_file(p) for p in used}
+    stripped = stripped_library_paths(chosen, args.out)
+    strip_info = {}
+    for lib in used:
+        strip_info[lib.parent.name] = strip_claims(lib, args.out / "stripped" / lib.parent.name / "frozen.db")
+    stub = _core.StubEmbeddingAdapter(8)
+    work = args.out / "scratch_isolation_precheck"
+    rows = {arm: [] for arm in ISOLATION_ARMS}
+    for item in items:
+        for arm, lib in ((_NOCLAIM, stripped[item]), (_REPEAT, chosen[item])):
+            out = recall_for_arm(arm, by_id[item], lib, work, embedder=stub, now_iso=args.now_iso)
+            rows[arm].append({"item_id": item, "block_sha256": hashlib.sha256(out["block"].encode("utf-8")).hexdigest(),
+                              "turn_ids": [ref.get("turn_id") for ref in out["source_refs"]]})
+    if work.exists() and not any(work.iterdir()):
+        work.rmdir()
+    after = {p.parent.name: ans._sha256_file(p) for p in used}
+    if after != before:
+        return _fail("源库哈希在复制与重放前后不一致,停止,不写门文件。")
+    gates = {arm: isolation_gate(arm, rows[arm], reference=reference, original=original) for arm in ISOLATION_ARMS}
+    result = {"core_sha256": core_sha, "items_sha256": ans._sha256_file(args.items), "items": len(items),
+              "reference_arm": CONTROL_REFERENCE_ARM, "gates": gates,
+              "ready": all(g["ready"] for g in gates.values()),
+              "source_sha256": before, "source_sha256_after": after,
+              "stripped_sha256": {p.parent.name: ans._sha256_file(p) for p in stripped.values()},
+              "stripped": strip_info}
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "isolation_precheck.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                                                      encoding="utf-8")
+    print(json.dumps({"gates": gates, "ready": result["ready"], "stripped": strip_info}, ensure_ascii=False))
+    return 0 if result["ready"] else 2
+
+
+def _isolation_report(args) -> int:
+    records = ans._load_corpus(args.corpus)
+    try:
+        items = load_item_list(args.items, records)
+    except (OSError, ValueError) as exc:
+        return _fail(f"题号名单不可用: {exc}")
+    original = ans.load_rows(args.original_journal, "st_ctrl")
+    rows_by_arm = {}
+    for arm in ISOLATION_ARMS:
+        journal = args.out / f"{arm}_journal.jsonl"
+        if not journal.exists():
+            return _fail(f"缺 {arm} 的 journal: {journal}")
+        rows_by_arm[arm] = ans.load_rows(journal, arm)
+    try:
+        report = build_isolation_report(records, items, original, rows_by_arm)
+    except ValueError as exc:
+        return _fail(str(exc))
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.result is not None:
+        args.result.write_text(text + "\n", encoding="utf-8")
+    print(text)
     return 0
 
 
@@ -825,7 +1122,7 @@ def main(argv=None) -> int:
     cov = sub.add_parser("coverage", parents=[common], help="零请求:金标话轮回链覆盖")
     cov.add_argument("--builds", type=Path, required=True)
     answer = sub.add_parser("answer", parents=[common], help="对一个臂发出作答与判分请求(需 --real-run)")
-    answer.add_argument("--arm", choices=ARMS, required=True)
+    answer.add_argument("--arm", choices=ARMS + ISOLATION_ARMS, required=True)
     answer.add_argument("--out", type=Path, required=True)
     answer.add_argument("--builds", type=Path, required=True)
     answer.add_argument("--prompts", type=Path, required=True)
@@ -834,10 +1131,23 @@ def main(argv=None) -> int:
     answer.add_argument("--judge-model", default=None)
     answer.add_argument("--now-iso", default=NOW_ISO)
     answer.add_argument("--limit", type=int, default=0)
+    answer.add_argument("--items", type=Path, default=None, help="题号名单,只用于隔离臂")
     answer.add_argument("--real-run", action="store_true")
     report = sub.add_parser("report", parents=[common], help="零请求:汇总配对读数")
     report.add_argument("--out", type=Path, required=True)
     report.add_argument("--result", type=Path, default=None)
+    iso_pre = sub.add_parser("isolation-precheck", parents=[common], help="零请求:隔离臂的库副本与来源门")
+    iso_pre.add_argument("--builds", type=Path, required=True)
+    iso_pre.add_argument("--out", type=Path, required=True)
+    iso_pre.add_argument("--items", type=Path, required=True)
+    iso_pre.add_argument("--original-journal", type=Path, required=True)
+    iso_pre.add_argument("--reference-rows", type=Path, default=DEFAULT_REFERENCE)
+    iso_pre.add_argument("--now-iso", default=NOW_ISO)
+    iso_rep = sub.add_parser("isolation-report", parents=[common], help="零请求:隔离臂的配对读数")
+    iso_rep.add_argument("--out", type=Path, required=True)
+    iso_rep.add_argument("--items", type=Path, required=True)
+    iso_rep.add_argument("--original-journal", type=Path, required=True)
+    iso_rep.add_argument("--result", type=Path, default=None)
     args = parser.parse_args(argv)
     try:
         args.profile = args.profile or default_profile_name(args.profiles)
@@ -845,7 +1155,8 @@ def main(argv=None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     handler = {"build": _build, "precheck": _precheck, "coverage": _coverage, "answer": _answer,
-               "report": _report}[args.cmd]
+               "report": _report, "isolation-precheck": _isolation_precheck,
+               "isolation-report": _isolation_report}[args.cmd]
     return handler(args)
 
 

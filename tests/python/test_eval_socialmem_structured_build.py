@@ -737,3 +737,282 @@ def test_preflight_refuses_a_failing_embedding():
     stub.fail_next(mod.PREFLIGHT_TEXT)
     with pytest.raises(RuntimeError, match="嵌入"):
         mod.preflight(_preflight_config(8), (good, stub, good, good))
+
+
+# ---------------------------- 隔离答题(登记:对照臂放在去掉声明的库上,对 28 题重答) ----------------------------
+
+_VISIBLE_MC = "来源选择认得声明对选择题有可见影响"
+_VISIBLE_OPEN = "来源选择认得声明对开放题有可见影响"
+_INDISTINGUISHABLE = "无法区分"
+
+
+def _claims_db(path, rows):
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("create table statements (id text primary key, holder_id text, semantic_claim_json text)")
+        conn.executemany("insert into statements values (?,?,?)", rows)
+        conn.commit()
+
+
+def _file_sha(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def test_isolation_arms_are_the_control_arm_twice_and_leave_the_registered_arms_alone():
+    mod = _load()
+    assert mod.ARMS == ("st_ctrl", "st_hyb", "st_hyb_cov")
+    assert mod.ISOLATION_ARMS == ("st_ctrl_noclaim", "st_ctrl_repeat")
+    for arm in mod.ISOLATION_ARMS:
+        assert mod.arm_spec(arm) == mod.arm_spec("st_ctrl")
+
+
+def test_strip_claims_clears_only_the_claim_column_on_a_copy_and_leaves_the_source_untouched(tmp_path):
+    mod = _load()
+    src, dst = tmp_path / "src.db", tmp_path / "out" / "dst.db"
+    _claims_db(src, [("a", "Ada", '{"x":1}'), ("b", "Bob", None), ("c", "Ada", ""), ("d", "Bob", '{"y":2}')])
+    before = _file_sha(src)
+    info = mod.strip_claims(src, dst)
+    assert _file_sha(src) == before
+    assert info == {"statements": 4, "claims_cleared": 2}
+    with closing(sqlite3.connect(dst)) as conn:
+        rows = conn.execute("select id, holder_id, semantic_claim_json from statements order by id").fetchall()
+    assert rows == [("a", "Ada", ""), ("b", "Bob", ""), ("c", "Ada", ""), ("d", "Bob", "")]
+
+
+def test_strip_claims_refuses_to_overwrite_a_copy_and_a_missing_source_leaves_nothing_behind(tmp_path):
+    mod = _load()
+    src = tmp_path / "src.db"
+    _claims_db(src, [("a", "Ada", '{"x":1}')])
+    dst = tmp_path / "dst.db"
+    dst.write_bytes(b"x")
+    with pytest.raises(FileExistsError):
+        mod.strip_claims(src, dst)
+    assert dst.read_bytes() == b"x"
+    with pytest.raises(FileNotFoundError):
+        mod.strip_claims(tmp_path / "nope.db", tmp_path / "d2.db")
+    assert not (tmp_path / "d2.db").exists()
+
+
+def test_load_item_list_returns_corpus_order_and_rejects_unknown_duplicate_or_empty_lists(tmp_path):
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q5", "n2", "long_form"), _rec("c", "Q6", "n3")]
+    path = tmp_path / "items.txt"
+    path.write_text("c\na\n", encoding="utf-8")
+    assert mod.load_item_list(path, recs) == ["a", "c"]
+    for bad in ("a\nzzz\n", "a\na\n", "\n\n", ""):
+        path.write_text(bad, encoding="utf-8")
+        with pytest.raises(ValueError):
+            mod.load_item_list(path, recs)
+
+
+def test_isolation_gate_for_the_stripped_arm_needs_the_reference_turn_sequences():
+    mod = _load()
+    ref = [{"arm": mod.CONTROL_REFERENCE_ARM, "item_id": "a", "turn_ids": ["t1", "t2"], "block_sha256": "h1"},
+           {"arm": mod.CONTROL_REFERENCE_ARM, "item_id": "b", "turn_ids": ["t3"], "block_sha256": "h2"},
+           {"arm": "other", "item_id": "b", "turn_ids": ["zz"], "block_sha256": "zz"}]
+    rows = [{"item_id": "a", "turn_ids": ["t1", "t2"], "block_sha256": "x1"},
+            {"item_id": "b", "turn_ids": ["t3"], "block_sha256": "x2"}]
+    assert mod.isolation_gate("st_ctrl_noclaim", rows, reference=ref, original={}) == {
+        "arm": "st_ctrl_noclaim", "turn_ids_equal": 2, "block_equal": 0, "of": 2, "ready": True}
+    rows[1]["turn_ids"] = ["t9"]
+    gate = mod.isolation_gate("st_ctrl_noclaim", rows, reference=ref, original={})
+    assert gate["turn_ids_equal"] == 1 and gate["ready"] is False
+
+
+def test_isolation_gate_for_the_repeat_arm_needs_the_original_blocks_and_rejects_empty_or_unknown():
+    mod = _load()
+    orig = {"a": {"block_sha256": "h1", "source_turn_ids": ["t1"]}, "b": {"block_sha256": "h2", "source_turn_ids": ["t3"]}}
+    rows = [{"item_id": "a", "turn_ids": ["t1"], "block_sha256": "h1"},
+            {"item_id": "b", "turn_ids": ["t3"], "block_sha256": "h2"}]
+    gate = mod.isolation_gate("st_ctrl_repeat", rows, reference=[], original=orig)
+    assert gate["block_equal"] == 2 and gate["of"] == 2 and gate["ready"] is True
+    rows[0]["block_sha256"] = "zz"
+    assert mod.isolation_gate("st_ctrl_repeat", rows, reference=[], original=orig)["ready"] is False
+    assert mod.isolation_gate("st_ctrl_repeat", [], reference=[], original=orig)["ready"] is False
+    with pytest.raises(ValueError):
+        mod.isolation_gate("st_ctrl", rows, reference=[], original=orig)
+
+
+@pytest.mark.parametrize("net,flips_claimless,flips_repeat,label", [
+    (3, 4, 2, _VISIBLE_MC), (-3, 5, 3, _VISIBLE_MC),
+    (2, 6, 0, _INDISTINGUISHABLE), (3, 3, 2, _INDISTINGUISHABLE), (0, 4, 0, _INDISTINGUISHABLE)])
+def test_isolation_rule_one_reads_the_multiple_choice_change_against_the_repeat_noise(
+        net, flips_claimless, flips_repeat, label):
+    mod = _load()
+    assert mod.read_isolation_mc(net, flips_claimless, flips_repeat) == label
+
+
+@pytest.mark.parametrize("c_lo,c_hi,r_lo,r_hi,label", [
+    (0.02, 0.20, -0.05, 0.05, _VISIBLE_OPEN), (-0.20, -0.02, -0.05, 0.05, _VISIBLE_OPEN),
+    (-0.01, 0.20, -0.05, 0.05, _INDISTINGUISHABLE), (0.02, 0.20, 0.01, 0.10, _INDISTINGUISHABLE),
+    (-0.10, 0.10, -0.05, 0.05, _INDISTINGUISHABLE)])
+def test_isolation_rule_two_reads_the_open_interval_against_the_repeat_interval(c_lo, c_hi, r_lo, r_hi, label):
+    mod = _load()
+    assert mod.read_isolation_open(c_lo, c_hi, r_lo, r_hi) == label
+
+
+def test_isolation_report_pairs_both_new_arms_with_the_original_journal_on_the_listed_items_only():
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q6", "n2"), _rec("c", "Q2", "n3"),
+            _rec("d", "Q5", "n1", "long_form"), _rec("e", "Q9", "n2", "long_form"), _rec("z", "Q4", "n3")]
+    items = ["a", "b", "c", "d", "e"]
+    orig = {"a": _row(1.0), "b": _row(0.0), "c": _row(1.0), "d": _row(0.5), "e": _row(1.0), "z": _row(1.0)}
+    noclaim = {"a": _row(0.0), "b": _row(0.0), "c": _row(0.0), "d": _row(1.0), "e": _row(1.0)}
+    repeat = {"a": _row(1.0), "b": _row(0.0), "c": _row(1.0), "d": _row(0.5), "e": _row(1.0)}
+    report = mod.build_isolation_report(recs, items, orig, {"st_ctrl_noclaim": noclaim, "st_ctrl_repeat": repeat},
+                                        seed=1, draws=200)
+    assert report["mc"]["n"] == 3 and report["mc"]["orig_correct"] == 2
+    assert report["mc"]["st_ctrl_noclaim"] == {"correct": 0, "net": -2, "flips": 2}
+    assert report["mc"]["st_ctrl_repeat"] == {"correct": 2, "net": 0, "flips": 0}
+    assert report["mc"]["read"] == _INDISTINGUISHABLE
+    assert report["open"]["n"] == 2
+    assert report["open"]["st_ctrl_noclaim"]["delta"] == pytest.approx(0.25)
+    assert report["open"]["st_ctrl_repeat"]["delta"] == pytest.approx(0.0)
+    assert report["open"]["read"] == _INDISTINGUISHABLE
+    assert report["flips"]["st_ctrl_noclaim"] == {"a": "答对变答错", "c": "答对变答错"}
+    assert report["flips"]["st_ctrl_repeat"] == {}
+
+
+def test_isolation_report_lists_missing_rows_and_unreliable_judge_scores_and_leaves_them_out():
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q6", "n2"),
+            _rec("d", "Q5", "n1", "long_form"), _rec("e", "Q9", "n2", "long_form")]
+    items = ["a", "b", "d", "e"]
+    orig = {"a": _row(1.0), "b": _row(1.0), "d": _row(0.5), "e": _row(1.0)}
+    noclaim = {"a": _row(1.0), "d": _row(1.0, status="regex_fallback"), "e": _row(1.0)}
+    repeat = {"a": _row(1.0), "b": _row(1.0), "d": _row(0.5), "e": _row(1.0)}
+    report = mod.build_isolation_report(recs, items, orig, {"st_ctrl_noclaim": noclaim, "st_ctrl_repeat": repeat},
+                                        seed=1, draws=50)
+    assert report["missing"]["st_ctrl_noclaim"] == ["b"]
+    assert report["missing"]["st_ctrl_repeat"] == []
+    assert report["excluded"]["st_ctrl_noclaim"] == ["d"]
+    assert report["mc"]["st_ctrl_noclaim"]["flips"] == 0
+    assert report["open"]["st_ctrl_noclaim"]["n"] == 1
+
+
+def test_main_refuses_an_isolation_arm_without_items_and_a_regular_arm_with_items(tmp_path, capsys):
+    mod = _load()
+    assert mod.main(_answer_args(tmp_path, arm="st_ctrl_noclaim")) == 1
+    assert "--items" in capsys.readouterr().err
+    assert mod.main(_answer_args(tmp_path, arm="st_ctrl") + ["--items", str(tmp_path / "i.txt")]) == 1
+    assert "--items" in capsys.readouterr().err
+    assert not (tmp_path / "a").exists()
+
+
+def test_main_refuses_to_answer_an_isolation_arm_without_real_run_and_touches_nothing(tmp_path, capsys):
+    mod = _load()
+    args = _answer_args(tmp_path, arm="st_ctrl_repeat") + ["--items", str(tmp_path / "i.txt")]
+    assert mod.main(args) == 1
+    assert "--real-run" in capsys.readouterr().err
+    assert not (tmp_path / "a").exists()
+
+
+# ---------------------------- 隔离答题:路径、门文件校验与命令 ----------------------------
+
+def test_stripped_library_paths_put_each_copy_under_its_group_directory(tmp_path):
+    mod = _load()
+    libs = {"a": tmp_path / "runs" / "g1" / "frozen.db", "b": tmp_path / "runs" / "g1" / "frozen.db",
+            "c": tmp_path / "runs" / "g2" / "frozen.db"}
+    out = tmp_path / "out"
+    paths = mod.stripped_library_paths(libs, out)
+    assert paths == {"a": out / "stripped" / "g1" / "frozen.db", "b": out / "stripped" / "g1" / "frozen.db",
+                     "c": out / "stripped" / "g2" / "frozen.db"}
+
+
+def _ready_precheck(**over):
+    pre = {"core_sha256": "c0", "items_sha256": "i0", "ready": True,
+           "gates": {"st_ctrl_noclaim": {"ready": True}, "st_ctrl_repeat": {"ready": True}}}
+    pre.update(over)
+    return pre
+
+
+def test_isolation_precheck_problem_accepts_a_matching_ready_file_and_names_each_mismatch():
+    mod = _load()
+    check = mod.isolation_precheck_problem
+    assert check(_ready_precheck(), "st_ctrl_noclaim", items_sha256="i0", core_sha256="c0") is None
+    assert "isolation_precheck.json" in check(None, "st_ctrl_noclaim", items_sha256="i0", core_sha256="c0")
+    assert "名单" in check(_ready_precheck(), "st_ctrl_noclaim", items_sha256="zz", core_sha256="c0")
+    assert "核心" in check(_ready_precheck(), "st_ctrl_noclaim", items_sha256="i0", core_sha256="zz")
+    not_ready = _ready_precheck(gates={"st_ctrl_noclaim": {"ready": False}, "st_ctrl_repeat": {"ready": True}})
+    assert "门" in check(not_ready, "st_ctrl_noclaim", items_sha256="i0", core_sha256="c0")
+    assert check(not_ready, "st_ctrl_repeat", items_sha256="i0", core_sha256="c0") is None
+    assert "门" in check(_ready_precheck(gates={}), "st_ctrl_noclaim", items_sha256="i0", core_sha256="c0")
+
+
+def test_isolation_precheck_refuses_a_non_empty_stripped_directory_before_touching_anything(tmp_path, capsys):
+    mod = _load()
+    out = tmp_path / "o"
+    (out / "stripped" / "g1").mkdir(parents=True)
+    (out / "stripped" / "g1" / "frozen.db").write_bytes(b"x")
+    args = ["isolation-precheck", "--builds", str(tmp_path / "b"), "--out", str(out),
+            "--items", str(tmp_path / "i.txt"), "--original-journal", str(tmp_path / "j.jsonl")]
+    assert mod.main(args) == 1
+    assert "stripped" in capsys.readouterr().err
+    assert (out / "stripped" / "g1" / "frozen.db").read_bytes() == b"x"
+    assert not (out / "isolation_precheck.json").exists()
+
+
+def _write_jsonl(path, rows):
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_isolation_report_command_reads_the_journals_and_prints_the_registered_readings(tmp_path, capsys):
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q6", "n2"), _rec("d", "Q5", "n3", "long_form")]
+    corpus, items, orig = tmp_path / "c.jsonl", tmp_path / "i.txt", tmp_path / "orig.jsonl"
+    _write_jsonl(corpus, recs)
+    items.write_text("a\nb\nd\n", encoding="utf-8")
+
+    def row(arm, item, score):
+        return {"arm": arm, "item_id": item, "ok": score >= 0.7, "score": score, "judge_status": None}
+
+    _write_jsonl(orig, [row("st_ctrl", "a", 1.0), row("st_ctrl", "b", 0.0), row("st_ctrl", "d", 0.5),
+                        row("st_ctrl", "zz", 1.0)])
+    out = tmp_path / "out"
+    out.mkdir()
+    _write_jsonl(out / "st_ctrl_noclaim_journal.jsonl",
+                 [row("st_ctrl_noclaim", "a", 0.0), row("st_ctrl_noclaim", "b", 0.0), row("st_ctrl_noclaim", "d", 1.0)])
+    _write_jsonl(out / "st_ctrl_repeat_journal.jsonl",
+                 [row("st_ctrl_repeat", "a", 1.0), row("st_ctrl_repeat", "b", 0.0), row("st_ctrl_repeat", "d", 0.5)])
+    result = tmp_path / "res.json"
+    args = ["isolation-report", "--corpus", str(corpus), "--out", str(out), "--items", str(items),
+            "--original-journal", str(orig), "--result", str(result)]
+    assert mod.main(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["mc"]["n"] == 2 and printed["open"]["n"] == 1
+    assert printed["mc"]["st_ctrl_noclaim"] == {"correct": 0, "net": -1, "flips": 1}
+    assert printed["mc"]["st_ctrl_repeat"] == {"correct": 1, "net": 0, "flips": 0}
+    assert printed["mc"]["read"] == "无法区分"
+    assert json.loads(result.read_text(encoding="utf-8")) == printed
+
+
+def test_isolation_report_command_fails_loudly_when_an_arm_journal_is_missing(tmp_path, capsys):
+    mod = _load()
+    corpus, items, orig = tmp_path / "c.jsonl", tmp_path / "i.txt", tmp_path / "orig.jsonl"
+    _write_jsonl(corpus, [_rec("a", "Q2", "n1")])
+    items.write_text("a\n", encoding="utf-8")
+    _write_jsonl(orig, [{"arm": "st_ctrl", "item_id": "a", "ok": True, "score": 1.0, "judge_status": None}])
+    out = tmp_path / "out"
+    out.mkdir()
+    args = ["isolation-report", "--corpus", str(corpus), "--out", str(out), "--items", str(items),
+            "--original-journal", str(orig)]
+    assert mod.main(args) == 1
+    assert "journal" in capsys.readouterr().err
+
+
+def test_isolation_library_problem_checks_each_library_hash_against_the_precheck_record(tmp_path):
+    mod = _load()
+    lib = tmp_path / "g1" / "frozen.db"
+    lib.parent.mkdir()
+    lib.write_bytes(b"aaa")
+    pre = {"source_sha256": {"g1": _file_sha(lib)}, "stripped_sha256": {"g1": _file_sha(lib)}}
+    assert mod.isolation_library_problem(pre, "st_ctrl_noclaim", {"x": lib}) is None
+    assert mod.isolation_library_problem(pre, "st_ctrl_repeat", {"x": lib}) is None
+    other = tmp_path / "g2" / "frozen.db"
+    other.parent.mkdir()
+    other.write_bytes(b"c")
+    assert "g2" in mod.isolation_library_problem(pre, "st_ctrl_repeat", {"x": lib, "y": other})
+    assert "g1" in mod.isolation_library_problem(pre, "st_ctrl_noclaim", {"x": tmp_path / "g1" / "missing.db"})
+    lib.write_bytes(b"bbb")
+    assert "g1" in mod.isolation_library_problem(pre, "st_ctrl_repeat", {"x": lib})
+    assert "g1" in mod.isolation_library_problem({}, "st_ctrl_noclaim", {"x": lib})
