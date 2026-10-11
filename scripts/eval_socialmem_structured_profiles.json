@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "default_profile": "dashscope",
+  "note": "WP2.B 评测模型与端点配置。不含任何密钥，只记读取密钥的环境变量名。改模型只改本文件，不改评测代码；也可用 --profiles 指向另一份同结构的文件。embedding_dim 为 null 表示该嵌入模型当前无法探测到维度，驱动会拒绝用它建库，绝不猜一个数字。",
+  "profiles": {
+    "dashscope": {
+      "note": "原登记设置，默认，行为不变。",
+      "extract_model": "qwen3.8-27b",
+      "extract_provider": "dashscope",
+      "extract_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "extract_key_env": "DASHSCOPE_API_KEY",
+      "answer_model": "qwen3.8-27b",
+      "answer_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "answer_key_env": "DASHSCOPE_API_KEY",
+      "embedding_model": "qwen3.7-text-embedding",
+      "embedding_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "embedding_dim": 1024,
+      "embedding_key_env": "DASHSCOPE_API_KEY"
+    },
+    "tokenkey_flash": {
+      "note": "用户指示(2026-10-10):转向 TokenKey,qwen3.8-flash 替代 qwen3.8-27b。嵌入是被迫换的:qwen3.7-text-embedding 在中转上不可用。",
+      "extract_model": "qwen3.8-flash",
+      "extract_provider": "tokenkey",
+      "extract_endpoint": "https://api.tokenkey.dev/v1",
+      "extract_key_env": "DEEPSEEK_API_KEY",
+      "answer_model": "qwen3.8-flash",
+      "answer_endpoint": "https://api.tokenkey.dev/v1",
+      "answer_key_env": "DEEPSEEK_API_KEY",
+      "embedding_model": "doubao-embedding-vision",
+      "embedding_endpoint": "https://api.tokenkey.dev/v1",
+      "embedding_dim": 2048,
+      "embedding_key_env": "DEEPSEEK_API_KEY"
+    },
+    "tokenkey_max": {
+      "note": "用户指示(2026-10-11):qwen3.8-max 与 text-embedding-v4。qwen3.8-max 已实测可用;text-embedding-v4 截至 2026-10-11 在中转上不可用(一把钥匙 400 unsupported_model,另一把 429 no_available_accounts,间隔重试无效),模型详情路由 404,所以 embedding_dim 无法确定。填 null,驱动会拒绝用它建库——这是有意的,不要猜。能探测到维度后把该数字填进来即可,不必改代码。",
+      "extract_model": "qwen3.8-max",
+      "extract_provider": "tokenkey",
+      "extract_endpoint": "https://api.tokenkey.dev/v1",
+      "extract_key_env": "DEEPSEEK_API_KEY",
+      "answer_model": "qwen3.8-max",
+      "answer_endpoint": "https://api.tokenkey.dev/v1",
+      "answer_key_env": "DEEPSEEK_API_KEY",
+      "embedding_model": "text-embedding-v4",
+      "embedding_endpoint": "https://api.tokenkey.dev/v1",
+      "embedding_dim": null,
+      "embedding_key_env": "DEEPSEEK_API_KEY"
+    }
+  }
+}
