@@ -392,6 +392,10 @@ def _real_answer(stage: str, record: dict, seed: int, config: dict) -> bool:
             diagnostics.update(score=verdict["score"], judge_raw=verdict["raw"],
                                judge_status=verdict["status"],
                                judge_rationale=verdict["rationale"])
+        if verdict["status"] in proto.BAD_JUDGE_STATUSES:
+            # 裁判没有给出真实分数:抛错,run_cell 写 error 行并排除出统计,续跑会重试;
+            # 不记 0 分,也不把正则从无关文字里读到的数字当分数
+            raise ValueError(f"official judge reply carried no real score: {verdict['status']}")
         if config.get("strict_corun"):
             strict = bool(config["judge"](record["question"], reference, response, backbone))
             if diagnostics is not None:
@@ -797,7 +801,14 @@ def append_journal(path: Path, row: dict) -> None:
     import os
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    needs_break = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as probe:      # 上次被 kill 可能留下没有换行的半行,先补换行再追加
+            probe.seek(-1, os.SEEK_END)
+            needs_break = probe.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as fh:
+        if needs_break:
+            fh.write("\n")
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         fh.flush()
         os.fsync(fh.fileno())

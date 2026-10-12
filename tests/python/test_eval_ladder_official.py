@@ -433,3 +433,32 @@ def test_report_config_serializes_official_prompts_and_cache_without_leaking_tex
     text = json.dumps(ladder._serializable_config(config), ensure_ascii=False)
     assert "OE-PROMPT" not in text
     assert str(tmp_path / "cache") in text
+
+
+# ---------------------------- 裁判坏状态不是分数(对抗审查后) ----------------------------
+
+def _bad_status_judge(status, score):
+    def judge(question, reference, candidate, backbone):
+        return {"score": score, "rationale": "r", "raw": "Step 1: compare", "status": status}
+
+    return judge
+
+
+@pytest.mark.parametrize("status,score", [("parse_failed", 0.0), ("regex_fallback", 1.0)])
+def test_official_style_raises_on_a_judge_reply_that_carried_no_real_score(status, score):
+    """parse_failed 的 0 分与正则兜底读出的数字都不是裁判给的分数:
+    抛错让 run_cell 写 error 行并排除出统计,续跑会重试,而不是记成 0 分或满分。"""
+    trace = {}
+    cfg = _cfg(answer_style="official", official_prompts=PROMPTS, official_judge=_bad_status_judge(status, score),
+               judge=_strict_judge_must_not_run, diagnostics=trace)
+    with pytest.raises(ValueError, match=status):
+        ladder._real_answer("S_rag", _free(), 0, cfg)
+    assert trace["judge_status"] == status        # 留痕仍写,便于事后统计坏状态
+
+
+def test_append_journal_terminates_a_half_written_last_line_so_the_new_row_is_not_lost(tmp_path):
+    j = tmp_path / "j.jsonl"
+    j.write_text(json.dumps({"key": "S_rag|stub|0|a", "ok": True}) + "\n" + '{"key": "S_rag|stub|0|b", "o',
+                 encoding="utf-8")                                      # 被 kill:第二行只写了一半,没有换行
+    ladder.append_journal(j, {"key": "S_rag|stub|0|c", "ok": False})
+    assert ladder.load_journal(j) == {"S_rag|stub|0|a": True, "S_rag|stub|0|c": False}

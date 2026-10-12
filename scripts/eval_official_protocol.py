@@ -162,6 +162,9 @@ def parse_official_judge(content: str) -> tuple[float, str, str]:
         return 0.0, "parse failed", "parse_failed"
 
 
+BAD_JUDGE_STATUSES = ("parse_failed", "regex_fallback")   # 两者都不是裁判给出的分数,不得当分数计入
+
+
 def official_is_correct(score: float) -> bool:
     return score >= CORRECT_THRESHOLD
 

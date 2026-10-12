@@ -76,7 +76,14 @@ def _read_rows(path: Path) -> dict[str, dict]:
 
 
 def _append(path: Path, row: dict) -> None:
+    needs_break = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as probe:      # 上次被 kill 可能留下没有换行的半行,先补换行再追加
+            probe.seek(-1, os.SEEK_END)
+            needs_break = probe.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as fh:
+        if needs_break:
+            fh.write("\n")
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
@@ -108,7 +115,8 @@ def rescore(root, corpus: dict[str, dict], out, judge, *, backbone: str = "") ->
     out.touch(exist_ok=True)
     done = _read_rows(out)
     counts = {"already_done": 0, "skipped_missing_record": 0, "skipped_multiple_choice": 0,
-              "skipped_not_ok": 0, "skipped_unreadable": 0, "judge_errors": 0}
+              "skipped_not_ok": 0, "skipped_unreadable": 0, "judge_errors": 0,
+              "judge_bad_status": 0}
     for path in iter_question_files(root):
         try:
             question = json.loads(path.read_text(encoding="utf-8"))
@@ -135,6 +143,11 @@ def rescore(root, corpus: dict[str, dict], out, judge, *, backbone: str = "") ->
         except Exception as exc:                  # noqa: BLE001 — 单题失败不毁整轮,下次续跑重试
             counts["judge_errors"] += 1
             print(f"  ! {item_id} judge failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            continue
+        if result["status"] in proto.BAD_JUDGE_STATUSES:    # 没有真实分数:不写行,续跑会重试
+            counts["judge_bad_status"] += 1
+            print(f"  ! {item_id} judge reply carried no real score: {result['status']}",
+                  file=sys.stderr, flush=True)
             continue
         row = {"item_id": item_id, "query_type": record.get("query_type"),
                "strict_correct": bool(question.get("correct")),

@@ -225,3 +225,42 @@ def test_main_refuses_a_summary_inside_the_question_directory(tmp_path, capsys):
         assert "--summary" in capsys.readouterr().err
         assert not summary.exists()
     assert list(root.rglob("*")) == []
+
+
+def _status_judge(table):
+    def judge(question, reference, candidate, backbone):
+        score, status = table[candidate]
+        return {"score": score, "rationale": "r", "raw": "{}", "status": status}
+
+    return judge
+
+
+def test_rescore_does_not_count_a_bad_judge_status_as_a_score_and_retries_it_on_resume(tmp_path):
+    mod = _load("rescore_socialmem_official")
+    root = tmp_path / "dev"
+    _question_file(root, "Q5_a", correct=False, raw="Femi knew it")
+    _question_file(root, "Q5_c", correct=True, raw="The venue changed")
+    out = tmp_path / "rows.jsonl"
+    summary = mod.rescore(root, CORPUS, out, _status_judge({"Femi knew it": (0.9, "ok"),
+                                                             "The venue changed": (1.0, "regex_fallback")}))
+    assert summary["n"] == 1 and summary["mean_score"] == pytest.approx(0.9)
+    assert summary["judge_bad_status"] == 1
+    assert set(_rows(out)) == {"Q5_a"}                      # 坏状态的题不写成已完成
+    calls = []
+
+    def retry(question, reference, candidate, backbone):
+        calls.append(candidate)
+        return {"score": 0.4, "rationale": "r", "raw": "{}", "status": "ok"}
+
+    summary = mod.rescore(root, CORPUS, out, retry)
+    assert calls == ["The venue changed"]                   # 续跑只重试坏状态的那题
+    assert summary["n"] == 2 and summary["already_done"] == 1
+
+
+def test_append_terminates_a_half_written_last_line_so_the_new_row_is_not_lost(tmp_path):
+    mod = _load("rescore_socialmem_official")
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps({"item_id": "Q5_a", "official_score": 0.9}) + "\n" + '{"item_id": "Q5_c", "off',
+                    encoding="utf-8")                                   # 被 kill:第二行只写了一半,没有换行
+    mod._append(path, {"item_id": "Q5_x", "official_score": 0.4})
+    assert sorted(mod._read_rows(path)) == ["Q5_a", "Q5_x"]

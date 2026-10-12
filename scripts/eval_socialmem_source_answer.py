@@ -41,7 +41,7 @@ GUARD_TYPES = ("Q2", "Q4", "Q6")
 MAX_CONSECUTIVE_FAILURES = 4       # 连续传输类失败的中止线(构造失败 ValueError 不计)
 PARSE_CHECK_AFTER = 30             # 已判这么多开放题后才检查裁判解析失败率
 PARSE_FAILURE_LIMIT = 0.05
-BAD_JUDGE_STATUSES = ("parse_failed", "regex_fallback")   # 两者都不是裁判给出的分数:计入中止线,不进汇总
+BAD_JUDGE_STATUSES = proto.BAD_JUDGE_STATUSES   # 两者都不是裁判给出的分数:计入中止线,不进汇总
 _EPS = 1e-9
 
 
@@ -87,7 +87,14 @@ def answer_item(record: dict, recall: dict, *, prompts: dict, answerer, judge, s
 
 def _append(path: Path, row: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    needs_break = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as probe:      # 上次被 kill 可能留下没有换行的半行,先补换行再追加
+            probe.seek(-1, os.SEEK_END)
+            needs_break = probe.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as fh:
+        if needs_break:
+            fh.write("\n")
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
@@ -111,6 +118,34 @@ def load_rows(journal, arm: str | None = None) -> dict[str, dict]:
         if arm is not None and row.get("arm") != arm:
             continue
         rows[row["item_id"]] = row
+    return rows
+
+
+def load_full_rows(journal) -> dict[str, dict]:
+    """S_full 基线行。梯子 journal 可含多个台阶,只取 stage 为 S_full 的行;同一题出现在多个 backbone
+    或 seed 下时基线不唯一,拒绝;没有任何 S_full 行也拒绝,不静默给出空基线。"""
+    path = Path(journal)
+    rows: dict[str, dict] = {}
+    seen: dict[str, tuple] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict) or row.get("stage") != "S_full":
+                continue
+            if not isinstance(row.get("item_id"), str) or not isinstance(row.get("ok"), bool):
+                continue
+            item, ident = row["item_id"], (row.get("backbone"), row.get("seed"))
+            if item in seen and seen[item] != ident:
+                raise ValueError(f"S_full journal 里 {item} 出现在多个 backbone 或 seed 下,基线不唯一")
+            seen[item] = ident
+            rows[item] = row
+    if not rows:
+        raise ValueError(f"S_full journal 里没有 stage 为 S_full 的行: {path}")
     return rows
 
 
@@ -373,7 +408,12 @@ def _report(args) -> int:
     records = _load_corpus(args.corpus)
     rows_by_arm = {arm: load_rows(args.out / f"{arm}_journal.jsonl", arm)
                    for arm in ANSWER_ARMS if arm in ARMS or (args.out / f"{arm}_journal.jsonl").exists()}
-    report = build_report(records, rows_by_arm, load_rows(args.full_journal))
+    try:
+        full_rows = load_full_rows(args.full_journal)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    report = build_report(records, rows_by_arm, full_rows)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.result is not None:
         args.result.write_text(text + "\n", encoding="utf-8")

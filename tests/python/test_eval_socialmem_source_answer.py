@@ -493,7 +493,8 @@ def test_main_report_includes_extended_arms_only_when_their_journal_exists(tmp_p
     recs, arms, full = _wp1e_inputs()
     corpus, full_path, out, result = tmp_path / "c.jsonl", tmp_path / "full.jsonl", tmp_path / "o", tmp_path / "r.json"
     corpus.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
-    _journal(full_path, None, full)
+    full_path.write_text("".join(json.dumps({"item_id": i, "stage": "S_full", "backbone": "m", "seed": 0, **row})
+                                 + "\n" for i, row in full.items()), encoding="utf-8")   # 真梯子 journal 带 stage
     out.mkdir()
     for arm in ("src_base", "src_gold", "src_gold_ctx"):
         _journal(out / f"{arm}_journal.jsonl", arm, arms[arm])
@@ -517,3 +518,46 @@ def test_build_report_excludes_parse_failed_scores_like_regex_fallback():
     ctx = rep["arms"]["src_gold_ctx"]
     assert ctx["q5q9"]["n"] == 2 and ctx["regex_fallback"] == ["b"]
     assert rep["paired"]["gold_ctx_vs_base"]["n"] == 2
+
+
+def test_load_full_rows_keeps_only_the_s_full_stage_and_refuses_a_mixed_or_ambiguous_journal(tmp_path):
+    mod = _load()
+    path = tmp_path / "ladder.jsonl"
+
+    def row(stage, item, score, backbone="m", seed=0):
+        return {"key": f"{stage}|{backbone}|{seed}|{item}", "stage": stage, "backbone": backbone, "seed": seed,
+                "item_id": item, "ok": score >= 0.7, "score": score, "judge_status": "ok"}
+
+    # 多台阶 journal:S_full 之后还有 S_star 的同题行,旧逻辑会用最后一行覆盖
+    path.write_text("".join(json.dumps(r) + "\n" for r in (
+        row("S_full", "a", 1.0), row("S_full", "b", 0.9), row("S_star", "a", 0.0), row("S_star", "b", 0.0))),
+        encoding="utf-8")
+    full = mod.load_full_rows(path)
+    assert {i: r["score"] for i, r in full.items()} == {"a": 1.0, "b": 0.9}
+    # 同一题在 S_full 下有两个 backbone 或 seed:基线不唯一,拒绝
+    path.write_text("".join(json.dumps(r) + "\n" for r in (
+        row("S_full", "a", 1.0), row("S_full", "a", 0.5, backbone="other"))), encoding="utf-8")
+    with pytest.raises(ValueError, match="S_full"):
+        mod.load_full_rows(path)
+    # 没有任何 S_full 行:拒绝,而不是静默空基线
+    path.write_text(json.dumps(row("S_star", "a", 0.0)) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="S_full"):
+        mod.load_full_rows(path)
+
+
+def test_append_terminates_a_half_written_last_line_so_the_new_row_is_not_lost(tmp_path):
+    mod = _load()
+    path = tmp_path / "j.jsonl"
+    path.write_text(json.dumps({"key": "a|1", "arm": "a", "item_id": "1", "ok": True, "score": 1.0}) + "\n"
+                    + '{"key": "a|2", "arm"', encoding="utf-8")      # 被 kill:第二行只写了一半,没有换行
+    mod._append(path, {"key": "a|3", "arm": "a", "item_id": "3", "ok": True, "score": 0.0})
+    assert sorted(mod.load_rows(path, "a")) == ["1", "3"]
+
+
+def test_append_adds_no_blank_line_to_a_complete_or_missing_journal(tmp_path):
+    mod = _load()
+    path = tmp_path / "sub" / "j.jsonl"
+    mod._append(path, {"key": "a|1", "arm": "a", "item_id": "1", "ok": True, "score": 1.0})
+    mod._append(path, {"key": "a|2", "arm": "a", "item_id": "2", "ok": True, "score": 0.0})
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+    assert sorted(mod.load_rows(path, "a")) == ["1", "2"]
