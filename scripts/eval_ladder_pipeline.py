@@ -20,8 +20,12 @@ seed 契约(与 eval_longmemeval._real_answer 同):raw sqlite 24 列 INSERT 先�
 """
 from __future__ import annotations
 
-import sqlite3
+import hashlib
 import json
+import shutil
+import sqlite3
+from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 # 六台阶的规范记忆块来源(与 eval_ladder.ALL_STAGES 对齐)。
@@ -244,3 +248,52 @@ def recall_block(core: Any, stage: str, *, adapter: Any, embedder: Any,
             now_iso=now_iso, k=k, max_context_bytes=8000)
 
     raise ValueError(f"unknown stage: {stage!r}; valid={STAGES}")
+
+
+# --------------------------- 网络级库复用(WP0 R5)---------------------------
+# 同一段对话历史下的题共用一次建库(抽取与嵌入是最贵的部分);每题检出一份独立副本再召回,
+# 召回会写 statement.recalled 等事件,所以共享库本身从不被召回触碰。
+
+
+def history_key(history: list[dict]) -> str:
+    """话轮内容的 SHA-256 前 10 位:同内容同键,与网络号无关(按会话截断的题历史不同,键也不同)。"""
+    blob = json.dumps([[t.get("speaker"), t.get("observed_at"), t.get("text"),
+                        t.get("session_index"), t.get("turn_id")] for t in history],
+                      ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:10]
+
+
+class LibraryCache:
+    """目录下每个 (台阶, 键) 一个条目:library.db 加 done.json(建库返回的 meta)。
+    建库失败不留半成品;只有写完 done.json 才算命中。"""
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def get_or_build(self, stage: str, key: str, build):
+        entry = self.root / f"{stage}_{key}"
+        db, done = entry / "library.db", entry / "done.json"
+        if done.exists():
+            return db, "hit", json.loads(done.read_text(encoding="utf-8"))["meta"]
+        if entry.exists():
+            shutil.rmtree(entry)             # 上次中断留下的半成品
+        entry.mkdir(parents=True)
+        try:
+            meta = build(str(db))
+            done.write_text(json.dumps({"meta": meta}, ensure_ascii=False, default=str), encoding="utf-8")
+        except BaseException:
+            shutil.rmtree(entry, ignore_errors=True)
+            raise
+        return db, "miss", meta
+
+    def checkout(self, src, dest) -> None:
+        """用 sqlite 备份接口复制一份独立副本;目标已存在则拒绝覆盖。"""
+        dest = Path(dest)
+        if dest.exists():
+            raise FileExistsError(str(dest))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.touch(exist_ok=False)
+        with closing(sqlite3.connect(Path(src).resolve().as_uri() + "?mode=ro", uri=True)) as source, \
+                closing(sqlite3.connect(dest)) as target:
+            source.backup(target)
