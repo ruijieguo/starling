@@ -90,7 +90,7 @@
 
 - [x] **Step 1:** 写失败测试，覆盖回答正文取法、续跑、跳过规则、按题型汇总、不触碰逐题目录。
 - [x] **Step 2:** 实现，裁判失败的题不写行。
-- [x] **Step 3:** 运行 `.venv/bin/python -m pytest tests/python/test_rescore_socialmem_official.py -q`，期望 11 passed。
+- [x] **Step 3:** 运行 `.venv/bin/python -m pytest tests/python/test_rescore_socialmem_official.py -q`，期望 13 passed。
 
 ### Task 6: 全量门与预注册真跑
 
