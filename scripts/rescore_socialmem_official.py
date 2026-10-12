@@ -162,9 +162,13 @@ def main(argv=None) -> int:
         print("ERROR: 未指定 --real-run;本脚本只做真实裁判请求,拒绝误触网络。", file=sys.stderr)
         return 1
     root = args.root.resolve()
-    if root == args.out.resolve().parent or root in args.out.resolve().parents:
-        print("ERROR: --out 必须在 --root 之外(逐题目录只读)。", file=sys.stderr)
-        return 1
+    for flag, target in (("--out", args.out), ("--summary", args.summary)):
+        if target is None:
+            continue
+        resolved = target.resolve()
+        if root == resolved.parent or root in resolved.parents:
+            print(f"ERROR: {flag} 必须在 --root 之外(逐题目录只读)。", file=sys.stderr)
+            return 1
     prompts = proto.load_official_prompts(args.prompts, args.prompts_sha256)
     import eval_judge_audit as audit_mod
     judge = proto.make_official_judge_fn(audit_mod._chat_completion, prompts)

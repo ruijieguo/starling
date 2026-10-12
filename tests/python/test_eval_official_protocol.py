@@ -264,3 +264,14 @@ def test_chat_completion_carries_system_prompt_and_thinking_switch(monkeypatch):
     body = seen["body"]
     assert body["messages"] == [{"role": "system", "content": "S"}, {"role": "user", "content": "P"}]
     assert body["enable_thinking"] is False
+
+
+@pytest.mark.parametrize("content", [
+    '{"rationale": "no score field here"}',
+    '{"rationale": "I would give it 0.9 overall"}',      # 理由里的数字不能当分数
+    '{"score": null, "rationale": "r"}',
+])
+def test_a_json_judge_reply_without_a_usable_score_is_parse_failed_not_an_ok_zero(content):
+    mod = _load("eval_official_protocol")
+    score, _rationale, status = mod.parse_official_judge(content)
+    assert (score, status) == (0.0, "parse_failed")

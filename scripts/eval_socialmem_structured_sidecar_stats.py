@@ -30,7 +30,6 @@ def _mean_pair(ids: list[str], ctrl: dict, hyb: dict):
 
 
 def sidecar_stats(records: list[dict], ctrl: dict, hyb: dict) -> dict:
-    by_id = {r["item_id"]: r for r in records}
     by_type: dict[str, dict] = {}
     for rec in records:
         row = hyb.get(rec["item_id"])
@@ -54,8 +53,8 @@ def sidecar_stats(records: list[dict], ctrl: dict, hyb: dict) -> dict:
     q4 = [r["item_id"] for r in records if r["query_type"] == "Q4" and _is_mc(r) and r["item_id"] in hyb and nonempty(r["item_id"])]
     opened = [r["item_id"] for r in records if r["query_type"] in ans.PRIMARY_TYPES and not _is_mc(r)
               and r["item_id"] in hyb and nonempty(r["item_id"])
-              and ctrl[r["item_id"]].get("judge_status") != "regex_fallback"
-              and hyb[r["item_id"]].get("judge_status") != "regex_fallback"]
+              and ctrl[r["item_id"]].get("judge_status") not in ans.BAD_JUDGE_STATUSES
+              and hyb[r["item_id"]].get("judge_status") not in ans.BAD_JUDGE_STATUSES]
     paired = {"mc_q2q6": _mean_pair(q2q6, ctrl, hyb), "mc_q4": _mean_pair(q4, ctrl, hyb),
               "open_q5q9": _mean_pair(opened, ctrl, hyb)}
     return {"by_type": by_type, "mc_q2q6": mc_summary, "paired": paired}

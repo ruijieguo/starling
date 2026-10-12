@@ -62,7 +62,7 @@ def _stub_judge(table):
 
 
 def _rows(path):
-    return {r["item_id"]: r for r in (json.loads(l) for l in Path(path).read_text().splitlines() if l.strip())}
+    return {r["item_id"]: r for r in (json.loads(line) for line in Path(path).read_text().splitlines() if line.strip())}
 
 
 # ---------------------------- 回答正文的取法 ----------------------------
@@ -212,4 +212,16 @@ def test_main_refuses_an_output_inside_the_question_directory(tmp_path, capsys):
         assert mod.main(_cli_args(tmp_path, out, "--real-run")) == 1
         assert "--root" in capsys.readouterr().err
         assert not out.exists()
+    assert list(root.rglob("*")) == []
+
+
+def test_main_refuses_a_summary_inside_the_question_directory(tmp_path, capsys):
+    mod = _load("rescore_socialmem_official")
+    root = tmp_path / "dev"
+    root.mkdir()
+    out = tmp_path / "out" / "rows.jsonl"
+    for summary in (root / "summary.json", root / "nested" / "summary.json"):
+        assert mod.main(_cli_args(tmp_path, out, "--real-run", "--summary", str(summary))) == 1
+        assert "--summary" in capsys.readouterr().err
+        assert not summary.exists()
     assert list(root.rglob("*")) == []

@@ -428,6 +428,35 @@ def precheck_summary(ctrl_rows: list[dict], hyb_rows: list[dict], reference: lis
 
 # ---------------------------- 读法与报告 ----------------------------
 
+def precheck_problem(pre, *, core_sha256: str) -> str | None:
+    """作答前核对放行门文件:存在、ready 为真、记录的核心就是当前加载的核心。"""
+    if not isinstance(pre, dict):
+        return "缺少 precheck.json:先跑零请求的 precheck。"
+    if pre.get("ready") is not True:
+        return "precheck.json 的 ready 不为真:先跑零请求的 precheck 并确认通过。"
+    if pre.get("core_sha256") != core_sha256:
+        return "precheck.json 记录的核心与当前加载的核心不一致:换核心后要重跑 precheck。"
+    return None
+
+
+MANIFEST_NON_IDENTITY_KEYS = ("code_sha256",)
+
+
+def manifest_conflict(previous, current: dict) -> str | None:
+    """续跑前核对:同一输出目录里同一个臂的 manifest 必须与上次一致(代码哈希除外)。
+    否则旧 journal 里的行是在另一套设置下答的,继续追加会把两套设置混进同一份读数。"""
+    if previous is None:
+        return None
+    keys = (set(previous) | set(current)) - set(MANIFEST_NON_IDENTITY_KEYS)
+    differing = sorted(key for key in keys if previous.get(key) != current.get(key))
+    if differing:
+        return f"manifest_{current.get('arm')}.json 与上次运行不一致: {differing};换设置请用新的输出目录。"
+    return None
+
+
+READ_INCOMPLETE = "缺行,不下读法"
+
+
 def read_hyb_mc_vs_ctrl(delta: float, lo: float) -> str:
     """登记读法 1(st_hyb 减 st_ctrl,Q2+Q6 选择题,每题记 1 或 0)。"""
     if delta >= 0.10 - _EPS and lo > 0:
@@ -448,7 +477,7 @@ def build_report(records: list[dict], rows_by_arm: dict, *, seed: int = ans.BOOT
         return by_id[item]["query_type"] in ans.PRIMARY_TYPES and not is_mc(item)
 
     def fallback(rows: dict, item: str) -> bool:
-        return rows[item].get("judge_status") == "regex_fallback"
+        return rows[item].get("judge_status") in ans.BAD_JUDGE_STATUSES
 
     def network(item: str) -> str:
         return by_id[item]["source"]["network_id"]
@@ -483,9 +512,12 @@ def build_report(records: list[dict], rows_by_arm: dict, *, seed: int = ans.BOOT
         return ans.paired_network_bootstrap(items, seed=seed, draws=draws) if items else None
 
     ctrl, hyb = rows_by_arm["st_ctrl"], rows_by_arm["st_hyb"]
+    incomplete = [r["item_id"] for r in records if r["item_id"] not in ctrl or r["item_id"] not in hyb]
+    complete = not incomplete       # 配对差只在两臂都有行的题上算;缺行会让失败的难题悄悄退出比较,此时不下读法
     main_pair = mc_pair(ctrl, hyb, ("Q2", "Q6"))
     if main_pair:
-        main_pair["read"] = read_hyb_mc_vs_ctrl(main_pair["delta"], main_pair["lo"])
+        main_pair["read"] = (read_hyb_mc_vs_ctrl(main_pair["delta"], main_pair["lo"])
+                             if complete else READ_INCOMPLETE)
     paired = {"hyb_vs_ctrl_mc": main_pair, "hyb_vs_ctrl_open": open_pair(ctrl, hyb)}
     if "st_hyb_cov" in rows_by_arm:
         paired["hyb_cov_vs_ctrl_mc"] = mc_pair(ctrl, rows_by_arm["st_hyb_cov"], ("Q2", "Q6"))
@@ -496,8 +528,10 @@ def build_report(records: list[dict], rows_by_arm: dict, *, seed: int = ans.BOOT
     open_delta = paired["hyb_vs_ctrl_open"]["delta"] if paired["hyb_vs_ctrl_open"] else None
     guards = {"q4_mc": {"ctrl": q4_ctrl, "hyb": q4_hyb, "held": q4_hyb >= q4_ctrl - 2},
               "open_mean_delta": open_delta,
-              "open_held": open_delta is not None and open_delta >= -0.05 - _EPS}
+              "open_held": open_delta is not None and open_delta >= -0.05 - _EPS,
+              "complete": complete}
     return {"arms": arms, "mc": mc, "paired": paired, "guards": guards,
+            "complete": complete, "incomplete_items": incomplete,
             "bootstrap": {"seed": seed, "draws": draws}}
 
 
@@ -829,7 +863,6 @@ def _precheck(args) -> int:
     core_sha, problem = _core_gate(args)
     if problem:
         return _fail(problem)
-    import hashlib
 
     from starling import _core
 
@@ -939,9 +972,11 @@ def _answer(args) -> int:
 def _answer_impl(args, core_sha: str, config: dict) -> int:
     backbone = args.backbone or config["answer_model"]
     judge_model = args.judge_model or config["answer_model"]
-    pre = args.builds / "precheck.json"
-    if not pre.is_file() or json.loads(pre.read_text(encoding="utf-8")).get("ready") is not True:
-        return _fail("缺少通过的 precheck.json:先跑零请求的 precheck。")
+    pre_path = args.builds / "precheck.json"
+    pre = json.loads(pre_path.read_text(encoding="utf-8")) if pre_path.is_file() else None
+    problem = precheck_problem(pre, core_sha256=core_sha)
+    if problem:
+        return _fail(problem)
     try:
         prompts = proto.load_official_prompts(args.prompts, args.prompts_sha256)
     except (OSError, ValueError, ImportError) as exc:
@@ -996,8 +1031,12 @@ def _answer_impl(args, core_sha: str, config: dict) -> int:
     if isolation:
         manifest.update(items_sha256=items_sha, items=len(records),
                         variant="claims_cleared" if args.arm == _NOCLAIM else "original_library")
-    (out / f"manifest_{args.arm}.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                                                   encoding="utf-8")
+    manifest_path = out / f"manifest_{args.arm}.json"
+    previous = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+    problem = manifest_conflict(previous, manifest)
+    if problem:
+        return _fail(problem)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     work = out / f"scratch_{args.arm}"
 
     def answer_for(rec: dict, recall: dict) -> dict:

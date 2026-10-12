@@ -180,8 +180,8 @@ def test_run_arm_journals_every_item_and_resumes_without_recomputing(tmp_path):
     rows = mod.run_arm("src_base", recs, recall_for, answer_for, journal=journal)
     assert [r["item_id"] for r in rows] == ["a", "b"]
     lines = _rows(journal)
-    assert [l["key"] for l in lines] == ["src_base|a", "src_base|b"]
-    assert all({"arm", "item_id", "ok", "score"} <= set(l) for l in lines)
+    assert [row["key"] for row in lines] == ["src_base|a", "src_base|b"]
+    assert all({"arm", "item_id", "ok", "score"} <= set(row) for row in lines)
     calls.clear()
     again = mod.run_arm("src_base", recs, recall_for, answer_for, journal=journal)
     assert calls == [] and [r["item_id"] for r in again] == ["a", "b"] and again[0]["score"] == 1.0
@@ -507,3 +507,13 @@ def test_main_report_includes_extended_arms_only_when_their_journal_exists(tmp_p
     assert mod.main(argv) == 0
     second = json.loads(result.read_text(encoding="utf-8"))
     assert "src_cov60" in second["arms"] and "cov60_vs_base_mc" in second["paired"] and "noise" in second
+
+
+def test_build_report_excludes_parse_failed_scores_like_regex_fallback():
+    mod = _load()
+    recs, arms, full = _report_inputs()
+    arms["src_gold_ctx"]["b"] = dict(arms["src_gold_ctx"]["b"], judge_status="parse_failed", score=0.0, ok=False)
+    rep = mod.build_report(recs, arms, full, seed=1, draws=500)
+    ctx = rep["arms"]["src_gold_ctx"]
+    assert ctx["q5q9"]["n"] == 2 and ctx["regex_fallback"] == ["b"]
+    assert rep["paired"]["gold_ctx_vs_base"]["n"] == 2

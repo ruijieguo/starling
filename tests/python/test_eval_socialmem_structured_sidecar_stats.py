@@ -109,3 +109,10 @@ def test_main_refuses_when_a_journal_is_missing(tmp_path, capsys):
     corpus.write_text(json.dumps(RECS[0]) + "\n", encoding="utf-8")
     assert mod.main(["--out", str(tmp_path), "--corpus", str(corpus)]) == 1
     assert "st_hyb" in capsys.readouterr().err
+
+
+def test_parse_failed_open_scores_are_left_out_of_the_open_pairing():
+    mod = _load()
+    ctrl, hyb = _arms()
+    ctrl["f"] = _row("f", 0.0, 0, status="parse_failed", arm="st_ctrl")
+    assert mod.sidecar_stats(RECS, ctrl, hyb)["paired"]["open_q5q9"] is None

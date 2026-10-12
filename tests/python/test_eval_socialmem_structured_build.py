@@ -1016,3 +1016,71 @@ def test_isolation_library_problem_checks_each_library_hash_against_the_precheck
     lib.write_bytes(b"bbb")
     assert "g1" in mod.isolation_library_problem(pre, "st_ctrl_repeat", {"x": lib})
     assert "g1" in mod.isolation_library_problem({}, "st_ctrl_noclaim", {"x": lib})
+
+
+# ---------------------------- 评审后加固:parse_failed 口径、缺行不下读法、precheck 绑核心、manifest 续跑 ----------------------------
+
+def test_build_report_excludes_parse_failed_scores_like_regex_fallback_and_lists_them():
+    mod = _load()
+    recs = [_rec("e", "Q5", "n2", "long_form"), _rec("f", "Q9", "n3", "long_form")]
+    ctrl = {"e": _row(0.5), "f": _row(1.0)}
+    hyb = {"e": _row(0.0, status="parse_failed"), "f": _row(1.0)}
+    report = mod.build_report(recs, {"st_ctrl": ctrl, "st_hyb": hyb}, seed=1, draws=50)
+    assert report["arms"]["st_hyb"]["q5q9"]["n"] == 1
+    assert report["arms"]["st_hyb"]["regex_fallback"] == ["e"]
+    assert report["paired"]["hyb_vs_ctrl_open"]["n"] == 1
+
+
+def test_build_report_refuses_a_reading_when_an_arm_is_missing_rows():
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q2", "n2"), _rec("c", "Q6", "n3")]
+    ctrl = {"a": _row(0.0), "b": _row(0.0), "c": _row(0.0)}
+    hyb = {"a": _row(1.0), "c": _row(1.0)}            # 少一行 b:成对差只在交集上算,不能据此下读法
+    report = mod.build_report(recs, {"st_ctrl": ctrl, "st_hyb": hyb}, seed=1, draws=50)
+    assert report["complete"] is False and report["incomplete_items"] == ["b"]
+    assert report["paired"]["hyb_vs_ctrl_mc"]["read"] == mod.READ_INCOMPLETE
+    assert report["guards"]["complete"] is False
+
+
+def test_build_report_marks_a_full_comparison_complete_and_keeps_the_registered_reading():
+    mod = _load()
+    recs = [_rec("a", "Q2", "n1"), _rec("b", "Q6", "n2")]
+    ctrl = {"a": _row(0.0), "b": _row(0.0)}
+    hyb = {"a": _row(1.0), "b": _row(1.0)}
+    report = mod.build_report(recs, {"st_ctrl": ctrl, "st_hyb": hyb}, seed=1, draws=50)
+    pair = report["paired"]["hyb_vs_ctrl_mc"]
+    assert report["complete"] is True and report["incomplete_items"] == []
+    assert report["guards"]["complete"] is True
+    assert pair["read"] == mod.read_hyb_mc_vs_ctrl(pair["delta"], pair["lo"])
+
+
+def test_precheck_problem_binds_the_gate_file_to_the_loaded_core():
+    mod = _load()
+    ok = {"ready": True, "core_sha256": "c0"}
+    assert mod.precheck_problem(ok, core_sha256="c0") is None
+    assert "precheck.json" in mod.precheck_problem(None, core_sha256="c0")
+    assert "ready" in mod.precheck_problem({"ready": False, "core_sha256": "c0"}, core_sha256="c0")
+    assert "核心" in mod.precheck_problem(ok, core_sha256="zz")
+    assert "核心" in mod.precheck_problem({"ready": True}, core_sha256="c0")
+
+
+def _manifest(**over):
+    base = {"arm": "st_ctrl", "spec": {"mode": "sources"}, "profile": "p", "core_sha256": "c0",
+            "corpus_sha256": "k0", "prompts_sha256": "p0", "profiles_sha256": "f0", "backbone": "m",
+            "judge_model": "m", "now_iso": "T", "questions": 110, "libraries": {"g1": "h1"},
+            "build_config_sha256": "b0", "code_sha256": {"x.py": "d0"}}
+    base.update(over)
+    return base
+
+
+def test_manifest_conflict_allows_a_fresh_or_identical_run_and_names_every_changed_setting():
+    mod = _load()
+    assert mod.manifest_conflict(None, _manifest()) is None
+    assert mod.manifest_conflict(_manifest(), _manifest()) is None
+    assert mod.manifest_conflict(_manifest(), _manifest(code_sha256={"x.py": "d1"})) is None   # 代码哈希不进身份
+    for key, value in (("backbone", "m2"), ("judge_model", "m2"), ("now_iso", "T2"), ("core_sha256", "c1"),
+                       ("prompts_sha256", "p1"), ("libraries", {"g1": "h2"}), ("spec", {"mode": "hybrid"}),
+                       ("questions", 28), ("profile", "q")):
+        problem = mod.manifest_conflict(_manifest(), _manifest(**{key: value}))
+        assert problem is not None and key in problem
+    assert "items_sha256" in mod.manifest_conflict(_manifest(items_sha256="i0"), _manifest(items_sha256="i1"))

@@ -226,7 +226,7 @@ def build_report(records: list[dict], rows_by_arm: dict, full_rows: dict, *,
         return rec["query_type"] in PRIMARY_TYPES and rec.get("answer_format", "multiple_choice") != "multiple_choice"
 
     def fallback(rows: dict, item: str) -> bool:
-        return rows[item].get("judge_status") == "regex_fallback"
+        return rows[item].get("judge_status") in BAD_JUDGE_STATUSES
 
     arms = {}
     for name, rows in sources.items():

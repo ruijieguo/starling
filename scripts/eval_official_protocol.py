@@ -151,6 +151,9 @@ def parse_official_judge(content: str) -> tuple[float, str, str]:
         else:
             body = content
         result = json.loads(body)
+        if isinstance(result, dict) and result.get("score") is None:
+            # 合法 JSON 但没有分数:裁判没有给出 0 分,按解析失败暴露,不走正则兜底(理由里的数字不是分数)
+            return 0.0, "parse failed", "parse_failed"
         return _clamp(float(result.get("score", 0.0))), str(result.get("rationale", "")), "ok"
     except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError):
         match = re.search(r"\b(0\.\d+|1\.0|0|1)\b", content)
