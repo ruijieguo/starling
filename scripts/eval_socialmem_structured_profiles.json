@@ -44,6 +44,20 @@
       "embedding_endpoint": "https://api.tokenkey.dev/v1",
       "embedding_dim": null,
       "embedding_key_env": "DEEPSEEK_API_KEY"
+    },
+    "second_judge_flash": {
+      "note": "二裁专用(2026-10-12 起,WP3):只用 answer_* 三个键做第二裁判;extract_* 与 embedding_* 照抄 tokenkey_flash 以满足配置校验,不用于建库。与 WP2.B 二裁所用的裁判模型相同。",
+      "extract_model": "qwen3.8-flash",
+      "extract_provider": "tokenkey",
+      "extract_endpoint": "https://api.tokenkey.dev/v1",
+      "extract_key_env": "DEEPSEEK_API_KEY",
+      "answer_model": "deepseek-v4-flash",
+      "answer_endpoint": "https://api.tokenkey.dev/v1",
+      "answer_key_env": "DEEPSEEK_API_KEY",
+      "embedding_model": "doubao-embedding-vision",
+      "embedding_endpoint": "https://api.tokenkey.dev/v1",
+      "embedding_dim": 2048,
+      "embedding_key_env": "DEEPSEEK_API_KEY"
     }
   }
 }

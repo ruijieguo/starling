@@ -384,7 +384,7 @@ RELAY = "https://api.tokenkey.dev/v1"
 
 def test_profiles_keep_the_original_setup_and_add_the_relay_flash_setup():
     mod = _load()
-    assert set(mod.load_profiles()) == {"dashscope", "tokenkey_flash", "tokenkey_max"}
+    assert set(mod.load_profiles()) == {"dashscope", "tokenkey_flash", "tokenkey_max", "second_judge_flash"}
     base_cfg, flash = mod.build_config(), mod.build_config("tokenkey_flash")
     assert mod.build_config("dashscope") == base_cfg
     assert base_cfg["profile"] == "dashscope"
