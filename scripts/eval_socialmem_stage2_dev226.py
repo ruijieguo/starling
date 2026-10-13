@@ -215,24 +215,71 @@ def _answer(args) -> int:
     return 0
 
 
+SETTING_KEYS = ("spec", "core_sha256", "prompts_sha256", "backbone", "judge_model", "now_iso")
+
+
+def merge_settings_problem(manifests: list) -> str | None:
+    """合并读数前核对各臂设置逐项相同。臂名、profiles 文件哈希、代码哈希与参照哈希不比较。
+    缺任何一份 manifest 或缺任何设置键都拒绝,不把「两边都没记」当成相同。"""
+    if not manifests or any(not isinstance(m, dict) for m in manifests):
+        return "合并需要每份 journal 旁边都有 manifest,缺一份就不合并。"
+    for m in manifests:
+        absent = [k for k in SETTING_KEYS if k not in m]
+        if absent:
+            return f"manifest 缺少设置键 {absent},不合并。"
+    first = manifests[0]
+    for m in manifests[1:]:
+        for key in SETTING_KEYS:
+            if m[key] != first[key]:
+                return f"设置不一致: {key}。不同设置下的行不能合并成一份读数。"
+    return None
+
+
+def _manifest_of(journal: Path, arm: str):
+    path = Path(journal).parent / f"manifest_{arm}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
 def _report(args) -> int:
     if (args.wp3_corpus is None) != (args.wp3_journal is None):
         return _fail("--wp3-corpus 与 --wp3-journal 必须一起给。")
     records = ans._load_corpus(args.corpus)
+    types = tuple(t.strip() for t in args.types.split(",") if t.strip()) if args.types else STAGE2_TYPES
+    unknown = [t for t in types if t not in DEV_TYPES]
+    if unknown:
+        return _fail(f"--types 里有不认识的题型 {unknown};可用 {list(DEV_TYPES)}")
+    dropped = sorted({r["query_type"] for r in records} - set(types))
+    if dropped:
+        return _fail(f"语料里有题型 {dropped} 不在 --types {list(types)} 里,报告会静默漏掉它们;请用 --types 明确列出。")
     journal = args.out / f"{ARM}_journal.jsonl"
     if not journal.exists():
         return _fail(f"缺 journal: {journal}")
     rows = ans.load_rows(journal, ARM)
-    out = {"stage2": build_report(records, rows)}
+    out = {"stage2": build_report(records, rows, types=types)}
+    groups = []
     if args.wp3_corpus is not None:
-        if not args.wp3_journal.exists():
-            return _fail(f"缺 journal: {args.wp3_journal}")
+        groups.append(("dev_split", "dev_split", [(args.wp3_corpus, args.wp3_journal, SRC_ARM)]))
+    if args.also:
+        groups.append(("merged", args.merged_label, [(Path(c), Path(j), a) for c, j, a in args.also]))
+    for key, label, extras in groups:
+        for _, jpath, _arm in extras:
+            if not Path(jpath).exists():
+                return _fail(f"缺 journal: {jpath}")
+        problem = merge_settings_problem([_manifest_of(journal, ARM)] + [_manifest_of(j, a) for _, j, a in extras])
+        if problem:
+            return _fail(problem)
+        combined, merged = list(records), rows
         try:
-            merged = merge_rows(rows, ans.load_rows(args.wp3_journal, SRC_ARM))
+            for cpath, jpath, arm in extras:
+                more = ans._load_corpus(cpath)
+                dup = sorted({r["item_id"] for r in combined} & {r["item_id"] for r in more})
+                if dup:
+                    return _fail(f"{len(dup)} 道题同时出现在多份语料里,例 {dup[:3]}")
+                combined += more
+                merged = merge_rows(merged, ans.load_rows(jpath, arm))
         except ValueError as exc:
             return _fail(str(exc))
-        out["dev_split"] = build_report(records + ans._load_corpus(args.wp3_corpus), merged,
-                                        types=DEV_TYPES, arm="dev_split")
+        out[key] = build_report(combined, merged, types=DEV_TYPES, arm=label)
     text = json.dumps(out, ensure_ascii=False, indent=2)
     if args.result is not None:
         args.result.write_text(text + "\n", encoding="utf-8")
@@ -267,6 +314,10 @@ def main(argv=None) -> int:
     report.add_argument("--result", type=Path, default=None)
     report.add_argument("--wp3-corpus", type=Path, default=None)
     report.add_argument("--wp3-journal", type=Path, default=None)
+    report.add_argument("--types", default=None, help="逗号分隔的题型;默认 Q2,Q4,Q5,Q6,Q9;语料里有不在其中的题型就拒绝")
+    report.add_argument("--also", nargs=3, action="append", metavar=("CORPUS", "JOURNAL", "ARM"), default=None,
+                        help="再并入一份语料与 journal 做合并读数;旁边必须有设置相同的 manifest;可重复")
+    report.add_argument("--merged-label", default="merged", help="--also 合并读数在报告里的臂名")
     args = parser.parse_args(argv)
     if args.cmd == "answer":
         try:
