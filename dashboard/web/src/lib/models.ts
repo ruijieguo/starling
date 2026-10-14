@@ -9,6 +9,13 @@ export type Prov = {
 	base_url: string;
 	key_set?: boolean;
 	dim?: number;
+	// Optional generation knobs for OpenAI-compatible endpoints; absent → built-in defaults.
+	// Set via starling.json / POST /api/config; the settings page does not edit them and
+	// the backend merge keeps them across a save.
+	max_tokens?: number;
+	timeout_ms?: number;
+	max_retries?: number;
+	enable_thinking?: boolean;
 };
 
 export type Config = {

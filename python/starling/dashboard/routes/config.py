@@ -20,6 +20,11 @@ class ProviderFields(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     dim: int | None = None
+    # 生成参数(可选,仅 OpenAI 兼容端点):未设置则沿用 C++ 默认。
+    max_tokens: int | None = None
+    timeout_ms: int | None = None
+    max_retries: int | None = None
+    enable_thinking: bool | None = None
 
 
 class ConfigBody(BaseModel):
@@ -42,6 +47,9 @@ def _mask(d: dict) -> dict:
            "key_set": bool(d.get("api_key"))}
     if "dim" in d:
         out["dim"] = d["dim"]
+    for k in ("max_tokens", "timeout_ms", "max_retries", "enable_thinking"):
+        if k in d:
+            out[k] = d[k]
     return out
 
 
@@ -64,6 +72,15 @@ def _merge_provider(dst: dict, body: ProviderFields) -> None:
         if k == "dim" and (not isinstance(v, int) or v <= 0):
             continue
         dst[k] = v
+    # 生成参数:max_tokens/timeout_ms 须为正数(非正数忽略);max_retries 允许 0(不重试)。
+    for k in ("max_tokens", "timeout_ms"):
+        v = getattr(body, k, None)
+        if v is not None and v > 0:
+            dst[k] = v
+    if body.max_retries is not None and body.max_retries >= 0:
+        dst["max_retries"] = body.max_retries
+    if body.enable_thinking is not None:
+        dst["enable_thinking"] = body.enable_thinking
 
 
 def build_config_router(require_token) -> APIRouter:
