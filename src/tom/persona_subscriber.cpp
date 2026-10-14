@@ -6,6 +6,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <utility>
@@ -22,6 +23,16 @@ std::string col(sqlite3_stmt* stmt, int idx) {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, idx));
     return txt != nullptr ? txt : "";
+}
+// Highest outbox sequence currently in bus_events (0 when empty).
+int outbox_head(sqlite3* db) {
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(outbox_sequence), 0) FROM bus_events",
+                           -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(db, "persona_subscriber: read outbox head prepare");
+    }
+    StmtHandle h(raw);
+    return sqlite3_step(h.get()) == SQLITE_ROW ? sqlite3_column_int(h.get(), 0) : 0;
 }
 }  // namespace
 
@@ -70,9 +81,11 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
                               sqlite3_column_int(handle.get(), 2)});
         }
     }
-    if (events.empty()) {
-        return 0;
-    }
+    // Events of other types are ignored by design. Once the batch is not full no trigger
+    // event can remain after the ones read, so the cursor may follow the outbox head;
+    // otherwise Vitals reports a permanent false backlog behind ignored events.
+    const bool batch_full = static_cast<int>(events.size()) >= batch_size;
+    const int head_seq = batch_full ? last_seq : outbox_head(dbh);
 
     // 3. resolve each event's affected subject via primary_id (NEVER aggregate_id
     //    — it differs across the three event types); dedup (tenant, subject).
@@ -135,8 +148,10 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
         container.rebuild(conn, tenant, subject, sources, now_iso);
     }
 
-    // 5. advance checkpoint (events were seen).
-    {
+    // 5. advance checkpoint: to the last trigger event read, or to the outbox head when
+    //    no trigger event can remain.
+    const int next_seq = std::max(max_seq, head_seq);
+    if (!events.empty() || next_seq > last_seq) {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(dbh,
             "UPDATE persona_subscriber_checkpoint SET last_processed_outbox_sequence=?, "
@@ -144,7 +159,7 @@ int PersonaSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             throw make_sqlite_error(dbh, "persona_subscriber: advance checkpoint prepare");
         }
         StmtHandle handle(raw);
-        sqlite3_bind_int(handle.get(), 1, max_seq);
+        sqlite3_bind_int(handle.get(), 1, next_seq);
         bind_sv(handle.get(), 2, now_iso);
         if (sqlite3_step(handle.get()) != SQLITE_DONE)
             throw make_sqlite_error(dbh, "persona_subscriber: advance checkpoint step");

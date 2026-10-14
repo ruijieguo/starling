@@ -71,6 +71,15 @@ void seed_event(persistence::Connection& conn, const std::string& eid,
     persistence::detail::bind_sv(handle.get(), 6, std::string("ik-") + eid);
     sqlite3_step(handle.get());
 }
+int persona_checkpoint(persistence::Connection& conn) {
+    sqlite3_stmt* raw = nullptr;
+    sqlite3_prepare_v2(conn.raw(),
+        "SELECT last_processed_outbox_sequence FROM persona_subscriber_checkpoint WHERE id=1",
+        -1, &raw, nullptr);
+    persistence::StmtHandle handle(raw);
+    sqlite3_step(handle.get());
+    return sqlite3_column_int(handle.get(), 0);
+}
 }  // namespace
 
 // statement.derived (normal consolidation) on a self-anchor → persona materializes.
@@ -125,4 +134,44 @@ TEST(PersonaSubscriber, SupersededTriggersRebuild) {
     EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
     EXPECT_EQ(neocortex::PersonaContainer(*adapter).read(conn, "default", "self")
                   .dimensions.at("role"), "staff_engineer");
+}
+
+// The checkpoint must follow the outbox head. Advancing only to the last trigger
+// event leaves every unrelated event after it counted as "lag" forever, so the
+// Vitals page shows a permanent false backlog.
+TEST(PersonaSubscriber, CheckpointAdvancesPastIrrelevantEvents) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_statement(conn, "S5", "self", "self", "trait_x", "y", "consolidated", "review_requested");
+    seed_event(conn, "E5", "statement.derived", "S5", 1);
+    seed_event(conn, "E5b", "vector.embedded", "S5", 2);
+    seed_event(conn, "E5c", "pipeline.run_started", "S5", 3);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 1);
+    EXPECT_EQ(persona_checkpoint(conn), 3);
+}
+
+// With no trigger event at all the checkpoint still has to reach the head.
+TEST(PersonaSubscriber, CheckpointAdvancesWhenNoTriggerEventExists) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_event(conn, "E6", "vector.embedded", "none", 4);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z"), 0);
+    EXPECT_EQ(persona_checkpoint(conn), 4);
+}
+
+// A full batch must not jump to the head: pending trigger events would be skipped.
+TEST(PersonaSubscriber, FullBatchDoesNotSkipPendingTriggerEvents) {
+    auto adapter = persistence::SqliteAdapter::open(":memory:");
+    auto& conn = adapter->connection();
+    seed_statement(conn, "S7a", "self", "self", "trait_a", "a", "consolidated", "review_requested");
+    seed_statement(conn, "S7b", "self", "self", "trait_b", "b", "consolidated", "review_requested");
+    seed_event(conn, "E7a", "statement.derived", "S7a", 1);
+    seed_event(conn, "E7b", "statement.derived", "S7b", 2);
+    seed_event(conn, "E7c", "vector.embedded", "S7b", 3);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:00:00Z", 1), 1);
+    EXPECT_EQ(persona_checkpoint(conn), 1);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:01:00Z", 1), 1);
+    EXPECT_EQ(persona_checkpoint(conn), 2);
+    EXPECT_EQ(tom::PersonaSubscriber::tick_one_batch(*adapter, conn, "2026-07-01T10:02:00Z", 1), 0);
+    EXPECT_EQ(persona_checkpoint(conn), 3);
 }
