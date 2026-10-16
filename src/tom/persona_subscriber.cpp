@@ -25,14 +25,14 @@ std::string col(sqlite3_stmt* stmt, int idx) {
     return txt != nullptr ? txt : "";
 }
 // Highest outbox sequence currently in bus_events (0 when empty).
-int outbox_head(sqlite3* db) {
+int outbox_head(sqlite3* dbh) {
     sqlite3_stmt* raw = nullptr;
-    if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(outbox_sequence), 0) FROM bus_events",
+    if (sqlite3_prepare_v2(dbh, "SELECT COALESCE(MAX(outbox_sequence), 0) FROM bus_events",
                            -1, &raw, nullptr) != SQLITE_OK) {
-        throw make_sqlite_error(db, "persona_subscriber: read outbox head prepare");
+        throw make_sqlite_error(dbh, "persona_subscriber: read outbox head prepare");
     }
-    StmtHandle h(raw);
-    return sqlite3_step(h.get()) == SQLITE_ROW ? sqlite3_column_int(h.get(), 0) : 0;
+    StmtHandle handle(raw);
+    return sqlite3_step(handle.get()) == SQLITE_ROW ? sqlite3_column_int(handle.get(), 0) : 0;
 }
 }  // namespace
 
