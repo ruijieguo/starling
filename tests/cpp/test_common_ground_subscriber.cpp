@@ -484,3 +484,55 @@ TEST(CommonGroundSubscriber, TimeoutSweepRunsInTick) {
         "SELECT status FROM common_ground WHERE statement_id='SOLD'"),
         "suspected_diverge");
 }
+
+// ── Checkpoint follows the outbox head, not only the last trigger event ──────
+
+static void insert_event_of_type(Connection& conn, const std::string& event_id,
+                                 const std::string& type, int outbox_sequence) {
+    const std::string sql =
+        "INSERT INTO bus_events(event_id,tenant_id,event_type,primary_id,aggregate_id,"
+        "outbox_sequence,idempotency_key,payload_json,created_at) VALUES ('" + event_id +
+        "','default','" + type + "','x','x'," + std::to_string(outbox_sequence) +
+        ",'ikey-" + event_id + "','{}','2026-06-06T00:00:00Z')";
+    ASSERT_EQ(SQLITE_OK, sqlite3_exec(conn.raw(), sql.c_str(), nullptr, nullptr, nullptr));
+}
+
+static int cg_checkpoint(Connection& conn) {
+    return icol(conn.raw(),
+        "SELECT last_processed_outbox_sequence FROM common_ground_subscriber_checkpoint WHERE id=1");
+}
+
+TEST(CommonGroundSubscriber, CheckpointAdvancesPastIrrelevantEvents) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    insert_statement(conn, "S1", "self", "pos", "[\"bob\",\"self\"]");
+    insert_bus_event(conn, "ev1", "S1", 1);
+    insert_event_of_type(conn, "ev2", "vector.embedded", 2);
+    insert_event_of_type(conn, "ev3", "pipeline.run_started", 3);
+    EXPECT_EQ(CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z"), 1);
+    EXPECT_EQ(cg_checkpoint(conn), 3);
+}
+
+TEST(CommonGroundSubscriber, CheckpointAdvancesWhenNoTriggerEventExists) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    insert_event_of_type(conn, "ev5", "vector.embedded", 5);
+    EXPECT_EQ(CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z"), 0);
+    EXPECT_EQ(cg_checkpoint(conn), 5);
+}
+
+TEST(CommonGroundSubscriber, FullBatchDoesNotSkipPendingTriggerEvents) {
+    auto adapter = open_fresh();
+    auto& conn = adapter->connection();
+    insert_statement(conn, "S1", "self", "pos", "[\"bob\",\"self\"]", "default", "bob", "p", "h");
+    insert_statement(conn, "S2", "self", "pos", "[\"bob\",\"self\"]", "default", "bob", "q", "h2");
+    insert_bus_event(conn, "ev1", "S1", 1);
+    insert_bus_event(conn, "ev2", "S2", 2);
+    insert_event_of_type(conn, "ev3", "vector.embedded", 3);
+    EXPECT_EQ(CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:00:00Z", 1), 1);
+    EXPECT_EQ(cg_checkpoint(conn), 1);
+    EXPECT_EQ(CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:01:00Z", 1), 1);
+    EXPECT_EQ(cg_checkpoint(conn), 2);
+    EXPECT_EQ(CommonGroundSubscriber::tick_one_batch(*adapter, conn, "2026-06-06T10:02:00Z", 1), 0);
+    EXPECT_EQ(cg_checkpoint(conn), 3);
+}

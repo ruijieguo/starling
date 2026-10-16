@@ -129,6 +129,14 @@ def _build_chat_adapter(llm_cfg: dict):
             cfg.model = llm_cfg["model"]
         if llm_cfg.get("base_url"):
             cfg.base_url = llm_cfg["base_url"]
+        # 生成参数(可选):未设置则保持 C++ 默认(max_tokens 4096 / 超时 60s / 重试 3)。
+        for key in ("max_tokens", "timeout_ms"):
+            if llm_cfg.get(key):
+                setattr(cfg, key, int(llm_cfg[key]))
+        if llm_cfg.get("max_retries") is not None:
+            cfg.max_retries = int(llm_cfg["max_retries"])
+        if llm_cfg.get("enable_thinking") is not None:
+            cfg.enable_thinking = bool(llm_cfg["enable_thinking"])
         return _core.OpenAIAdapter(cfg)
 
 

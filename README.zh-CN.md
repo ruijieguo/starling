@@ -154,7 +154,7 @@ Dashboard ready → http://127.0.0.1:8787/#token=…
 
 打开它——前端从片段读取 token(浏览器**绝不**把片段发往服务器,故它不会进 access log)并存下来。**无需第二个终端、无需记一堆环境变量。**
 
-**在 UI 里配置模型:** dashboard 启动时未配模型;检视面板、`recall`、`tick`、Working Set 立即可用(走离线 embedder),而 `remember`(抽取 Statement)在你配置之前返回 409。打开**设置页**(`/settings`)管理一份**具名 provider 注册表**(每条:provider / model / base URL / API key),并把每个**角色**——`extraction`、`embedding`、`chat`、`consolidation`——绑定到某个 provider。`extraction` 与 `embedding` 今天已接线;`chat` 驱动 `converse`。改动会**热切换**——无需重启。改 embedding provider 会重嵌已有记忆(向量维度变化)。
+**在 UI 里配置模型:** dashboard 启动时未配模型;检视面板、`recall`、`tick`、Working Set 立即可用(走离线 embedder),而 `remember`(抽取 Statement)在你配置之前返回 409。打开**设置页**(`/settings`)管理一份**具名 provider 注册表**(每条:provider / model / base URL / API key;OpenAI 兼容端点另可选生成参数 `max_tokens` / `timeout_ms` / `max_retries` / `enable_thinking`,写在 `starling.json` 或经 `POST /api/config` 设置,不设则沿用内置默认(4096 token、60 秒、重试 3 次)),并把每个**角色**——`extraction`、`embedding`、`chat`、`consolidation`——绑定到某个 provider。`extraction` 与 `embedding` 今天已接线;`chat` 驱动 `converse`。改动会**热切换**——无需重启。改 embedding provider 会重嵌已有记忆(向量维度变化)。
 
 **统一配置 —— `~/.starling/starling.json`(0600):** 一个文件收纳一切——`db_path`(默认 `~/.starling/dashboard.db`,自动建库)、`agent`、`tenant`、`token`(自动生成)、`host`、`port`、`cors_origins`、具名 provider 注册表(`providers`)与按角色绑定(`roles`),含每个 provider 的 API key。旧的单 `{llm, embedder}` 文件在载入时自动迁移,既有配置无需手改即可继续用。该文件 gitignored 且 chmod 0600。用 `STARLING_CONFIG` 或 `--config` 覆盖其路径;环境变量(`STARLING_DASH_*`、`OPENAI_*`)仍会覆盖文件,供 CI / 临时使用。
 

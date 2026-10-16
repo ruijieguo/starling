@@ -27,6 +27,17 @@ std::string col(sqlite3_stmt* h, int i) {
     return t ? t : "";
 }
 
+// Highest outbox sequence currently in bus_events (0 when empty).
+int outbox_head(sqlite3* dbh) {
+    sqlite3_stmt* raw = nullptr;
+    if (sqlite3_prepare_v2(dbh, "SELECT COALESCE(MAX(outbox_sequence), 0) FROM bus_events",
+                           -1, &raw, nullptr) != SQLITE_OK) {
+        throw make_sqlite_error(dbh, "cg_subscriber: read outbox head prepare");
+    }
+    StmtHandle handle(raw);
+    return sqlite3_step(handle.get()) == SQLITE_ROW ? sqlite3_column_int(handle.get(), 0) : 0;
+}
+
 std::optional<std::string> ref_from_parties_json(std::string_view parties_json) {
     const auto parties = schema::parse_common_ground_parties_json(parties_json);
     if (!parties || parties->size() < 2) return std::nullopt;
@@ -99,7 +110,10 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
             rebuilt.clear();   // 没有任何降级,无需为此重建
         }
     }
-    if (evs.empty() && rebuilt.empty()) return 0;
+    // Events of other types are ignored by design. Once the batch is not full no
+    // statement.written/superseded event can remain, so the cursor may follow the outbox head.
+    const bool idle = evs.empty() && rebuilt.empty();
+    const int head_seq = (static_cast<int>(evs.size()) < batch_size) ? outbox_head(db) : last_seq;
 
     for (const auto& ev : evs) {
         max_seq = ev.seq;
@@ -252,15 +266,16 @@ int CommonGroundSubscriber::tick_one_batch(persistence::SqliteAdapter& adapter,
     rebuilt.erase(std::unique(rebuilt.begin(), rebuilt.end()), rebuilt.end());
     for (const auto& [tenant, ref] : rebuilt) container.rebuild(conn, tenant, ref, now_iso);
 
-    // 4. advance checkpoint
-    {
+    // 4. advance checkpoint: to the last event read, or to the outbox head when none can remain
+    const int next_seq = std::max(max_seq, head_seq);
+    if (!idle || next_seq > last_seq) {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
             "UPDATE common_ground_subscriber_checkpoint SET last_processed_outbox_sequence=?, last_updated_at=? WHERE id=1",
             -1, &raw, nullptr) != SQLITE_OK)
             throw make_sqlite_error(db, "cg_subscriber: advance checkpoint prepare");
         StmtHandle h(raw);
-        sqlite3_bind_int(h.get(), 1, max_seq);
+        sqlite3_bind_int(h.get(), 1, next_seq);
         bind_sv(h.get(), 2, now_iso);
         if (sqlite3_step(h.get()) != SQLITE_DONE)
             throw make_sqlite_error(db, "cg_subscriber: advance checkpoint step");

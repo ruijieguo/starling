@@ -52,15 +52,41 @@ def clean_turns(lines: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+def _split_turn(prefix: str, text: str, max_chars: int) -> list[str]:
+    """把 "<prefix><text>" 切成每段 <= max_chars 的若干段,优先在整行边界切;
+    每段都带 prefix。单行本身超过预算时硬切(_strip_code 之后正常不会出现)。"""
+    whole = prefix + text
+    if len(whole) <= max_chars:
+        return [whole]
+    budget = max(1, max_chars - len(prefix))
+    pieces: list[str] = []
+    buf: list[str] = []
+    size = 0
+    for ln in text.split("\n"):
+        while len(ln) > budget:                      # 极端:单行 > 预算
+            if buf:
+                pieces.append(prefix + "\n".join(buf)); buf, size = [], 0
+            pieces.append(prefix + ln[:budget]); ln = ln[budget:]
+        if buf and size + len(ln) > budget:
+            pieces.append(prefix + "\n".join(buf)); buf, size = [], 0
+        buf.append(ln); size += len(ln) + 1
+    if buf:
+        pieces.append(prefix + "\n".join(buf))
+    return pieces
+
+
 def chunk_dialogue(turns: list[tuple[str, str]], max_chars: int = MAX_CHARS) -> list[str]:
+    """按 max_chars 分块。单个 turn 超过 max_chars 时先按行切成多段再装箱,
+    保证每块长度 <= max_chars(此前单个长 turn 会整块漏过上限)。"""
     chunks: list[str] = []
     buf: list[str] = []
     size = 0
     for role, text in turns:
-        line = f"{'User' if role == 'user' else 'Assistant'}: {text}"
-        if buf and size + len(line) > max_chars:
-            chunks.append("\n".join(buf)); buf, size = [], 0
-        buf.append(line); size += len(line) + 1
+        prefix = "User: " if role == "user" else "Assistant: "
+        for line in _split_turn(prefix, text, max_chars):
+            if buf and size + len(line) > max_chars:
+                chunks.append("\n".join(buf)); buf, size = [], 0
+            buf.append(line); size += len(line) + 1
     if buf:
         chunks.append("\n".join(buf))
     return chunks

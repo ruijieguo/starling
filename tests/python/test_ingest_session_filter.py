@@ -85,3 +85,23 @@ def test_line_exactly_at_threshold():
     kept = clean_turns(lines)[0][1]
     assert at_400 in kept
     assert at_401 not in kept
+
+
+def test_chunk_splits_single_oversized_turn_at_line_boundaries():
+    # 单个 turn 总长超过 max_chars(每行都 <=400,逃过超长行过滤)也必须被切开,
+    # 且每块保留角色前缀,切在整行边界上。
+    body = "\n".join(f"item {i:04d} " + "z" * 60 for i in range(400))
+    chunks = chunk_dialogue([("assistant", body)], max_chars=8000)
+    assert len(chunks) >= 3
+    assert all(len(c) <= 8000 for c in chunks)
+    assert all(c.startswith("Assistant: ") for c in chunks)
+    rejoined = "\n".join(c.removeprefix("Assistant: ") for c in chunks)
+    assert rejoined == body
+
+
+def test_chunk_oversized_turn_does_not_swallow_neighbours():
+    big = "\n".join("w" * 100 for _ in range(200))
+    chunks = chunk_dialogue([("user", "hi"), ("assistant", big), ("user", "bye")], max_chars=8000)
+    assert chunks[0].startswith("User: hi")
+    assert chunks[-1].endswith("User: bye")
+    assert all(len(c) <= 8000 for c in chunks)
