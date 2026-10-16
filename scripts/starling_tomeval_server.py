@@ -59,6 +59,23 @@ _MAX_TOKENS = 32768
 # The eval harnesses pass --model deepseek-v4-pro explicitly; we must too.
 _MODEL = os.environ.get("STARLING_TOMBENCH_MODEL", "deepseek-v4-pro")
 
+# Qwen-style thinking models (e.g. v3.2) emit <think>...</think> that derails the
+# extraction parsers -> 0 perception rows -> the chain operator never fires. Append
+# Qwen's /no_think directive to the extraction prompts (NOT the answer) so extraction
+# yields clean structured output while the answer keeps its CoT. Opt-in, default OFF
+# (byte-for-byte today's behaviour for non-thinking backends like deepseek).
+_NOTHINK_EXTRACTION = None
+if os.environ.get("STARLING_NO_THINK_EXTRACT") == "1":
+    from starling.extractor.config import ExtractionConfig
+    from starling.extractor.prompts import EXTRACTION_PROMPT
+    from starling.extractor.episodic_prompt import EPISODIC_EXTRACTION_PROMPT
+    from starling.extractor.general_fact_prompt import GENERAL_FACT_EXTRACTION_PROMPT
+    _NT = "\n\n/no_think"
+    _NOTHINK_EXTRACTION = ExtractionConfig(
+        belief_prompt=EXTRACTION_PROMPT + _NT,
+        episodic_prompt=EPISODIC_EXTRACTION_PROMPT + _NT,
+        general_fact_prompt=GENERAL_FACT_EXTRACTION_PROMPT + _NT)
+
 # PER-REQUEST TIME BUDGET MUST STAY UNDER ToMEval's client timeout (~20 min/request).
 # One request makes up to (3 remember extraction calls + _ANSWER_TRIES answer calls),
 # each bounded by _TIMEOUT_MS, times the adapter's own max_retries. If that product
@@ -413,8 +430,64 @@ def _belief_digest_for(mem, db_path: str, user_content: str) -> str:
             + "\n".join(lines))
 
 
+_VOTE = int(os.environ.get("STARLING_EXTRACT_VOTE", "1"))
+
+
+def _chain_value_once(chain, theme, story):
+    """One independent extraction -> the chain's computed state_value, or None.
+    A weak model's extraction is noisy; voting across N of these cancels the noise."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tmp.name
+    tmp.close()
+    mem = None
+    try:
+        _open_kw = {"extraction": _NOTHINK_EXTRACTION} if _NOTHINK_EXTRACTION is not None else {}
+        mem = starling.Memory.open(db, agent="narrator", llm=_new_adapter(), **_open_kw)
+        mem.remember(story)
+        frontier = _core.KnowledgeFrontier(mem._rt.adapter)
+        sb = _core.what_does_X_think_chain(
+            mem._rt.adapter, frontier, chain, theme, mem._core.tenant, "9999-12-31T23:59:59Z")
+        return sb.state_value if (sb.has_belief and sb.state_value) else None
+    except Exception:
+        return None
+    finally:
+        if mem is not None:
+            with contextlib.suppress(Exception):
+                mem.close()
+        gc.collect()
+        for p in (db, db + "-wal", db + "-shm"):
+            with contextlib.suppress(OSError):
+                os.unlink(p)
+
+
+def _voted_chain_injection(story: str, user_content: str) -> str:
+    """Self-consistency: extract N times, vote on the chain value, inject ONLY on a
+    strict majority. No consensus -> "" (the extraction is unreliable here, so let the
+    model reason instead of reading a noisy injection — cuts the BROKE cases)."""
+    parsed = _parse_chain_question(user_content)
+    if not parsed:
+        return ""
+    chain, theme = parsed
+    from collections import Counter
+    votes: Counter = Counter()
+    for _ in range(_VOTE):
+        val = _chain_value_once(chain, theme, story)
+        if val:
+            votes[val] += 1
+    if not votes:
+        return ""
+    val, cnt = votes.most_common(1)[0]
+    if cnt * 2 > _VOTE:  # strict majority of all attempts
+        return _format_chain_injection(chain, theme, val)
+    return ""
+
+
 def _starling_memory_for(story: str, user_content: str = "") -> str:
     """remember(story) into a throwaway Starling memory, return the dump. Best-effort."""
+    # Multi-sample extraction voting (opt-in): for noisy/weak-model extraction, inject
+    # the chain answer only when N independent extractions agree (strict majority).
+    if _VOTE > 1 and story and os.environ.get("STARLING_PASSTHROUGH") != "1":
+        return _voted_chain_injection(story, user_content)
     # Measurement passthrough: pure deepseek baseline through the same robust C++
     # adapter + identical prompt as the scaffolded path, with NO injection. Gives a
     # clean paired control (baseline vs in-loop differ only by the scaffold) without
@@ -428,7 +501,8 @@ def _starling_memory_for(story: str, user_content: str = "") -> str:
     tmp.close()
     mem = None
     try:
-        mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter())
+        _open_kw = {"extraction": _NOTHINK_EXTRACTION} if _NOTHINK_EXTRACTION is not None else {}
+        mem = starling.Memory.open(db_path, agent="narrator", llm=_new_adapter(), **_open_kw)
         mem.remember(story)
         chain = _chain_injection_for(mem, user_content)
         ck = _ck_injection_for(mem, user_content)
@@ -469,13 +543,27 @@ def _answer(system: str, user: str, memdump: str) -> str:
     """deepseek-v4-pro answers the MCQ, scaffolded by Starling's extracted memory."""
     prompt = f"{system}\n\n{user}"
     if memdump:
-        prompt += (
-            "\n\n[Structured memory my memory system extracted from the story]\n"
-            f"{memdump}\n\n"
-            "Use BOTH the story and this extracted memory (especially who perceived / "
-            "knows / believes what) to reason step by step, then give the final answer "
-            "as \\boxed{X}."
-        )
+        if os.environ.get("STARLING_NO_THINK_ANSWER") == "1":
+            # READ-don't-reason: weak thinking models (e.g. v3.2) reason PAST a correct
+            # injection. When a deterministic answer is present, tell the model to READ it
+            # (not re-derive) and append Qwen's /no_think so it does not spend a CoT pass
+            # overriding the verified answer. Only applies when memdump is non-empty (i.e.
+            # the chain/ck actually fired); order 0/1 stay on the normal CoT path.
+            prompt += (
+                "\n\n[Structured memory my memory system extracted from the story]\n"
+                f"{memdump}\n\n"
+                "The extracted memory above contains the deterministic answer to this exact "
+                "question. Read it, match it to the correct lettered choice, and give the final "
+                "answer as \\boxed{X}. Do not re-derive it. /no_think"
+            )
+        else:
+            prompt += (
+                "\n\n[Structured memory my memory system extracted from the story]\n"
+                f"{memdump}\n\n"
+                "Use BOTH the story and this extracted memory (especially who perceived / "
+                "knows / believes what) to reason step by step, then give the final answer "
+                "as \\boxed{X}."
+            )
     for attempt in range(_ANSWER_TRIES):
         t = time.time()
         try:

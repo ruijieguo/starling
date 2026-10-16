@@ -38,3 +38,7 @@ dashboard/web/build
 
 # clangd / cmake tooling cache
 .cache/
+
+# Claude Code 会话目录与 firecrawl 缓存(本机产物,不提交)
+.claude/
+.firecrawl/
