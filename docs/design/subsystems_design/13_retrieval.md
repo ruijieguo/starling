@@ -661,3 +661,7 @@ R6.7已完成文档、RED、实现及评测：13项新增原生反例包含在13
 新入口核对响应合同、模式、schema哈希和原始内容一致性；不支持、超量、围栏或不健康响应直接失败，不隐式能力探测、不重试或回退。JSON mode只约束传输格式，不能保证来源选择语义正确或满足20条预算。既有显式能力探测API新增空来源列表夹具与可重放证据，真实评测不自动调用它。
 
 本地1395项C++回归、20项绑定/localhost HTTP、14项选择编排和16项QA编排测试通过。R6.8已完成133题结构化来源选择与同期QA：v9为52/133，selector为60/133，净增6.02个百分点；六网络聚类95%区间[-5.60,16.28]，候选正常127/133低于v9的130/133，门槛未通过，不晋升。选择合同失败从R6.7的4题降为3题，均为超过20条预算；Markdown围栏失败为0。来源池、选择提示词、预算及回答政策保持R6.7合同；群体反例、事件角色和裁判规则本轮不改。完整设计见[中文设计](../../superpowers/specs/2026-09-26-socialmem-r68-structured-selection-design.md)，详细结果见[中文评测报告](../../eval/2026-09-26-socialmem-r68-structured-selection.md)，历史R6.7原始结果保留。
+
+## 2026-10-17 双脑检索设计入口（计划，未实现）
+
+计划在 RetrievalPlanner 新增 `engram_chunks` 与 `lexical_index` 两个 scope、`PlannerQuery.lanes`（auto/right/left/both）、跨 lane RRF（k=60）和 Context Pack 第 9 标签 `[SOURCE]`（原文加 observed_at）。perspective mask 仍先于融合；四个弃答条件不变，`max_score` 取融合后最高分；右脑 8 标签与现有 lane 语义不变。ObserverRetriever 评测专用路径不动。本段描述计划，不代表已经实现或获得新分数。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。

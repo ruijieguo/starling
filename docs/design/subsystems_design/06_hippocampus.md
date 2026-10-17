@@ -406,3 +406,7 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 原生 `claim_extraction_batch_plan(payload, policy)` 给出计划与请求上界；分批回执保留全局attempt编号、batch_index、target_clause_ids和 `claim_batches_complete`。全部批成功才允许该holder分批claim写入；后批失败保留全部原始回执与成本，0条分批claim落库。持久化重新验证计划、policy与候选来源，批间写异常由事务回滚；跨分批大小重放保持幂等。完整上下文重复输入增加成本，有限来源单元不等于token硬上限。
 
 本轮本地验证已通过，真实同输入验收与扩大评测尚待完成；不把测试结果当QA增益。完整设计与当前证据见[R5.6中文设计](../../superpowers/specs/2026-09-25-socialmem-r56-bounded-claim-design.md)，历史评测继续按各自冻结核心解释。
+
+## 2026-10-17 chunk 投影与 VOLATILE 可召回策略（计划，未实现）
+
+计划让左脑 lane 召回 VOLATILE 事实 Statement（按 `volatile_penalty` 降权），右脑 lane 仍只取 consolidated/archived，六态机本身不变。这是对 CLS“海马体记忆可即时回忆但未皮层化”的实现偏差修正：现状实测约 13.5% 语句对检索可见。chunk 投影不经 VOLATILE 状态。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。

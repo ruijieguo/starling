@@ -702,3 +702,7 @@ local-store 行从 4 项压缩到 2 项（seekdb 合并 relational + vector + ft
 ## R4.7 多声明与第一人称归属设计入口（2026-09-23）
 
 R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入归属车道的问题。R4.7 先保留全部通过证据校验的 claim，再按人物边界进入 C++ 归属车道；设计见 [2026-09-23-socialmem-r47-multi-claim-attribution-design.md](../../superpowers/specs/2026-09-23-socialmem-r47-multi-claim-attribution-design.md)，实施计划见 [2026-09-23-socialmem-r47-multi-claim-attribution.md](../../superpowers/plans/2026-09-23-socialmem-r47-multi-claim-attribution.md)。R4.7 当前只完成行为与离线验证，真实复评尚未封存，不提前宣称质量提升。
+
+## 2026-10-17 第 8 类投影与 FTS5 能力（计划，未实现）
+
+计划新增 `engram_chunks` 投影（含 FTS5 外部内容表 `engram_chunks_fts` 与 `chunk_vectors`），可由 engrams 全量重建并走 repair guard；`VectorIndex` 增 chunk 命名空间（主键前缀与 statement 隔离）；`ProfileCapability` 增 `lexical_fts5`，缺失时词法 lane 降级为 degraded_paths，不阻断 preflight。chunk 是 Projection，不是事实源。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
