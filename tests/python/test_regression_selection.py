@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def isolated_suite(tmp_path):
     shutil.copyfile(ROOT / 'tests/python/conftest.py', tmp_path / 'conftest.py')
     options = tomllib.loads((ROOT / 'pyproject.toml').read_text())['tool']['pytest']['ini_options']
-    (tmp_path / 'pytest.ini').write_text(f"[pytest]\naddopts = {options['addopts']}\n")
+    (tmp_path / 'pytest.ini').write_text(
+        f"[pytest]\naddopts = {options['addopts']}\n"
+        f"strict_markers = {str(options['strict_markers']).lower()}\n")
     (tmp_path / 'test_boundary.py').write_text('''
 from pathlib import Path
 import pytest

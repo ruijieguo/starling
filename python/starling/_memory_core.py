@@ -343,6 +343,13 @@ class MemoryCore:
                                 ids=list(ids), now_iso=now_iso)
         return {"forgotten": n}
 
+    def clear_tenant(self) -> dict:
+        """物理清空本租户全部记忆(保留 kind='self' 认知体):核心
+        `memoryops::clear_tenant`,单事务。只有 zvec 后端的向量存在 SQLite 之外,
+        才把句柄交给核心在提交后逐条移除;sqlite 后端的向量就是表行,已随事务删除。"""
+        index = self.idx if self._vector_backend == "zvec" else None
+        return _core.memory_clear_tenant(self.rt.adapter, tenant=self.tenant, index=index)
+
     # ── 片 6 干预集:触发式安全写(全经核心,这里只薄转发) ─────────────────
     def approve_review(self, stmt_id: str, *, now=None) -> dict:
         """人工审批 review_requested → approved(守卫幂等)。核心 `memoryops::approve_review`。

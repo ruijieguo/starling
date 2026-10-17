@@ -19,6 +19,9 @@ export type Prov = {
 };
 
 export type Config = {
+	// 当前 dashboard 进程服务的租户(GET/POST /api/config 都带)。设置页「危险区」
+	// 要求手输它来确认清空记忆。
+	tenant?: string;
 	providers: Record<string, Prov>;
 	roles: Record<string, string>;
 	// #38-C v2 threshold surface: NORM-gist knobs (min_holders / min_replay_count /

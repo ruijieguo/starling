@@ -1,0 +1,11 @@
+-- replay_ledger 原先没有租户列:一个回放批次只是 (batch_id, mode, 采样数, ops json)。
+-- 设置页「清空记忆」按租户删除,账本因此成了唯一删不掉的租户相关表。
+--
+-- 可空而非 NOT NULL DEFAULT 'default':
+--   · 一个批次可能同时采样多个租户的语句(见 replay_scheduler 的 by_tenant),这种批次
+--     无法归属单个租户,记 NULL;
+--   · 迁移前已存在的行同样无从得知租户,也是 NULL —— 不在迁移里猜(账本行与语句只靠
+--     statements.last_replay_batch_id 单向关联,大半批次没有任何语句)。
+-- 清空租户时的取舍见 memoryops::clear_tenant:本租户的行删除;NULL 行仅在库里已没有
+-- 其他租户数据时才一并删除。
+ALTER TABLE replay_ledger ADD COLUMN tenant_id TEXT;

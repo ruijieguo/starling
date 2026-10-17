@@ -44,6 +44,14 @@ describe('describeEvent — 概览 feed 事件结构化', () => {
 		expect(describeEvent('statement_forgotten', { forgotten: 4 }).tone).toBe('danger');
 	});
 
+	it('memory_cleared: 删除行数 + 丢弃的待摄入会话数(0 时不提),danger', () => {
+		const v = describeEvent('memory_cleared', { tenant: 'default', total: 12, spool_discarded: 2 });
+		expect(v.label).toBe('清空记忆');
+		expect(v.detail).toBe('删除 12 行 · 丢弃 2 个待摄入会话');
+		expect(v.tone).toBe('danger');
+		expect(describeEvent('memory_cleared', { total: 5, spool_discarded: 0 }).detail).toBe('删除 5 行');
+	});
+
 	it('commitment_transition: 短 id + 目标态,FULFILLED 为 success', () => {
 		const v = describeEvent('commitment_transition', {
 			stmt_id: '0123456789abcdef',

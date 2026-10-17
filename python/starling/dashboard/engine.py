@@ -152,6 +152,17 @@ def _build_embed_adapter(emb_cfg: dict):
         return _core.OpenAIEmbeddingAdapter(cfg)
 
 
+class _TenantCleared(Exception):
+    """remember 的 prepare 段发现租户在本次调用开始后被 clear_memory 清空。
+
+    只用于 ingest worker:它在 claim 前快照 `_clear_generation`,逐块 remember 时
+    带上;清空后的块不再写入(否则会把清空前就排队的旧会话重新灌回来)。"""
+
+
+class ClearConfirmMismatch(ValueError):
+    """clear_memory 的 confirm 与当前租户名不符:零写入,路由回 400。"""
+
+
 class DashboardEngine:
     def __init__(self, config) -> None:
         # Embedded facade runs the reduced capability set (testing_helper_marker
@@ -204,6 +215,9 @@ class DashboardEngine:
         self._ingest_remember_ms_total = 0      # observability: see _ingest_drain_once
         self._ingest_throttle_s = 5.0           # gap after each processed job (dashboard breathing room)
         self._ingest_max_attempts = 5           # bounded retry before dead-lettering to failed/
+        # clear_memory 每次 +1。ingest worker 在 claim 前快照,逐块 remember 时带上;
+        # 代数变了 = 清空发生在这个 job 被 claim 之后,该 job 作废(见 _TenantCleared)。
+        self._clear_generation = 0
 
         # dogfood 子项 B:embed 深度采样序列。HOST 独立 sqlite(唯一写者=采样器,
         # 天然单写者;与 core 的 dashboard.db 无共享写连接)。非记忆 schema,不进
@@ -442,13 +456,19 @@ class DashboardEngine:
         return self._core.llm
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
-                 provider: str | None = None) -> dict:
+                 provider: str | None = None, clear_generation: int | None = None) -> dict:
         """三相落锁(方案2 + option B 收尾):belief+gf+episodic extraction 段全在
         锁外,prepare/commit 持锁。episodic LLM 已出锁(commit 内 episodic 只做纯
         DB persist)。provider 解析为局部 adapter 传入 extract/commit(避拆锁后全局
-        slot 竞态,同 _converse_phased)。"""
+        slot 竞态,同 _converse_phased)。
+
+        clear_generation:ingest worker 传 claim 时的 `_clear_generation` 快照;
+        与当前值不同 = 该 job 被 claim 后发生过 clear_memory,抛 _TenantCleared,
+        不再写入。锁外抽取期间被清空的情况由 C++ commit 守卫兜底(source_missing)。"""
         now = now or datetime.now(timezone.utc)
         with self._lock:                                    # ① 短:写门 + engram
+            if clear_generation is not None and clear_generation != self._clear_generation:
+                raise _TenantCleared("tenant memory was cleared after this job was claimed")
             extraction = self._resolve_extraction(provider)
             if extraction is None:   # #1:fail-fast 在写 engram 前(provider 未给且抽取角色未绑)
                 raise _LLMNotConfigured(
@@ -528,6 +548,26 @@ class DashboardEngine:
     def forget(self, ids, *, now=None) -> dict:
         with self._lock:
             return self._core.forget(ids, now=now)
+
+    def clear_memory(self, *, confirm: str) -> dict:
+        """设置页「危险区」:物理清空当前租户的全部记忆(保留 self 认知体),并把该
+        租户 spool 里尚未 claim 的会话 job 移到 discarded/(不删,手动移回即可重新摄入)。
+
+        confirm 必须等于当前租户名(前端要求手输),否则 ClearConfirmMismatch,零写入。
+        三件事在同一把引擎锁内完成:核心清库、代数 +1、丢弃 pending job。ingest
+        worker 的 claim 也在这把锁内快照代数(见 _ingest_drain_once),所以任何 job
+        要么在清空前被 claim(代数不符 → 作废),要么已被这里移走,不会把清空前排队
+        的旧会话重新灌回来。"""
+        if confirm != self._cfg.tenant:
+            raise ClearConfirmMismatch("confirm_mismatch")
+        with self._lock:
+            # 先清库:写门关闭时核心抛 WriteGateRejected,此时代数与 spool 都不动,
+            # 在途 job 不会因一次没发生的清空被作废。
+            out = self._core.clear_tenant()
+            self._clear_generation += 1
+            out["spool_discarded"] = self._ingest_discard_pending()
+        out["tenant"] = self._cfg.tenant
+        return out
 
     # 片 6 干预集:全经 self._lock 串行(对单写者 + 后台 tick)。
     def approve_review(self, stmt_id: str, *, now=None) -> dict:
@@ -733,6 +773,30 @@ class DashboardEngine:
         for stale in sp.glob("*.json.processing"):
             stale.rename(stale.with_suffix(""))    # strip the trailing ".processing"
 
+    def _ingest_discard_pending(self) -> int:
+        """clear_memory 专用(调用方持 self._lock):把本租户 spool 根下尚未 claim 的
+        `*.json` 移到 discarded/。不删除——手动移回 spool 根即可重新摄入。
+        明确属于别的租户的 job 原样留下,与 _ingest_drain_once 的租户过滤一致。
+        返回移走的个数。"""
+        sp = self._ingest_spool
+        if not sp.exists():
+            return 0
+        moved = 0
+        for job_path in sorted(sp.glob("*.json")):
+            try:
+                job = json.loads(job_path.read_text())
+            except Exception:  # noqa: BLE001 — 损坏的 job 也在本分区,一并移走
+                job = None
+            if isinstance(job, dict) and "tenant" in job and job.get("tenant") != self._cfg.tenant:
+                continue
+            (sp / "discarded").mkdir(exist_ok=True)
+            try:
+                job_path.rename(sp / "discarded" / job_path.name)
+            except OSError:
+                continue   # 已被别处移走;worker 的 claim 同样持锁,正常不会发生
+            moved += 1
+        return moved
+
     def _ingest_drain_once(self) -> str:
         """Drain ONE spool job: claim (atomic rename to .json.processing) ->
         read transcript -> clean/chunk -> self.remember() each chunk -> done/
@@ -799,9 +863,15 @@ class DashboardEngine:
             return "deferred"
         claimed = job_path.with_suffix(".json.processing")
         try:
-            job_path.rename(claimed)               # 原子 claim
+            # claim 与代数快照在同一把锁内,clear_memory 也持这把锁:要么它先把这个
+            # pending job 移进 discarded/(这里 rename 失败 → deferred),要么它后发生
+            # (代数不符 → remember 抛 _TenantCleared → 作废)。清空前排队的旧会话
+            # 因此不会被重新灌回来。
+            with self._lock:
+                generation = self._clear_generation
+                job_path.rename(claimed)           # 原子 claim
         except OSError:
-            return "deferred"                       # 被别的消费者抢走(单 worker 下罕见/防御性),下轮再试
+            return "deferred"                       # 被别的消费者抢走或已被清空丢弃,下轮再试
         try:
             job = json.loads(claimed.read_text())
         except Exception:                           # noqa: BLE001 — 损坏的 job 文件按空 job 处理,下方统一走有界重试
@@ -818,8 +888,12 @@ class DashboardEngine:
             for chunk in chunks:
                 t0 = time.monotonic()
                 out = self.remember(chunk, holder="self",
-                                    interlocutor=f"claude-code:{project}", now=None)
+                                    interlocutor=f"claude-code:{project}", now=None,
+                                    clear_generation=generation)
                 self._ingest_remember_ms_total += int((time.monotonic() - t0) * 1000)
+                if out.get("outcome") == "source_missing":
+                    # 锁外抽取期间被清空:C++ commit 已零写入,整个 job 作废。
+                    raise _TenantCleared("tenant memory was cleared during extraction")
                 if out.get("extraction_failed"):
                     extraction_failed = True
             if extraction_failed:
@@ -828,6 +902,13 @@ class DashboardEngine:
                     f"more of {len(chunks)} chunk(s)")
             (sp / "done").mkdir(exist_ok=True)
             claimed.rename(sp / "done" / job_path.name)
+            return "done"
+        except _TenantCleared:
+            # 清空发生在本 job claim 之后:不重试、不进 failed/,与清空时尚未 claim 的
+            # job 一样归档到 discarded/(手动移回 spool 根即可重新摄入)。清空前已提交的
+            # 块随清空一起被删,清空后的块一律没写,所以库里不留这个 job 的半截。
+            (sp / "discarded").mkdir(exist_ok=True)
+            claimed.rename(sp / "discarded" / job_path.name)
             return "done"
         except Exception as exc:                    # noqa: BLE001 — classify + route, never crash the worker
             attempts = int(job.get("attempts") or 0) + 1

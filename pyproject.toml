@@ -26,3 +26,6 @@ cmake.args = ["-DSTARLING_BUILD_PYTHON=ON"]
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = "-ra -v --strict-markers"
+# pytest 9.0.3 实测:写在 addopts 里的 --strict-markers 对未知 marker 只告警不报错,
+# ini 键 strict_markers 才会报错(pytest 8 无此键,会提示未知配置项但不影响运行)。
+strict_markers = true

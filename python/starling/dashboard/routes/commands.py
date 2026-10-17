@@ -57,6 +57,10 @@ class ForgetBody(BaseModel):
     now: str | None = None  # None → MemoryCore resolves to current UTC time
 
 
+class ClearMemoryBody(BaseModel):
+    confirm: str            # 必须等于当前租户名(设置页「危险区」要求手输);不符 → 400
+
+
 # ── 片 6 干预集 ──────────────────────────────────────────────────────────
 class ReviewBody(BaseModel):
     stmt_id: str            # approve(review_requested→approved);reject 走 /api/forget
@@ -172,6 +176,26 @@ def build_commands_router(require_token) -> APIRouter:
         eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.forget, body.ids, now=body.now))
         await _broadcast(request, "statement_forgotten", r)
+        return r
+
+    @router.post("/clear_memory")
+    async def clear_memory(body: ClearMemoryBody, request: Request):
+        # 设置页「危险区」:物理清空当前租户的全部记忆(保留 self 认知体),并把该租户
+        # spool 里尚未 claim 的会话 job 移到 discarded/。confirm 必须等于当前租户名。
+        from starling import _core
+        from starling.dashboard.engine import ClearConfirmMismatch
+        eng = _engine(request)
+        try:
+            r = await to_thread.run_sync(partial(eng.clear_memory, confirm=body.confirm))
+        except ClearConfirmMismatch:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="confirm_mismatch")
+        except _core.WriteGateRejected:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="draining")
+        await _broadcast(request, "memory_cleared",
+                         {"tenant": r["tenant"], "total": r["total"],
+                          "spool_discarded": r["spool_discarded"]})
         return r
 
     # ── 片 6 干预集:触发式安全写(全经 engine self._lock 串行) ─────────────

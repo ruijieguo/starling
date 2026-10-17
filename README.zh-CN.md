@@ -134,7 +134,7 @@ Python 面向的是被绑定的 C++ 核心:`from starling import _core`,其上�
 
 ## Dashboard
 
-一个 Web 观测 + 交互面:**FastAPI** engine-API,前面是 **SvelteKit + Tailwind** UI,按脑区地图组织。页面覆盖**交互**(带记忆对话 `converse`、裸 `remember` / `recall`、Working Set 渲染、承诺提醒)、**认知检视**(statement explorer、cognizer 社会图、commitment 状态机,以及对单条记忆做来源取证的**透视镜 Lens**)、**动力学**(replay 含每批次**梦境日志**、**生命周期**占用分布、**衰减预报**、conflict probe)、**生命体征**(只读观测:pump lag、队列深度、recall 收据归因),以及一个**总览 + Eval 报告**落地页。实时更新经 WebSocket 推送;检视面板只读 SQLite,命令——`converse`、`remember`、`tick`,加上干预(`forget`、`review`、`replay_trigger`、`reconsolidate`)——经引擎(模型可在 UI 配置)。
+一个 Web 观测 + 交互面:**FastAPI** engine-API,前面是 **SvelteKit + Tailwind** UI,按脑区地图组织。页面覆盖**交互**(带记忆对话 `converse`、裸 `remember` / `recall`、Working Set 渲染、承诺提醒)、**认知检视**(statement explorer、cognizer 社会图、commitment 状态机,以及对单条记忆做来源取证的**透视镜 Lens**)、**动力学**(replay 含每批次**梦境日志**、**生命周期**占用分布、**衰减预报**、conflict probe)、**生命体征**(只读观测:pump lag、队列深度、recall 收据归因),以及一个**总览 + Eval 报告**落地页。实时更新经 WebSocket 推送;检视面板只读 SQLite,命令——`converse`、`remember`、`tick`,加上干预(`forget`、`review`、`replay_trigger`、`reconsolidate`)——经引擎(模型可在 UI 配置)。设置页另有**危险区**(`clear_memory`):手输租户名确认后,物理清空当前租户的全部记忆(含梦境日志,保留 `self` 认知体),并把该租户待摄入的会话 job 移到 `discarded/`;其他租户不受影响。
 
 **前置:** 已安装 Python 包(见 [构建与测试](#构建与测试))+ Node ≥20 与 npm(用于一次性前端构建)。
 

@@ -6,16 +6,22 @@
 
 #include "starling/embedding/embedding_adapter.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
+#include "starling/governance/write_gate.hpp"
 #include "starling/persistence/migration_runner.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/persistence/stmt.hpp"
 #include "starling/runtime_health.hpp"
 #include "starling/vector/vector_index.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace starling::memoryops {
 
@@ -373,6 +379,203 @@ TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
     ASSERT_EQ(t.stages_skipped.size(), 9U);
     EXPECT_TRUE(t.stage_timings_ms.empty());
     EXPECT_EQ(t.embedded, 0);
+}
+
+// ── 设置页「危险区」:clear_tenant ───────────────────────────────────────────
+// 钉:单租户物理清空(保留 self 认知体)、其他租户零影响、无悬空外键、写门、
+// 新增租户作用域表必须纳入删除清单、清空后同文本重新 remember 是全新 accepted。
+
+namespace {
+
+RememberParams tenant_params(std::string tenant, std::string_view text) {
+    RememberParams scoped = params(text);
+    scoped.tenant_id = std::move(tenant);
+    return scoped;
+}
+
+std::int64_t count_rows(persistence::Connection& conn, const std::string& sql) {
+    persistence::Stmt query(conn.raw(), sql.c_str());
+    EXPECT_TRUE(query.step_row()) << sql;
+    return sqlite3_column_int64(query.raw(), 0);
+}
+
+// (表名, 租户列名):清单必须覆盖的全部租户作用域表(视图不算)。
+std::vector<std::pair<std::string, std::string>> tenant_scoped_tables(
+        persistence::Connection& conn) {
+    persistence::Stmt query(conn.raw(),
+        "SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p "
+        "WHERE m.type='table' AND p.name IN ('tenant_id','window_tenant_id') "
+        "ORDER BY m.name");
+    std::vector<std::pair<std::string, std::string>> tables;
+    while (query.step_row()) {
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+        tables.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(query.raw(), 0)),
+                            reinterpret_cast<const char*>(sqlite3_column_text(query.raw(), 1)));
+        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    }
+    return tables;
+}
+
+void seed_cognizer(persistence::Connection& conn, std::string_view tenant,
+                   std::string_view cognizer_id, std::string_view kind) {
+    persistence::Stmt insert(conn.raw(),
+        "INSERT INTO cognizers(id,tenant_id,kind,canonical_name,canonical_name_normalized,"
+        "external_id,created_at,last_seen_at) "
+        "VALUES(?1,?2,?3,?1,?1,?1,'2026-06-11T10:00:00Z','2026-06-11T10:00:00Z')");
+    insert.bind(cognizer_id, tenant, kind);
+    insert.step_done();
+}
+
+// remember + 一次 tick:让该租户有 engram/语句/事件/向量/投影/抽取审计行。
+void populate_tenant(persistence::SqliteAdapter& adapter, const std::string& tenant) {
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(adapter, llm, "", tenant_params(tenant, "Bob owns auth")).outcome,
+              "accepted");
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex index;
+    embedding::EmbeddingWorker worker(adapter, emb, index);
+    prospective::PolicyEngine policy(adapter);
+    (void)tick_all(adapter, worker, policy, "2026-06-11T10:05:00Z");
+}
+
+}  // namespace
+
+TEST(ClearTenant, RemovesTenantRowsKeepsSelfAndOtherTenants) {
+    auto adapter = make_adapter();
+    populate_tenant(*adapter, "default");
+    populate_tenant(*adapter, "other");
+    auto& conn = adapter->connection();
+    seed_cognizer(conn, "default", "cog-self", "self");
+    seed_cognizer(conn, "default", "cog-bob", "human");
+    seed_cognizer(conn, "other", "cog-carol", "human");
+    ASSERT_GE(count_rows(conn,
+        "SELECT COUNT(*) FROM statement_vectors WHERE tenant_id='default'"), 1);
+    const auto other_statements =
+        count_rows(conn, "SELECT COUNT(*) FROM statements WHERE tenant_id='other'");
+    ASSERT_GE(other_statements, 1);
+
+    const auto out = clear_tenant(*adapter, "default");
+
+    EXPECT_GT(out.total, 0);
+    EXPECT_GE(out.deleted.at("statements"), 1);
+    EXPECT_GE(out.deleted.at("engrams"), 1);
+    EXPECT_EQ(out.deleted.at("cognizers"), 1);   // 只删 cog-bob
+    for (const auto& [table, column] : tenant_scoped_tables(conn)) {
+        std::string sql = "SELECT COUNT(*) FROM " + table + " WHERE " + column + "='default'";
+        if (table == "cognizers") { sql += " AND kind<>'self'"; }
+        EXPECT_EQ(count_rows(conn, sql), 0) << table;
+    }
+    EXPECT_EQ(count_rows(conn,
+        "SELECT COUNT(*) FROM cognizers WHERE tenant_id='default' AND kind='self'"), 1);
+    // 无租户列的子表:跟着父行走,不留孤儿。
+    EXPECT_EQ(count_rows(conn,
+        "SELECT COUNT(*) FROM extraction_attempt a WHERE NOT EXISTS "
+        "(SELECT 1 FROM governance_pipeline_run r WHERE r.id=a.pipeline_run_id)"), 0);
+    // 其他租户零影响。
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM statements WHERE tenant_id='other'"),
+              other_statements);
+    EXPECT_GE(count_rows(conn, "SELECT COUNT(*) FROM engrams WHERE tenant_id='other'"), 1);
+    EXPECT_GE(count_rows(conn, "SELECT COUNT(*) FROM extraction_attempt"), 1);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM cognizers WHERE tenant_id='other'"), 1);
+    // 全库无悬空外键。
+    persistence::Stmt fk_check(conn.raw(), "PRAGMA foreign_key_check");
+    EXPECT_FALSE(fk_check.step_row());
+}
+
+void seed_ledger(persistence::Connection& conn, std::string_view batch_id,
+                 const char* tenant /* nullptr = NULL */) {
+    persistence::Stmt insert(conn.raw(),
+        "INSERT INTO replay_ledger(replay_batch_id,mode,sampled_count,ops_applied_json,"
+        "started_at,tenant_id) VALUES(?1,'idle',1,'{}','2026-06-11T10:00:00Z',?2)");
+    if (tenant != nullptr) {
+        insert.bind(batch_id, std::string_view(tenant));
+    } else {
+        insert.bind(batch_id, nullptr);
+    }
+    insert.step_done();
+}
+
+TEST(ClearTenant, ReplayLedgerDeletesOwnRowsKeepsOtherTenants) {
+    auto adapter = make_adapter();
+    populate_tenant(*adapter, "default");
+    populate_tenant(*adapter, "other");
+    auto& conn = adapter->connection();
+    seed_ledger(conn, "b-default", "default");
+    seed_ledger(conn, "b-other", "other");
+    seed_ledger(conn, "b-legacy", nullptr);   // 迁移前的旧行 / 跨租户批次
+    // populate_tenant 里的 tick_all 自己也会写单租户账本行(归 default),所以期望值取
+    // 清空前 default 名下的实际行数,而不是假设账本一开始是空的。
+    const auto own_rows =
+        count_rows(conn, "SELECT COUNT(*) FROM replay_ledger WHERE tenant_id='default'");
+    ASSERT_GE(own_rows, 1);
+
+    const auto out = clear_tenant(*adapter, "default");
+
+    EXPECT_EQ(out.deleted.at("replay_ledger"), own_rows);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM replay_ledger WHERE tenant_id='default'"), 0);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM replay_ledger WHERE replay_batch_id='b-default'"), 0);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM replay_ledger WHERE replay_batch_id='b-other'"), 1);
+    // 另一个租户还有数据时,无法归属的 NULL 行可能是它的,不能删。
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM replay_ledger WHERE replay_batch_id='b-legacy'"), 1);
+}
+
+TEST(ClearTenant, ReplayLedgerNullRowsGoWhenNoOtherTenantHasData) {
+    auto adapter = make_adapter();
+    populate_tenant(*adapter, "default");
+    auto& conn = adapter->connection();
+    seed_ledger(conn, "b-default", "default");
+    seed_ledger(conn, "b-legacy", nullptr);
+    const auto all_rows = count_rows(conn, "SELECT COUNT(*) FROM replay_ledger");
+    ASSERT_GE(all_rows, 2);   // 两条手工行 + tick_all 自己写的行
+
+    const auto out = clear_tenant(*adapter, "default");
+
+    // 库里只剩这一个租户:NULL 行只可能是它的,一并删除,不留残余梦境日志。
+    EXPECT_EQ(out.deleted.at("replay_ledger"), all_rows);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM replay_ledger"), 0);
+}
+
+TEST(ClearTenant, CoversEveryTenantScopedTable) {
+    // 新迁移加了租户作用域表却没进 clear_tenant 的删除清单 → 这里红。
+    auto adapter = make_adapter();
+    const auto out = clear_tenant(*adapter, "default");
+    EXPECT_EQ(out.total, 0);
+    const auto tables = tenant_scoped_tables(adapter->connection());
+    ASSERT_FALSE(tables.empty());
+    for (const auto& [table, column] : tables) {
+        EXPECT_EQ(out.deleted.count(table), 1U) << "clear_tenant misses " << table;
+    }
+    EXPECT_EQ(out.deleted.count("extraction_attempt"), 1U);
+    EXPECT_EQ(out.deleted.count("idempotency_inbox"), 1U);
+}
+
+TEST(ClearTenant, RejectedWhenGateClosedOrTenantEmpty) {
+    auto adapter = make_adapter();
+    populate_tenant(*adapter, "default");
+    auto& conn = adapter->connection();
+    const auto before = count_rows(conn, "SELECT COUNT(*) FROM statements");
+
+    EXPECT_THROW((void)clear_tenant(*adapter, ""), std::invalid_argument);
+    adapter->set_write_admit([] { return false; });
+    EXPECT_THROW((void)clear_tenant(*adapter, "default"), governance::WriteGateRejected);
+    EXPECT_EQ(count_rows(conn, "SELECT COUNT(*) FROM statements"), before);   // 零写
+}
+
+TEST(ClearTenant, RememberStartsFreshAfterClear) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(*adapter, llm, "", params("Bob owns auth")).outcome, "accepted");
+
+    (void)clear_tenant(*adapter, "default");
+
+    // 旧 engram 已删:同文本不再判 idempotent,而是全新入库并重新抽取。
+    const auto again = remember(*adapter, llm, "", params("Bob owns auth"));
+    EXPECT_EQ(again.outcome, "accepted");
+    EXPECT_FALSE(again.statement_ids.empty());
+    EXPECT_GE(count_rows(adapter->connection(),
+        "SELECT COUNT(*) FROM statements WHERE tenant_id='default'"), 1);
 }
 
 }  // namespace starling::memoryops

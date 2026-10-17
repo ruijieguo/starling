@@ -37,6 +37,14 @@
 	let tests = $state<Record<string, TestResult>>({});
 	let testing = $state<Record<string, boolean>>({});
 
+	// 危险区:清空当前租户的全部记忆。tenant 来自 /api/config;手输一致才放行,
+	// 后端再按 confirm === 租户名校验一次(POST /api/clear_memory)。
+	let tenant = $state('');
+	let clearConfirm = $state('');
+	let clearOpen = $state(false);
+	let clearing = $state(false);
+	let canClear = $derived(!!tenant && clearConfirm === tenant && !clearing);
+
 	// New-provider draft
 	let draftName = $state('');
 	let draftProvider = $state('openai');
@@ -67,6 +75,7 @@
 			entity_gist_enabled: gt.entity_gist_enabled ?? null
 		};
 		keyInputs = Object.fromEntries(Object.keys(providers).map((n) => [n, '']));
+		tenant = c.tenant ?? '';
 	}
 
 	// ── 配置加载门 ────────────────────────────────────────────────────────────
@@ -227,6 +236,29 @@
 		setToken(token);
 		toast.success('Token 已更新');
 	}
+
+	async function doClear() {
+		// 确认框打开期间输入框仍可改:提交前按当前值再校验一次。
+		if (!tenant || clearConfirm !== tenant) return;
+		clearing = true;
+		try {
+			const r = await api.post<{ tenant: string; total: number; spool_discarded: number }>(
+				'/api/clear_memory',
+				{ confirm: clearConfirm },
+				{ timeoutMs: 120_000 }
+			);
+			clearConfirm = '';
+			toast.success(
+				r.spool_discarded
+					? `已清空 ${r.total} 行,丢弃 ${r.spool_discarded} 个待摄入会话`
+					: `已清空 ${r.total} 行`
+			);
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : String(e));
+		} finally {
+			clearing = false;
+		}
+	}
 </script>
 
 <PageHeader
@@ -377,6 +409,30 @@
 			<Button variant="soft" onclick={saveToken}>保存 Token</Button>
 		</div>
 	</Card>
+
+	<!-- 危险区:只在配置加载成功、拿到租户名后渲染——不知道租户名就无从确认。 -->
+	{#if loaded && tenant}
+		<Card
+			title="危险区"
+			class="border-danger"
+			description={`物理删除租户「${tenant}」的全部记忆:engram、语句、事件、向量、承诺、共同基础与认知体(保留 self)。该租户尚未处理的会话摄入任务移到 spool 的 discarded/。不可撤销,其他租户不受影响。`}
+		>
+			<div class="space-y-3">
+				<Field label={`输入租户名「${tenant}」以确认`} for="clear-confirm">
+					<Input
+						id="clear-confirm"
+						bind:value={clearConfirm}
+						placeholder={tenant}
+						autocomplete="off"
+						class="max-w-64"
+					/>
+				</Field>
+				<Button variant="danger" loading={clearing} disabled={!canClear} onclick={() => (clearOpen = true)}
+					>清空记忆</Button
+				>
+			</div>
+		</Card>
+	{/if}
 </div>
 
 <ConfirmDialog
@@ -385,4 +441,13 @@
 	description="改了 embedding 角色的 provider / dim 会按新设置重嵌已有记忆,可能耗时。继续?"
 	confirmLabel="继续保存"
 	onconfirm={doSave}
+/>
+
+<ConfirmDialog
+	bind:open={clearOpen}
+	title="确认清空记忆?"
+	description={`将物理删除租户「${tenant}」的全部记忆,无法恢复。`}
+	confirmLabel="确认清空"
+	danger
+	onconfirm={doClear}
 />

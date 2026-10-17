@@ -1,7 +1,9 @@
 #include "starling/memory/memory_ops.hpp"
 
+#include <array>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <variant>
 
 #include <nlohmann/json.hpp>
@@ -17,6 +19,7 @@
 #include "starling/extractor/episodic_extractor.hpp"
 #include "starling/governance/tick_load_shedding.hpp"
 #include "starling/governance/write_gate.hpp"
+#include "starling/persistence/stmt.hpp"
 #include "starling/projection/projection_maintainer.hpp"
 #include "starling/replay/replay_scheduler.hpp"
 #include "starling/retrieval/retrieval_planner.hpp"
@@ -25,6 +28,28 @@
 #include "starling/tom/persona_subscriber.hpp"
 
 namespace starling::memoryops {
+
+namespace {
+
+// prepare 与 commit 之间(锁外抽取段)租户可能被 clear_tenant 清空。commit 前确认
+// 证据 engram 仍在:不在则零写入返回,绝不写出证据悬空的语句。host 在 commit 段持
+// 引擎锁,clear 同样持锁,故「查 → 写」对 clear 是原子的。
+bool engram_present(persistence::Connection& conn, const RememberParams& params,
+                    const RememberPrepared& prepared) {
+    persistence::Stmt lookup(conn.raw(),
+                             "SELECT 1 FROM engrams WHERE id=?1 AND tenant_id=?2");
+    lookup.bind(prepared.engram_ref, params.tenant_id);
+    return lookup.step_row();
+}
+
+RememberOutcome source_missing_outcome(const RememberParams& params) {
+    RememberOutcome out;
+    out.holder_id = params.holder_id;
+    out.outcome = "source_missing";   // engram_ref 留空 = 未入库
+    return out;
+}
+
+}  // namespace
 
 RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
                                   const RememberParams& params) {
@@ -92,6 +117,9 @@ RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
         return result;   // no_store/rejected:未入库即不抽取、不泵(与单体早退等价)
     }
     governance::require_write_admission(adapter);   // 捕锁外 extract 期间转 DRAINING
+    if (!engram_present(adapter.connection(), params, prepared)) {
+        return source_missing_outcome(params);   // 抽取期间租户被清空:零写、不泵
+    }
 
     extractor::Extractor extr(adapter.connection(), llm, adapter,
                               /*prompt_template=*/"", policy);
@@ -199,6 +227,11 @@ RememberOutcome remember_commit_all(
     out.engram_ref = prepared.engram_ref;
     if (!prepared.should_extract) { return out;
 }
+    // Cleared mid-turn: return before belief/episodic/general-fact all try to
+    // persist against an engram that no longer exists.
+    if (!engram_present(adapter.connection(), params, prepared)) {
+        return source_missing_outcome(params);
+    }
 
     // The nested persists use SAVEPOINT-backed TransactionGuards. Any later
     // channel failure rolls back belief, episodic, general-fact, pump effects,
@@ -586,6 +619,127 @@ int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
     for (const auto& id : ids)
         n += store::SqliteStatementStore(conn).forget(id, tenant, now_iso);
     return n;
+}
+
+ClearTenantOutcome clear_tenant(persistence::SqliteAdapter& adapter,
+                                std::string_view tenant_id,
+                                vector::VectorIndex* index) {
+    if (tenant_id.empty()) {
+        throw std::invalid_argument("clear_tenant: tenant_id must be nonempty");
+    }
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
+
+    struct Step {
+        const char* table;
+        const char* sql;   // 恰一个参数 ?1 = tenant_id
+    };
+    // 顺序即外键依赖:子表先于父表(episodic_events→statements、
+    // source_documents→engrams、extraction_attempt→governance_pipeline_run)。
+    // idempotency_inbox 无租户列,按本租户事件的幂等键删,故须排在 bus_events 之前。
+    // 新增租户作用域表必须加进来——ClearTenant.CoversEveryTenantScopedTable 会拦。
+    static constexpr std::array kSteps{
+        Step{.table = "episodic_events", .sql = "DELETE FROM episodic_events WHERE tenant_id=?1"},
+        Step{.table = "source_documents", .sql = "DELETE FROM source_documents WHERE tenant_id=?1"},
+        Step{.table = "extraction_attempt",
+             .sql = "DELETE FROM extraction_attempt WHERE pipeline_run_id IN "
+             "(SELECT id FROM governance_pipeline_run WHERE tenant_id=?1)"},
+        Step{.table = "governance_pipeline_run",
+             .sql = "DELETE FROM governance_pipeline_run WHERE tenant_id=?1"},
+        Step{.table = "idempotency_inbox",
+             .sql = "DELETE FROM idempotency_inbox WHERE idempotency_key IN "
+             "(SELECT idempotency_key FROM bus_events WHERE tenant_id=?1)"},
+        Step{.table = "bus_events", .sql = "DELETE FROM bus_events WHERE tenant_id=?1"},
+        Step{.table = "statement_vectors",
+             .sql = "DELETE FROM statement_vectors WHERE tenant_id=?1"},
+        Step{.table = "statement_edges", .sql = "DELETE FROM statement_edges WHERE tenant_id=?1"},
+        Step{.table = "statements", .sql = "DELETE FROM statements WHERE tenant_id=?1"},
+        Step{.table = "engrams", .sql = "DELETE FROM engrams WHERE tenant_id=?1"},
+        Step{.table = "commitment_protection",
+             .sql = "DELETE FROM commitment_protection WHERE tenant_id=?1"},
+        Step{.table = "commitment_triggers",
+             .sql = "DELETE FROM commitment_triggers WHERE tenant_id=?1"},
+        Step{.table = "commitments", .sql = "DELETE FROM commitments WHERE tenant_id=?1"},
+        Step{.table = "common_ground", .sql = "DELETE FROM common_ground WHERE tenant_id=?1"},
+        Step{.table = "grounding_acts", .sql = "DELETE FROM grounding_acts WHERE tenant_id=?1"},
+        Step{.table = "containers", .sql = "DELETE FROM containers WHERE tenant_id=?1"},
+        Step{.table = "perception_state", .sql = "DELETE FROM perception_state WHERE tenant_id=?1"},
+        Step{.table = "proj_commitment_due",
+             .sql = "DELETE FROM proj_commitment_due WHERE tenant_id=?1"},
+        Step{.table = "proj_common_ground",
+             .sql = "DELETE FROM proj_common_ground WHERE tenant_id=?1"},
+        Step{.table = "proj_entity_statement",
+             .sql = "DELETE FROM proj_entity_statement WHERE tenant_id=?1"},
+        Step{.table = "proj_holder_state_time",
+             .sql = "DELETE FROM proj_holder_state_time WHERE tenant_id=?1"},
+        Step{.table = "proj_holder_subgraph",
+             .sql = "DELETE FROM proj_holder_subgraph WHERE tenant_id=?1"},
+        Step{.table = "proj_salience_hot",
+             .sql = "DELETE FROM proj_salience_hot WHERE tenant_id=?1"},
+        Step{.table = "proj_vector_payload",
+             .sql = "DELETE FROM proj_vector_payload WHERE tenant_id=?1"},
+        Step{.table = "reconsolidation_pending_evidence",
+             .sql = "DELETE FROM reconsolidation_pending_evidence WHERE window_tenant_id=?1"},
+        Step{.table = "reconsolidation_windows",
+             .sql = "DELETE FROM reconsolidation_windows WHERE tenant_id=?1"},
+        Step{.table = "tom_depth_estimator_cache",
+             .sql = "DELETE FROM tom_depth_estimator_cache WHERE tenant_id=?1"},
+        Step{.table = "cognizer_frontier_facts",
+             .sql = "DELETE FROM cognizer_frontier_facts WHERE tenant_id=?1"},
+        Step{.table = "cognizer_presence_log",
+             .sql = "DELETE FROM cognizer_presence_log WHERE tenant_id=?1"},
+        Step{.table = "cognizer_relations",
+             .sql = "DELETE FROM cognizer_relations WHERE tenant_id=?1"},
+        // 二阶 ToM 依赖 self 认知体(lookup_self),只删其他认知体。
+        Step{.table = "cognizers",
+             .sql = "DELETE FROM cognizers WHERE tenant_id=?1 AND kind<>'self'"},
+        // 梦境日志。tenant_id 可空:单租户批次记租户;跨租户批次与迁移 0036 之前的旧行
+        // 为 NULL,无法归属。NULL 行只在库里已没有任何其他租户的数据时才跟着删——否则
+        // 会误删别的租户的账本。「其他租户有数据」以 statements/engrams 为准(账本本身
+        // 不算,它是被清理的对象)。
+        Step{.table = "replay_ledger",
+             .sql = "DELETE FROM replay_ledger WHERE tenant_id=?1 OR (tenant_id IS NULL AND NOT "
+             "EXISTS (SELECT 1 FROM engrams WHERE tenant_id<>?1) AND NOT EXISTS "
+             "(SELECT 1 FROM statements WHERE tenant_id<>?1))"},
+    };
+
+    auto& conn = adapter.connection();
+    ClearTenantOutcome out;
+    std::vector<std::string> vector_ids;   // 外部索引要逐条 remove 的 id,删前快照
+    {
+        persistence::TransactionGuard transaction(conn);
+        if (index != nullptr) {
+            persistence::Stmt select_ids(
+                conn.raw(), "SELECT stmt_id FROM statement_vectors WHERE tenant_id=?1");
+            select_ids.bind(tenant_id);
+            while (select_ids.step_row()) {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                const auto* stmt_id = reinterpret_cast<const char*>(
+                    sqlite3_column_text(select_ids.raw(), 0));
+                if (stmt_id != nullptr) { vector_ids.emplace_back(stmt_id); }
+            }
+        }
+        for (const auto& step : kSteps) {
+            persistence::Stmt del(conn.raw(), step.sql);
+            del.bind(tenant_id);
+            del.step_done();
+            const std::int64_t changed = sqlite3_changes64(conn.raw());
+            out.deleted[step.table] = changed;
+            out.total += changed;
+        }
+        transaction.commit();
+    }
+    // 外部索引非事务性:只在 SQLite 提交后动它,回滚时不会出现「行在、向量没了」。
+    if (index != nullptr) {
+        for (const auto& stmt_id : vector_ids) {
+            try {
+                index->remove(conn, stmt_id, tenant_id);
+                ++out.vectors_removed;
+            } catch (const std::exception&) {
+                ++out.vector_remove_failed;
+            }
+        }
+    }
+    return out;
 }
 
 int approve_review(persistence::SqliteAdapter& adapter, std::string_view tenant,
