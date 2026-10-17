@@ -705,4 +705,4 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 
 ## 2026-10-17 第 8 类投影与 FTS5 能力（计划，未实现）
 
-计划新增 `engram_chunks` 投影（含 FTS5 外部内容表 `engram_chunks_fts` 与 `chunk_vectors`），可由 engrams 全量重建并走 repair guard；`VectorIndex` 增 chunk 命名空间（主键前缀与 statement 隔离）；`ProfileCapability` 增 `lexical_fts5`，缺失时词法 lane 降级为 degraded_paths，不阻断 preflight。chunk 是 Projection，不是事实源。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+计划新增 `engram_chunks` 投影与 `chunk_vectors`（P1），可由 engrams 全量重建并走 repair guard；`VectorIndex` 增 chunk 命名空间（主键前缀与 statement 隔离）；待嵌入队列抽成按 kind 分发的泛型接口，chunk 不做模式分离。FTS5 词法表属 P2：CMake 只要求 SQLite ≥3.46 而不检测 `SQLITE_ENABLE_FTS5`，且 `CREATE VIRTUAL TABLE ... USING fts5` 在迁移期就会失败，故须先加构建期检测，缺失时不创建虚表，并在 `ProfileCapability` 增 `lexical_fts5`。chunk 是 Projection，不是事实源。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。

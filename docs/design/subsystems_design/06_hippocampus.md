@@ -407,6 +407,6 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 
 本轮本地验证已通过，真实同输入验收与扩大评测尚待完成；不把测试结果当QA增益。完整设计与当前证据见[R5.6中文设计](../../superpowers/specs/2026-09-25-socialmem-r56-bounded-claim-design.md)，历史评测继续按各自冻结核心解释。
 
-## 2026-10-17 chunk 投影与 VOLATILE 可召回策略（计划，未实现）
+## 2026-10-17 chunk 投影与 VOLATILE 可见性（计划，未实现）
 
-计划让左脑 lane 召回 VOLATILE 事实 Statement（按 `volatile_penalty` 降权），右脑 lane 仍只取 consolidated/archived，六态机本身不变。这是对 CLS“海马体记忆可即时回忆但未皮层化”的实现偏差修正：现状实测约 13.5% 语句对检索可见。chunk 投影不经 VOLATILE 状态。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+P1 的左脑 chunk 投影是 Engram 的只读投影，不经 VOLATILE 状态，因而不触及六态机与“检索只看 consolidated/archived”的现有规则。现状诊断仍成立：statement 出生 VOLATILE 而检索只取 consolidated/archived，实测约 13.5% 语句对检索可见；如何处置该偏差（例如让左脑事实 Statement 在召回时可见并降权）随 P2 事实层一并设计，P1 不引入。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。

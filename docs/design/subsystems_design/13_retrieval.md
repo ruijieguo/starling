@@ -664,4 +664,4 @@ R6.7已完成文档、RED、实现及评测：13项新增原生反例包含在13
 
 ## 2026-10-17 双脑检索设计入口（计划，未实现）
 
-计划在 RetrievalPlanner 新增 `engram_chunks` 与 `lexical_index` 两个 scope、`PlannerQuery.lanes`（auto/right/left/both）、跨 lane RRF（k=60）和 Context Pack 第 9 标签 `[SOURCE]`（原文加 observed_at）。perspective mask 仍先于融合；四个弃答条件不变，`max_score` 取融合后最高分；右脑 8 标签与现有 lane 语义不变。ObserverRetriever 评测专用路径不动。本段描述计划，不代表已经实现或获得新分数。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+计划在 RetrievalPlanner 新增 `engram_chunks` scope（P1）、`PlannerQuery.lanes`（auto/right/left/both）与 `allowed_holders`、类型化候选（statement 与 chunk 各有 identity，不再共用 statement 形状）、跨 lane RRF（k=60）和 Context Pack 第 9 标签 `[SOURCE]`（原文加 observed_at）。chunk 授权在话轮粒度，perspective 可见性用类型化 join 在候选生成处下推并先于排序；右脑现有的 `evidence_json` 子串 mask 不动。四个弃答条件不变，`max_score` 取融合后最高分；右脑 8 标签与现有 lane 语义不变。`lexical_index`（FTS5）、查询改写与当前态/历史态策略属 P2。另有既有缺陷须先修：HISTORY 沿 supersedes 补链处跳过所有未取到的邻居（`retrieval_planner.cpp` fetch_graph_supersedes）。ObserverRetriever 评测专用路径不动。本段描述计划，不代表已经实现或获得新分数。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。

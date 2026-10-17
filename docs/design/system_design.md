@@ -2664,4 +2664,4 @@ R6.7已完成文档、RED、实现及评测：13项新增原生反例包含在13
 
 ## 2026-10-17 双脑记忆设计入口（计划，未实现）
 
-在不改 Statement 本体、Bus 单入口、六态机、Reconsolidation 不覆盖、perspective filter 位序的前提下，计划增设**左脑（通用记忆）**通道：Engram 的投影层（话轮级 chunk、FTS5 词法、chunk 向量）加可开关的开放谓词事实层，与现有社会心智通道（**右脑**，本文各节所述全部子系统）共享 Engram、Bus、Replay、Governance，并在 RetrievalPlanner 的 fuse 步跨 lane 融合。§2.4 子系统清单与 12 个子系统文档的现行语义不变；落地时本节所指内容逐项并入对应子系统文档。本段描述计划，不代表已经实现或获得新分数。设计见[双脑记忆设计](../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+在不改 Statement 本体、Bus 单入口、六态机、Reconsolidation 不覆盖、perspective filter 位序的前提下，计划增设**左脑（通用记忆）**通道：Engram 的只读投影层（话轮级 chunk 与 chunk 向量，P1），其后才是词法 lane、查询改写与开放谓词事实层（P2，P1 有实测增益才启动）。左脑与现有社会心智通道（**右脑**，本文各节所述全部子系统）共享 Engram、Bus、Replay、Governance，并在 RetrievalPlanner 的 fuse 步跨 lane 融合。§2.4 子系统清单与 12 个子系统文档的现行语义不变；落地时本节所指内容逐项并入对应子系统文档。本段描述计划，不代表已经实现或获得新分数。设计（v2，已按第三方评审修订）见[双脑记忆设计](../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
