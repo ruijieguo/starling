@@ -2,10 +2,10 @@ import { getToken } from './token';
 import { wsConn } from './health';
 
 /**
- * 广播 /ws 的事件词表 —— 与后端一一对应:routes/commands.py 的六处 _broadcast
+ * 广播 /ws 的事件词表 —— 与后端一一对应:routes/commands.py 的七种 _broadcast
  * (statement_added / statement_forgotten / recall / tick / commitment_fired /
- * commitment_transition)+ app.py 后台循环的 tick + converse 流完结后补广播的
- * statement_added。lib/feed.ts 的 switch 也正好覆盖这六种。
+ * commitment_transition / memory_cleared)+ app.py 后台循环的 tick + converse 流
+ * 完结后补广播的 statement_added。lib/feed.ts 的 switch 也正好覆盖这七种。
  *
  * 收窄为联合类型而非 string:页面里的事件名字面量此前完全不受 svelte-check 校验,
  * 打错一个字母就是静默失效且三门全绿(T8 review M3)。注意 /ws/converse 是另一条
@@ -17,7 +17,8 @@ export const WS_EVENT_TYPES = [
 	'statement_forgotten',
 	'recall',
 	'commitment_transition',
-	'commitment_fired'
+	'commitment_fired',
+	'memory_cleared'
 ] as const;
 export type WsEventType = (typeof WS_EVENT_TYPES)[number];
 

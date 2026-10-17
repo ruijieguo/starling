@@ -213,6 +213,52 @@ TEST(ReplayScheduler, TickOnline_SamplingOnThirdCall) {
         1);
 }
 
+// ── 账本租户归属(迁移 0036):单租户批次记租户,跨租户批次记 NULL ──
+
+std::string ledger_tenant(sqlite3* db, const std::string& batch_id) {
+    sqlite3_stmt* s = nullptr;
+    const std::string q = "SELECT COALESCE(tenant_id,'<NULL>') FROM replay_ledger "
+                          "WHERE replay_batch_id='" + batch_id + "'";
+    sqlite3_prepare_v2(db, q.c_str(), -1, &s, nullptr);
+    std::string out = "<missing>";
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        out = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    }
+    sqlite3_finalize(s);
+    return out;
+}
+
+TEST(ReplayScheduler, LedgerRecordsTenantForSingleTenantBatch) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+    seed_volatile(c.raw(), "t1", "2026-05-27T00:00:00Z", 0.9, 0, "user_input", "acme");
+    seed_volatile(c.raw(), "t2", "2026-05-27T00:00:00Z", 0.8, 0, "user_input", "acme");
+    ReplayScheduler sched(*a);
+
+    sched.tick_online(c, "2026-05-27T10:00:00Z");
+    sched.tick_online(c, "2026-05-27T10:00:01Z");
+    const auto stats = sched.tick_online(c, "2026-05-27T10:00:02Z");
+
+    ASSERT_FALSE(stats.replay_batch_id.empty());
+    EXPECT_EQ(ledger_tenant(c.raw(), stats.replay_batch_id), "acme");
+}
+
+TEST(ReplayScheduler, LedgerTenantIsNullWhenBatchSpansTenants) {
+    auto a = SqliteAdapter::open(":memory:");
+    auto& c = a->connection();
+    seed_volatile(c.raw(), "t1", "2026-05-27T00:00:00Z", 0.9, 0, "user_input", "acme");
+    seed_volatile(c.raw(), "t2", "2026-05-27T00:00:00Z", 0.9, 0, "user_input", "other");
+    ReplayScheduler sched(*a);
+
+    sched.tick_online(c, "2026-05-27T10:00:00Z");
+    sched.tick_online(c, "2026-05-27T10:00:01Z");
+    const auto stats = sched.tick_online(c, "2026-05-27T10:00:02Z");
+
+    ASSERT_FALSE(stats.replay_batch_id.empty());
+    // 一个批次无法归属单个租户 → NULL,而不是随便挑一个。
+    EXPECT_EQ(ledger_tenant(c.raw(), stats.replay_batch_id), "<NULL>");
+}
+
 // ── Test 5: run_decay → consolidated old/low-salience stmt archived + event emitted ──
 //           + duplicate candidate id only archived once
 

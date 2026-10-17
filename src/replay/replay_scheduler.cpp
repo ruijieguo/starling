@@ -230,16 +230,20 @@ std::vector<StmtRow> sample_volatile(sqlite3* db, int limit, std::string_view no
 }
 
 // Write a replay_ledger row
+// tenant_id:批次只涉及一个租户时记该租户,跨租户批次记 NULL(无法归属单个租户;
+// 设置页清空租户时 NULL 行的处理见 memoryops::clear_tenant)。
 void write_ledger(sqlite3* db,
                   std::string_view batch_id,
                   std::string_view mode,
                   int sampled_count,
                   std::string_view ops_json,
-                  std::string_view now_iso) {
+                  std::string_view now_iso,
+                  const std::optional<std::string>& tenant_id) {
     const char* sql =
         "INSERT INTO replay_ledger"
-        "(replay_batch_id, mode, sampled_count, ops_applied_json, started_at, finished_at)"
-        " VALUES(?,?,?,?,?,?)";
+        "(replay_batch_id, mode, sampled_count, ops_applied_json, started_at, finished_at,"
+        " tenant_id)"
+        " VALUES(?,?,?,?,?,?,?)";
     sqlite3_stmt* raw = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK)
         throw make_sqlite_error(db, "write_ledger: prepare");
@@ -250,6 +254,11 @@ void write_ledger(sqlite3* db,
     bind_sv(h.get(), 4, ops_json);
     bind_sv(h.get(), 5, now_iso);
     bind_sv(h.get(), 6, now_iso);
+    if (tenant_id.has_value()) {
+        bind_sv(h.get(), 7, *tenant_id);
+    } else {
+        sqlite3_bind_null(h.get(), 7);
+    }
     if (sqlite3_step(h.get()) != SQLITE_DONE)
         throw make_sqlite_error(db, "write_ledger: step");
 }
@@ -384,8 +393,12 @@ ReplayStats do_compress_and_emit(
     std::ostringstream ops_json;
     ops_json << "{\"compress\":" << stats.compressed
              << ",\"gist_candidates\":" << stats.gist_candidates << "}";
+    // 压缩批与 NORM 种子的并集只落在一个租户上才能把该批次归属给它。
+    const std::optional<std::string> ledger_tenant =
+        seed_by_tenant.size() == 1 ? std::optional<std::string>(seed_by_tenant.begin()->first)
+                                   : std::nullopt;
     write_ledger(conn.raw(), stats.replay_batch_id, mode,
-                 stats.sampled, ops_json.str(), now_iso);
+                 stats.sampled, ops_json.str(), now_iso, ledger_tenant);
 
     return stats;
 }

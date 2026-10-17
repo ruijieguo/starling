@@ -197,7 +197,9 @@ def replay(db_path: str, tenant: str) -> dict:
             conn,
             "SELECT replay_batch_id, mode, sampled_count, ops_applied_json, "
             "started_at, finished_at "
-            "FROM replay_ledger ORDER BY started_at DESC LIMIT 100",
+            "FROM replay_ledger WHERE tenant_id=? OR tenant_id IS NULL "
+            "ORDER BY started_at DESC LIMIT 100",
+            (tenant,),
         )
         windows = _rows(
             conn,
@@ -388,7 +390,8 @@ def brain_map(db_path: str, tenant: str) -> dict:
              "count": n("SELECT COUNT(*) FROM commitments WHERE tenant_id=?", (tenant,))},
             {"key": "consolidation", "label": "睡眠与固化", "region": "回放",
              "href": "/replay", "dormant": False,
-             "count": n("SELECT COUNT(*) FROM replay_ledger")},
+             "count": n("SELECT COUNT(*) FROM replay_ledger "
+                        "WHERE tenant_id=? OR tenant_id IS NULL", (tenant,))},
             {"key": "lens", "label": "透视镜", "region": None,
              "href": "/lens", "count": None, "dormant": False},  # 片 3 已落地(来源取证)
             {"key": "vitals", "label": "生命体征", "region": "脑干",
@@ -1131,13 +1134,14 @@ def metrics_gist_quality(db_path: str, tenant: str, since_iso: str, bucket_s: in
     since 过滤按解析后的时间值比较(_parse_iso),不做字典序 SQL WHERE——replay_ledger.
     started_at / statements.created_at 与其他表一样,整秒 since 对带微秒的存量值在同一
     墙钟秒内字典序会误判(同类 bug 已在 metrics_embed_depth 修过,见 _parse_iso
-    docstring)。replay_ledger 无 tenant_id 列(镜像 metrics_latency 对 extraction_attempt
-    的处理),故只有 consolidation_abstract statements 按 tenant 过滤。
+    docstring)。replay_ledger.tenant_id 可空(迁移 0036):单租户批次记租户,跨租户批次与
+    迁移前的旧行为 NULL、无法归属——读取时「本租户 或 NULL」都算,与迁移前的口径一致。
     """
     since_dt = _parse_iso(since_iso)
     with open_ro(db_path) as conn:
         led = _rows(conn, "SELECT ops_applied_json, started_at FROM replay_ledger "
-                          "ORDER BY started_at")
+                          "WHERE tenant_id=? OR tenant_id IS NULL ORDER BY started_at",
+                    (tenant,))
         gists = _rows(conn, "SELECT confidence, derived_from_json, consolidation_summary, "
                             "created_at FROM statements WHERE tenant_id=? AND "
                             "provenance='consolidation_abstract' ORDER BY created_at",

@@ -40,7 +40,9 @@ struct RememberOutcome {
     std::string holder_id;
     std::string engram_ref;                   // 空 = 未入库(no_store/rejected)
     std::vector<std::string> statement_ids;   // 本次新写入的语句
-    std::string outcome;                      // accepted/idempotent/no_store/rejected
+    std::string outcome;                      // accepted/idempotent/no_store/rejected/
+                                              // source_missing(prepare 后证据 engram 已被
+                                              // clear_tenant 删除,commit 零写入)
     bool extraction_failed = false;           // 证据已入库但抽取 LLM 失败(Extractor
                                               // 吞失败返回 FAILED 而非抛异常)——供
                                               // converse 区分「抽取失败」与「抽取空」。
@@ -98,6 +100,8 @@ extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter& adapter,
 // 相位 3(锁内短):require_write_admission(捕中途转 DRAINING)+ Extractor::persist
 // (txn 写 statements/attempt/events)+ 写后泵。should_extract=false 时直接回
 // prepared 的 outcome/engram_ref(no_store/rejected 短路,不 persist、不泵)。
+// prepare 与 commit 之间(锁外抽取段)若租户被 clear_tenant 清空,证据 engram 已不
+// 存在:回 outcome="source_missing" 且零写入,绝不写出证据悬空的语句。
 RememberOutcome remember_commit(persistence::SqliteAdapter& adapter,
                                 extractor::LLMAdapter& llm,
                                 const RememberParams& params,
@@ -277,6 +281,28 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
 // P3.b2:逻辑删除一批 statements(→forgotten),返回实际转换计数。
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso);
+
+// 清空单个租户的全部记忆(dashboard 设置页「危险区」)。与 forget 不同,这是物理删除:
+// 单事务删掉该租户所有租户作用域行(engram/语句/事件/向量/投影/边/承诺/共同基础/
+// 再巩固窗/认知体关系/梦境日志等),保留 kind='self' 的认知体(二阶 ToM 依赖 self)。
+// 全局表(迁移记录、出箱序号、订阅者游标)不动——它们不属于任何租户,且游标只会前进,
+// 新事件序号总比游标大,清空后各订阅者照常工作。其他租户零影响。
+// 梦境日志(replay_ledger.tenant_id,迁移 0036,可空):删本租户的行;跨租户批次与旧行
+// 的 tenant_id 为 NULL,仅在库里已无其他租户数据时才一并删除,否则保留。
+// 门前抛 WriteGateRejected(零写);tenant_id 为空抛 std::invalid_argument。
+// index:向量不在 SQLite 里的后端(zvec HNSW collection)传入,事务提交后逐条
+// best-effort remove;SQLite blob 后端传 nullptr(向量就是 statement_vectors 行,
+// 已随事务删除)。remove 失败只计数不抛——SQLite 已清空,残留向量会被检索的 SQL
+// 精过滤(JOIN statements)滤掉,不可见,只占空间。
+struct ClearTenantOutcome {
+    std::map<std::string, std::int64_t> deleted;   // 表名 → 删除行数(每张表都有键,含 0)
+    std::int64_t total = 0;
+    std::int64_t vectors_removed = 0;              // index 非空时成功 remove 的条数
+    std::int64_t vector_remove_failed = 0;
+};
+ClearTenantOutcome clear_tenant(persistence::SqliteAdapter& adapter,
+                                std::string_view tenant_id,
+                                vector::VectorIndex* index = nullptr);
 
 // 片 6 干预集:人工审批 review_requested → approved(守卫幂等、tenant-scoped),返回转换计数(0/1)。
 // reject 不在此 —— reject = forget(→forgotten 终态)。

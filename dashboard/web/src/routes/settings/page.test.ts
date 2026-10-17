@@ -137,3 +137,62 @@ describe('设置页:配置加载门(数据丢失防线)', () => {
 		expect(saveButton(container)!.disabled, '重试成功后应解除禁用').toBe(false);
 	});
 });
+
+// 危险区是物理删除且不可恢复:钉住「手输租户名 + 确认框」两道闸,以及请求体形状
+// (后端按 confirm === 当前租户名再校验一次)。
+describe('设置页:危险区(清空记忆)', () => {
+	const CONFIG_T = { ...CONFIG, tenant: 'default' };
+	const confirmInput = (c: HTMLElement) =>
+		c.querySelector('#clear-confirm') as HTMLInputElement | null;
+
+	beforeEach(() => {
+		get.mockReset();
+		post.mockReset();
+	});
+
+	it('没手输正确的租户名之前,清空按钮禁用', async () => {
+		get.mockResolvedValue(CONFIG_T);
+		const { container } = render(Settings);
+		await settle();
+
+		const btn = byText(container, '清空记忆');
+		expect(btn, '加载成功后应当渲染危险区').toBeTruthy();
+		expect(btn!.disabled).toBe(true);
+
+		await fireEvent.input(confirmInput(container)!, { target: { value: 'defaul' } });
+		await settle();
+		expect(byText(container, '清空记忆')!.disabled, '差一个字也不放行').toBe(true);
+		expect(post).not.toHaveBeenCalled();
+	});
+
+	it('手输租户名并在确认框里确认后,才 POST /api/clear_memory', async () => {
+		get.mockResolvedValue(CONFIG_T);
+		post.mockResolvedValue({ tenant: 'default', total: 12, spool_discarded: 0, deleted: {} });
+		const { container } = render(Settings);
+		await settle();
+
+		await fireEvent.input(confirmInput(container)!, { target: { value: 'default' } });
+		await settle();
+		const btn = byText(container, '清空记忆')!;
+		expect(btn.disabled).toBe(false);
+		await fireEvent.click(btn);
+		await settle();
+		expect(post, '点按钮只弹确认框,不直接清空').not.toHaveBeenCalled();
+
+		// ConfirmDialog 走 bits-ui Portal,渲染在 document.body。
+		const confirm = byText(document.body, '确认清空');
+		expect(confirm, '应当弹出确认框').toBeTruthy();
+		await fireEvent.click(confirm!);
+		await settle();
+		expect(post).toHaveBeenCalledTimes(1);
+		expect(post.mock.calls[0][0]).toBe('/api/clear_memory');
+		expect(post.mock.calls[0][1]).toEqual({ confirm: 'default' });
+	});
+
+	it('配置加载失败时不渲染危险区(不知道租户名就无从确认)', async () => {
+		get.mockRejectedValue(new Error('401 unauthorized'));
+		const { container } = render(Settings);
+		await settle();
+		expect(byText(container, '清空记忆')).toBeUndefined();
+	});
+});

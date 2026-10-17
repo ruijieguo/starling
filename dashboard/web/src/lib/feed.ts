@@ -13,6 +13,7 @@
 //   commitment_fired       {fired: number}             commands.py:159
 //   commitment_transition  {stmt_id, state}            commands.py:214,226
 //   statement_forgotten    {forgotten: number}         commands.py:174
+//   memory_cleared         {tenant, total, spool_discarded}  commands.py clear_memory
 //
 // 未知类型/缺字段/脏 payload 一律优雅回退(只读面板,不因后端加事件或改 payload 而崩)。
 // 原则:宁可少说,不断言——无法确认时给空细节,不编造「空转」之类的结论。
@@ -147,6 +148,19 @@ export function describeEvent(type: string, payload: unknown): FeedEventView {
 		case 'statement_forgotten': {
 			const n = num(p.forgotten);
 			return { label: '遗忘', detail: n === null ? '' : `${n} 条移出检索`, tone: 'danger' };
+		}
+		case 'memory_cleared': {
+			// 设置页「危险区」:物理清空当前租户。total 是删除的行数(跨所有表),
+			// spool_discarded 是移进 discarded/ 的待摄入会话数(0 时不提)。
+			const total = num(p.total);
+			const discarded = num(p.spool_discarded);
+			const detail = [
+				total === null ? '' : `删除 ${total} 行`,
+				discarded ? `丢弃 ${discarded} 个待摄入会话` : ''
+			]
+				.filter(Boolean)
+				.join(' · ');
+			return { label: '清空记忆', detail, tone: 'danger' };
 		}
 		default:
 			// 后端新增事件类型时不崩:显示原类型名,细节留空。

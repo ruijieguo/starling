@@ -586,6 +586,23 @@ void bind_13_memory_ops(pybind11::module_& m) {
           },
           py::arg("adapter"), py::arg("tenant"), py::arg("ids"), py::arg("now_iso"));
 
+    // 设置页「危险区」:单事务物理清空一个租户的全部记忆(保留 kind='self' 认知体)。
+    // 门前抛 WriteGateRejected(零写);空 tenant 抛 ValueError。index 只给向量存在
+    // SQLite 之外的后端(zvec);None = 不碰外部索引。
+    m.def("memory_clear_tenant",
+          [](starling::persistence::SqliteAdapter& adapter, const std::string& tenant,
+             starling::vector::VectorIndex* index) {
+              starling::memoryops::ClearTenantOutcome out;
+              {
+                  py::gil_scoped_release release;
+                  out = starling::memoryops::clear_tenant(adapter, tenant, index);
+              }
+              return py::dict("deleted"_a = out.deleted, "total"_a = out.total,
+                              "vectors_removed"_a = out.vectors_removed,
+                              "vector_remove_failed"_a = out.vector_remove_failed);
+          },
+          py::arg("adapter"), py::arg("tenant"), py::arg("index") = py::none());
+
     // 片 6 干预集:人工审批 review_requested → approved(守卫幂等、tenant-scoped)。
     // 返回转换计数(1=已批准,0=非 review_requested 行 no-op)。reject 不在此(=memory_forget)。
     m.def("memory_approve_review",

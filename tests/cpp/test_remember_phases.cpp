@@ -163,6 +163,31 @@ TEST(RememberPhases, CommitAllRollsBackEarlierChannelsWhenLaterChannelFails) {
     EXPECT_EQ(row_count(pa->connection(), "episodic_events"), 0);
 }
 
+TEST(RememberPhases, CommitAllIsNoOpWhenTenantClearedDuringExtract) {
+    // 锁外抽取期间设置页清空了租户:prepare 写的 engram 已不在,commit 必须零写入
+    // 返回 source_missing,而不是写出证据悬空的语句。
+    auto pa = make_adapter();
+    extractor::FakeLLMAdapter pllm;
+    pllm.set_default_response(ok_json());
+    const auto p = rp("hi bob");
+    const auto prepared = remember_prepare(*pa, p);
+    ASSERT_TRUE(prepared.should_extract);
+    const RememberPrompts prompts{.belief = "{convo}", .episodic = "{passage}",
+                                  .general_fact = "{convo}"};
+    const auto extracted = remember_extract_all(*pa, pllm, p, prompts);
+
+    (void)clear_tenant(*pa, p.tenant_id);   // 抽取期间被清空
+
+    const auto out = remember_commit_all(*pa, pllm, p, prepared, extracted);
+    EXPECT_EQ(out.outcome, "source_missing");
+    EXPECT_TRUE(out.engram_ref.empty());
+    EXPECT_TRUE(out.statement_ids.empty());
+    EXPECT_FALSE(out.extraction_failed);
+    EXPECT_EQ(row_count(pa->connection(), "statements"), 0);
+    EXPECT_EQ(row_count(pa->connection(), "engrams"), 0);
+    EXPECT_EQ(row_count(pa->connection(), "governance_pipeline_run"), 0);
+}
+
 TEST(RememberPhases, CoreExpandsAllRememberPromptsBeforeLlmCalls) {
     auto adapter = make_adapter();
     RecordingLLMAdapter llm;
