@@ -410,3 +410,5 @@ R4.6 暴露了同一来源多条 claim 覆盖和第一人称信念无法进入�
 ## 2026-10-17 chunk 投影与 VOLATILE 可见性（计划，未实现）
 
 P1 的左脑 chunk 投影是 Engram 的只读投影，不经 VOLATILE 状态，因而不触及六态机与“检索只看 consolidated/archived”的现有规则。现状诊断仍成立：statement 出生 VOLATILE 而检索只取 consolidated/archived，实测约 13.5% 语句对检索可见；如何处置该偏差（例如让左脑事实 Statement 在召回时可见并降权）随 P2 事实层一并设计，P1 不引入。本段描述计划，不代表已经实现。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+
+**2026-10-18 更新：时间语义现状**。chunk 投影暂缓。三个抽取通道的语句时间语义不同：默认路径（声明合同关闭）下 belief 与 general_fact 语句的 `observed_at` 是写入时钟（`json_parser.cpp`），与传入的 `created_at` 无关；episodic 语句的 `observed_at` 是调用方传入的时间，`event_time_start` 存原文时间短语。Dashboard 转录摄入丢弃话轮时间戳并以当前时间调 `remember`。计划改为类型化时间来源：报告时间、事件时间、有效期分开，各带来源与精度，在 API 边界确定，只渲染可信时间。是否实现、落在哪条路径，由评测侧实验决定。本段描述计划，不代表已经实现。见[召回带时间：评测先行](../../superpowers/specs/2026-10-18-temporal-recall-rendering-design.md)。
