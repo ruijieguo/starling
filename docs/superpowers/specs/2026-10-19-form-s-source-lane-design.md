@@ -36,6 +36,13 @@ E2 oracle 诊断给出：带日期原文 95.6% vs 带日期三元组 23.0%，决
 - Q4：查询改写与多跳（P2 立项）与形态 S 的关系——LoCoMo multi-hop 51.4% / open-domain 37.0% 说明检索本身有缺口，S 只解决"行取到之后怎么渲染"，解决不了"行取不到"。
 - Q5：写入侧。现有 Dashboard 摄入走 `memory_remember_all`（抽取成语句），**不写 source_documents**；要让原文通道持续有货，摄入必须同时调 `retain_source_turns`。这是形态 S 真正的改动面，也是它最大的成本项。
 
+### Q5 的代码落点（2026-10-19 核实）
+
+- 调用点唯一：`python/starling/dashboard/engine.py:892`，摄入 worker 内 `for chunk in chunks: self.remember(chunk, ...)`。形态 S 要在这个循环里增加一次 `retain_source_turns`。
+- 话轮结构已经现成：同一函数上方的 `chunk_dialogue(clean_turns(lines))` 里，`clean_turns` 返回 `[(role, text)]`，speaker 保留，可直接映射为 source unit 的 `speaker`。
+- **但时间没有**：`clean_turns` 只取 `role` 与 `text`，transcript 事件本身不带时间戳。`retain_source_turns` 要求 `created_at` 为显式 UTC，unit 的 `observed_at` 缺失则 `time_status=unknown`、默认被检索过滤（`include_unknown_time=false`）。因此在摄入侧，**要么全部填摄入时刻（ingest clock）**——这是诚实的来源，但会把"三天前说过的话"标成"今天"；**要么留空并接受这些原文不可召回**。两者都需要用户在设计评审时裁定，不能默认选一个。
+- 一条重要边界：这与本设计"只渲染可信时间"的硬约束直接冲突。若摄入侧只能提供 ingest clock，那么形态 S 在**生产**里拿不到评测臂那种"会话真实日期"，因为评测数据集的日期是数据集自带的，生产 transcript 没有。这是形态 S 最大的可行性风险，比 BM25-vs-向量那一条更根本。
+
 ## 5. 边界
 
 遵守 C++/Python 边界裁定：检索、融合、渲染全在 C++；Python 只做开关透传与 DTO 构造。不新建投影表（E2 已证明 chunk 层不是瓶颈）。不改六态机与 §0.1 吸收原则。
