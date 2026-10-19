@@ -129,6 +129,19 @@ v2 规则：
 - **开放谓词事实层**（`general_fact_projector`）：保持 spec v1 的设计要点（单通道、`open_predicates`、`preserve_text_objects`、span_key 幂等），并补足 Codex 指出的缺口：supersede 回填 `valid_to` 需定义取值（新版 `observed_at`）、并发到达的两个更新如何定序、replay/rebuild 是否可复现同一区间历史；回填目前是合法的（migrations 0006/0007 的触发器不保护 `valid_to`），但是新的时间变更路径，需单独测试。
 - **`episode_gist`**：保持 v1 设计，推迟到事实层有增益之后。
 
+## P1 载体判读表（2026-10-19 预注册，待 [召回带时间](2026-10-18-temporal-recall-rendering-design.md) 的 top-20 与 E3 结果）
+
+P1 的载体有两个候选：**source lane**（现有 `retain_source_turns` + `ObserverRetriever`，见 [形态 S 草稿](2026-10-19-form-s-source-lane-design.md)）与 **`engram_chunks` 投影**（本文原方案，需新建表与向量命名空间）。下表在结果出来前固定，避免事后解释。
+
+| top-20 / E3 结果 | P1 载体 | 理由 |
+|---|---|---|
+| `S1 − T1` 区间下界 > 0，且 `S1 − S0` 下界 > 0 | **source lane**，不建 `engram_chunks` | 带日期原文在真实检索下仍胜出且日期有效；现有原语已覆盖写入/存储/检索/渲染，新建投影层是重复建设（§0.2 简单性）|
+| `S1 − T1` 成立但 `S1 − S0` 不成立 | source lane，但日期渲染降级为可选开关 | 路径 S 的增益不来自日期，说明是"原文优于三元组"本身；与 E1 的结论需重新解释 |
+| `S1 − T1` 不成立、`T1 − T0` 成立 | **回退路径 T**（类型化时间来源 + 三元组渲染），P1 载体另议 | 三元组可部署；`engram_chunks` 与 source lane 都不必要 |
+| 两者都不成立，且零语句题占比高 | 先修抽取与粒度，P1 暂停 | top-20 的 T 臂被粒度伪影污染，结论不可用于选型 |
+
+**与 E3 的关系**：若 E3 显示 k=10 与 k=20 的 S1 差距很小而上下文体积减半，则 source lane 的默认 `k` 取更小的值，但载体选择不因此改变。
+
 ## 评测与验收
 
 - **适配器**：`longmemeval_official`、`locomo_official`（cat5 排除但保留字段）；`beam` 在 P2 加。
