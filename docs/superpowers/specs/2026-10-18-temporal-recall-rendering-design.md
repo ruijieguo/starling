@@ -295,13 +295,13 @@ FULL 失败 5 行（4 次 SSL 错误、1 次输出截断），R2 2 行，R0 8 �
 
 **数据**：确认集 113 道时序题全部证据会话，去重后 248 段，2,858 个话轮，约 9e5 token 的原文。不灌整段 haystack（确认集整段共 84,098 个话轮，三通道各抽一次约 25 万次调用，超出开发预算）。
 
-**抽取路径（评测侧，B 方案）**：生产适配器目前无法关闭这个网关上的推理，按原样跑会得到“超时后的生产”，而不是“抽取正常工作时的生产”。E2 因此改为：保留生产的三份 prompt、`ExtractionConfig()` 默认值、Dashboard 的 `chunk_dialogue` 分块、`holder=self`、`created_at` 取会话真实日期，**但用评测侧脚本直接调用模型，请求体带 `thinking: {"type":"disabled"}`，再按生产的输出解析规则落盘**。Python 绑定里没有可继承的 `LLMAdapter`，所以评测侧不能把自己的适配器插进 `memory_remember_all`；这意味着 E2 不走 C++ 写入路径，语句的 `observed_at` 等字段要按代码行为在评测侧复现，复现处必须逐条对照 C++（`json_parser.cpp:159`、`episodic_extractor.cpp:227`）并写明。
+**抽取路径（评测侧，B 方案）**：生产适配器目前无法关闭这个网关上的推理，按原样跑会得到“超时后的生产”，而不是“抽取正常工作时的生产”。E2 因此改为：保留生产的三份 prompt、`ExtractionConfig()` 默认值、Dashboard 的 `chunk_dialogue` 分块、`holder=self`、`created_at` 取会话真实日期，**但用评测侧脚本直接调用模型，请求体带 `thinking: {"type":"disabled"}`，再按生产的输出解析规则落盘**。评测侧仍走 **C++ 的真实解析与写入路径**：先按 C++ 的拼接规则逐字节重建三个通道的 prompt（belief 与 general_fact 只替换第一个 `{convo}`，general_fact 先把全部 `{self}` 换成 holder，episodic 只替换第一个 `{passage}`），用生产请求体加 `thinking: {"type":"disabled"}` 调模型；再把原始回复按 prompt 的 sha256（与 C++ 传给适配器的哈希相同）装进 `FakeLLMAdapter`，由 `memory_remember_all` 完成解析、校验与写入。`FakeLLMAdapter` 的默认回复设为哨兵 `SENTINEL_MISS`：任何一个通道的 prompt 与重建版本差一个字节，C++ 就拿到哨兵并记为抽取失败，不会被当作成功。2026-10-19 在一个真实块上验证：三个通道各 3 到 6 秒、写出 6 条语句、未命中哨兵；阴性对照（给 general_fact 的 prompt 多加一个空格）得到 `extraction_failed=true`、`failure_detail=SENTINEL_MISS`。同一次运行也实测确认了“现状”表的判断：传入 `created_at=2023-05-27`，belief 语句的 `observed_at` 是写入时钟 `2026-10-19`。
 
 **这条路径测的是什么**：E2 回答“抽取正常工作时，三元组保住了多少时序信息，渲染能否迁移”。它**不回答**“线上现状抽得怎么样”。线上现状另有问题（见上“抽取可用性”），那是一个独立的、需要先修的问题，不属于评测先行的范围。两个问题的区别要在 E2 报告里写明，不能把 E2 的保留率当作线上保留率引用。
 
 **方案 A 另列，不在本文范围**：让 C++ 适配器能发出 `thinking: {"type":"disabled"}`（目前只能发 `enable_thinking` 与 `thinking_budget`，且二者对这个网关无效）。这是一个小的 C++ 与绑定改动，可能同时修好线上抽取，但我只有间接证据，且需要真实线上失败率来判断紧迫程度。若做，应另立设计与测试，并在改动后重跑本节的 20 块抽样作为验证。
 
-**抽取（一次，缓存）**：每段证据会话切块（611 块），每块按上述路径对三个通道各调用一次；全部写出的语句字段、每条语句来自哪个块与哪个会话，落盘到边车文件，此后所有臂复用，不再调用抽取。由于不走 C++ 写入，没有 `memory_remember_all` 的返回值可用，失败以调用异常、非 JSON 输出、`finish_reason=length` 三类逐块记录，不静默丢弃。
+**抽取（一次，缓存）**：每段证据会话切块（611 块），每块按上述路径对三个通道各调用一次；全部写出的语句字段、每条语句来自哪个块与哪个会话，落盘到边车文件，此后所有臂复用，不再调用抽取。每块记录三个通道的调用耗时、`finish_reason`、推理 token、`memory_remember_all` 的 `extraction_failed` 与 `failure_detail`，以及是否命中哨兵；`finish_reason=length` 或传输失败按失败回复交给 C++，不静默丢弃。
 
 **保留率（不经回答模型的直接测量）**：
 - **事件保留**：对每个证据话轮，自动判定“是否至少有一条语句承载了该话轮中答题所需的事件”。判定用独立 judge prompt，输入证据话轮、问题、标准答案与该会话抽出的全部语句，输出 yes/no 与所承载语句的 ID。另抽 30 条，由执行者对照原文与语句逐条核对，估 judge 误差。
