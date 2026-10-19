@@ -142,6 +142,8 @@ P1 的载体有两个候选：**source lane**（现有 `retain_source_turns` + `
 
 **与 E3 的关系**：若 E3 显示 k=10 与 k=20 的 S1 差距很小而上下文体积减半，则 source lane 的默认 `k` 取更小的值，但载体选择不因此改变。
 
+**判读结果（2026-10-20）**：top-20 上 `S1 − T1` +66.4pp [+56.6, +76.1]、`S1 − S0` +29.2pp [+19.5, +38.9]，三种失败口径与两种区间全部成立 → 落在第一行：**P1 载体取 source lane，不建 `engram_chunks`**。E3 显示日期增益在 k=6/10/20 上稳定（+25.7 / +29.2 / +26.9pp），S1 绝对值随 k 上升（74.8 → 79.3 → 85.8），说明默认 `k` 的取舍是“证据量 vs 上下文体积”，与日期无关，另立对比再定。详见 [召回带时间](2026-10-18-temporal-recall-rendering-design.md) 的“E2 top-20 结果”与“E3 结果”。下一步是把 [形态 S 草稿](2026-10-19-form-s-source-lane-design.md) 写成完整设计并交 Codex 评审，**评审前不动 C++**。
+
 ## 评测与验收
 
 - **适配器**：`longmemeval_official`、`locomo_official`（cat5 排除但保留字段）；`beam` 在 P2 加。
