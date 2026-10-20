@@ -299,5 +299,9 @@
 
 ## 基线
 
-- ctest：待填（Task 0）
-- pytest：待填（Task 0）
+在 `671b74a`（本计划提交）上实测，2026-10-21：
+
+- **ctest：1416/1416 通过，0 失败**（`python scripts/configure_build.py --build --test`，28.0 s）
+- **pytest：2701 passed, 630 skipped**（`.venv/bin/python -m pytest tests/python -q`，173 s）；0 failed
+
+后续所有回归以这两个数字为底线，只增不减。注意：仓库内历史计划记的是 2404 passed / ctest 1401，那是几个月前的数字，不可引用。
