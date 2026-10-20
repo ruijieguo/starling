@@ -1,8 +1,10 @@
 # 形态 S：带日期的原文通道进入生产召回（完整设计 v3）
 
-日期 2026-10-20（v1→v2 经 Codex 首轮 14 条，v2→v3 经二轮 12 条）。状态：**设计稿，未实现**。
+日期 2026-10-20（v1→v2 经 Codex 首轮 14 条，v2→v3 经二轮 12 条；随后按用户裁定补 §6.3 通用摄入 API 定位与 provenance 列）。状态：**设计稿，未实现**。
 
 **v3 相对 v2 的实质变化**：v2 把授权当成"调用方传一个 scope"的过滤问题，v3 承认它是**信任边界问题**——`SourceScope` 必须由摄入作业权威签发，且索引元数据必须与 payload 交叉验证。v3 还撤回了 v2 的一个错误承诺（Project 机制同轮实现），并重写了 abstain（v2 用名次判据，会把无关结果当证据）。
+
+**产品定位（用户 2026-10-20 澄清）**：原文通道的产品面是**通用摄入 API**，不是某个前端。Claude Code transcript 只是测试数据，Dashboard 摄入是本轮唯一的端到端测试消费者，不是设计依据。
 
 ## 0. 结论
 
@@ -66,12 +68,13 @@ v3 的处理不是假装它存在，而是**明确定义消费者**：
 
 | 消费者 | 会话如何确定 |
 |---|---|
-| `POST /api/converse`、`WS /ws/converse` | 请求体新增可选 `session_id`；**调用方（Claude Code 集成、脚本）必须显式传入**，Dashboard 网页端不传则 lane 不工作 |
+| 通用摄入 API 的调用方（产品面）| 调用方本就知道自己的会话，直接传 `session_id` |
+| `POST /api/converse`、`WS /ws/converse` | 请求体新增可选 `session_id`；不传则 lane 不工作 |
 | `POST /api/recall`（带 intent） | 同上 |
 | `Memory.query`（Python） | 新增可选 `session_id` 参数 |
 | OpenClaw | 本轮不接 |
 
-**这意味着**：Session 模式的真实用法是"按会话回看"，不是"聊天时自动带记忆"。**如果要做后者，需要先解决"当前会话如何被发现"**——那是一个独立的集成问题（Claude Code 侧的 hook 要把 session id 传给 Dashboard），不在本设计内。
+**这意味着**：Session 模式的真实用法是"调用方按自己的会话召回"。Dashboard 网页端的聊天没有这个关联，属于已知范围而不是缺陷（§13 第 2 条已裁定不做 hook 集成）。
 
 这一条必须写进交付说明，否则会误以为"接上就能用"。
 
@@ -139,12 +142,13 @@ v3 改为**分数判据 + 预算后判定**：
 
 **payload 的真实结构（v2 已更正，此处确认）**：带版本前缀的行（`turn_prefix="@starling/source-turn-v1 "`，`claim_contract.cpp:120`；容错 `v2` 在 `:121`）。`units()` 产出的 unit 里 `text` 是整行原文，解析后的说话内容在 `utterance`（`claim_contract.cpp:194`）。
 
-**时间来源（Codex 二轮 #9，v2 的判断仍然错）**：v2 说"按 `adapter_name` 区分 `source_turn` 与 `ingest_clock`"——**不成立**，因为 `retain_source_turns` 对所有调用都写死 `adapter_name="source_turns"`（`source_retriever.cpp:1297`）。
+**时间来源（Codex 二轮 #9；用户 2026-10-20 澄清后进一步修正）**：v2 说"按 `adapter_name` 区分 `source_turn` 与 `ingest_clock`"——**不成立**，因为 `retain_source_turns` 对所有调用都写死 `adapter_name="source_turns"`（`source_retriever.cpp:1297`）。
 
-v3 的处理：
-- **来源由写入路径决定，不由 adapter_name 推断**。本轮只有一个写入路径（transcript 摄入），其 `observed_at` 一律来自事件时间 → 一律 `source_turn`。
-- 将来若有 `ingest_clock` 来源，必须在 `source_unit_vectors` 或 unit 元数据里**显式存一个 provenance 字段**（合同升到 v3），不能靠 adapter_name 猜。
-- 因此 v2 里"`ingest_clock` 不渲染日期"这条规则本轮**没有用例**，保留定义但不实现分支。
+v3 原以为"本轮只有一个写入路径，一律 `source_turn`"，但 §6.3 的裁定（通用摄入 API，transcript 只是测试数据）使 `ingest_clock` 成为真实用例。因此：
+
+- **provenance 显式存储**：写入 API 增加必填参数 `provenance ∈ {source_time, ingest_clock}`，落 `source_unit_vectors.provenance` 列（§5.3）。
+- `source_time` → 渲染日期；`ingest_clock` → **不渲染日期**（行仍出现，日期位留空）。
+- 检索侧不因 provenance 过滤：两种来源都可召回，只是显示不同。as-of 截断对 `ingest_clock` 用 `observed_at`（= 摄入时刻）判断，语义正确。
 
 **多行注入（Codex 首轮 #11）**：原文换行 JSON 转义为单行，续行不产生标签前缀；`neutralize_recall_fence`（`memory_ops.cpp:360`，在 `:408` 调用）继续作用于 SOURCE 行。
 
@@ -203,6 +207,7 @@ CREATE TABLE source_unit_vectors (
   project_key   TEXT,               -- §3.3，可为空（bootstrap/未知来源）
   turn_index    INTEGER,
   observed_at   TEXT,               -- unit 级；NULL = 无可信时间，不参与召回
+  provenance    TEXT NOT NULL CHECK (provenance IN ('source_time','ingest_clock')),  -- §4.5 来源，决定是否渲染日期
   dim           INTEGER NOT NULL CHECK (dim > 0),
   model         TEXT NOT NULL,
   index_vector  BLOB,
@@ -255,9 +260,11 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 
 ## 6. 写入侧与 Python 适配
 
-### 6.1 摄入点
+### 6.1 写入入口（两条，都是同一个 API）
 
-`engine.py:892` 的循环内，**必须在现有锁与 generation 检查下**：generation 在 `engine.py:871` 捕获，`:470` 处检查；新调用放在同一 try 块内，`source_missing` 与 `_TenantCleared` 语义照现有 remember 路径。`retain_source_turns` 继承写入门禁（`memory_ops.cpp:56`），但门禁不等于 generation 检查。
+**产品入口：通用摄入 API。** 任何调用方提供逐话轮数组（`speaker`、`text`、`session_id`、`turn_id`、`turn_index`、`observed_at`）+ `provenance` + `project_key`，即可写入左脑。底层就是 `retain_source_turns`（`source_retriever.cpp:1267`）加 §5.1 的三处改动。**这是产品面，不绑定前端。**
+
+**测试入口：Dashboard transcript worker**（`engine.py:892`）。它是本轮唯一的端到端消费者，用来验证真实数据上的行为，不是设计依据。接它时必须在现有锁与 generation 检查下：generation 在 `engine.py:871` 捕获、`:470` 检查，新调用放在同一 try 块内，`source_missing` 与 `_TenantCleared` 语义照现有 remember 路径。`retain_source_turns` 继承写入门禁（`memory_ops.cpp:56`），但门禁不等于 generation 检查。
 
 ### 6.2 时间与清洗
 
@@ -265,9 +272,18 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 - **新增 `clean_turns_ts()`**：返回 `(role, text, event_time, turn_index)`；不动 `clean_turns()`，避免破坏 `chunk_dialogue` 的两元解包（`ingest_filter.py:84`）。
 - **已知损失**：`clean_turns` 剥掉代码块与超长行，source lane 拿到的是清洗后文本，不是逐字节原文。写明，不掩盖。
 
-### 6.3 来源范围（更正 v1 的错误）
+### 6.3 来源范围（用户 2026-10-20 裁定：transcript 只是测试数据）
 
-本轮**只有** Dashboard transcript 摄入会写 source lane。自由文本 `remember`、OpenClaw 写入都**不会**。`ingest_clock` 语义本轮无实际用例。
+**这条改变了设计的重心。** Claude Code transcript 只是**测试数据**，不是产品的摄入主路径。因此：
+
+- 原文通道的入口必须是**通用的摄入 API**：任何调用方只要提供符合 `claim_source_turn_payload` 合同的逐话轮数组（`speaker`、`text`、`session_id`、`turn_id`、`turn_index`、`observed_at`），并给出 `session_id` 与 `project_key`，就能写入左脑。这条 API 就是现有的 `retain_source_turns`（`source_retriever.cpp:1267`）加上 §5.1 的改动，**不绑定任何特定前端**。
+- Dashboard transcript 摄入（`engine.py:892`）只是**第一个消费者**，也是本轮唯一的消费者，因为它是现成的、可用于端到端验证的数据源。
+- **不作为设计依据的**：transcript 的字段形状（`clean_turns` 的清洗损失、毫秒时间戳、SessionEnd 作业的会话关联）。这些是实现第一个消费者时要处理的细节，不是原文通道的普遍约束。v3 的 §6.2 保留为"transcript 消费者的适配说明"，不再当作核心设计的组成部分。
+- **`ingest_clock` 不再是空转**：通用 API 的调用方若无法提供事件时间，就填摄入时刻，来源标 `ingest_clock`，渲染时不显示日期。这条来源语义因此有了真实用例（§4.5 需要它能被区分，见下）。
+
+**对 §4.5 的连带影响**：既然通用 API 会有 `ingest_clock` 来源，v3 原来说"本轮只有一个写入路径，一律 `source_turn`"不再成立。因此 **provenance 必须显式存储**，不能推迟到"将来"：写入 API 增加一个必填的来源参数（`source_time` | `ingest_clock`），存进 `source_unit_vectors.provenance` 列。这是把 v2 标记为技术债的东西提到了本轮。
+
+**对 §3.2 的连带影响**：`session_id` 由通用 API 的调用方提供，不是从 transcript 作业推断。Dashboard 网页端"拿不到会话"的问题，在通用 API 视角下不存在——调用方本来就知道自己的会话。§3.2 的"实际可用面比预期窄"这条风险相应降低，但对**网页端**仍然成立。
 
 ## 7. 开关
 
@@ -311,7 +327,7 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 2. SQLite 向量后端全量扫描，扩展性上限已知。
 3. 三条入口不覆盖（不带 intent 的 recall、OpenClaw、Working Set）。
 4. 清洗后文本不是逐字节原文。
-5. Session 模式需要调用方显式传会话 id，**Dashboard 网页端没有这个能力**，实际可用面比预期窄。
+5. Session 模式需要调用方显式传会话 id。通用 API 的调用方天然具备；**Dashboard 网页端的聊天不具备**，按 §13 裁定不做 hook 集成，属已知范围。
 6. `tau_source` 未标定，lane 不能上线。
 7. 未实测：`[SOURCE]` 前缀与评测臂格式差异对模型的影响。
 
@@ -327,13 +343,13 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 | 6 | P1 | 采纳：§4.4 改为分数判据 `tau_source` + 预算后判定；未标定前 lane 不得开启 |
 | 7 | P1 | 采纳：§5.1 更正"写入不变"；unit 级元数据、事务原子性、project_key 写入三处都要改；§5.3 表补 `observed_at` |
 | 8 | P2 | 采纳：§4.1 去重改为 `(holder, session_id, turn, observed_at, text)`；§4.2 改迭代回填 + `source_truncated` |
-| 9 | P1 | 采纳并更正：§4.5 撤回"按 adapter_name 判来源"；所有权重写 `source_turns`；本轮单一来源；§4.2 无时间 unit 不召回 |
+| 9 | P1 | 采纳并更正：§4.5 撤回"按 adapter_name 判来源"；用户澄清后进一步改为**写入 API 必填 provenance 并落库**（`source_time` / `ingest_clock`），因为通用摄入 API 使 `ingest_clock` 成为真实用例；§4.2 无时间 unit 不召回 |
 | 10 | P2 | 采纳：§5.6 给出 `source_partial` 的触发规则表；§5.5 模型变更同时重置 `retry_count`；更正"无退避" |
 | 11 | P2 | 采纳：§9 扩为测试矩阵；§3.4 统一缺省语义（缺省 Off / 非法拒绝 / 关闭模式拒绝） |
 | 12 | P2 | 采纳：§4.6 更正 `memory.py` 返回 row 对象；§4.5 引用改 `:132`/`:194`；§6.1 generation 在 `:871` 捕获、`:470` 检查；§5.5 更正无退避；§10 预算引用改 `:171` |
 
-## 13. 待确认
+## 13. 待确认（用户 2026-10-20 已裁定：按建议执行）
 
-1. **`tau_source` 的标定实验**：需要在 Session 模式下的单会话数据集上做，还是先用 LongMemEval 的单会话切片近似？这决定 lane 能否上线。
-2. **Session 模式的消费者**：是否需要同时做 Claude Code 侧的 hook（把 session id 传给 Dashboard），还是本轮只提供 API 参数、由脚本调用。
-3. **Project 模式**是否立为独立项目（含它自己的评测与安全复核）。
+1. **`tau_source` 标定** —— 裁定：**用单会话切片标定，且与验收题分离**。做法是从已用过的 LongMemEval 确认集中切出"单会话可答"的子集（每题只保留与其证据同会话的话轮），留出一半做标定、一半做验收；不得在同一半上既调阈值又报数字。若切不出足够样本（预计偏少），则 lane 保持关闭，改为先采集真实单会话数据再标定——**不允许用拍脑袋的阈值上线**。
+2. **Session 模式的消费者** —— 裁定：**不做 Claude Code hook**。用户 2026-10-20 明确 transcript 只是测试数据，不是重点。产品面是通用摄入 API（§6.3）；Dashboard transcript 摄入只作为端到端测试消费者。因此不投入集成工作，§3.2 的"网页端不具备会话关联"从风险降为**已知范围**。
+3. **Project 模式** —— 裁定：**立为独立项目**，含它自己的评测（把每个基准库映射成显式 project、并测混合库隔离）与安全复核（助手转述跨会话、共享目录、时间无界三条残余风险）。本轮只签发并存储 `project_key`，不实现检索分支。
