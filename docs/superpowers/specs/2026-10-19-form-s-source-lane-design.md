@@ -76,7 +76,7 @@ using Candidate = std::variant<StatementCandidate, SourceCandidate>;
 2. `search_topk` 于 source 向量索引（§5.2），**过滤条件全部下推到 SQL，且在任何排序之前**：
    - `tenant_id` 精确匹配；
    - `holder_id IN allowed_holders`；
-   - **`session_id = session_scope`**（§7 方案 A，必填，缺省即拒绝查询而非放宽）；
+   - **授权作用域**（§7.3-7.4）：`Session` 模式下 `session_id = 当前会话`；`Project` 模式下 `project_key = 当前项目`。作用域缺失或为 `Off` 时**不检索**，不放宽；
    - `status='embedded'`；
    - **时间三重界**（Codex #7）：`julianday(registered_at) <= as_of` **且** `julianday(engram.created_at) <= as_of` **且** `(observed_at IS NULL OR julianday(observed_at) <= as_of)`。只查 `observed_at` 会让晚摄入的旧 transcript 出现在早期的知识快照里。
    - `erased_at IS NULL`、`retention_mode='audit_retain'`（与 `source_retriever.cpp:1377` 的现有条件一致）。
@@ -156,7 +156,7 @@ public:
 };
 ```
 
-`SourceSearchScope` 带 `tenant_id`、`std::vector<std::string> holders`（**多值**）、`session_scope`（§7，**单值，必填**）、`as_of`、`include_unknown_time`。
+`SourceSearchScope` 带 `tenant_id`、`std::vector<std::string> holders`（**多值**）、`SourceScope scope`（§7.3：模式 + session_id/project_key）、`as_of`、`include_unknown_time`。
 
 **成本要写明**：SQLite 后端的 `search` 是**全量扫描 + 排序**（与现有 `SqliteBlobVectorIndex` 同构）。在 source unit 数量达到数万级之前可接受，但这是已知的扩展性上限，必须进当轮验收指标（查询延迟 p50/p95 随 unit 数的曲线）。zvec 后端可作为后续替换，接口为此预留。
 
@@ -172,7 +172,8 @@ CREATE TABLE source_unit_vectors (
   engram_ref   TEXT NOT NULL,
   clause_id    TEXT NOT NULL,
   holder_id    TEXT NOT NULL,
-  session_id   TEXT NOT NULL,               -- §7 方案 A：会话作用域，检索必填
+  session_id   TEXT NOT NULL,               -- §7.4：会话作用域（A 模式检索键）
+  project_key  TEXT NOT NULL,               -- §7.4：项目作用域（W 模式检索键，写入即填，避免日后重灌）
   dim          INTEGER NOT NULL CHECK (dim > 0),
   model        TEXT NOT NULL,
   index_vector BLOB,
@@ -259,17 +260,66 @@ v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权
 - 84.1% / +29.2pp 这些数字**不能直接搬成 A 下的生产预期**。A 下左脑只回答"本次会话里说过什么"。
 - 这一条不是实现细节，是能力边界的改变。如果目标是"跨会话的通用记忆"，A 只是安全底座，不是终点。
 
-### 7.3 扩宽开关 W（默认关闭，需单独决定）
+### 7.3 召回作用域：前置缺口与载体
 
-为了让 A 的机制不被浪费，v2 定义一个具名的扩宽策略，与 A 同一套机制、只改授权集的构造：
+A 与 W 都需要查询侧知道"当前是哪个会话、哪个项目"。**现状没有这个信息**：`ConverseParams`（`memory_ops.hpp:155-166`）只有 tenant / holder / interlocutor / adapter / created_at / message / recall_k，`/api/converse` 的 `ConverseBody` 也没有会话或项目字段。这是 A 与 W 共同的前置改动，不是 W 专属。
 
-- **W = 同 project 内跨会话**：`allowed_scopes = 该 project 的全部 session`，其中 project = cwd 全路径哈希（不用 basename）。
-- 默认关闭。打开需要：① Codex 级的安全复核（助手的转述仍可能跨会话泄漏，只是限制在同一项目内）；② 一次配对评测，确认跨会话收益真实存在且非基准特异性。
-- W 关闭时行为完全等于 A，因此可以共存、可分阶段启用。
+新增一个值类型，随查询一路下传：
 
-### 7.4 本轮落地范围
+```cpp
+enum class SourceScopeMode { Off, Session, Project };
+struct SourceScope {
+    SourceScopeMode mode = SourceScopeMode::Off;
+    std::string session_id;      // Session 模式必填 = transcript 会话 UUID
+    std::string project_key;     // Project 模式必填 = 项目稳定标识
+};
+```
 
-本轮**只实现 A**，W 只留接口与开关位，不实现扩宽逻辑。这样安全边界先立起来，能力扩宽作为独立决策。
+- 进 `PlannerQuery`（新增字段，默认 `Off`）与 `ConverseParams`；
+- `/api/converse` 的 `ConverseBody` 增加可选 `session_id`、`project_key`，Python 只透传（边界裁定：作用域语义在 C++）；
+- **缺省即 Off**：调用方不传 → 左脑 lane 不工作，不静默降级为某个默认作用域。
+
+`project_key` 的构造（Python 适配层，不入核心）：优先取 git remote URL 的规范化哈希；没有 remote 时取 `cwd` 绝对路径的哈希。**不用 basename**（Codex #4：同名目录会合并）。移动仓库会导致 project_key 变化，后果是"召回不到旧会话"——安全方向上的失败，可接受，但要在文档里写明。
+
+### 7.4 扩宽开关 W：同 project 内跨会话
+
+W 与 A 是同一套机制的两个 `SourceScopeMode`，只改授权集的构造方式：
+
+| 模式 | 授权集 | 检索条件 |
+|---|---|---|
+| `Off` | — | 不检索 |
+| `Session`（A，默认） | `{holder@session_id}` | `session_id = 当前会话` |
+| `Project`（W） | `{holder@project_key}` | `project_key = 当前项目`（跨该项目的全部会话）|
+
+`source_unit_vectors` 与 `source_documents` 都要存 `session_id` **与** `project_key`，两者在写入时一次性确定，检索时按模式选其一做 SQL 下推。索引：`(tenant_id, project_key, status)`。
+
+**W 打开后必须可见**：receipt 记录 `scope_mode`、`sessions_matched`（该模式下可召回的会话数）、`sessions_contributing`（本次结果实际来自几个会话）。跨会话取回时，渲染行**保留日期**，让模型与用户都能看出这是别的会话的内容。
+
+**W 的残余风险（不得隐藏）**：
+
+1. **助手转述仍会跨会话**。W 把范围从"所有项目"收到"同一项目"，但同一项目里的助手输出依然可能总结第三方（"你同事说他下周休假"）。W 降低范围，不消除这一类泄漏。
+2. **共享目录会模糊 holder**。同一台机器上同目录的不同人，在 W 下会共享 `project_key`。这是部署问题，不是代码能解决的，必须写进部署说明。
+3. **时间上无界**。W 默认不设时间窗，会召回很久以前的会话。提供可选 `max_age_days`（默认不设），由部署方决定。
+
+### 7.5 两份评测证据分别对应哪个模式
+
+这一点必须讲清，否则会把 W 的读数当成 A 的：
+
+| 实验 | 会话结构 | 对应模式 |
+|---|---|---|
+| LongMemEval 113 道时序题（84.1%，`S1 − S0` +29.2pp）| 每题 47 个会话 | **W**（同题内跨会话）|
+| LoCoMo 1540 题（cat2 +57.6pp）| 每组 10 个会话 | **W** |
+| E3 召回深度（k=6/10/20）| 同上 | **W** |
+
+因此：**A 下没有任何实测预期**。A 只回答"本次会话里说过什么"，这是本任务目标之外的一个更窄的能力。W 才是与现有证据对得上的模式。
+
+### 7.6 落地顺序（本轮）
+
+1. **先实现 A（`Session`）**：安全边界先立，语义最小，测试面最小。
+2. **同一轮内实现 `Project`（W）的机制**，但默认关闭、默认不暴露给 Dashboard：写入侧同时填 `project_key`（不填就没法在不重灌数据的前提下打开 W，这是先见之明而非过度设计），检索侧的 `Project` 分支实现并测好，开关默认 `Off`。
+3. W 的**启用**不在本轮，需要：一次安全复核（§7.4 三条残余风险），以及一次配对评测证明跨会话收益真实且非基准特异性。
+
+这样做的代价是写入侧多一列与多一次哈希计算，收益是 W 的启用不需要重灌历史数据。
 
 ## 8. 开关
 
