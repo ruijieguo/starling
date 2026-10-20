@@ -107,8 +107,30 @@
 | 查询时扩展（不采用） | 让 membership 分支返回组成员能看到的 engram | 需要 engram→group 的关联与成员有效期，且"后来入组能看到历史上所有组内对话"在模拟器里是错的 |
 
 **随之要修的两处底层缺陷**（都属于 C++ 核心，须带测试）：
-1. `record_group_membership` 改为可幂等：合成主键加入 `metadata_json` 里的 `group_id`，使同一 `(cognizer, group_id)` 只留一行（现状是随机 id，会重复）。
-2. 明确并记录 `visible_engrams_at` 的实际语义：**membership 分支在修好之前永远为空**。文档不再宣称"五路并集"，改为"三路有效 + 一处待修"。
+
+1. **成员关系必须有时间维度，不能只按 `(cognizer, group_id)` 去重**（Codex 五轮 #5 指出 v4.2 的错）。按 `(cognizer, group_id)` 单行会丢掉加入/离开的时间；而按时刻解析"当时谁在组里"正需要它。因此**新建一张有历史的成员表**，不复用 `cognizer_frontier_facts`（它的 `metadata_json` 只存 `group_id`，无法可靠做时间查询，Codex 五轮 #6），也不放进 `cognizers`（那是认知体本身）：
+
+```sql
+CREATE TABLE cognizer_group_membership (
+  tenant_id    TEXT NOT NULL,
+  group_id     TEXT NOT NULL,
+  cognizer_id  TEXT NOT NULL,
+  joined_at    TEXT NOT NULL,        -- 生效时刻（世界时刻/事件时间，不是写入时刻）
+  left_at      TEXT,                 -- NULL = 仍在组内
+  recorded_at  TEXT NOT NULL,        -- 写入时刻，供审计
+  PRIMARY KEY (tenant_id, group_id, cognizer_id, joined_at)
+);
+CREATE INDEX idx_cgm_asof ON cognizer_group_membership(tenant_id, group_id, joined_at);
+```
+
+   - **幂等**：主键含 `joined_at`，同一 (组, 成员, 生效时刻) 重复写入被 `INSERT OR IGNORE` 吸收；同一成员在不同时刻的多次加入是不同行，历史完整保留。
+   - **as-of 查询**：`WHERE group_id=? AND joined_at <= ? AND (left_at IS NULL OR left_at > ?)`。
+   - **离开**：`UPDATE ... SET left_at=?`，只影响之后的 as-of 查询，不改写历史。
+   - 旧 `record_group_membership` 的写入改为写这张表（`asserted_at` 作为 `joined_at`），`cognizer_frontier_facts` 里原有的 membership 行保留不动但不参与可见性。
+
+2. **`visible_engrams_at` 的实际语义写清**：membership 分支在修好之前永远为空。文档不再宣称"五路并集"，改为"三路有效 + 成员关系仅经写入时展开生效"。
+
+**右脑影响**：新建成员表本身不改变任何现有可见性（该分支此前恒为空，v4.3 也不扩展 `visible_engrams_at`）。真正的行为变化来自 §3.4b 的在场权威统一。两项可分开评审：先做 §3.4b + 成员表，再启用写入时展开。
 
 **组本身怎么存**：`record_group_membership` 已有 `metadata_json={"group_id":...}` 的写法，但它只记录"某 cognizer 属于某组"，**没有"组在某时刻有哪些成员"的可查询视图**。写入时展开需要一个按 `group_id` 查成员的查询，实现上就是 `SELECT cognizer_id FROM cognizer_frontier_facts WHERE fact_kind='membership' AND json_extract(metadata_json,'$.group_id')=? AND asserted_at <= ?`。这条查询要加到 `KnowledgeFrontier`，并由它负责展开，**不由 Python 展开**（边界裁定：授权语义在 C++）。
 
@@ -129,7 +151,7 @@
 
 v3 的 `SourceScope{Off|Session|Project}`、`project_key`、Session/Project 两套授权规则**全部移除**。理由：感知授权已经给出了正确的认知边界，作用域模式与之重复且在多智能体下是错的；`project_key` 的身份稳定性问题（Codex 二轮 #2、三轮 #7）随之消失。`ConverseParams`/`PlannerQuery` 不再需要新增作用域字段——查询主体已经由现有的 `querier`/`perspective` 表达。
 
-### 3.4b 左脑写在场记录会改变右脑的结果（v4.1，Codex 四轮最重要的一条）
+### 3.4b 左脑写在场记录会改变右脑的结果（v4.1；v4.3 补顺序与冲突规则）
 
 **这不是假设，是代码事实**：
 - 严格语义来源链接下，右脑抽取**刻意复用** `retain_source_turns` 注册的同一个 engram（`eval_ladder.py:588-591`、`:661-664`：`adapter_name="source_turns"`、同一 `source_prefix`，注释写明"否则严格语义来源链接会失败"）。所以右脑语句的 `evidence_json` 引用的正是左脑的原话 engram。
@@ -138,21 +160,16 @@ v3 的 `SourceScope{Off|Session|Project}`、`project_key`、Session/Project 两�
 
 **因此**：左脑给某个 engram 的听众写在场记录，从这个 engram 抽出的右脑语句就对这些听众可见，ToM 的"X 知道吗"结果也随之改变。**只含原话、没有被抽取的 engram 不产生信念**——影响只发生在左右脑共用的 engram 上。
 
-**这是想要的行为，不是泄漏**：B 在场听 A 说话，B 理应能看到"A 相信什么"，ToM 推理"B 是否知道"也理应改变。这正是"左右脑共用同一个感知边界"的意思。**但它必须有唯一的权威**，现在有两个写入者：
+**这是想要的行为，不是泄漏**：B 在场听 A 说话，B 理应能看到"A 相信什么"，ToM 推理"B 是否知道"也理应改变。但它必须有唯一的权威。
 
-| 写入者 | 写入的在场集合 | 位置 |
-|---|---|---|
-| 右脑抽取 | `{holder, interlocutor}` 两人对 | `extractor.cpp:867-871`（无 interlocutor 时为 `{holder}`）|
-| 左脑原话 | 调用方声明的 `audience` | §5.1 |
+**v4.3 的规则（回应 Codex 五轮 #1、#2、#3）**：
 
-在场是并集。两者不一致时，可见性是二者之并——例如右脑把 `interlocutor="claude-code:{project}"` 这样的字符串写成了在场者，或多智能体场景下右脑的两人对漏掉第三个在场者。
+1. **听众先于抽取落库，抽取只读不写。** 顺序固定为：① 写原话 engram（`retain_source_turns`）→ ② 在同一事务内写 `source_unit_meta`（含 `audience`）与逐 agent 的在场记录 → ③ 抽取在同一事务内读该 engram 的 `audience` 作为 `perceived_by`，**不得自行推断，也不得再写在场记录**。
+2. **对来源 engram，抽取不得覆盖冲突值。** 现状只在 `perceived_by` 为空时填默认值（`extractor.cpp:872-874`），所以预填值会存活——这正是 v4.2 方案不成立的原因。v4.3 改为：若 engram 有 `source_unit_meta` 记录，`perceived_by` **强制取自**该记录的 `audience`；抽取若给出不同集合，视为合同错误并拒绝（`perceived_by_conflict`），不静默合并。
+3. **竞态规则**：在场记录是 `INSERT OR IGNORE` 且按 `cognizer:engram` 合成主键（`knowledge_frontier.cpp:39-45`），**后写的收窄不掉先写的**。因此顺序不能反过来：必须先写声明听众，再抽取。同一事务内完成，用同一个连接（Codex 五轮 #7 也要求同一连接，否则有快照竞态）。
+4. **无听众来源的兼容规则**：普通 `remember`（非原话路径）没有 `audience`，保持现有 `{holder, interlocutor}` 回退不变，历史行为逐字节兼容。**空听众不等于"所有人可见"**；对来源 engram 而言空听众直接拒收（`empty_audience`）。
 
-**v4.1 的规则**：**同一 engram 的在场集合只有一个权威，即左脑写入时声明的 `audience`。** 当一个 engram 既被左脑注册、又被右脑抽取时，右脑抽取的 `perceived_by` 必须取自该 engram 的 `audience`，而不是自行用 `{holder, interlocutor}` 推断。这需要改右脑抽取的一处默认值（`extractor.cpp:867-871`），属于 C++ 核心改动，必须带回归测试：
-- 单人或两人场景下行为不变（`audience` 恰为 `{holder, interlocutor}` 时结果逐字节相同）；
-- 多智能体场景下右脑可见性 = 左脑声明的听众，不多不少；
-- SocialMemBench（0.7825）与 HiToM 的嵌套信念结果不下降。
-
-**这是 v4.1 新增的一处右脑改动，违背了"右脑不动"的初始约束**，但它是左右脑成为一个系统的必要代价：不统一在场权威，两套写入会产生不一致的可见性。必须在评审中明确批准。
+**回归要求（Codex 五轮 #4）**：只有当声明听众恰好等于旧的推断两人对时，行为才不变；任何不一致都会同时改变 planner 可见性与 ToM 结果。因此测试必须覆盖：预填冲突的 `perceived_by`、抽取在前与在后的两种顺序、多智能体听众的精确性、普通 remember 的回退、planner 遮罩、`does_X_know`，然后跑 SocialMemBench（0.7825）与 HiToM 的回归。
 
 ### 3.5 为世界/场景任务铺路（本设计内做，零成本）
 
@@ -236,8 +253,8 @@ v3 原以为"本轮只有一个写入路径，一律 `source_turn`"，但 §6.3 
 v3 写"写入路径不变"。**不成立**。v4 在此基础上又改了一处**分组键**，这是感知授权的直接要求：
 
 1. **分组键从 speaker 改为 `(session_id, audience 集合)`**。现状 `source_retriever.cpp:1279-1283` 用 `std::map<speaker, turns>` 按说话人分组，同一说话人的话跨会话、跨听众会被并成一个 engram；而 `visible_engrams_at` 按 engram 判可见（§3.2），一个 engram 混了不同听众就会错判。**一个 engram 必须是"一个场景 + 一组固定听众"**，组内可以有多位说话人（`speaker` 仍逐句保留，用于渲染归属，不再用于授权）。
-2. **写入时必须记录在场**：对 `audience` 中每个 agent 调 `KnowledgeFrontier::record_presence_from_statement(tenant, audience, engram_id, observed_at, conn)`。presence 是感知授权的数据来源，漏记等于让这些 agent 永远召回不到——这必须是原子的一部分。
-3. **原文、pending 向量行、presence 必须同一事务完成**，否则会出现"原文写成功、但召不到"或"索引有了、感知没记"的静默不一致。**v4.1 更正（Codex 四轮）**：v4 说"`retain_source_turns` 内部自行提交、无法原子"是错的——`TransactionGuard` 支持嵌套（`connection.hpp:44`：最外层守卫持有 `BEGIN IMMEDIATE`，内层用 SAVEPOINT），所以外层开一个事务包住即可，**不需要改 `retain_source_turns` 的提交方式**。工作量比 v4 估的小。
+2. **写入时必须记录在场，且顺序固定**（v4.3 补，Codex 五轮 #2、#7）：对 `audience` 中每个 agent 调 `KnowledgeFrontier::record_presence_from_statement(tenant, audience, engram_id, observed_at, conn)`。**必须在抽取之前、同一事务、同一连接**——在场记录是 `INSERT OR IGNORE` 且按 `cognizer:engram` 合成主键（`knowledge_frontier.cpp:39-45`），先写入的收窄不掉，所以抽取先写会把声明的听众永久并进可见集。组名（`group:*`）在此步展开成当时的成员（§3.2b）。
+3. **原文、`source_unit_meta`、pending 向量行、presence、抽取必须同一事务完成**，否则会出现"原文写成功、但召不到"或"索引有了、感知没记"的静默不一致。**v4.1 更正（Codex 四轮）**：v4 说"`retain_source_turns` 内部自行提交、无法原子"是错的——`TransactionGuard` 支持嵌套（`connection.hpp:44`：最外层守卫持有 `BEGIN IMMEDIATE`，内层用 SAVEPOINT），外层开一个事务包住即可，**不需要改它的提交方式**。
 4. **删除 `project_key` 相关写入**（§3.4 已移除该概念）。
 
 这四处是 v4 的主要实现面，工作量不小，不能按"复用现有原语"估算。**grouping 变化还会改变幂等键**：engram 的幂等键是 `sha256(payload)` 前 16 hex（`memory_ops.cpp:65`），分组键变化会改变 payload 内容，因此**历史数据的分组与新版不一致**，需要迁移策略：旧 engram 保留原样（其听众按 `speaker` 回填为单元素听众集），新写入按新键分组。这一点必须写进迁移。
@@ -262,38 +279,51 @@ public:
 
 SQLite 实现是**全量扫描 + 排序**，与现有实现同构。这是已知扩展性上限，必须进验收指标（延迟随 unit 数曲线）。依赖注入：给 `RetrievalPlanner` 增加可选 `SourceLaneDeps{SourceVectorIndex*, EmbeddingAdapter*, int dim, std::string model}`，为空即关闭。两个 planner 构造点都要接线。
 
-### 5.3 表（含 unit 级元数据）
+### 5.3 表：元数据与派生索引分离（v4.3 重构）
 
-迁移 `0037_source_unit_vectors.sql`（仓内最新 `0036`，无冲突）：
+**v4.3 的结构变化（回应 Codex 五轮 #9）**：v4.2 把 `audience`、`session_id`、`provenance` 都存在 `source_unit_vectors` 里——那是**派生索引**，删掉重建会丢数据。而这三项是**权威元数据**（重建要用、授权要查、审计要留）。因此拆成两张表：
 
 ```sql
-CREATE TABLE source_unit_vectors (
+-- 权威元数据：写入即固定，只追加，重建的来源
+CREATE TABLE source_unit_meta (
   tenant_id     TEXT NOT NULL,
   engram_ref    TEXT NOT NULL,
-  clause_id     TEXT NOT NULL,      -- unit 在 payload 内的稳定编号
-  speaker       TEXT NOT NULL,      -- 渲染归属；不再作授权依据
-  session_id    TEXT NOT NULL,      -- 场景（= 对话 session 的推广），元数据
-  audience_json TEXT NOT NULL,      -- §3.2 听众集合（JSON 数组），写入即固定；用于复核与诊断
+  clause_id     TEXT NOT NULL,
+  speaker       TEXT NOT NULL,      -- 渲染归属
+  session_id    TEXT NOT NULL,      -- 场景
+  audience_json TEXT NOT NULL,      -- 展开后的听众（组已在写入时展开，§3.2b）
   turn_index    INTEGER,
-  observed_at   TEXT,               -- unit 级；NULL = 无可信时间，不参与召回
+  observed_at   TEXT,               -- NULL = 无可信时间，不参与召回
   provenance    TEXT NOT NULL CHECK (provenance IN ('source_time','ingest_clock')),
-  dim           INTEGER NOT NULL CHECK (dim > 0),
-  model         TEXT NOT NULL,
-  index_vector  BLOB,
-  raw_embedding BLOB,
-  status        TEXT NOT NULL CHECK (status IN ('pending','embedded','failed')),
-  retry_count   INTEGER NOT NULL DEFAULT 0,
-  last_attempt_at TEXT,
-  embedded_at   TEXT,
   PRIMARY KEY (tenant_id, engram_ref, clause_id)
 );
-CREATE INDEX idx_suv_scan    ON source_unit_vectors(tenant_id, status);
-CREATE INDEX idx_suv_session ON source_unit_vectors(tenant_id, session_id, status);
+CREATE INDEX idx_sum_session ON source_unit_meta(tenant_id, session_id);
+
+-- 派生索引：可整表重建，删了不丢信息
+CREATE TABLE source_unit_vectors (
+  tenant_id      TEXT NOT NULL,
+  engram_ref     TEXT NOT NULL,
+  clause_id      TEXT NOT NULL,
+  dim            INTEGER NOT NULL CHECK (dim > 0),
+  model          TEXT NOT NULL,
+  index_vector   BLOB,
+  raw_embedding  BLOB,
+  status         TEXT NOT NULL CHECK (status IN ('pending','embedded','failed')),
+  retry_count    INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TEXT,
+  embedded_at    TEXT,
+  PRIMARY KEY (tenant_id, engram_ref, clause_id)
+);
+CREATE INDEX idx_suv_scan ON source_unit_vectors(tenant_id, status);
 ```
 
-**授权不出现在这张表里**：可见性是 `cognizer_presence_log` 经 `visible_engrams_at` 算出来的（§3.2），不在向量表里存冗余副本——存了就要维护一致性，而 presence 是唯一权威。`audience_json` 只用于 §4.2 第 4 步的交叉校验与诊断。
+**要点**：
+- 检索时 `observed_at`/`session_id` 从 `source_unit_meta` 取，向量表只存向量与索引状态。`search` 的实现因此是一次 `JOIN source_unit_meta`，而不是从单表取。
+- **重建只依赖 `source_unit_meta` + payload**，不依赖向量表。这同时修好了 Codex 三轮 #9（provenance 无法重建）。
+- 旧数据的回填：`source_unit_meta` 从既有 payload 解析生成；解析不出的 unit 不入表（不可召回），计入迁移报告。
+- `source_unit_meta` 加入 `clear_tenant` 的删除列表（与 `source_documents` 同列），异步清理按 `erased_at` 删。
 
-`observed_at` 必须在这张表里，因为 §4.2 要在排序前按它过滤（Codex 二轮 #7）。
+**授权仍然不出现在这两张表里**：可见性是 `cognizer_presence_log` 经 `visible_engrams_at` 算出来的（§3.2）。`audience_json` 是诊断与重建用的记录，不是授权依据（§4.2 第 4 步已删除 `P ∈ audience` 检查）。
 
 ### 5.4 擦除
 
@@ -509,6 +539,20 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 | 7 | P1 | 采纳：§3.1 拆分信任边界与认知边界，信任模型取方案 A（可信后端），明确其不适用的部署形态；交叉校验改称数据完整性检查 |
 | 8 | P2 | 采纳：§6.1 给出 v3 合同字段表（必填/可空、批次规则、确定性分组顺序、旧数据回填）；`ingest_clock` 由受信摄入代码写入；更正"仅 speaker/text 必填"的现状 |
 | 9 | P1 | 采纳：provenance 写进**原话 payload（合同 v3）**，不再只存在派生表；重建可复现；§3.5 的可重放不变量要求 payload 自足 |
+
+## 12.6 五轮 7 条处置（v4.3）
+
+| # | 级别 | 处置 |
+|---|---|---|
+| 1 | P1 | 采纳：`perceived_by` 只在为空时填默认（`extractor.cpp:872-874`），所以只改默认值不够。v4.3 改为**对有 `source_unit_meta` 的 engram 强制取自 `audience`**，抽取给出不同集合即拒绝（`perceived_by_conflict`） |
+| 2 | P1 | 采纳：写明顺序与竞态规则——**听众先写、抽取后读**，同一事务同一连接；因为在场是 `INSERT OR IGNORE`，反序会把声明听众永久并进可见集 |
+| 3 | P2 | 采纳：来源 engram 必须提供非空听众，空即拒收；普通 `remember` 保持 `{holder, interlocutor}` 回退，历史行为不变；空听众**不等于**所有人可见 |
+| 4 | P2 | 采纳：撤回 v4.2"两人场景不变"的宽泛说法——只有声明听众恰等于旧推断两人对时才不变；给出六项回归清单 + SocialMemBench/HiToM 回归 |
+| 5 | P1 | 采纳并更正：`(cognizer, group_id)` 单行会丢掉加入/离开时间。改为**新建带历史的 `cognizer_group_membership`**（`joined_at` / `left_at` / `recorded_at`），主键含 `joined_at` 以保幂等与历史 |
+| 6 | P2 | 采纳：不复用 `cognizer_frontier_facts`（`metadata_json` 只存 group_id，无法可靠做时间查询），也不放 `cognizers`；定义加入/离开语义与 as-of 查询 |
+| 7 | P2 | 采纳：写入时展开的追溯语义正确且符合 C++ 边界，但**必须在同一事务、同一连接内**执行，否则有快照竞态；不扩展 `visible_engrams_at`，另加 as-of 成员查询 |
+
+**v4.3 的结构性变化**：新增 `source_unit_meta` 作为**权威元数据表**，`source_unit_vectors` 降为可整表重建的派生索引（§5.3）。这一处同时修好了五轮 #1（抽取读权威听众）、五轮 #5/#6（成员表独立）与三轮 #9（provenance 可重建）。
 
 ## 13. 待确认（用户 2026-10-20 已裁定：按建议执行）
 
