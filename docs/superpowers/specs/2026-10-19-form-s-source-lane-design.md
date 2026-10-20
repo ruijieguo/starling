@@ -1,6 +1,6 @@
 # 形态 S：带日期的原文通道进入生产召回（完整设计 v2）
 
-日期 2026-10-20（v1 同日出，经 Codex 评审后全面重写）。状态：**设计稿，未实现**。评审前不动 C++。
+日期 2026-10-20（v1 同日出，经 Codex 评审后全面重写；四项待决问题已由用户裁定，见 §14）。状态：**设计稿，未实现**。评审前不动 C++。
 
 **v2 相对 v1 的实质变化**：v1 自造了一套并行 `source_entries` + 交替融合，绕过了父 spec（[双脑设计](2026-10-17-dual-brain-general-memory-design.md)）已经设计好的 `Candidate` variant、RRF(k=60)、第 9 标签 `[SOURCE]`、`neutralize_recall_fence`。v2 回到父 spec 的路线，并逐条修掉 Codex 的 14 条发现。逐条处置见 §13。
 
@@ -76,6 +76,7 @@ using Candidate = std::variant<StatementCandidate, SourceCandidate>;
 2. `search_topk` 于 source 向量索引（§5.2），**过滤条件全部下推到 SQL，且在任何排序之前**：
    - `tenant_id` 精确匹配；
    - `holder_id IN allowed_holders`；
+   - **`session_id = session_scope`**（§7 方案 A，必填，缺省即拒绝查询而非放宽）；
    - `status='embedded'`；
    - **时间三重界**（Codex #7）：`julianday(registered_at) <= as_of` **且** `julianday(engram.created_at) <= as_of` **且** `(observed_at IS NULL OR julianday(observed_at) <= as_of)`。只查 `observed_at` 会让晚摄入的旧 transcript 出现在早期的知识快照里。
    - `erased_at IS NULL`、`retention_mode='audit_retain'`（与 `source_retriever.cpp:1377` 的现有条件一致）。
@@ -155,7 +156,7 @@ public:
 };
 ```
 
-`SourceSearchScope` 带 `tenant_id`、`std::vector<std::string> holders`（**多值**）、`as_of`、`include_unknown_time`。
+`SourceSearchScope` 带 `tenant_id`、`std::vector<std::string> holders`（**多值**）、`session_scope`（§7，**单值，必填**）、`as_of`、`include_unknown_time`。
 
 **成本要写明**：SQLite 后端的 `search` 是**全量扫描 + 排序**（与现有 `SqliteBlobVectorIndex` 同构）。在 source unit 数量达到数万级之前可接受，但这是已知的扩展性上限，必须进当轮验收指标（查询延迟 p50/p95 随 unit 数的曲线）。zvec 后端可作为后续替换，接口为此预留。
 
@@ -171,6 +172,7 @@ CREATE TABLE source_unit_vectors (
   engram_ref   TEXT NOT NULL,
   clause_id    TEXT NOT NULL,
   holder_id    TEXT NOT NULL,
+  session_id   TEXT NOT NULL,               -- §7 方案 A：会话作用域，检索必填
   dim          INTEGER NOT NULL CHECK (dim > 0),
   model        TEXT NOT NULL,
   index_vector BLOB,
@@ -183,6 +185,7 @@ CREATE TABLE source_unit_vectors (
   FOREIGN KEY (tenant_id, engram_ref) REFERENCES engrams(tenant_id, id) ON DELETE CASCADE
 );
 CREATE INDEX idx_source_unit_vectors_scan ON source_unit_vectors(tenant_id, status);
+CREATE INDEX idx_source_unit_vectors_scope ON source_unit_vectors(tenant_id, session_id, status);
 ```
 
 `retry_count` 与 `last_attempt_at` 是照现有 worker 的字段补的（`embedding_worker.cpp:90,103-108`），v1 漏了。
@@ -238,24 +241,35 @@ v1 声称自由文本 `remember` 与 OpenClaw 的原文也会变得可召回—�
 
 v2 明确：**本轮只覆盖 Dashboard transcript 摄入**。其他来源若需要，各自在其摄入点加调用，另立工作。`ingest_clock` 这一来源语义因此只对"将来接入的其他来源"有意义，本轮没有实际用例——保留定义，但要在文档里说明它当前是空转。
 
-## 7. 授权语义（Codex #4，需要用户裁定）
+## 7. 授权语义（用户 2026-10-20 裁定：方案 A）
 
-v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权集 `{self, 当前对话方}`。Codex 指出两个问题，都成立：
+v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权集 `{self, 当前对话方}`。Codex #4 指出两点，均成立：所有项目的助手话轮都记在 `self` 下，任何对话都能召回任何项目的助手输出（而助手输出常转述第三方）；`{project}` 用目录 basename，同名目录会合并。
 
-1. **`self` 不是对话隔离**。所有项目的 assistant 话轮都记在 `self` 下，于是任何对话都能召回任何项目的助手输出——而助手输出经常引用或总结第三方内容（比如转述用户提到的同事）。字面上满足 holder allowlist，实质上破坏了"不涉及第三方"。
-2. **`claude-code:{project}` 用的是目录 basename**，同名目录会合并成同一个人。
+### 7.1 裁定：会话级隔离（A）
 
-**v2 的候选方案（需裁定）**：
+- **`session_scope`**：每个 source unit 携带一个会话作用域。取值 = 摄入 job 的 `transcript_path` 文件名（即 Claude Code 会话 UUID），写入 unit 现有的 `session_id` 字段（合同已有该字段，`claim_contract.cpp:123`）。
+- **授权集**：`{holder@session_scope}`，检索时强制 `session_scope = 当前会话`，跨会话一律不返回。
+- **`turn_index`**：该 transcript 文件内的单调序号（现在 `clean_turns` 丢弃了它，§6.2 一并补回）。
+- **project 标识修正**：`project` 不再用 `os.path.basename(cwd)`（同名目录会合并），改用 cwd 全路径的稳定哈希，仅在扩宽开关 W 下使用。
 
-| 方案 | 内容 | 代价 |
-|---|---|---|
-| A. 会话级隔离 | 引入 `session_scope`（= transcript 会话 id 或 job id），授权集从 `{self, 对话方}` 收紧为 `{self@session_scope, 对话方@session_scope}`；跨会话不召回 | 需要 `source_unit_vectors` 与检索都带 session 维度；`source_turn` 合同已有 `session_id`，可复用 |
-| B. 保持 `self`，但只召回"当前会话" | 检索时强制 `session_id = 当前会话` | 简单，但左脑退化为"当前对话内的记忆"，跨会话的通用记忆能力（本任务的目标）基本消失 |
-| C. 保持现状，接受跨项目 | 不做隔离 | 与"不涉及第三方"冲突，不推荐 |
+### 7.2 必须写明的后果（A 的代价）
 
-**我倾向 A**，但它会改变"左脑是通用记忆"的能力边界——跨会话召回是通用记忆的核心。所以这不是纯技术取舍，需要你定。
+**A 关掉了跨会话召回，而本设计的全部评测证据都是跨会话的**：LongMemEval 的时序题每题有 47 个会话、LoCoMo 每个对话 10 组。因此：
 
-在裁定前，v2 采用**保守的中间态**：`self` 的 assistant 话轮**只按 session 召回**（等价 B），`user` 话轮按对话方 holder 召回（跨会话）。这样一个项目内的对话记忆仍然可用，同时不会把别的项目的助手总结带进来。这条要标注为"临时，待裁定"。
+- 84.1% / +29.2pp 这些数字**不能直接搬成 A 下的生产预期**。A 下左脑只回答"本次会话里说过什么"。
+- 这一条不是实现细节，是能力边界的改变。如果目标是"跨会话的通用记忆"，A 只是安全底座，不是终点。
+
+### 7.3 扩宽开关 W（默认关闭，需单独决定）
+
+为了让 A 的机制不被浪费，v2 定义一个具名的扩宽策略，与 A 同一套机制、只改授权集的构造：
+
+- **W = 同 project 内跨会话**：`allowed_scopes = 该 project 的全部 session`，其中 project = cwd 全路径哈希（不用 basename）。
+- 默认关闭。打开需要：① Codex 级的安全复核（助手的转述仍可能跨会话泄漏，只是限制在同一项目内）；② 一次配对评测，确认跨会话收益真实存在且非基准特异性。
+- W 关闭时行为完全等于 A，因此可以共存、可分阶段启用。
+
+### 7.4 本轮落地范围
+
+本轮**只实现 A**，W 只留接口与开关位，不实现扩宽逻辑。这样安全边界先立起来，能力扩宽作为独立决策。
 
 ## 8. 开关
 
@@ -284,7 +298,7 @@ v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权
 | 类别 | 用例 |
 |---|---|
 | 单元 | unit 解析（含版本前缀）、`clause_id` 稳定性、时间三重界、多 holder 检索、payload-speaker 复核拒绝伪造行 |
-| 授权 | 混合说话人 engram；擦除后**立即**不可见（不靠清理任务）；generation 过期 job 不得回填 |
+| 授权 | 混合说话人 engram；擦除后**立即**不可见（不靠清理任务）；generation 过期 job 不得回填；**跨会话不可召回**（A）；缺 `session_scope` 时拒绝查询而非放宽；同名 cwd 目录不合并 |
 | 渲染 | `SOURCE` 行多行原文转义后不产生 `[FACT]`；`neutralize_recall_fence` 仍生效；`render_time=false` 时不带日期；`ingest_clock` 不渲染日期 |
 | 融合 | RRF 名次计算；同分稳定；字节预算截断计数；abstain 在"只有 source"时不误拒 |
 | 生命周期 | pending→embedded；重试耗尽转 failed；模型变更清空并重排；重建后 unit 数与 payload 行数一致 |
@@ -326,9 +340,11 @@ v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权
 | 13 | P2 | 采纳：§8 `render_time` 默认改为 `false`；兼容性主张收窄；枚举追加在末尾但要求审计自省代码 |
 | 14 | P2 | 采纳：§4.3 更正 RRF 理由（名次而非分数）、删除不存在的 `min_source_items`、§11 更正进攻判据与预算口径、§3 照搬父 spec 的 intent 限制 |
 
-## 14. 待实施前确认
+## 14. 待实施前确认（用户 2026-10-20 已裁定，全部按建议）
 
-1. **§7 的授权方案 A/B/C**（是否引入 session scope）——这条决定左脑是否还是"跨会话通用记忆"。
-2. **§4.4** 三个语句侧否决条件在 source 有命中时是否仍应拒答（v2 选了保守：仍拒答）。
-3. **§5.4** 嵌入重试耗尽（3 次）后永久 failed 是否可接受，或需要"授权回退 + 显式不完整检索"。
-4. **迁移编号 `0037`** 是否与其他在途工作冲突。
+1. **§7 授权** —— 裁定：**A（会话级隔离）**。已落到 §7.1-§7.4：`session_scope` = transcript 会话 UUID，授权集 `{holder@session_scope}`，跨会话不返回；project 标识改用 cwd 全路径哈希；扩宽开关 W（同 project 跨会话）只留接口与开关位，本轮不实现。
+2. **§4.4 三个语句侧否决条件** —— 裁定：按建议，**仍拒答**（保守），拒答理由里保留 `source_available=true` 供诊断。
+3. **§5.4 嵌入重试耗尽** —— 裁定：按建议，`retry_count>=3` 永久 failed，但必须让检索侧可见：`source_partial=true` 进 receipt，且 Vitals 暴露"聚合积压 + 永久失败数"，不得让"没检索到"与"索引没建好"在外部看起来一样。
+4. **迁移编号 `0037`** —— 已核实无冲突：仓内最新是 `0036_replay_ledger_tenant.sql`，本分支无其他迁移。
+
+**A 带来的已知矛盾（必须随设计一起交付，不得隐藏）**：A 关闭跨会话召回，而本轮全部评测证据是跨会话的（LongMemEval 每题 47 会话、LoCoMo 10 组）。因此 §1 的读数**不能作为 A 的生产预期**；A 下左脑只回答"本次会话里说过什么"。跨会话能力属于开关 W，需要单独的安全复核与配对评测。这一点写进交付说明的显眼位置。
