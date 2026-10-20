@@ -81,7 +81,7 @@
 
 | 事实 | 依据 | 对左脑的影响 |
 |---|---|---|
-| **群体成员这一路是死的** | `record_group_membership` 以 `source_engram_id = nullopt` 写入；可见性查询要求 `source_engram_id IS NOT NULL` | 实际只有**三路**起作用（在场、明确告知、可访问来源）。"agent 属于某个群体就能看到群体内的话"**目前做不到**；若模拟器需要，要么修这条（右脑行为也会变，须单独评估），要么改为逐个 agent 写在场 |
+| **群体成员这一路现在不工作，用户 2026-10-20 裁定"修"** | `record_group_membership` 以 `source_engram_id = nullopt` 写入；可见性查询的 membership 分支要求 `source_engram_id IS NOT NULL`。另外 `insert_frontier_fact` 在两个 id 都为空时用 `random_hex_32()` 合成主键，所以**重复调用会插入重复行**（不是幂等） | 见 §3.2b 的修法 |
 | **在场记录先写入的时间赢** | 主键合成为 `cognizer:engram`，`INSERT OR IGNORE`（`insert_presence`）| 事后用更早时间补写会被**静默忽略**；首次写入若用了偏晚的时间，该 engram 在这之前的 as-of 查询里不可见。因此 presence 必须在**原话写入的同一事务里、用世界时刻**一次写对，不能依赖事后回填 |
 | **"明确未被告知"按 engram 整体扣除，且不看时间先后** | `EXCEPT` 按 `source_engram_id` 扣，不比较 `asserted_at` 的先后 | 对一句话标"X 未被告知"会把**整个 engram**（同组所有原话）对 X 扣掉；之后再标"已告知"也恢复不了。按 `(场景, 听众)` 分组后一个 engram 可能含多句话，粒度变粗。v4.1 规定：左脑**不使用** `explicit_not_told` 表达可见性，"谁没听到"由不把他写进听众来表达 |
 
@@ -92,6 +92,31 @@
 **粒度要求**：`visible_engrams_at` 按 engram 判可见。若一个 engram 混入不同听众的话（A 先对 B 说一句、再对 C 说一句），engram 级判断就会错。因此 **写入必须按 `(session_id, 听众集合)` 分组成 engram**，一个 engram 内所有原话的听众相同、场景相同。见 §5.1。
 
 **说话人与听众的关系**：说话人默认属于听众（说的人当然知道自己说了什么）；写入时若 `audience` 不含 `speaker`，自动补上。听众为空的单元拒收（`empty_audience`）。
+
+### 3.2b 修群体成员这条路（用户 2026-10-20 裁定"修"）
+
+**现状是坏的，有两处缺陷**：
+1. `record_group_membership` 写入时 `statement_id` 与 `source_engram_id` 都为空（`knowledge_frontier.cpp` 的该函数），而 `visible_engrams_at` 的 membership 分支要求 `source_engram_id IS NOT NULL` ——**这条路永远贡献 0 条可见 engram**。
+2. `insert_frontier_fact` 在两个 id 都为空时用 `random_hex_32()` 合成主键，`INSERT OR IGNORE` 形同虚设，**重复调用会插入重复行**。
+
+**修法取"写入时展开"，不取"查询时按组成员关系扩展"**：
+
+| 方案 | 做法 | 判断 |
+|---|---|---|
+| **写入时展开（采用）** | 调用方给出听众时可以直接写 `audience = ["alice","bob","group:team"]`。C++ 在写入事务内把 `group:*` 展开成**当时**的成员列表，再按 §5.1 分组、逐 agent 写在场记录 | 语义正确：感知是**当时**发生的事实，后来加入组的人不该凭空获得之前的记忆。且不新增可见性分支，不改 `visible_engrams_at` |
+| 查询时扩展（不采用） | 让 membership 分支返回组成员能看到的 engram | 需要 engram→group 的关联与成员有效期，且"后来入组能看到历史上所有组内对话"在模拟器里是错的 |
+
+**随之要修的两处底层缺陷**（都属于 C++ 核心，须带测试）：
+1. `record_group_membership` 改为可幂等：合成主键加入 `metadata_json` 里的 `group_id`，使同一 `(cognizer, group_id)` 只留一行（现状是随机 id，会重复）。
+2. 明确并记录 `visible_engrams_at` 的实际语义：**membership 分支在修好之前永远为空**。文档不再宣称"五路并集"，改为"三路有效 + 一处待修"。
+
+**组本身怎么存**：`record_group_membership` 已有 `metadata_json={"group_id":...}` 的写法，但它只记录"某 cognizer 属于某组"，**没有"组在某时刻有哪些成员"的可查询视图**。写入时展开需要一个按 `group_id` 查成员的查询，实现上就是 `SELECT cognizer_id FROM cognizer_frontier_facts WHERE fact_kind='membership' AND json_extract(metadata_json,'$.group_id')=? AND asserted_at <= ?`。这条查询要加到 `KnowledgeFrontier`，并由它负责展开，**不由 Python 展开**（边界裁定：授权语义在 C++）。
+
+**右脑影响**：修好 membership 幂等本身不改变任何现有可见性（因为该分支此前恒为空，且现在仍不参与 `visible_engrams_at`）。真正的行为变化来自 §3.4b 的在场权威统一。因此这两项可以分开评审、分阶段落地：
+- 先做 §3.4b（统一在场权威）+ 幂等修复，这两项都不改 `visible_engrams_at` 的语义；
+- 写入时展开是左脑 lane 新增的能力，只影响左脑新写入的数据。
+
+**测试要求**：同一组重复写同一批原话不产生重复在场行；组在 T1 有成员 {a,b}、T2 加入 c，T1 的原话对 c 不可见、T2 之后的可见；空组拒收（`empty_group`）；组内成员不在 `allowed` 租户范围内时拒绝。
 
 ### 3.3 场景是元数据，不是召回边界
 
