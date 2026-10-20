@@ -75,7 +75,15 @@
 
 **规则**：查询主体 P（`perspective`，未设则为 `querier`）能召回一个原话单元 u，当且仅当 u 所在的 engram 属于 `KnowledgeFrontier::visible_engrams_at(tenant, P, as_of)`。
 
-`visible_engrams_at` 已实现并在用（`knowledge_frontier.cpp`；调用方：`tom_engine.cpp:30`、`mentalizing_know.cpp:139`、`retrieval_planner.cpp:125`），语义是五路并集减一路：在场记录 ∪ 被明确告知 ∪ 可访问来源 ∪ 群体成员 − 明确未被告知。这正是社会情境模拟需要的认知模型，左脑直接复用，不自造授权逻辑。
+`visible_engrams_at` 已实现并在用（`knowledge_frontier.cpp`；调用方：`tom_engine.cpp:30`、`mentalizing_know.cpp:139`、`retrieval_planner.cpp:125`）。它的 SQL 写成"在场记录 ∪ 被明确告知 ∪ 可访问来源 ∪ 群体成员 − 明确未被告知"。左脑直接复用，不自造授权逻辑。
+
+**v4.1 更正（Codex 四轮，已逐条核对代码）——这套机制的实际语义比 SQL 的写法窄，左脑必须按实际语义设计：**
+
+| 事实 | 依据 | 对左脑的影响 |
+|---|---|---|
+| **群体成员这一路是死的** | `record_group_membership` 以 `source_engram_id = nullopt` 写入；可见性查询要求 `source_engram_id IS NOT NULL` | 实际只有**三路**起作用（在场、明确告知、可访问来源）。"agent 属于某个群体就能看到群体内的话"**目前做不到**；若模拟器需要，要么修这条（右脑行为也会变，须单独评估），要么改为逐个 agent 写在场 |
+| **在场记录先写入的时间赢** | 主键合成为 `cognizer:engram`，`INSERT OR IGNORE`（`insert_presence`）| 事后用更早时间补写会被**静默忽略**；首次写入若用了偏晚的时间，该 engram 在这之前的 as-of 查询里不可见。因此 presence 必须在**原话写入的同一事务里、用世界时刻**一次写对，不能依赖事后回填 |
+| **"明确未被告知"按 engram 整体扣除，且不看时间先后** | `EXCEPT` 按 `source_engram_id` 扣，不比较 `asserted_at` 的先后 | 对一句话标"X 未被告知"会把**整个 engram**（同组所有原话）对 X 扣掉；之后再标"已告知"也恢复不了。按 `(场景, 听众)` 分组后一个 engram 可能含多句话，粒度变粗。v4.1 规定：左脑**不使用** `explicit_not_told` 表达可见性，"谁没听到"由不把他写进听众来表达 |
 
 **与右脑的关键差异（必须写明）**：planner 现在只在 `perspective ≠ querier` 时才套 frontier 遮罩（`retrieval_planner.cpp:121`：`need_mask = perspective != q.querier`）。agent 查**自己**的记忆时不做感知过滤——对右脑这是对的，因为语句本身按 `holder_id` 归属，查自己的信念不需要遮罩。**左脑不能沿用**：原话不按 holder 归属，自查时若不过滤，agent X 就能召回它从未听到的话。因此 **source lane 无条件按 P 套 `visible_engrams_at`**，不论 `perspective` 是否等于 `querier`。
 
@@ -95,6 +103,31 @@
 ### 3.4 移除的内容
 
 v3 的 `SourceScope{Off|Session|Project}`、`project_key`、Session/Project 两套授权规则**全部移除**。理由：感知授权已经给出了正确的认知边界，作用域模式与之重复且在多智能体下是错的；`project_key` 的身份稳定性问题（Codex 二轮 #2、三轮 #7）随之消失。`ConverseParams`/`PlannerQuery` 不再需要新增作用域字段——查询主体已经由现有的 `querier`/`perspective` 表达。
+
+### 3.4b 左脑写在场记录会改变右脑的结果（v4.1，Codex 四轮最重要的一条）
+
+**这不是假设，是代码事实**：
+- 严格语义来源链接下，右脑抽取**刻意复用** `retain_source_turns` 注册的同一个 engram（`eval_ladder.py:588-591`、`:661-664`：`adapter_name="source_turns"`、同一 `source_prefix`，注释写明"否则严格语义来源链接会失败"）。所以右脑语句的 `evidence_json` 引用的正是左脑的原话 engram。
+- planner 的遮罩是"语句的任一证据 engram 可见，则语句可见"（`retrieval_planner.cpp:345-356`，按子串匹配 `evidence_json`）。
+- `does_X_know`：语句的任一证据 engram 对 X 可见，结果就从 `Unknowable` 变为 `NotKnown`（`mentalizing_know.cpp:142-145`）。
+
+**因此**：左脑给某个 engram 的听众写在场记录，从这个 engram 抽出的右脑语句就对这些听众可见，ToM 的"X 知道吗"结果也随之改变。**只含原话、没有被抽取的 engram 不产生信念**——影响只发生在左右脑共用的 engram 上。
+
+**这是想要的行为，不是泄漏**：B 在场听 A 说话，B 理应能看到"A 相信什么"，ToM 推理"B 是否知道"也理应改变。这正是"左右脑共用同一个感知边界"的意思。**但它必须有唯一的权威**，现在有两个写入者：
+
+| 写入者 | 写入的在场集合 | 位置 |
+|---|---|---|
+| 右脑抽取 | `{holder, interlocutor}` 两人对 | `extractor.cpp:867-871`（无 interlocutor 时为 `{holder}`）|
+| 左脑原话 | 调用方声明的 `audience` | §5.1 |
+
+在场是并集。两者不一致时，可见性是二者之并——例如右脑把 `interlocutor="claude-code:{project}"` 这样的字符串写成了在场者，或多智能体场景下右脑的两人对漏掉第三个在场者。
+
+**v4.1 的规则**：**同一 engram 的在场集合只有一个权威，即左脑写入时声明的 `audience`。** 当一个 engram 既被左脑注册、又被右脑抽取时，右脑抽取的 `perceived_by` 必须取自该 engram 的 `audience`，而不是自行用 `{holder, interlocutor}` 推断。这需要改右脑抽取的一处默认值（`extractor.cpp:867-871`），属于 C++ 核心改动，必须带回归测试：
+- 单人或两人场景下行为不变（`audience` 恰为 `{holder, interlocutor}` 时结果逐字节相同）；
+- 多智能体场景下右脑可见性 = 左脑声明的听众，不多不少；
+- SocialMemBench（0.7825）与 HiToM 的嵌套信念结果不下降。
+
+**这是 v4.1 新增的一处右脑改动，违背了"右脑不动"的初始约束**，但它是左右脑成为一个系统的必要代价：不统一在场权威，两套写入会产生不一致的可见性。必须在评审中明确批准。
 
 ### 3.5 为世界/场景任务铺路（本设计内做，零成本）
 
@@ -124,7 +157,8 @@ v3 的 `SourceScope{Off|Session|Project}`、`project_key`、Session/Project 两�
      - 理由：`observed_at` 是渲染日期与 as-of 语义的唯一依据；缺失时既不能排序也不能截断。这类 unit 仍存在于库中（可审计），只是不进召回。这要在 receipt 里计数 `source_no_time`。
    - `erased_at IS NULL`、`retention_mode='audit_retain'`（对齐 `source_retriever.cpp:1377`）。
 3. **回填（Codex 二轮 #8）**：v2 的"取 k×3"不保证 k 条——若前 3k 全被去重或复核拒绝，后面还有合法行也拿不到。v3 改为**迭代回填**：以倍增批量取（k、2k、4k…，上限 `k_max=200`），直到凑够 k 条或遍历完符合条件的集合；若遍历完仍不足，返回实际条数并在 receipt 标 `source_truncated=true`（截断），**不**标成"语料不足"。
-4. **payload 交叉校验（数据完整性，不是授权）**：解析 unit → `unit.session_id == 索引行 session_id` → `P ∈ unit.audience` → 内容哈希与 `engrams.content_hash` 一致 → `erased_at IS NULL`。任一不符丢弃并计数 `source_unit_rejected` / `audience_mismatch`。**注意**：这一层只防索引与 payload 错配，不建立所有权（§3.1）；真正的认知边界是第 2 步的感知过滤。
+4. **payload 交叉校验（数据完整性，不是授权）**：解析 unit → `unit.session_id == 索引行 session_id` → 内容哈希与 `engrams.content_hash` 一致 → `erased_at IS NULL`。任一不符丢弃并计数 `source_unit_rejected`。**注意**：这一层只防索引与 payload 错配，不建立所有权（§3.1）；真正的认知边界是第 2 步的感知过滤。
+   - **v4.1 更正（Codex 四轮）**：v4 在这里还有一步 `P ∈ unit.audience`，**这与感知规则自相矛盾**——通过 `explicit_told` 获得可见性的 agent 不在听众列表里，会被它错误拒绝。v4.1 删除该步。授权**只**由第 2 步的 `visible_engrams_at` 决定；`audience` 只作诊断与重建用，不参与授权。
 5. **与 `global_holder_filter` 的交互**：左脑不受它约束（它是语句侧的 holder 过滤），但若查询同时设置了 `global_holder_filter` 且其值不在感知主体内，照现有 `invalid_scope_filter_mix`（`retrieval_planner.cpp:204-212`）拒绝整次查询，不静默降级。
 
 ### 4.3 融合：RRF
@@ -178,7 +212,7 @@ v3 写"写入路径不变"。**不成立**。v4 在此基础上又改了一处**
 
 1. **分组键从 speaker 改为 `(session_id, audience 集合)`**。现状 `source_retriever.cpp:1279-1283` 用 `std::map<speaker, turns>` 按说话人分组，同一说话人的话跨会话、跨听众会被并成一个 engram；而 `visible_engrams_at` 按 engram 判可见（§3.2），一个 engram 混了不同听众就会错判。**一个 engram 必须是"一个场景 + 一组固定听众"**，组内可以有多位说话人（`speaker` 仍逐句保留，用于渲染归属，不再用于授权）。
 2. **写入时必须记录在场**：对 `audience` 中每个 agent 调 `KnowledgeFrontier::record_presence_from_statement(tenant, audience, engram_id, observed_at, conn)`。presence 是感知授权的数据来源，漏记等于让这些 agent 永远召回不到——这必须是原子的一部分。
-3. **`retain_source_turns` 内部自行提交**（`source_retriever.cpp:1291` 的 `TransactionGuard`），无法与"入队 pending 向量行 + 记录 presence"原子完成。必须改为在同一事务内完成三件事（原文、pending 向量行、presence），否则会出现"原文写成功、但召不到"或"索引有了、感知没记"的静默不一致。
+3. **原文、pending 向量行、presence 必须同一事务完成**，否则会出现"原文写成功、但召不到"或"索引有了、感知没记"的静默不一致。**v4.1 更正（Codex 四轮）**：v4 说"`retain_source_turns` 内部自行提交、无法原子"是错的——`TransactionGuard` 支持嵌套（`connection.hpp:44`：最外层守卫持有 `BEGIN IMMEDIATE`，内层用 SAVEPOINT），所以外层开一个事务包住即可，**不需要改 `retain_source_turns` 的提交方式**。工作量比 v4 估的小。
 4. **删除 `project_key` 相关写入**（§3.4 已移除该概念）。
 
 这四处是 v4 的主要实现面，工作量不小，不能按"复用现有原语"估算。**grouping 变化还会改变幂等键**：engram 的幂等键是 `sha256(payload)` 前 16 hex（`memory_ops.cpp:65`），分组键变化会改变 payload 内容，因此**历史数据的分组与新版不一致**，需要迁移策略：旧 engram 保留原样（其听众按 `speaker` 回填为单元素听众集），新写入按新键分组。这一点必须写进迁移。
@@ -325,7 +359,9 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 
 ## 8. 与右脑及不变量
 
-不改右脑三通道、六态机、§0.1、Bus 单入口。source unit 无状态，不参与六态机。事实权威在 Statement 图，`[SOURCE]` 靠转义与 fence 保证不冒充。检索/融合/渲染全在 C++，Python 只做信封适配与三元组构造。
+不改右脑三通道的**抽取逻辑与输出形状**、不改六态机、§0.1、Bus 单入口。source unit 无状态，不参与六态机。事实权威在 Statement 图，`[SOURCE]` 靠转义与 fence 保证不冒充。检索/融合/渲染全在 C++，Python 只做信封适配与三元组构造。
+
+**唯一例外（v4.1，§3.4b）**：右脑抽取写入的 `perceived_by` 必须改为取自该 engram 的 `audience`，否则左脑的在场记录与右脑的两人对推断会产生不一致的可见性。这是本设计**唯一**触碰右脑的改动，需要明确批准，并带"两人场景逐字节不变 + SocialMemBench/HiToM 不下降"的回归测试。
 
 ## 9. 测试矩阵（Codex 二轮 #11）
 
