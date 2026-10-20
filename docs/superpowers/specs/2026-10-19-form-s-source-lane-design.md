@@ -1,14 +1,16 @@
-# 形态 S：带日期的原文通道进入生产召回（完整设计 v2）
+# 形态 S：带日期的原文通道进入生产召回（完整设计 v3）
 
-日期 2026-10-20（v1 同日出，经 Codex 评审后全面重写；四项待决问题已由用户裁定，见 §14）。状态：**设计稿，未实现**。评审前不动 C++。
+日期 2026-10-20（v1→v2 经 Codex 首轮 14 条，v2→v3 经二轮 12 条）。状态：**设计稿，未实现**。
 
-**v2 相对 v1 的实质变化**：v1 自造了一套并行 `source_entries` + 交替融合，绕过了父 spec（[双脑设计](2026-10-17-dual-brain-general-memory-design.md)）已经设计好的 `Candidate` variant、RRF(k=60)、第 9 标签 `[SOURCE]`、`neutralize_recall_fence`。v2 回到父 spec 的路线，并逐条修掉 Codex 的 14 条发现。逐条处置见 §13。
+**v3 相对 v2 的实质变化**：v2 把授权当成"调用方传一个 scope"的过滤问题，v3 承认它是**信任边界问题**——`SourceScope` 必须由摄入作业权威签发，且索引元数据必须与 payload 交叉验证。v3 还撤回了 v2 的一个错误承诺（Project 机制同轮实现），并重写了 abstain（v2 用名次判据，会把无关结果当证据）。
 
 ## 0. 结论
 
-左脑 = 一条原文召回 lane：原始话轮存 `source_documents` + engram，按**向量**检索，以 `[SOURCE]` 标签渲染，与右脑语句候选**在同一个 `Candidate` variant 上融合**。复用现有写入/存储/授权原语；新增的是 source 单元的向量索引、嵌入生命周期、以及 planner 内部的类型化候选重构。
+左脑 = 一条原文召回 lane：原始话轮存 `source_documents` + engram，按**向量**检索，以 `[SOURCE]` 标签渲染，与右脑语句候选在同一 `Candidate` variant 上 RRF 融合。
 
-## 1. 证据（不在本文重述实验）
+**但必须先说清能力边界**：本轮实现的是**会话内**召回（`Session` 模式）。跨会话召回（`Project` 模式）的**机制**设计完整，但**不实现、不暴露**，因为它没有被评测过，也没有被安全复核过。§1 的读数是"跨会话条件下的检索证据"，不是 Project 模式的验证，更不是 Session 模式的预期。
+
+## 1. 证据及其正确边界
 
 | 事实 | 读数 |
 |---|---|
@@ -18,383 +20,320 @@
 | BM25 证据召回@20 | 55.1%（向量 89.4%），34 题零证据 |
 | 抽取对个人事件的保留率 | 11.1% |
 
-结论：原文通道要进生产；检索必须向量，不能沿用 BM25。
+**这些实验实际是什么**（v2 的 §7.5 说错了，这里更正）：
+
+- LongMemEval 113 道时序题：每题 haystack 有 **41 到 58 个会话，中位 47，只有 14 道题正好 47**（v2 写"每题 47 个会话"是错的）。
+- LoCoMo：**10 个对话组，每组 19 到 32 个会话**（v2 写"每组 10 个会话"是错的）。
+- 评测实现是**每题/每组一个独立库**，把话轮平铺成 statement 行后直接调 `SemanticRetriever`（`spike_run.py:78,113`、`locomo_l1.py:115`）。它**没有**经过 `SourceScope`、没有项目身份、没有跨库隔离、没有 planner 融合。
+
+**因此准确的表述是**：这是"在互相隔离的基准库里观察到的跨会话检索证据"。它说明**跨会话能力有价值**，但它**不是**任何生产模式的验证——尤其不是 Session 模式（那些题本来就是多会话的），也不是 Project 模式（没有项目边界参与）。
+
+**这条直接决定了落地顺序**：本轮先做能安全落地的（会话内），跨会话作为独立项目，配它自己的评测（把每个基准库映射成一个显式 project、并测混合库）与安全复核。
 
 ## 2. 接入点与生效范围
 
-生产召回有四条路径，只有两条经过 `RetrievalPlanner`：
-
 | 入口 | 经过 planner | 位置 |
 |---|---|---|
-| `/api/converse`、`/ws/converse` | 是 | `engine.py:495-514` → `_memory_core.py:254-263` → `memory_ops.cpp:376`（planner 调用在 `:395`）|
+| `/api/converse`、`/ws/converse` | 是 | `engine.py:495-514` → `_memory_core.py:254-263` → `memory_ops.cpp:376`（planner 在 `:395`）|
 | `/api/recall` 带 intent | 是 | `commands.py:114-129` → `engine.py:598` → `_memory_core.py:220-241` → `retrieval_planner.cpp:86` |
-| `/api/recall` 不带 intent | 否 | `commands.py:130-137` → `_memory_core.py:196-218`；`mode="completion"` 走 `PatternCompletor`，不是 `vector_recall` |
+| `/api/recall` 不带 intent | 否 | `commands.py:130-137` → `_memory_core.py:196-218`；completion 模式走 `PatternCompletor` |
 | OpenClaw recall / workingSet | 否 | `runtime.ts:123`、`index.ts:112-114` |
 
-**决定 D4-a**：左脑 lane 只接 `RetrievalPlanner` 内部（fetch → fuse → render）。这是**范围限制，不是 bug**：另外三条路径有各自独立的取数逻辑，接它们另立设计。交付说明必须写清，不能让"左脑只在部分入口生效"被误读。
+左脑只接 planner 内部。这是范围限制，不是缺陷。
 
-**同时修正 v1 的错误表述**：v1 说这让三条入口"自动获得"——错。planner 内部改动不会让 Python 侧的返回结构自动带上 source，见 §4.4。
+**intent 限制照搬父 spec**（`2026-10-17-...md:102-118`）：FACT_LOOKUP、HISTORY、PREFERENCE、ABSTAIN_CHECK 开；BELIEF_OF_OTHER、META_BELIEF、COMMON_GROUND、COMMITMENT_DUE、NORM_LOOKUP 不开。
 
-## 3. 检索范围：父 spec 的 intent 表照搬
+## 3. 作用域：签发、校验、传播
 
-父 spec（`2026-10-17-...md:100-118`）规定左脑只在四个 intent 开启，五个不开。v2 照搬，不重新发明：
+### 3.1 为什么这是信任边界，不是过滤器（Codex 二轮 #1）
 
-| Intent | 左脑 |
+v2 的做法是"调用方在请求里传 scope"。问题：`SourceScope` 由调用方提供，而 Dashboard 的鉴权只有**一个配置 bearer token**（`auth.py:9-30`，常量时间比较、无会话/项目成员概念）。传什么值都由调用方决定，等于没有边界。
+
+v3 分两层：
+
+1. **签发（authoritative issuance）**：`session_id` 与 `project_key` 在**摄入作业被 claim 的那一刻**从 job 记录确定，写进 unit 元数据，此后不可变。job 里本来就有 `session_id`（`ingest_session.py:66` 写入 `{"session_id","transcript_path","cwd","tenant"}`），只是 `engine.py:883` 现在没用它——v3 用它。
+2. **校验（cross-check）**：检索时向量行只提供定位 `(engram_ref, clause_id)`。取回 payload 后必须验证 **`unit.session_id` 与索引行的 `session_id` 一致**，不一致即丢弃并计 `scope_mismatch`（Codex 二轮 #1 指出的正是这个缺口：v2 只校验 speaker 与 hash，不校验会话）。
+
+`project_key` 的签发（本轮不实现 Project 模式，但要签发，见 §3.3）：从 job 的 `cwd` 与（若存在）git remote 计算，**在 claim 后冻结**，重试复用同一值。
+
+### 3.2 会话内模式（`Session`，本轮唯一实现）
+
+- 授权集：`{holder@session_id}`；
+- 检索条件：`session_id = 当前会话`；
+- **前提缺口（Codex 二轮 #5）**：现在没有任何调用方知道"当前会话"。摄入是 SessionEnd 作业，而 Dashboard 聊天与那个 transcript UUID 没有关联。
+
+v3 的处理不是假装它存在，而是**明确定义消费者**：
+
+| 消费者 | 会话如何确定 |
 |---|---|
-| FACT_LOOKUP、HISTORY、PREFERENCE、ABSTAIN_CHECK | 开 |
-| BELIEF_OF_OTHER、META_BELIEF、COMMON_GROUND、COMMITMENT_DUE、NORM_LOOKUP | **不开** |
+| `POST /api/converse`、`WS /ws/converse` | 请求体新增可选 `session_id`；**调用方（Claude Code 集成、脚本）必须显式传入**，Dashboard 网页端不传则 lane 不工作 |
+| `POST /api/recall`（带 intent） | 同上 |
+| `Memory.query`（Python） | 新增可选 `session_id` 参数 |
+| OpenClaw | 本轮不接 |
 
-理由：后五类是右脑的社会心智语义，原文通道不改善它们，且会引入无关上下文。`HISTORY` 下 source 按 `observed_at` 升序。
+**这意味着**：Session 模式的真实用法是"按会话回看"，不是"聊天时自动带记忆"。**如果要做后者，需要先解决"当前会话如何被发现"**——那是一个独立的集成问题（Claude Code 侧的 hook 要把 session id 传给 Dashboard），不在本设计内。
+
+这一条必须写进交付说明，否则会误以为"接上就能用"。
+
+### 3.3 跨会务模式（`Project`，机制设计完整，本轮不实现）
+
+Codex 二轮 #4 指出 v2 自相矛盾：§7.6 说"同轮实现机制"，§14 说"只留接口"。**v3 撤回实现承诺**，只保留：
+
+- 模式定义：授权集 `{holder@project_key}`，检索 `project_key = 当前项目`；
+- **写入侧仍然签发并存储 `project_key`**（列 + 值），因为不这么做，日后启用就要重灌全部历史数据。这是**数据先见**，不是代码先见——写数据不等于实现检索分支。
+- 不实现 `Project` 检索分支、不加开关暴露、不加未测的授权逻辑。
+
+**project_key 的稳定性（Codex 二轮 #2，v2 说错）**：v2 写"移动仓库会改变 key"。**改法**：优先用 git remote URL 的规范化哈希——remote 不变则仓库移动**不会**改变 key；没有 remote 时才退回 `cwd` 绝对路径哈希（这时移动会变，属于已知限制）。同一 remote 的多个克隆会合并成同一 project，这是**设计意图**（同一个项目的不同工作副本）。`--bootstrap` 作业的 `cwd` 为空（`ingest_session.py:96`），这类导入**不签发 project_key**，留空，日后按"未知来源"处理，不猜。
+
+### 3.4 缺省语义（Codex 二轮 #11）
+
+v2 同时写了"缺省即 Off"与"缺省即拒绝"，矛盾。v3 统一：
+
+- 请求**未提供** scope 字段 → `Off`，lane 不工作（正常情况）；
+- 请求提供 scope 但**格式非法或字段冲突**（如 `mode=Session` 却无 `session_id`）→ **拒绝查询**（`invalid_source_scope`），不静默降级；
+- `Project` 模式在开关关闭时收到请求 → 拒绝（`source_scope_mode_disabled`），**不允许用请求参数开启**。
 
 ## 4. 检索与融合
 
-### 4.1 类型化候选（父 spec 的设计，v2 采纳）
+### 4.1 类型化候选
 
-`FetchedRow`、`RerankCandidate`、`StatementRow`、按 statement ID 去重、claim 证据校验、标签分类全是 statement 形状。v1 用"并行向量"绕开它们，代价是 source 完全进不了计数、receipt 与 Python 返回（Codex #2）。
+采用父 spec 的 `std::variant<StatementCandidate, SourceCandidate>`。`SourceCandidate` 字段：`tenant_id`、`engram_ref`、`clause_id`、`holder_id`、`session_id`、`project_key`、`turn_index`、`observed_at`（**unit 级**，见 §5.3）、`text`、`score`、`rrf_rank`。
 
-v2 采用父 spec 的 `std::variant<StatementCandidate, SourceCandidate>`：
+**去重身份（Codex 二轮 #8）**：v2 只写 `(tenant, engram_ref, clause_id)`，但增长的 transcript 快照会得到新 engram_ref，导致同一话轮重复出现、白白占上下文。v3 改为与现有 observer 一致的元组去重：`(holder, session_id, turn_id 或 turn_index, observed_at, text)`（参照 `source_retriever.cpp:1423` 的 `seen_turns` 构造）。
 
-```cpp
-struct StatementCandidate { StatementRow row; double score; ContextPackLabel label; /* 现状 */ };
-struct SourceCandidate {
-    std::string tenant_id, engram_ref, clause_id, holder_id;
-    std::string session_id; std::optional<int> turn_index;
-    std::string observed_at;            // 渲染用；来源见 §4.5
-    TimeProvenance provenance;          // source_turn | caller_supplied | ingest_clock | unknown
-    std::string text;
-    double score = 0.0;                 // 融合前为向量相似度，融合后为 RRF
-    int rrf_rank = 0;
-};
-using Candidate = std::variant<StatementCandidate, SourceCandidate>;
-```
+### 4.2 fetch
 
-`identity` 分别为 statement id 与 `(tenant_id, engram_ref, clause_id)`；去重按 identity。这是 planner 内部重构，工作量计入 P1（父 spec 已如此声明）。
-
-### 4.2 fetch：source 候选
-
-1. 问题文本嵌入（与语句腿同一 embedder、model、dim；**dim/model 不匹配的行一律不参与**）。
-2. `search_topk` 于 source 向量索引（§5.2），**过滤条件全部下推到 SQL，且在任何排序之前**：
+1. 问题嵌入（与语句腿同 embedder/model/dim；不匹配的行不参与）。
+2. `SourceVectorIndex::search`，**所有条件在 SQL 下推、排序之前**：
    - `tenant_id` 精确匹配；
    - `holder_id IN allowed_holders`；
-   - **授权作用域**（§7.3-7.4）：`Session` 模式下 `session_id = 当前会话`；`Project` 模式下 `project_key = 当前项目`。作用域缺失或为 `Off` 时**不检索**，不放宽；
+   - **scope**：`Session` 下 `session_id = ?`；`Off` 不检索；
    - `status='embedded'`；
-   - **时间三重界**（Codex #7）：`julianday(registered_at) <= as_of` **且** `julianday(engram.created_at) <= as_of` **且** `(observed_at IS NULL OR julianday(observed_at) <= as_of)`。只查 `observed_at` 会让晚摄入的旧 transcript 出现在早期的知识快照里。
-   - `erased_at IS NULL`、`retention_mode='audit_retain'`（与 `source_retriever.cpp:1377` 的现有条件一致）。
-3. **top-k 之后再过滤的问题（Codex #7 第二条）**：上一步已把时间/授权条件下推，所以不会出现"高分全被时间过滤掉、剩下的空"。若仍需二次过滤（如同一 unit 的重复），采用**取 k×3 候选再回填**，保证最终返回 k 条或明确不足。
-4. **payload-speaker 复核（Codex #3）**：向量行只提供 `(engram_ref, clause_id)` 定位，**不能信任它的 `holder_id`**。取出 engram `payload_inline` 后必须重做与 `source_retriever.cpp:1396` 相同的校验：解析 unit、`unit.speaker == holder_id`、内容哈希与 `engrams.content_hash` 一致、`erased_at IS NULL`。任一不符则丢弃并计数 `source_unit_rejected`。**许可来自 payload，不来自索引行。**
-5. **perspective frontier 交叉（Codex #3）**：source 命中的 engram 必须与 planner 现有的可见 engram 集相交（类型化 join，不用子串 mask，沿用父 spec 的 v2 授权规则）。与 `global_holder_filter` 的交互照现有拒绝逻辑（`retrieval_planner.cpp:204-212` 的 `invalid_scope_filter_mix`）处理：source lane 的 `allowed_holders` 若与 `global_holder_filter` 不一致，直接拒绝整次查询，不静默降级。
+   - **时间三重界**：`registered_at <= as_of` 且 `engram.created_at <= as_of` 且 **`observed_at IS NOT NULL AND observed_at <= as_of`**。
+     - v2 写 `(observed_at IS NULL OR ...)` 与"无时间不可见"自相矛盾（Codex 二轮 #9 指出）。v3 明确：**source lane 只召回有可信时间的 unit**，`observed_at IS NULL` 的一律不进候选。
+     - 理由：`observed_at` 是渲染日期与 as-of 语义的唯一依据；缺失时既不能排序也不能截断。这类 unit 仍存在于库中（可审计），只是不进召回。这要在 receipt 里计数 `source_no_time`。
+   - `erased_at IS NULL`、`retention_mode='audit_retain'`（对齐 `source_retriever.cpp:1377`）。
+3. **回填（Codex 二轮 #8）**：v2 的"取 k×3"不保证 k 条——若前 3k 全被去重或复核拒绝，后面还有合法行也拿不到。v3 改为**迭代回填**：以倍增批量取（k、2k、4k…，上限 `k_max=200`），直到凑够 k 条或遍历完符合条件的集合；若遍历完仍不足，返回实际条数并在 receipt 标 `source_truncated=true`（截断），**不**标成"语料不足"。
+4. **payload 交叉校验**：解析 unit → `unit.speaker == holder_id` → `unit.session_id == 索引行 session_id`（§3.1）→ 内容哈希与 `engrams.content_hash` 一致 → `erased_at IS NULL`。任一不符丢弃并计数。
+5. **frontier 交叉**：命中的 engram 必须与 planner 的可见 engram 集相交（类型化 join）。与 `global_holder_filter` 不一致时照现有 `invalid_scope_filter_mix`（`retrieval_planner.cpp:204-212`）拒绝整次查询。
 
-### 4.3 fuse：RRF（修正 v1 的错误理由）
+### 4.3 融合：RRF
 
-v1 拒绝 RRF 的理由是"两路分数不可比"——**这是错的**。RRF 正是为此设计的：它用**名次**而非分数，`Σ 1/(k + rank)`，`k=60`，因此两路分数分布无需可比。v2 采用父 spec 的 RRF。
+两路各自按名次，`score = Σ 1/(60 + rank)`，`k=60`（RRF 用名次，不需要分数同分布——v1 的相反说法是错的）。融合后按 score 降序、同分按 identity 稳定排序，每行带 `lane` 与 `rrf_rank` 进 `score_breakdown`。统一字节预算（`chunk_byte_budget`，默认 8000），按整行截断，计数 `budget_skipped`。不引入 `min_source_items`（父 spec 已放弃该参数）。
 
-- 两路各自排序得到名次；
-- `score = 1/(60 + rank_statement) + 1/(60 + rank_source)`（某路缺席则该路项为 0）；
-- 融合后按 score 降序，同分按 identity 稳定排序；
-- 每行带 `lane` 与 `rrf_rank` 进 `score_breakdown`；
-- 最终上下文受**统一字节预算**约束（`chunk_byte_budget`，默认 8000）；截断按整行，计数 `budget_skipped`。
+### 4.4 abstain（Codex 二轮 #6，v2 的判据是错的）
 
-父 spec 已放弃 `min_source_items`（v1 引用了它，实际不存在），v2 也不引入：RRF 自然决定两路比例，人为下限需要单独实测才配得上一个参数。
+v2 用 `best_source_rank <= k` 判"有证据"——**这等于取消低分保护**：只有 source 候选时，最不相关的那条也是 rank 1，自动通过。
 
-### 4.4 abstain（Codex #1）
+v3 改为**分数判据 + 预算后判定**：
 
-v1 只改 `any_candidates`，**不够**：`evaluate_abstention` 的四个条件里，`max_score < tau_recall`（默认 **0.25**，`abstention.hpp:10`）在"只有 source 命中、没有语句"时仍会触发拒答，因为 `max_score` 取自语句重排分。
+- source 候选的相似度分数与语句的 `final_score` 不可直接比，所以**分别设阈值**：`tau_source`（新配置项，默认待实测确定，初始取与 `tau_recall=0.25` 同量级但必须由一次标定实验给出，不拍脑袋）；
+- `AbstentionInput` 增加 `best_source_score`（无 source 为 `-inf`）；
+- 判据：`any_candidates || best_source_score >= tau_source`；
+- **预算之后判定**：只有当该 source 行**实际进入了渲染后的 context pack** 才算证据（被字节预算截掉的不能用来宣称"有证据"）；
+- 语句侧三个否决条件（frontier/recanted/conflict）对 source 不适用，但成立时仍拒答，理由里带 `source_available` 供诊断（保守，见 §14）。
 
-v2 定义：
-- **`max_score` 取融合后最高分，但两路分数量纲不同，所以按 lane 分别归一**：语句路沿用现有 `final_score` 与 `tau_recall` 比较；source 路用**融合名次**判据——只要 source 候选进入融合结果前 `k` 名，即视为"有证据"。实现上给 `AbstentionInput` 增加 `best_source_rank`（无 source 为 INT_MAX），判据为 `best_source_rank <= k`。
-- `frontier_denied`、`only_recanted_evidence`、`unresolved_conflict` 三个**语句侧**条件保持不变，且对 source **不适用**（source 无状态、无冲突边）。但要注意：当三个条件之一成立而 source 有命中时，**不能**因此豁免——它们表达的是"语句侧知道但不可用"，与"另有原文可用"是两件事。v2 的规则是：这些条件成立时**仍然拒答**，但拒答理由里保留 `source_available=true` 供诊断。这一条是保守选择，需要评审确认。
-- `Sufficiency`（`retrieval_receipt.hpp:18`，含 `MISSING_INFO`）在 source 有命中时不得为 `MISSING_INFO`；source 检索被降级（§6.3）时另设 `source_partial` 标记。
+`tau_source` 未标定前，**lane 默认关闭**——这一步是硬约束，不允许用未经标定的阈值上线。
 
-### 4.5 渲染（Codex #6、#11）
+### 4.5 渲染
 
-**v1 的事实错误**：payload 不是"换行分隔的 JSON 行"，而是**带版本前缀的行**（`turn_prefix = "@starling/source-turn-v1 "`，`claim_contract.cpp:120`；容错前缀 `v2` 在 `:121`）。`units()` 产出的 unit 里 `text` 是**整行原文**（含前缀），解析出的说话内容字段是 `utterance`（`claim_contract.cpp:178` 附近的注释与解析）。v2 按实际结构写。
+**payload 的真实结构（v2 已更正，此处确认）**：带版本前缀的行（`turn_prefix="@starling/source-turn-v1 "`，`claim_contract.cpp:120`；容错 `v2` 在 `:121`）。`units()` 产出的 unit 里 `text` 是整行原文，解析后的说话内容在 `utterance`（`claim_contract.cpp:194`）。
 
-**时间来源必须可区分（Codex #6 第二条）**：写合同只接受六个字段（`claim_contract.cpp:123`），无法携带来源与精度，因此：
-- 在**读侧**由 engram 的 `adapter_name` 决定来源：`source_turns`（transcript 摄入）→ `source_turn`；其他 → `ingest_clock`。这条规则必须写死在 C++，不靠调用方传参。
-- 渲染规则：`source_turn` **渲染日期**；`ingest_clock` **不渲染日期**（行仍出现）；`unknown` 不可见（已被 §4.2 过滤）。
-- 若将来要携带逐 unit 的来源，需扩展合同到 v3 并在 C++ 内做版本分派；v2 明确**不做**，只记录为技术债。
+**时间来源（Codex 二轮 #9，v2 的判断仍然错）**：v2 说"按 `adapter_name` 区分 `source_turn` 与 `ingest_clock`"——**不成立**，因为 `retain_source_turns` 对所有调用都写死 `adapter_name="source_turns"`（`source_retriever.cpp:1297`）。
 
-**多行原文的标签注入（Codex #11）**：原文若含 `\n[FACT] ...`，逐行前缀方案会让续行冒充权威标签。v2 的处理：
-- 渲染为单行：换行替换为 `\n` 转义，与 `[SOURCE]` 行内 JSON 化一致（现有 observer 就是 JSON 转义，`source_retriever.cpp:1444`）；
-- 或在每个续行前加 `  ` 缩进 + 不产生标签前缀。**选前者**（JSON 转义），因为它与现有 observer 行为一致，且可机械验证。
-- `neutralize_recall_fence`（`memory_ops.cpp:360`，在 `:408` 被调用）**继续作用于** SOURCE 行，不可省。
+v3 的处理：
+- **来源由写入路径决定，不由 adapter_name 推断**。本轮只有一个写入路径（transcript 摄入），其 `observed_at` 一律来自事件时间 → 一律 `source_turn`。
+- 将来若有 `ingest_clock` 来源，必须在 `source_unit_vectors` 或 unit 元数据里**显式存一个 provenance 字段**（合同升到 v3），不能靠 adapter_name 猜。
+- 因此 v2 里"`ingest_clock` 不渲染日期"这条规则本轮**没有用例**，保留定义但不实现分支。
 
-**标签**：`ContextPackLabel` 追加 `SOURCE`（`context_pack.hpp:15` 现有 FACT…ABSTAIN 共 8 个）。**追加在末尾**，不插入中间——插入会重编号后续枚举值。Python 镜像同步（`bind_05_retrieval.cpp:274-282`）。
+**多行注入（Codex 首轮 #11）**：原文换行 JSON 转义为单行，续行不产生标签前缀；`neutralize_recall_fence`（`memory_ops.cpp:360`，在 `:408` 调用）继续作用于 SOURCE 行。
 
-### 4.6 计数、receipt 与 Python 返回（Codex #2）
+**标签**：`ContextPackLabel` **追加** `SOURCE` 在末尾（`context_pack.hpp:15`），现有值编号不变；Python 镜像同步（`bind_05_retrieval.cpp:274-282`）。枚举自省会变，需审计所有遍历/长度断言。
 
-只加候选类型不够，下游仍只认语句：
-- `PlannerResult` 增加 `std::vector<SourceEntryOut> source_entries`（供需要原文字段的调用方），但**计数与充分性以融合后的 `entries` 为准**；
-- `RetrievalReceipt` 增加 `source_candidates`、`source_selected`、`source_rejected`、`source_partial`；
-- Python 侧：`memory.py:186-194` 与 `engine.py:610-620` 现在只序列化 `e.row.subject_id/predicate/object_value`。**必须同时改**：source 条目输出 `{"kind":"source","engram_ref":…,"clause_id":…,"holder":…,"observed_at":…,"text":…,"label":"SOURCE","score":…}`，并保留 `kind:"statement"` 区分。不改的话，source 会出现在 `context_pack` 里却在 `results` 中消失——这正是 Codex 说的"上下文里有、结果里没有"。
+### 4.6 计数、receipt、Python 返回
 
-## 5. 存储与索引
+- `PlannerResult` 增加 `source_entries`；**计数与充分性以融合后的 `entries` 为准**；
+- `RetrievalReceipt` 增加 `source_scope_mode`、`source_candidates`、`source_selected`、`source_rejected`、`source_no_time`、`source_truncated`、`source_partial`、`source_degraded_reason`；
+- Python 侧**两处返回结构不同，v2 说错了**（Codex 二轮 #12）：
+  - `memory.py:189-190` 返回 `{"row": e.row, ...}`——整个 row 对象，不是扁平字段；
+  - `engine.py:613-617` 是扁平化 `subject/predicate/object`。
+  - 两处都要改：source 条目带 `kind:"source"` 与 `engram_ref/clause_id/holder/session_id/observed_at/text`；statement 条目补 `kind:"statement"` 保持向后兼容。
 
-### 5.1 写入（不变）
+## 5. 存储
 
-`retain_source_turns`（`source_retriever.cpp:1267`）。payload 格式见 §4.5（版本前缀行）。写入本身不需要改，但**读侧需要新的元数据**（§4.5 的来源判定），所以 `source_documents` 需要记录 `adapter_name`（或复用 engram 的）——v2 选择**直接 join engrams.adapter_name**，不加列。
+### 5.1 写入侧不是"不变"（Codex 二轮 #7，v2 说错）
 
-### 5.2 向量索引：明确是新后端（Codex #9）
+v2 写"写入路径不变"。**不成立**，有三处必须改：
 
-v1 写"另建一张表"是**低估**。实际问题：
-- `VectorIndex::insert/search_topk/remove` 的 id 参数叫 `stmt_id`，`SearchScope` 只带一个 `holder_id`（单值），`search_topk` 实现 `JOIN statements`（`sqlite_blob_vector_index.cpp:60` 附近）；
-- 返回类型 `ScoredId` 只有 id + 分数，装不下 `(engram_ref, clause_id)` 复合身份；
-- planner 拿不到 `SemanticRetriever` 私有的 embedder（`semantic_retriever.hpp:32`）。
+1. **`source_documents` 按 speaker 分组，不是按会话**（`source_retriever.cpp:1279-1283` 用 `std::map<speaker, turns>`）。同一 speaker 在多个会话的话轮会被并成一个 engram，**document 级 `session_id` 无法表达**。v3 必须：要么按 `(speaker, session_id)` 分组，要么把 `session_id` 存到 **unit 级**元数据。选择**后者**（unit 级），因为 unit 级元数据对检索与渲染都需要。
+2. **`retain_source_turns` 内部自行提交**（`source_retriever.cpp:1291` 的 `TransactionGuard`），无法与"入队 pending 向量行"原子完成。v3 要加一个可选参数或在同一事务内追加插入，保证"原文写入成功但向量没入队"不会留下静默空洞。
+3. **`project_key` 需要写入**（§3.3）。
 
-因此 v2 明确：**新增 `SourceVectorIndex` 抽象**，不复用 `VectorIndex`：
+这三处是 v3 的主要实现面，工作量不小，不能按"复用现有原语"估算。
+
+### 5.2 向量索引：新后端
+
+`VectorIndex` 硬绑 `statement_vectors`（`sqlite_blob_vector_index.cpp:27`）、`SearchScope` 单 holder、返回 `ScoredId` 只有 id+分数、planner 拿不到 `SemanticRetriever` 的私有 embedder。因此新增：
 
 ```cpp
-struct SourceVectorHit { std::string engram_ref, clause_id, holder_id; double score; };
+struct SourceVectorHit { std::string engram_ref, clause_id, holder_id, session_id; double score; };
 class SourceVectorIndex {
 public:
-    virtual ~SourceVectorIndex() = default;
-    virtual void upsert(persistence::Connection&, const SourceUnitKey&, std::string_view tenant,
-                        std::string_view holder, const std::vector<float>& v, std::string_view model, int dim) = 0;
-    virtual std::vector<SourceVectorHit> search(persistence::Connection&, const std::vector<float>& q,
+    virtual void upsert(persistence::Connection&, const SourceUnitKey&, const SourceUnitMeta&,
+                        const std::vector<float>&, std::string_view model, int dim) = 0;
+    virtual std::vector<SourceVectorHit> search(persistence::Connection&, const std::vector<float>&,
                                                 int k, const SourceSearchScope&) = 0;
     virtual void erase(persistence::Connection&, std::string_view tenant, std::string_view engram_ref) = 0;
 };
 ```
 
-`SourceSearchScope` 带 `tenant_id`、`std::vector<std::string> holders`（**多值**）、`SourceScope scope`（§7.3：模式 + session_id/project_key）、`as_of`、`include_unknown_time`。
+SQLite 实现是**全量扫描 + 排序**，与现有实现同构。这是已知扩展性上限，必须进验收指标（延迟随 unit 数曲线）。依赖注入：给 `RetrievalPlanner` 增加可选 `SourceLaneDeps{SourceVectorIndex*, EmbeddingAdapter*, int dim, std::string model}`，为空即关闭。两个 planner 构造点都要接线。
 
-**成本要写明**：SQLite 后端的 `search` 是**全量扫描 + 排序**（与现有 `SqliteBlobVectorIndex` 同构）。在 source unit 数量达到数万级之前可接受，但这是已知的扩展性上限，必须进当轮验收指标（查询延迟 p50/p95 随 unit 数的曲线）。zvec 后端可作为后续替换，接口为此预留。
+### 5.3 表（含 unit 级元数据）
 
-**依赖注入**：planner 需要一个 embedder 引用。v2 的做法是给 `RetrievalPlanner` 构造参数增加**可选的** `SourceLaneDeps{SourceVectorIndex*, EmbeddingAdapter*, int dim, std::string model}`，为空时等于关闭。不改 `SemanticRetriever` 的封装。
-
-### 5.3 表
-
-迁移 `0037_source_unit_vectors.sql`（当前最新 `0036`）：
+迁移 `0037_source_unit_vectors.sql`（仓内最新 `0036`，无冲突）：
 
 ```sql
 CREATE TABLE source_unit_vectors (
-  tenant_id    TEXT NOT NULL,
-  engram_ref   TEXT NOT NULL,
-  clause_id    TEXT NOT NULL,
-  holder_id    TEXT NOT NULL,
-  session_id   TEXT NOT NULL,               -- §7.4：会话作用域（A 模式检索键）
-  project_key  TEXT NOT NULL,               -- §7.4：项目作用域（W 模式检索键，写入即填，避免日后重灌）
-  dim          INTEGER NOT NULL CHECK (dim > 0),
-  model        TEXT NOT NULL,
-  index_vector BLOB,
+  tenant_id     TEXT NOT NULL,
+  engram_ref    TEXT NOT NULL,
+  clause_id     TEXT NOT NULL,      -- unit 在 payload 内的稳定编号
+  holder_id     TEXT NOT NULL,
+  session_id    TEXT NOT NULL,      -- §3，unit 级，签发后不可变
+  project_key   TEXT,               -- §3.3，可为空（bootstrap/未知来源）
+  turn_index    INTEGER,
+  observed_at   TEXT,               -- unit 级；NULL = 无可信时间，不参与召回
+  dim           INTEGER NOT NULL CHECK (dim > 0),
+  model         TEXT NOT NULL,
+  index_vector  BLOB,
   raw_embedding BLOB,
-  status       TEXT NOT NULL CHECK (status IN ('pending','embedded','failed')),
-  retry_count  INTEGER NOT NULL DEFAULT 0,      -- Codex #8：现有 worker 依赖
+  status        TEXT NOT NULL CHECK (status IN ('pending','embedded','failed')),
+  retry_count   INTEGER NOT NULL DEFAULT 0,
   last_attempt_at TEXT,
-  embedded_at  TEXT,
-  PRIMARY KEY (tenant_id, engram_ref, clause_id),
-  FOREIGN KEY (tenant_id, engram_ref) REFERENCES engrams(tenant_id, id) ON DELETE CASCADE
+  embedded_at   TEXT,
+  PRIMARY KEY (tenant_id, engram_ref, clause_id)
 );
-CREATE INDEX idx_source_unit_vectors_scan ON source_unit_vectors(tenant_id, status);
-CREATE INDEX idx_source_unit_vectors_scope ON source_unit_vectors(tenant_id, session_id, status);
+CREATE INDEX idx_suv_scope   ON source_unit_vectors(tenant_id, session_id, status);
+CREATE INDEX idx_suv_project ON source_unit_vectors(tenant_id, project_key, status);
+CREATE INDEX idx_suv_scan    ON source_unit_vectors(tenant_id, status);
 ```
 
-`retry_count` 与 `last_attempt_at` 是照现有 worker 的字段补的（`embedding_worker.cpp:90,103-108`），v1 漏了。
+`observed_at` 必须在这张表里，因为 §4.2 要在排序前按它过滤（Codex 二轮 #7）。
 
-**`ON DELETE CASCADE` 不足以实现擦除（Codex #5）**：`clear_tenant`（`memory_ops.cpp:642`）是物理删整个租户，不是 engram 擦除钩子；且级联不会处理"设 `erased_at`"。v2 明确：
-- **擦除 = 读侧过滤 + 异步清理**：§4.2 的查询条件已含 `erased_at IS NULL`，所以被擦除的 engram 其 source unit **立即不可见**，不依赖向量表是否清干净；
-- 清理任务由 `ProjectionMaintainer` 风格的 tick 执行（删除 `engrams.erased_at IS NOT NULL` 对应的向量行），滞后计入 Vitals；
-- `clear_tenant` 的删除列表加入 `source_unit_vectors`（与 `source_documents` 同列，`memory_ops.cpp:642`）；
-- **立即性证明**：必须有一条测试——擦除 engram 后**同一事务外**立刻查询，该 unit 必须不出现（靠读侧过滤而非清理任务）。
+### 5.4 擦除
 
-### 5.4 嵌入生命周期（Codex #8）
+- **读侧立即生效**：查询条件含 `erased_at IS NULL`，被擦除 engram 的 unit 立刻不可见，不依赖清理任务；
+- 异步清理：tick 删除 `engrams.erased_at IS NOT NULL` 的向量行，滞后进 Vitals；
+- `clear_tenant` 的删除列表加入 `source_unit_vectors`（`memory_ops.cpp:642` 附近）；
+- 测试必须有：擦除后同一事务外立刻查询，该 unit 不出现。
 
-v1 说"kind 分发"，没说清谁驱动。v2 补全：
+### 5.5 嵌入生命周期
 
 | 环节 | 做法 |
 |---|---|
-| 待处理单元的产生 | `retain_source_turns` 成功后，在同一事务内为每个 unit 插 `status='pending'` 行（只写元数据，不算向量） |
-| 谁嵌入 | 现有 `EmbeddingWorker` 的 tick 里按 kind 分支：语句分支现状不变；source 分支扫 `source_unit_vectors WHERE status IN ('pending','failed') AND retry_count < 3` |
-| 背填 | 已存在的 `source_documents`（评测脚本写入的历史数据）在首次启用时一次性扫描入队；**这是迁移的一部分**，不是运行时行为 |
-| 重试与退避 | 沿用现有语义：失败 `retry_count+1`、`last_attempt_at` 更新、`retry_count>=3` 永久 failed |
-| 模型/维度变更 | **必须同时清空 source 向量**。现有行为只删 `statement_vectors`，不清 source 会让新旧模型向量混在一张表里、余弦不可比。变更路径需同时置 `status='pending'` |
-| 原子发布 | 一条 unit 的写入是单行 UPSERT，天然原子；批量 tick 用 SAVEPOINT |
-| 重建 | source 专用重建：从 `source_documents` + payload 重新枚举 unit；现有 repair guard 的计数与分支是 statement 专用，**不能直接套用**，需各自的计数器与验证（重建后 unit 数与 payload 行数一致） |
-| 增量幂等 | payload 幂等（`sha256` 前 16 hex）保证重复摄入不重切；但**增长的 transcript 批次**不等于幂等——同一 engram 若被追加内容会得到新 ref，旧 ref 的向量保留，这是预期行为，需在测试里固定 |
+| 产生 | `retain_source_turns` 内为每个 unit 插 `pending` 行（与原文写入同一事务，§5.1 第 2 点） |
+| 驱动 | 现有 `EmbeddingWorker` tick 按 kind 分支；source 分支扫 `status IN ('pending','failed') AND retry_count < 3` |
+| 背填 | 首次启用时一次性把已有 `source_documents` 入队（迁移的一部分，非运行时） |
+| 重试 | 沿用现有语义：`retry_count+1`、`last_attempt_at` 更新、`>=3` 永久 failed。**注意**：现有 worker **只按 retry_count 判定，没时间退避**（`embedding_worker.cpp:223` 的 SQL），v2 写"退避"是错的 |
+| 模型/维度变更 | 必须同时清空 source 向量并把 `retry_count` **重置为 0**、状态置 `pending`；否则永久 failed 的行会带着 `retry_count>=3` 永远不被处理（Codex 二轮 #10） |
+| 原子发布 | 单行 UPSERT 原子；批量 tick 用 SAVEPOINT |
+| 重建 | source 专用重建：从 `source_documents` + payload 重新枚举；repair guard 的计数与分支是 statement 专用，需各自的验证（重建后 unit 数 == payload 有效行数） |
 
-## 6. 写入侧
+### 5.6 降级可见性（Codex 二轮 #10）
 
-### 6.1 唯一摄入点
+`source_partial` 必须有**明确的触发规则**，不是只加个字段：
 
-`engine.py:892` 的摄入循环。v1 说"加一次 `retain_source_turns`"，但漏了三点（Codex #5）：
-
-1. **必须在现有锁与 clear-generation 检查下执行**。`engine.py:470` 有 generation 捕获，`engine.py:894` 有 `_TenantCleared` 与 `source_missing` 处理。新调用必须放在同一个 try 块内，否则旧 job 能把已清空的租户重新填满。
-2. `retain_source_turns` 经 `remember_prepare` 继承了写入门禁（`require_write_admission`，`memory_ops.cpp:56`），但**这不等于 generation 检查**——门禁拦的是运行时状态，generation 拦的是"这个 job 是否属于被清空之前"。
-3. 失败语义：`source_missing`（抽取期间租户被清）必须让整个 job 作废，与现有 remember 路径一致。
-
-### 6.2 `clean_turns` 的改动（Codex #12）
-
-`clean_turns`（`ingest_filter.py:23-52`）返回 `[(role, text)]`，且**会剥掉代码块与超长行**——所以它的输出**不是**原始对话文本。v2 明确：
-
-- 加时间：返回 `[(role, text, event_time)]`；
-- **但这会破坏 `chunk_dialogue` 的两元解包**（`ingest_filter.py:84-85`）。v2 不改 `chunk_dialogue` 的签名，而是**新增** `clean_turns_ts()` 返回三元组供 source lane 用，`clean_turns()` 保持原样供 `chunk_dialogue` 用。二者共用同一解析逻辑，避免行为漂移。
-- **记录已知损失**：source lane 拿到的是"清洗后"文本（无代码块、无超长行），不是逐字节原文。这与"原文通道"的承诺有差距，必须在设计里写明，不掩盖。
-
-### 6.3 时间精度（Codex #6 第三条，硬阻塞）
-
-`valid_observation_time` 的正则只接受**秒级**（`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?$`，`claim_contract.cpp:124`），而 transcript 的 `timestamp` 是毫秒级（`2026-10-17T10:17:33.385Z`）。**v1 的方案会被合同直接拒收。**
-
-v2 的处理：**在 Python 适配层截断到秒**（`2026-10-17T10:17:33Z`），不改 C++ 合同。理由：合同放宽精度会影响所有 `observed_at` 消费方（排序、as-of 比较），风险远大于收益；而毫秒对记忆语义无价值。这一条要在 `clean_turns_ts()` 里实现并有测试。
-
-### 6.4 其他来源（Codex #12 第 3 条，v1 错误）
-
-v1 声称自由文本 `remember` 与 OpenClaw 的原文也会变得可召回——**错**。本设计唯一的注册钩子是 Dashboard 的 transcript worker。自由文本路径不会调 `retain_source_turns`，因此它们的原文**不会**进入 source lane。
-
-v2 明确：**本轮只覆盖 Dashboard transcript 摄入**。其他来源若需要，各自在其摄入点加调用，另立工作。`ingest_clock` 这一来源语义因此只对"将来接入的其他来源"有意义，本轮没有实际用例——保留定义，但要在文档里说明它当前是空转。
-
-## 7. 授权语义（用户 2026-10-20 裁定：方案 A）
-
-v1 的映射是 `assistant → self`、`user → claude-code:{project}`，授权集 `{self, 当前对话方}`。Codex #4 指出两点，均成立：所有项目的助手话轮都记在 `self` 下，任何对话都能召回任何项目的助手输出（而助手输出常转述第三方）；`{project}` 用目录 basename，同名目录会合并。
-
-### 7.1 裁定：会话级隔离（A）
-
-- **`session_scope`**：每个 source unit 携带一个会话作用域。取值 = 摄入 job 的 `transcript_path` 文件名（即 Claude Code 会话 UUID），写入 unit 现有的 `session_id` 字段（合同已有该字段，`claim_contract.cpp:123`）。
-- **授权集**：`{holder@session_scope}`，检索时强制 `session_scope = 当前会话`，跨会话一律不返回。
-- **`turn_index`**：该 transcript 文件内的单调序号（现在 `clean_turns` 丢弃了它，§6.2 一并补回）。
-- **project 标识修正**：`project` 不再用 `os.path.basename(cwd)`（同名目录会合并），改用 cwd 全路径的稳定哈希，仅在扩宽开关 W 下使用。
-
-### 7.2 必须写明的后果（A 的代价）
-
-**A 关掉了跨会话召回，而本设计的全部评测证据都是跨会话的**：LongMemEval 的时序题每题有 47 个会话、LoCoMo 每个对话 10 组。因此：
-
-- 84.1% / +29.2pp 这些数字**不能直接搬成 A 下的生产预期**。A 下左脑只回答"本次会话里说过什么"。
-- 这一条不是实现细节，是能力边界的改变。如果目标是"跨会话的通用记忆"，A 只是安全底座，不是终点。
-
-### 7.3 召回作用域：前置缺口与载体
-
-A 与 W 都需要查询侧知道"当前是哪个会话、哪个项目"。**现状没有这个信息**：`ConverseParams`（`memory_ops.hpp:155-166`）只有 tenant / holder / interlocutor / adapter / created_at / message / recall_k，`/api/converse` 的 `ConverseBody` 也没有会话或项目字段。这是 A 与 W 共同的前置改动，不是 W 专属。
-
-新增一个值类型，随查询一路下传：
-
-```cpp
-enum class SourceScopeMode { Off, Session, Project };
-struct SourceScope {
-    SourceScopeMode mode = SourceScopeMode::Off;
-    std::string session_id;      // Session 模式必填 = transcript 会话 UUID
-    std::string project_key;     // Project 模式必填 = 项目稳定标识
-};
-```
-
-- 进 `PlannerQuery`（新增字段，默认 `Off`）与 `ConverseParams`；
-- `/api/converse` 的 `ConverseBody` 增加可选 `session_id`、`project_key`，Python 只透传（边界裁定：作用域语义在 C++）；
-- **缺省即 Off**：调用方不传 → 左脑 lane 不工作，不静默降级为某个默认作用域。
-
-`project_key` 的构造（Python 适配层，不入核心）：优先取 git remote URL 的规范化哈希；没有 remote 时取 `cwd` 绝对路径的哈希。**不用 basename**（Codex #4：同名目录会合并）。移动仓库会导致 project_key 变化，后果是"召回不到旧会话"——安全方向上的失败，可接受，但要在文档里写明。
-
-### 7.4 扩宽开关 W：同 project 内跨会话
-
-W 与 A 是同一套机制的两个 `SourceScopeMode`，只改授权集的构造方式：
-
-| 模式 | 授权集 | 检索条件 |
+| 情形 | 标记 | 外部表现 |
 |---|---|---|
-| `Off` | — | 不检索 |
-| `Session`（A，默认） | `{holder@session_id}` | `session_id = 当前会话` |
-| `Project`（W） | `{holder@project_key}` | `project_key = 当前项目`（跨该项目的全部会话）|
+| 查询嵌入失败 | `source_partial=true`, `reason=query_embed_failed` | 只有语句结果；receipt 明示 |
+| 存在 pending/未嵌入 unit | `source_partial=true`, `reason=index_pending`, 附带 `index_pending_count` | 同上 |
+| payload 复核拒绝 | `source_rejected>0`，不单独置 partial | 计数可见 |
+| 依赖未注入（lane 关闭） | `source_off` | 与"没检索到"区分 |
+| 重试耗尽 | `source_partial=true`, `reason=index_failed`, 附带 `index_failed_count` | 同上 |
 
-`source_unit_vectors` 与 `source_documents` 都要存 `session_id` **与** `project_key`，两者在写入时一次性确定，检索时按模式选其一做 SQL 下推。索引：`(tenant_id, project_key, status)`。
+Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查询，receipt 必须能区分"语料里没有"与"索引没建好"。
 
-**W 打开后必须可见**：receipt 记录 `scope_mode`、`sessions_matched`（该模式下可召回的会话数）、`sessions_contributing`（本次结果实际来自几个会话）。跨会话取回时，渲染行**保留日期**，让模型与用户都能看出这是别的会话的内容。
+## 6. 写入侧与 Python 适配
 
-**W 的残余风险（不得隐藏）**：
+### 6.1 摄入点
 
-1. **助手转述仍会跨会话**。W 把范围从"所有项目"收到"同一项目"，但同一项目里的助手输出依然可能总结第三方（"你同事说他下周休假"）。W 降低范围，不消除这一类泄漏。
-2. **共享目录会模糊 holder**。同一台机器上同目录的不同人，在 W 下会共享 `project_key`。这是部署问题，不是代码能解决的，必须写进部署说明。
-3. **时间上无界**。W 默认不设时间窗，会召回很久以前的会话。提供可选 `max_age_days`（默认不设），由部署方决定。
+`engine.py:892` 的循环内，**必须在现有锁与 generation 检查下**：generation 在 `engine.py:871` 捕获，`:470` 处检查；新调用放在同一 try 块内，`source_missing` 与 `_TenantCleared` 语义照现有 remember 路径。`retain_source_turns` 继承写入门禁（`memory_ops.cpp:56`），但门禁不等于 generation 检查。
 
-### 7.5 两份评测证据分别对应哪个模式
+### 6.2 时间与清洗
 
-这一点必须讲清，否则会把 W 的读数当成 A 的：
+- **毫秒截断**：`valid_observation_time` 只接受秒级（`claim_contract.cpp:124`），transcript 是毫秒（`2026-10-17T10:17:33.385Z`）。在 Python 适配层截断到秒，不改 C++ 合同。
+- **新增 `clean_turns_ts()`**：返回 `(role, text, event_time, turn_index)`；不动 `clean_turns()`，避免破坏 `chunk_dialogue` 的两元解包（`ingest_filter.py:84`）。
+- **已知损失**：`clean_turns` 剥掉代码块与超长行，source lane 拿到的是清洗后文本，不是逐字节原文。写明，不掩盖。
 
-| 实验 | 会话结构 | 对应模式 |
+### 6.3 来源范围（更正 v1 的错误）
+
+本轮**只有** Dashboard transcript 摄入会写 source lane。自由文本 `remember`、OpenClaw 写入都**不会**。`ingest_clock` 语义本轮无实际用例。
+
+## 7. 开关
+
+| 开关 | 默认 | 说明 |
 |---|---|---|
-| LongMemEval 113 道时序题（84.1%，`S1 − S0` +29.2pp）| 每题 47 个会话 | **W**（同题内跨会话）|
-| LoCoMo 1540 题（cat2 +57.6pp）| 每组 10 个会话 | **W** |
-| E3 召回深度（k=6/10/20）| 同上 | **W** |
+| `source_lane.enabled` | `false` | 关闭即不检索、不渲染 |
+| `source_lane.render_time` | `false` | 从属于 enabled |
+| `current_date_in_prompt` | `false` | 独立 |
 
-因此：**A 下没有任何实测预期**。A 只回答"本次会话里说过什么"，这是本任务目标之外的一个更窄的能力。W 才是与现有证据对得上的模式。
+**上线额外门槛**：`tau_source` 未标定前 lane 不得开启（§4.4）。
 
-### 7.6 落地顺序（本轮）
+## 8. 与右脑及不变量
 
-1. **先实现 A（`Session`）**：安全边界先立，语义最小，测试面最小。
-2. **同一轮内实现 `Project`（W）的机制**，但默认关闭、默认不暴露给 Dashboard：写入侧同时填 `project_key`（不填就没法在不重灌数据的前提下打开 W，这是先见之明而非过度设计），检索侧的 `Project` 分支实现并测好，开关默认 `Off`。
-3. W 的**启用**不在本轮，需要：一次安全复核（§7.4 三条残余风险），以及一次配对评测证明跨会话收益真实且非基准特异性。
+不改右脑三通道、六态机、§0.1、Bus 单入口。source unit 无状态，不参与六态机。事实权威在 Statement 图，`[SOURCE]` 靠转义与 fence 保证不冒充。检索/融合/渲染全在 C++，Python 只做信封适配与三元组构造。
 
-这样做的代价是写入侧多一列与多一次哈希计算，收益是 W 的启用不需要重灌历史数据。
+## 9. 测试矩阵（Codex 二轮 #11）
 
-## 8. 开关
-
-三个开关，**全部默认关闭**（修正 v1 的 `render_time=true`）：
-
-| 开关 | 默认 | 关闭时 |
-|---|---|---|
-| `source_lane.enabled` | `false` | 不检索、不渲染 |
-| `source_lane.render_time` | `false`（**且从属于 enabled**）| 行出现但不带日期，仅当 enabled=true 时才有意义 |
-| `current_date_in_prompt` | `false` | 不加 `Current Date` 行 |
-
-**兼容性（Codex #13 的修正）**：
-- `SOURCE` **追加**在枚举末尾（FACT…ABSTAIN 之后），现有枚举值编号不变；
-- 但**枚举自省会变**：任何对 `ContextPackLabel` 做遍历/长度断言的代码都会看到第 9 个值。必须审计 `tests/cpp/test_context_pack.cpp` 与所有 `switch`；
-- 固定行集快照只能证明**渲染字节**不变，**不能**证明 receipt、事件、摄入行为、worker 行为、Python 返回结构不变。v2 把兼容性主张收窄为"渲染字节 + 现有测试全绿"，不再声称更强的保证。
-
-## 9. 与右脑及不变量的关系
-
-- 不改右脑三通道抽取、六态机、§0.1、Bus 单入口；
-- source unit 无状态，不参与六态机；
-- 事实权威仍在 Statement 图；`[SOURCE]` 行靠 §4.5 的转义与 `neutralize_recall_fence` 保证不冒充；
-- 融合、检索、渲染全在 C++（边界裁定）；Python 只做 transcript 信封适配与三元组构造。
-
-## 10. 测试
-
-| 类别 | 用例 |
+| 组 | 用例 |
 |---|---|
-| 单元 | unit 解析（含版本前缀）、`clause_id` 稳定性、时间三重界、多 holder 检索、payload-speaker 复核拒绝伪造行 |
-| 授权 | 混合说话人 engram；擦除后**立即**不可见（不靠清理任务）；generation 过期 job 不得回填；**跨会话不可召回**（A）；缺 `session_scope` 时拒绝查询而非放宽；同名 cwd 目录不合并 |
-| 渲染 | `SOURCE` 行多行原文转义后不产生 `[FACT]`；`neutralize_recall_fence` 仍生效；`render_time=false` 时不带日期；`ingest_clock` 不渲染日期 |
-| 融合 | RRF 名次计算；同分稳定；字节预算截断计数；abstain 在"只有 source"时不误拒 |
-| 生命周期 | pending→embedded；重试耗尽转 failed；模型变更清空并重排；重建后 unit 数与 payload 行数一致 |
-| parity | `source_lane.enabled=false` 时 planner 输出与现状逐字节相同（固定行集快照） |
-| 端到端 | converse、带 intent 的 recall、`Memory.query` 三条路径都能返回 source 条目；不带 intent 的 recall 与 OpenClaw 明确断言**不返回** |
+| 作用域 | Session 排除兄弟会话；Project 含授权兄弟、排除其他项目与其他租户；未提供 scope=Off；非法或冲突字段=拒绝；开关关闭时请求 Project=拒绝；伪造索引 session/project 被 payload 交叉校验拒；frontier 拒绝高排名不可访问命中 |
+| 身份稳定性 | 移动仓库后 remote 不变则 key 不变；重试期间 remote 变化不得重分配；同名不同目录不合并；同目录复用；空 cwd/bootstrap 不签发；symlink/worktree；remote URL 规范化 |
+| 时间 | 无 `observed_at` 不召回且计 `source_no_time`；as-of 三重界；未来时间不泄漏 |
+| 去重与回填 | 重叠 transcript 不重复占上下文；拒绝数 > 3k 时仍能取到后续合法行或明确 `source_truncated` |
+| abstain | 只有 source 且全低分时**拒答**；入选但被预算截掉不算证据；`tau_source` 标定前后行为 |
+| 渲染 | 多行原文转义后不产生 `[FACT]`；fence 生效；`render_time=false` 无日期；枚举追加不自省破坏（审计所有遍历） |
+| 生命周期 | pending→embedded；重试耗尽；模型变更重置 retry_count；重建后 unit 数一致；查询嵌入失败时 `source_partial` |
+| Python | `Memory.query`（row 对象）与 Dashboard（扁平）两条返回都带 source 条目 |
+| parity | `enabled=false` 时 planner 输出与现状逐字节相同（固定行集） |
 
-## 11. 验收与预算
+## 10. 验收与预算
 
 - 守护：SocialMemBench 0.7825 不下降（固定行集比对）；
-- 不劣化：LoCoMo 全量复跑，非时序类不劣化（基线 +3.1pp）；
-- 进攻：父 spec 的原始判据是 `S_dual − max(S_full, S_rag) ≥ max(5pp, α_judge)`（`2026-10-17-...md:158`）。v1 写成 `S_left − S_rag` 是**错的**，v2 更正为父 spec 的原式；
-- 预算：父 spec 给的是 **两个基准各约 3e7**（`2026-10-17-...md:152,153`），不是合计 3e7。v1 写错，v2 更正，并说明本轮要各自申请。
+- 不劣化：LoCoMo 全量，非时序不劣化（基线 +3.1pp）；
+- 进攻：父 spec 原式 `S_dual − max(S_full, S_rag) ≥ max(5pp, α_judge)`（`2026-10-17-...md:158`）；
+- 预算：父 spec 给的是**两个基准各约 3e7**（`2026-10-17-...md:171`），不是合计；
+- **但注意**：本设计是 Session 模式，上述判据都是跨会话条件下定义的。Session 模式的评测需要**新的**判据与数据集（单会话内的问题），本轮不承诺进攻数字。
 
-## 12. 剩余风险
+## 11. 剩余风险
 
-1. **上下文体积**：S 臂中位 14,743 字符，约语句路径的 5.8 倍；k=6 时 74.8%。默认 k=10 是折中，生产延迟未实测。
-2. **SQLite 向量后端是全量扫描**：unit 数上到数万后延迟会退化，需要实测曲线与替换预案。
-3. **只接三条入口**：不带 intent 的 recall、OpenClaw、Working Set 不受益。
-4. **清洗后的文本不是逐字节原文**（§6.2），"原文通道"有损。
-5. **`ingest_clock` 来源本轮无实际用例**（§6.4）。
-6. **未实测**：`[SOURCE]` 前缀与评测臂 `- [日期] role: text` 的差异对模型的影响。
+1. 上下文体积：S 臂中位 14,743 字符，约语句路径 5.8 倍；默认 k=10 是折中，延迟未实测。
+2. SQLite 向量后端全量扫描，扩展性上限已知。
+3. 三条入口不覆盖（不带 intent 的 recall、OpenClaw、Working Set）。
+4. 清洗后文本不是逐字节原文。
+5. Session 模式需要调用方显式传会话 id，**Dashboard 网页端没有这个能力**，实际可用面比预期窄。
+6. `tau_source` 未标定，lane 不能上线。
+7. 未实测：`[SOURCE]` 前缀与评测臂格式差异对模型的影响。
 
-## 13. Codex 14 条逐条处置
+## 12. 二轮 12 条处置
 
 | # | 级别 | 处置 |
 |---|---|---|
-| 1 | P1 | 采纳：§4.4 重写 abstain，按 lane 归一，source 用 `best_source_rank`；三语句侧否决条件对 source 不适用但保留保守拒绝 |
-| 2 | P1 | 采纳：§4.4 改用 `Candidate` variant；§4.6 明确计数、receipt 与 Python 返回都要改；删除"自动获得"的错误表述 |
-| 3 | P1 | 采纳：§4.2 增加 payload-speaker 复核、内容哈希、erased/retention 条件、frontier 交叉、`global_holder_filter` 冲突拒绝 |
-| 4 | P1 | 采纳为待裁定：§7 给出 A/B/C 三案，v2 暂用保守中间态 |
-| 5 | P1 | 采纳：§5.3 用读侧过滤保立即性 + 异步清理 + `clear_tenant` 列表；§6.1 补 generation 检查与 `source_missing` 语义 |
-| 6 | P1 | 采纳并更正：§4.5 更正 payload 为版本前缀行、`utterance` 字段；§6.3 毫秒截断到秒；来源判定改为读侧按 `adapter_name` |
-| 7 | P1 | 采纳：§4.2 时间三重界下推、k×3 回填、去重键改为含 session/turn 元数据 |
-| 8 | P1 | 采纳：§5.4 补全嵌入生命周期（产生、驱动、背填、重试、模型变更、重建、增量语义），表补 `retry_count`/`last_attempt_at` |
-| 9 | P2 | 采纳：§5.2 明确新增 `SourceVectorIndex` 抽象（不复用 `VectorIndex`），并写明全量扫描成本与依赖注入 |
-| 10 | P1 | 采纳：§5.4 + §4.6 增加降级可见性（`source_partial`）与覆盖回执；**待评审**：是否需要授权回退或显式"不完整检索"结果 |
-| 11 | P1 | 采纳：§4.5 多行原文 JSON 转义，保留 `neutralize_recall_fence` |
-| 12 | P2 | 采纳：§6.2 新增 `clean_turns_ts()` 不改 `chunk_dialogue` 签名并记录清洗损失；§6.4 更正"其他来源可召回"的错误；§2 更正 completion 模式走 `PatternCompletor` |
-| 13 | P2 | 采纳：§8 `render_time` 默认改为 `false`；兼容性主张收窄；枚举追加在末尾但要求审计自省代码 |
-| 14 | P2 | 采纳：§4.3 更正 RRF 理由（名次而非分数）、删除不存在的 `min_source_items`、§11 更正进攻判据与预算口径、§3 照搬父 spec 的 intent 限制 |
+| 1 | P1 | 采纳：§3.1 改为"签发 + 交叉校验"双层；补 `unit.session_id == 索引 session_id` 校验；承认 auth 只有 bearer token |
+| 2 | P1 | 采纳并更正：§3.3 project_key 用 remote 哈希（移动不改 key），重试冻结，bootstrap 不签发；撤回"移动必然改 key" |
+| 3 | P1 | 采纳：§1 更正会话数（41-58/中位 47/14 题正好 47；LoCoMo 10 组各 19-32 会话）与"这是隔离基准库里的跨会话证据" |
+| 4 | P1 | 采纳：§3.3 撤回"同轮实现 Project 分支"；只签发并存储 project_key，不实现检索分支 |
+| 5 | P1 | 采纳：§3.2 明确四个消费者与"必须显式传 session_id"，并写明 Dashboard 网页端不具备该能力 |
+| 6 | P1 | 采纳：§4.4 改为分数判据 `tau_source` + 预算后判定；未标定前 lane 不得开启 |
+| 7 | P1 | 采纳：§5.1 更正"写入不变"；unit 级元数据、事务原子性、project_key 写入三处都要改；§5.3 表补 `observed_at` |
+| 8 | P2 | 采纳：§4.1 去重改为 `(holder, session_id, turn, observed_at, text)`；§4.2 改迭代回填 + `source_truncated` |
+| 9 | P1 | 采纳并更正：§4.5 撤回"按 adapter_name 判来源"；所有权重写 `source_turns`；本轮单一来源；§4.2 无时间 unit 不召回 |
+| 10 | P2 | 采纳：§5.6 给出 `source_partial` 的触发规则表；§5.5 模型变更同时重置 `retry_count`；更正"无退避" |
+| 11 | P2 | 采纳：§9 扩为测试矩阵；§3.4 统一缺省语义（缺省 Off / 非法拒绝 / 关闭模式拒绝） |
+| 12 | P2 | 采纳：§4.6 更正 `memory.py` 返回 row 对象；§4.5 引用改 `:132`/`:194`；§6.1 generation 在 `:871` 捕获、`:470` 检查；§5.5 更正无退避；§10 预算引用改 `:171` |
 
-## 14. 待实施前确认（用户 2026-10-20 已裁定，全部按建议）
+## 13. 待确认
 
-1. **§7 授权** —— 裁定：**A（会话级隔离）**。已落到 §7.1-§7.4：`session_scope` = transcript 会话 UUID，授权集 `{holder@session_scope}`，跨会话不返回；project 标识改用 cwd 全路径哈希；扩宽开关 W（同 project 跨会话）只留接口与开关位，本轮不实现。
-2. **§4.4 三个语句侧否决条件** —— 裁定：按建议，**仍拒答**（保守），拒答理由里保留 `source_available=true` 供诊断。
-3. **§5.4 嵌入重试耗尽** —— 裁定：按建议，`retry_count>=3` 永久 failed，但必须让检索侧可见：`source_partial=true` 进 receipt，且 Vitals 暴露"聚合积压 + 永久失败数"，不得让"没检索到"与"索引没建好"在外部看起来一样。
-4. **迁移编号 `0037`** —— 已核实无冲突：仓内最新是 `0036_replay_ledger_tenant.sql`，本分支无其他迁移。
-
-**A 带来的已知矛盾（必须随设计一起交付，不得隐藏）**：A 关闭跨会话召回，而本轮全部评测证据是跨会话的（LongMemEval 每题 47 会话、LoCoMo 10 组）。因此 §1 的读数**不能作为 A 的生产预期**；A 下左脑只回答"本次会话里说过什么"。跨会话能力属于开关 W，需要单独的安全复核与配对评测。这一点写进交付说明的显眼位置。
+1. **`tau_source` 的标定实验**：需要在 Session 模式下的单会话数据集上做，还是先用 LongMemEval 的单会话切片近似？这决定 lane 能否上线。
+2. **Session 模式的消费者**：是否需要同时做 Claude Code 侧的 hook（把 session id 传给 Dashboard），还是本轮只提供 API 参数、由脚本调用。
+3. **Project 模式**是否立为独立项目（含它自己的评测与安全复核）。
