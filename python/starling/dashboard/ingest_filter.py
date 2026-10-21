@@ -52,6 +52,67 @@ def clean_turns(lines: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+def _normalize_timestamp(raw) -> str:
+    """ISO-8601 → 秒精度 UTC 字符串；无法解析返回 ""。
+
+    截断到秒是刻意的：``observed_at`` 只到秒，保留毫秒会让同一秒内的两句
+    在排序/去重上不稳定。
+    """
+    if not isinstance(raw, str) or not raw:
+        return ""
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        from datetime import datetime, timezone
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def clean_turns_ts(lines: list[str]) -> list[tuple[str, str, str, int]]:
+    """``clean_turns`` 的带时间版本：[(role, text, event_time, turn_index)]。
+
+    与 ``clean_turns`` 并存而不是替换它：既有摄入链（分块后走 remember）保持
+    逐字节不变；来源 lane 的消费者用这个版本拿到渲染日期与句序。
+
+    没有可解析时间戳的事件被丢弃——这类句子既不能渲染日期，也不能按 as-of
+    截断，放进来源 lane 只会污染召回。
+    """
+    out: list[tuple[str, str, str, int]] = []
+    turn_index = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") not in ("user", "assistant"):
+            continue
+        event_time = _normalize_timestamp(ev.get("timestamp"))
+        if not event_time:
+            continue
+        msg = ev.get("message") or {}
+        role, content = msg.get("role"), msg.get("content")
+        text = ""
+        if role == "user" and isinstance(content, str):
+            text = _strip_code(content)
+        elif role in ("user", "assistant") and isinstance(content, list):
+            parts = [blk.get("text", "") for blk in content
+                     if isinstance(blk, dict) and blk.get("type") == "text"]
+            text = _strip_code("\n".join(p for p in parts if p))
+        if not text:
+            continue
+        out.append((role, text, event_time, turn_index))
+        turn_index += 1
+    return out
+
+
 def _split_turn(prefix: str, text: str, max_chars: int) -> list[str]:
     """把 "<prefix><text>" 切成每段 <= max_chars 的若干段,优先在整行边界切;
     每段都带 prefix。单行本身超过预算时硬切(_strip_code 之后正常不会出现)。"""

@@ -35,7 +35,7 @@ from pathlib import Path
 from starling import _core
 from starling import runtime as _runtime
 from starling._memory_core import LLMNotConfigured, MemoryCore
-from starling.dashboard.ingest_filter import chunk_dialogue, clean_turns
+from starling.dashboard.ingest_filter import chunk_dialogue, clean_turns, clean_turns_ts
 from starling.dashboard.ingest_spool import tenant_spool_dir
 
 
@@ -177,6 +177,11 @@ class DashboardEngine:
         self._db_path = config.db_path
         rt = _runtime._build_local_store_sqlite_runtime(Path(config.db_path))
         rt.start()
+        # 左脑 lane：开启但未标定阈值即拒绝构造（spec §4.4 硬约束）。直接构造
+        # 引擎（测试、评测脚本）不经 create_app，所以这里也要守。
+        validate = getattr(config, "validate_source_lane", None)
+        if callable(validate):
+            validate()
         self._rt = rt   # the live Runtime (holds the C++ RuntimeSupervisor); the
                         # host drain reaches the supervisor through begin_drain().
         self._core = MemoryCore(rt, agent=config.agent, tenant_id=config.tenant,
@@ -454,6 +459,48 @@ class DashboardEngine:
                     f"selected provider '{provider}' is not configured")
             return _build_chat_adapter(cfg)
         return self._core.llm
+
+    def _retain_transcript_turns(self, lines, *, job: dict, project: str,
+                                 generation: int) -> int:
+        """把 transcript 的逐话轮写进左脑来源通道（形态 S §6.3）。
+
+        这是**通用摄入 API 的第一个消费者**：``retain_source_turns`` 本身不绑定
+        transcript，任何可信后端按 v3 契约提供逐话轮数组即可。
+
+        说话人映射必须与既有 ``remember`` 的 holder 约定一致
+        （holder="self"、interlocutor="claude-code:<project>"）——否则左脑写下的
+        在场集合与右脑抽取的语句归属对不上，可见性会被静默放宽或收窄。
+
+        返回写入的 engram 数；clear 语义与 remember 一致：代数过期即作废。
+        """
+        turns = clean_turns_ts(lines)
+        if not turns:
+            return 0
+        with self._lock:
+            if generation != self._clear_generation:
+                raise _TenantCleared(
+                    "tenant memory was cleared after this job was claimed")
+
+        speaker_of = {"user": self._cfg.agent or "self",
+                      "assistant": f"claude-code:{project}"}
+        listeners = sorted(set(speaker_of.values()))
+        session_id = job.get("session_id") or ""
+        payload = [
+            {"speaker": speaker_of.get(role, role),
+             "text": text,
+             "session_id": session_id,
+             "turn_index": turn_index,
+             "audience": listeners,        # 对话双方都在场；说话人必在听众里
+             "provenance": "source_time",
+             "turn_id": None,
+             "observed_at": event_time}
+            for role, text, event_time, turn_index in turns
+        ]
+        out = _core.retain_source_turns(
+            self._rt.adapter, self._cfg.tenant, listeners,
+            json.dumps(payload, ensure_ascii=False),
+            payload[0]["observed_at"])
+        return len(json.loads(out).get("engram_refs") or ())
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
                  provider: str | None = None, clear_generation: int | None = None) -> dict:
@@ -908,6 +955,12 @@ class DashboardEngine:
             tp = Path(job["transcript_path"])
             lines = tp.read_text(errors="replace").splitlines()
             project = os.path.basename((job.get("cwd") or "").rstrip("/")) or "unknown"
+            # 形态 S §6.3：transcript 是来源通道的第一个消费者。开关关闭时
+            # 完全走原有路径（clean_turns → chunk_dialogue → remember），
+            # 不写任何来源表；开启时先用带时间的版本把逐话轮写入左脑。
+            if getattr(self._cfg, "source_lane_enabled", False):
+                self._retain_transcript_turns(
+                    lines, job=job, project=project, generation=generation)
             chunks = chunk_dialogue(clean_turns(lines))
             extraction_failed = False
             for chunk in chunks:
