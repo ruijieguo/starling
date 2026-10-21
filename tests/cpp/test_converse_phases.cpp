@@ -12,7 +12,11 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/runtime_health.hpp"
+#include "starling/retrieval/source_retriever.hpp"
+#include "starling/vector/source_vector_index.hpp"
 #include "starling/vector/vector_index.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -197,6 +201,61 @@ TEST(ConversePhases, GateClosingMidTurnKeepsReplyAndFlagsRememberError) {
     EXPECT_EQ(out.reply, "Reply text.");
     EXPECT_FALSE(out.remember_ok);
     EXPECT_FALSE(out.remember_error.empty());  // WriteGateRejected e.what() 可观测
+}
+
+// 形态 S Task 11：生产对话路径也能开左脑 lane。converse_prepare 自己建
+// PlannerQuery，所以 source_lane 必须经 ConverseParams 透传，否则评测与生产
+// 用的不是同一份提示。
+namespace {
+struct SourceFixture {
+    std::unique_ptr<persistence::SqliteAdapter> adapter = make_adapter();
+    embedding::StubEmbeddingAdapter emb{8};
+    vector::SqliteBlobVectorIndex idx;
+    vector::SqliteSourceVectorIndex source_idx;
+    retrieval::SemanticRetriever semantic{*adapter, emb, idx};
+    embedding::EmbeddingWorker worker{*adapter, emb, idx, {}, &source_idx};
+
+    void retain(const std::string& text) {
+        const nlohmann::json turns = nlohmann::json::array({{
+            {"speaker", "alice"}, {"text", text}, {"session_id", "s1"},
+            {"turn_index", 0}, {"audience", {"alice", "cog-self"}},
+            {"provenance", "source_time"}, {"turn_id", nullptr},
+            {"observed_at", "2026-07-01T09:00:00Z"}}});
+        retrieval::retain_source_turns(*adapter, "default", {"alice", "cog-self"},
+                                       turns.dump(), "2026-07-01T09:00:00Z");
+        worker.tick_one_batch(adapter->connection(), "2026-07-02T00:00:00Z");
+    }
+    retrieval::SourceLaneDeps deps() {
+        retrieval::SourceLaneDeps out;
+        out.index = &source_idx;
+        out.embedder = &emb;
+        out.dim = emb.dim();
+        out.model = emb.model();
+        out.tau_source = 0.5;
+        return out;
+    }
+};
+}  // namespace
+
+TEST(ConversePhases, SourceLaneReachesTheProductionPrompt) {
+    SourceFixture fx;
+    const std::string secret = "the vault code is 4321";
+    fx.retain(secret);
+    auto params = conv_params(secret);
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    EXPECT_NE(prepared.context_pack.find("[SOURCE]"), std::string::npos) << prepared.context_pack;
+    // 原文进的是生产提示本身（围栏内），不只是 context_pack。
+    EXPECT_NE(prepared.prompt.find(secret), std::string::npos);
+    EXPECT_FALSE(prepared.abstained);
+}
+
+TEST(ConversePhases, NoSourceLaneLeavesPromptUnchanged) {
+    SourceFixture fx;
+    fx.retain("the vault code is 4321");
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic,
+                                           conv_params("the vault code is 4321"));
+    EXPECT_EQ(prepared.context_pack.find("[SOURCE]"), std::string::npos);
 }
 
 }  // namespace starling::memoryops

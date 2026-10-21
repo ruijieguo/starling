@@ -392,6 +392,7 @@ ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
     query.k             = params.recall_k;
     query.trace_id      = "conv-" + seed_hash.substr(0, 16);
     query.query_id      = "convq-" + seed_hash.substr(16, 16);
+    query.source_lane   = params.source_lane;   // nullopt = 左脑关闭
     retrieval::RetrievalPlanner planner(adapter, semantic);
     const auto plan = planner.run(query);
     prep.context_pack = plan.context_pack;
