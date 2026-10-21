@@ -117,17 +117,12 @@ TEST(ClaimContractV3, AudienceEntriesAreStoredTrimmed) {
     EXPECT_EQ(units[0]["audience"][1], "bob");
 }
 
-TEST(ClaimContractV3, SpeakerIsAlwaysInAudience) {
-    // 设计 §3.2：说话人默认属于听众。
+TEST(ClaimContractV3, RejectsSpeakerNotInAudience) {
+    // 不做隐式补全：存储的 audience 必须与调用方声明一致，否则审计前提被破坏。
     auto turn = v3_turn();
     turn["speaker"] = "carol";
     turn["audience"] = Json::array({"alice", "bob"});
-    const auto payload = claim_source_turn_payload(Json::array({turn}).dump(), false);
-    const auto units = Json::parse(claim_source_units(payload));
-    ASSERT_EQ(units.size(), 1u);
-    const auto& audience = units[0]["audience"];
-    EXPECT_NE(std::find(audience.begin(), audience.end(), "carol"), audience.end());
-    EXPECT_EQ(audience.size(), 3u);
+    EXPECT_THROW(claim_source_turn_payload(Json::array({turn}).dump(), false), std::runtime_error);
 }
 
 TEST(ClaimContractV3, DuplicateAudienceMembersCollapsed) {

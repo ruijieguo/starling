@@ -172,10 +172,11 @@ Json source_turn_v3(const Json& turn) {
             if (std::find(members.begin(), members.end(), who) == members.end())
                 members.push_back(who);
         }
-        // 说话人默认属于听众（设计 §3.2）：说的人当然知道自己说了什么。
+        // 说话人必须显式出现在听众里：不做隐式补全，否则存储的 audience 与调用方
+        // 声明的不一致，破坏"写入即固定"的审计前提（安全评审 2026-10-21）。
         const auto speaker = result.at("speaker").get<std::string>();
-        if (std::find(members.begin(), members.end(), speaker) == members.end())
-            members.push_back(speaker);
+        require(std::find(members.begin(), members.end(), speaker) != members.end(),
+                "source_span_failure","speaker must be listed in audience");
         Json normalized = Json::array();
         for (const auto& who : members) normalized.push_back(who);
         require(turn.at("session_id").is_string() && !trim(turn.at("session_id").get<std::string>()).empty(),
