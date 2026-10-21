@@ -324,6 +324,38 @@ void maybe_build_relation_edge(
     }
 }
 
+// 形态 S §3.4b：取来源 engram 的权威听众。左脑写入时把展开后的 audience 落进
+// source_unit_meta；右脑抽取必须取用它，而不是自行推断 {holder, interlocutor}。
+// 非来源 engram 返回空，调用方保持原有回退行为。同一 engram 的所有 unit 共享一个
+// 听众集合（写入按 (场景, 听众) 分组保证）；若出现不一致说明数据绕过了写入路径，
+// 取并集而不是静默选一个。
+std::vector<std::string> lookup_source_audience(
+        persistence::Connection& conn, std::string_view engram_ref, std::string_view tenant_id) {
+    std::vector<std::string> out;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT DISTINCT audience_json FROM source_unit_meta"
+        " WHERE tenant_id = ?1 AND engram_ref = ?2";
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
+    persistence::detail::bind_sv(stmt, 1, tenant_id);
+    persistence::detail::bind_sv(stmt, 2, engram_ref);
+    std::set<std::string> merged;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (text == nullptr) continue;
+        try {
+            for (const auto& member : nlohmann::json::parse(text)) {
+                if (member.is_string()) merged.insert(member.get<std::string>());
+            }
+        } catch (const std::exception&) {
+            // 损坏的元数据不阻断抽取：退回调用方的默认推断。
+        }
+    }
+    sqlite3_finalize(stmt);
+    out.assign(merged.begin(), merged.end());
+    return out;
+}
+
 }  // namespace
 
 ClaimBatchIntegrity claim_batch_integrity(const ExtractionLlmResult& result, const ValidationPolicy* policy) {
@@ -664,6 +696,10 @@ ExtractionRunResult Extractor::persist(
     // 异常 ROLLBACK(TransactionGuard)。所有 DB 写集中在 LLM 之后。
     starling::persistence::TransactionGuard tx(conn_);
 
+    // 形态 S §3.4b：来源 engram 的权威听众，每次 persist 只查一次（engram 固定）。
+    const std::vector<std::string> source_audience =
+        lookup_source_audience(conn_, engram_ref_id, holder_tenant_id);
+
     if (policy_.semantic_claim_contract || checked.semantic_claim_contract) {
         std::string failure;
         try {
@@ -872,6 +908,12 @@ ExtractionRunResult Extractor::persist(
             } else if (stmt.perceived_by.empty()) {
                 stmt.perceived_by = {std::string(holder_id)};
             }
+            // 形态 S §3.4b：来源 engram 的听众是权威，覆盖上面的推断。左脑写入时把
+            // audience 落进 source_unit_meta；若右脑另用 {holder, interlocutor}，两处
+            // 在场集合会不一致，可见性被静默放宽（在场是并集）。只覆盖 perceived_by
+            // （信息可见性）；scope_parties 是 grounding 群体，语义独立，保持不变。
+            // 非来源 engram（普通 remember）查不到记录，行为与改动前逐字节一致。
+            if (!source_audience.empty()) stmt.perceived_by = source_audience;
             const ValidationOutcome v = validate_extracted_statement(stmt, policy_);
             if (!v.ok()) {
                 any_rejected_this_attempt = true;

@@ -166,6 +166,7 @@ add_executable(starling_tests
     test_retrieval_planner.cpp
     test_source_retriever.cpp
     test_source_turns_write.cpp
+    test_perceived_by_authority.cpp
     test_evidence_answer.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp
