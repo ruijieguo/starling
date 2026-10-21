@@ -354,6 +354,33 @@ void bind_05_retrieval(pybind11::module_& m) {
               py::arg("view"));
     }
 
+    // 形态 S：左脑 lane 依赖。SourceLaneDeps 只存 index/embedder 的裸指针，
+    // 因此**调用方必须在 planner.run 期间持有这两个对象**（与 SemanticRetriever
+    // 持有 embedder 的约定相同）。dim/model 直接从 embedder 读，避免手填错配。
+    py::class_<starling::retrieval::SourceLaneDeps>(m, "SourceLaneDeps")
+        .def(py::init([](starling::vector::SourceVectorIndex& index,
+                         starling::embedding::EmbeddingAdapter& embedder,
+                         double tau_source, int k_max, int chunk_byte_budget) {
+                 starling::retrieval::SourceLaneDeps deps;
+                 deps.index = &index;
+                 deps.embedder = &embedder;
+                 deps.dim = embedder.dim();
+                 deps.model = embedder.model();
+                 deps.tau_source = tau_source;
+                 deps.k_max = k_max;
+                 deps.chunk_byte_budget = chunk_byte_budget;
+                 starling::retrieval::validate_source_lane(deps);
+                 return deps;
+             }),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
+             py::arg("index"), py::arg("embedder"), py::arg("tau_source"),
+             py::arg("k_max") = 200, py::arg("chunk_byte_budget") = 8000)
+        .def_readonly("dim",               &starling::retrieval::SourceLaneDeps::dim)
+        .def_readonly("model",             &starling::retrieval::SourceLaneDeps::model)
+        .def_readonly("tau_source",        &starling::retrieval::SourceLaneDeps::tau_source)
+        .def_readonly("k_max",             &starling::retrieval::SourceLaneDeps::k_max)
+        .def_readonly("chunk_byte_budget", &starling::retrieval::SourceLaneDeps::chunk_byte_budget);
+
     py::class_<starling::retrieval::PlannerQuery>(m, "PlannerQuery")
         .def(py::init<>())
         .def_readwrite("tenant_id",     &starling::retrieval::PlannerQuery::tenant_id)
@@ -370,6 +397,7 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readwrite("query_id",      &starling::retrieval::PlannerQuery::query_id)
         .def_readwrite("runtime_health",&starling::retrieval::PlannerQuery::runtime_health)
         .def_readwrite("temporal_evidence",&starling::retrieval::PlannerQuery::temporal_evidence)
+        .def_readwrite("source_lane",   &starling::retrieval::PlannerQuery::source_lane)
         .def_readwrite("global_holder_filter",
                        &starling::retrieval::PlannerQuery::global_holder_filter);
 
