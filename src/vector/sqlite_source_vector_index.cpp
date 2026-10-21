@@ -119,11 +119,18 @@ std::vector<SourceVectorHit> SqliteSourceVectorIndex::search(
         " FROM source_unit_vectors v"
         " JOIN source_unit_meta m ON m.tenant_id = v.tenant_id"
         "   AND m.engram_ref = v.engram_ref AND m.clause_id = v.clause_id"
+        " JOIN engrams e ON e.id = v.engram_ref AND e.tenant_id = v.tenant_id"
         " WHERE v.tenant_id = ?1 AND v.status = 'embedded' AND v.dim = ?2"
+        // 擦除与保留策略：与 source_retriever.cpp:1497-1498 对齐。擦除后
+        // 读侧立即不可见，不等异步清理。
+        "   AND e.erased_at IS NULL AND e.retention_mode = 'audit_retain'"
+        "   AND e.payload_inline IS NOT NULL"
         // 时间三重界里的 unit 级两界（as_of 上界、无可信时间是否放行）在 SQL 内完成
         // ——若留到 C++ 再判，NULL 行已经被 WHERE 丢掉，include_unknown_time 永远无效。
         "   AND ((m.observed_at IS NOT NULL AND (?3 = '' OR m.observed_at <= ?3))"
         "        OR (?4 = 1 AND m.observed_at IS NULL))"
+        // 时间三重界：as_of 同时约束 engram 创建时刻与每句 observed_at。
+        "   AND (?3 = '' OR julianday(e.created_at) <= julianday(?3))"
         "   AND v.engram_ref IN (" + visible_placeholders + ")"
         " ORDER BY v.engram_ref, v.clause_id";
 

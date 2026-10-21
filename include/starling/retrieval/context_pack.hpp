@@ -12,7 +12,8 @@
 
 namespace starling::retrieval {
 
-enum class ContextPackLabel { FACT, BELIEF, HEARSAY, INFERRED, COMMON, TODO, CONFLICT, ABSTAIN };
+// SOURCE 必须追加在末尾：现有值的编号被 Python 镜像与快照钉住。
+enum class ContextPackLabel { FACT, BELIEF, HEARSAY, INFERRED, COMMON, TODO, CONFLICT, ABSTAIN, SOURCE };
 
 inline const char* to_string(ContextPackLabel v) {
     switch (v) {
@@ -24,6 +25,7 @@ inline const char* to_string(ContextPackLabel v) {
         case ContextPackLabel::TODO:     return "TODO";
         case ContextPackLabel::CONFLICT: return "CONFLICT";
         case ContextPackLabel::ABSTAIN:  return "ABSTAIN";
+        case ContextPackLabel::SOURCE:   return "SOURCE";
     }
     return "FACT";
 }

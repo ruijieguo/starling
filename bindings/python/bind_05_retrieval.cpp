@@ -206,6 +206,16 @@ void bind_05_retrieval(pybind11::module_& m) {
         .def_readonly("candidate_counts",      &starling::retrieval::RetrievalReceipt::candidate_counts)
         .def_readonly("evidence_erased_count", &starling::retrieval::RetrievalReceipt::evidence_erased_count)
         .def_readonly("frontier_masked_count", &starling::retrieval::RetrievalReceipt::frontier_masked_count)
+        // 左脑来源 lane 计数（lane 关闭时全为 0/空）。
+        .def_readonly("source_candidates",         &starling::retrieval::RetrievalReceipt::source_candidates)
+        .def_readonly("source_selected",           &starling::retrieval::RetrievalReceipt::source_selected)
+        .def_readonly("source_rejected",           &starling::retrieval::RetrievalReceipt::source_rejected)
+        .def_readonly("source_no_time",            &starling::retrieval::RetrievalReceipt::source_no_time)
+        .def_readonly("source_truncated",          &starling::retrieval::RetrievalReceipt::source_truncated)
+        .def_readonly("source_partial",            &starling::retrieval::RetrievalReceipt::source_partial)
+        .def_readonly("source_degraded_reason",    &starling::retrieval::RetrievalReceipt::source_degraded_reason)
+        .def_readonly("source_audience_mismatch",  &starling::retrieval::RetrievalReceipt::source_audience_mismatch)
+        .def_readonly("frontier_visible_engrams",  &starling::retrieval::RetrievalReceipt::frontier_visible_engrams)
         .def_readonly("sufficiency_status",    &starling::retrieval::RetrievalReceipt::sufficiency_status)
         // P3.a1 planner 字段(纯增量;P1 路径默认空)。
         .def_readonly("querier",               &starling::retrieval::RetrievalReceipt::querier)
@@ -279,7 +289,8 @@ void bind_05_retrieval(pybind11::module_& m) {
         .value("COMMON",   starling::retrieval::ContextPackLabel::COMMON)
         .value("TODO",     starling::retrieval::ContextPackLabel::TODO)
         .value("CONFLICT", starling::retrieval::ContextPackLabel::CONFLICT)
-        .value("ABSTAIN",  starling::retrieval::ContextPackLabel::ABSTAIN);
+        .value("ABSTAIN",  starling::retrieval::ContextPackLabel::ABSTAIN)
+        .value("SOURCE",   starling::retrieval::ContextPackLabel::SOURCE);
 
     {
         using namespace starling::retrieval;
@@ -370,8 +381,23 @@ void bind_05_retrieval(pybind11::module_& m) {
     m.def("render_context_line", &starling::retrieval::render_line,
           py::arg("row"), py::arg("label"));
 
+    // 左脑原文条目（形态 S §4.6）。lane 关闭时 source_entries 恒空，
+    // Python 侧现有结构不变。
+    py::class_<starling::retrieval::SourceEntryOut>(m, "SourceEntry")
+        .def_readonly("engram_ref", &starling::retrieval::SourceEntryOut::engram_ref)
+        .def_readonly("clause_id",  &starling::retrieval::SourceEntryOut::clause_id)
+        .def_readonly("speaker",    &starling::retrieval::SourceEntryOut::speaker)
+        .def_readonly("session_id", &starling::retrieval::SourceEntryOut::session_id)
+        .def_readonly("observed_at", &starling::retrieval::SourceEntryOut::observed_at)
+        .def_readonly("text",       &starling::retrieval::SourceEntryOut::text)
+        .def_readonly("provenance", &starling::retrieval::SourceEntryOut::provenance)
+        .def_readonly("score",      &starling::retrieval::SourceEntryOut::score)
+        .def_readonly("rrf_score",  &starling::retrieval::SourceEntryOut::rrf_score)
+        .def_readonly("rrf_rank",   &starling::retrieval::SourceEntryOut::rrf_rank);
+
     py::class_<starling::retrieval::PlannerResult>(m, "PlannerResult")
         .def_readonly("entries",      &starling::retrieval::PlannerResult::entries)
+        .def_readonly("source_entries", &starling::retrieval::PlannerResult::source_entries)
         .def_readonly("receipt",      &starling::retrieval::PlannerResult::receipt)
         .def_readonly("context_pack", &starling::retrieval::PlannerResult::context_pack)
         .def_readonly("abstained",    &starling::retrieval::PlannerResult::abstained);

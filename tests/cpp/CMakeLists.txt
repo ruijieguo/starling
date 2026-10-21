@@ -169,6 +169,7 @@ add_executable(starling_tests
     test_perceived_by_authority.cpp
     test_source_vector_index.cpp
     test_embedding_worker_source_kind.cpp
+    test_planner_source_lane.cpp
     test_evidence_answer.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp
