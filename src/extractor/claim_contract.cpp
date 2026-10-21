@@ -161,12 +161,23 @@ Json source_turn_v3(const Json& turn) {
         const auto& audience = turn.at("audience");
         require(audience.is_array() && !audience.empty(),
                 "source_span_failure","audience must be a non-empty array");
-        Json normalized = Json::array();
+        // 存 trim 后的值：校验用 trim、存储用原值会让 " alice " 永远匹配不上在场记录。
+        std::vector<std::string> members;
+        members.reserve(audience.size());
         for (const auto& member : audience) {
-            require(member.is_string() && !trim(member.get<std::string>()).empty(),
-                    "source_span_failure","audience entries must be non-empty strings");
-            normalized.push_back(member);
+            require(member.is_string(),"source_span_failure","audience entries must be strings");
+            const std::string raw = member.get<std::string>();
+            std::string who(trim(raw));   // trim 返回 view，必须拷成 string 再存
+            require(!who.empty(),"source_span_failure","audience entries must be non-empty strings");
+            if (std::find(members.begin(), members.end(), who) == members.end())
+                members.push_back(who);
         }
+        // 说话人默认属于听众（设计 §3.2）：说的人当然知道自己说了什么。
+        const auto speaker = result.at("speaker").get<std::string>();
+        if (std::find(members.begin(), members.end(), speaker) == members.end())
+            members.push_back(speaker);
+        Json normalized = Json::array();
+        for (const auto& who : members) normalized.push_back(who);
         require(turn.at("session_id").is_string() && !trim(turn.at("session_id").get<std::string>()).empty(),
                 "source_span_failure","session_id must be a non-empty string");
         const auto& index = turn.at("turn_index");

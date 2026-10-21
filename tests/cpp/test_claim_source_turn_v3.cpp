@@ -105,4 +105,37 @@ TEST(ClaimContractV3, MixedBatchEmitsPerTurnPrefix) {
     EXPECT_NE(payload.find("\n@starling/source-turn-v1 "), std::string::npos);
 }
 
+TEST(ClaimContractV3, AudienceEntriesAreStoredTrimmed) {
+    // 校验用 trim、存储用原值会让 " alice " 永远匹配不上在场记录 → 必须存 trim 后的值。
+    auto turn = v3_turn();
+    turn["audience"] = Json::array({" alice ", "bob\t"});
+    const auto payload = claim_source_turn_payload(Json::array({turn}).dump(), false);
+    const auto units = Json::parse(claim_source_units(payload));
+    ASSERT_EQ(units.size(), 1u);
+    ASSERT_EQ(units[0]["audience"].size(), 2u);
+    EXPECT_EQ(units[0]["audience"][0], "alice");
+    EXPECT_EQ(units[0]["audience"][1], "bob");
+}
+
+TEST(ClaimContractV3, SpeakerIsAlwaysInAudience) {
+    // 设计 §3.2：说话人默认属于听众。
+    auto turn = v3_turn();
+    turn["speaker"] = "carol";
+    turn["audience"] = Json::array({"alice", "bob"});
+    const auto payload = claim_source_turn_payload(Json::array({turn}).dump(), false);
+    const auto units = Json::parse(claim_source_units(payload));
+    ASSERT_EQ(units.size(), 1u);
+    const auto& audience = units[0]["audience"];
+    EXPECT_NE(std::find(audience.begin(), audience.end(), "carol"), audience.end());
+    EXPECT_EQ(audience.size(), 3u);
+}
+
+TEST(ClaimContractV3, DuplicateAudienceMembersCollapsed) {
+    auto turn = v3_turn();
+    turn["audience"] = Json::array({"alice", "alice", "bob"});
+    const auto payload = claim_source_turn_payload(Json::array({turn}).dump(), false);
+    const auto units = Json::parse(claim_source_units(payload));
+    EXPECT_EQ(units[0]["audience"].size(), 2u);
+}
+
 }  // namespace starling::extractor
