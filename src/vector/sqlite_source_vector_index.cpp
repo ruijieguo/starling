@@ -69,6 +69,10 @@ void SqliteSourceVectorIndex::upsert(
         "   index_vector=excluded.index_vector,"
         "   raw_embedding=excluded.raw_embedding,"
         "   status='embedded',"
+        // 一次成功嵌入就是一次成功尝试：重试计数归零，否则退避状态会跟着
+        // 这条 unit 走进"已嵌入却仍记为失败过"的矛盾态。
+        "   retry_count=0,"
+        "   last_attempt_at=NULL,"
         "   embedded_at=excluded.embedded_at";
 
     sqlite3_stmt* raw = nullptr;

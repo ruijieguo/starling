@@ -17,6 +17,10 @@
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/vector/pattern_separator.hpp"
 #include "starling/vector/vector_math.hpp"
+#include "starling/vector/source_vector_index.hpp"
+#include "starling/extractor/claim_contract.hpp"
+
+#include <algorithm>
 #include "starling/store/sqlite_graph_store.hpp"
 
 #include <sqlite3.h>
@@ -241,7 +245,13 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
     }
 
     if (pending.empty()) {
-        return stats;  // nothing pending this tick — no batch call
+        // 语句分支无事可做，但来源 lane 仍要跑——两个分支各自独立扫描，
+        // 用一个 early return 会把另一条 lane 整个跳过（曾因此让 source
+        // unit 永远停在 pending）。
+        const EmbeddingStats source_stats = tick_source_units(conn, now_iso);
+        stats.source_embedded += source_stats.source_embedded;
+        stats.source_failed += source_stats.source_failed;
+        return stats;
     }
 
     const int dim = embedder_.dim();
@@ -405,6 +415,182 @@ EmbeddingStats EmbeddingWorker::tick_one_batch(persistence::Connection& conn,
         stats.overlaps_created += static_cast<int>(sep.overlaps.size());
     }
 
+    // 语句分支处理完后再跑来源分支：两者互不依赖，但共用同一 batch 预算语义。
+    const EmbeddingStats source_stats = tick_source_units(conn, now_iso);
+    stats.source_embedded += source_stats.source_embedded;
+    stats.source_failed += source_stats.source_failed;
+
+    return stats;
+}
+
+
+// ── 左脑来源 lane（形态 S §5.5）──────────────────────────────────────────────
+//
+// 与语句分支结构对称但语义不同：
+//   - 扫描的是 source_unit_vectors 的 pending/failed 行，不是 statement_vectors；
+//   - 待嵌入文本来自 engram payload 按 clause_id 切出的原文（权威元数据表只有
+//     元数据，没有正文）；
+//   - 不做 pattern separation / MAY_OVERLAP_WITH——那是语句语义重叠的概念，
+//     原话之间没有这层关系；
+//   - 成功后 retry_count 归零；失败累加，>= max_retry 后不再被扫。
+//
+// 模型/维度变更：已 exhausted 的行若带着旧 model 或旧 dim，重置为 pending 且
+// retry_count=0。否则新模型永远轮不到它们（Codex 二轮 #10）。
+EmbeddingStats EmbeddingWorker::tick_source_units(persistence::Connection& conn,
+                                                  std::string_view now_iso) {
+    EmbeddingStats stats;
+    if (source_index_ == nullptr) {
+        return stats;
+    }
+
+    const int dim = embedder_.dim();
+    const std::string model = embedder_.model();
+
+    // 1. 模型/维度变更：把不匹配的行退回 pending 并清零重试。
+    {
+        const char* sql =
+            "UPDATE source_unit_vectors SET status='pending', retry_count=0,"
+            "  last_attempt_at=NULL"
+            " WHERE status IN ('embedded','failed')"
+            "   AND (dim IS NOT ?1 OR model IS NOT ?2)";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: source reset prepare");
+        }
+        StmtHandle handle(raw);
+        // 不做 tenant 过滤：模型/维度是部署级事实，一次把所有租户的过期行重置。
+        sqlite3_bind_int(handle.get(), 1, dim);
+        bind_sv(handle.get(), 2, model);
+        if (sqlite3_step(handle.get()) != SQLITE_DONE) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: source reset step");
+        }
+    }
+
+    // 2. 扫描待嵌入 unit。
+    struct SourcePending {
+        std::string tenant_id;
+        std::string engram_ref;
+        std::string clause_id;
+    };
+    std::vector<SourcePending> pending;
+    {
+        const char* sql =
+            "SELECT tenant_id, engram_ref, clause_id FROM source_unit_vectors"
+            " WHERE status = 'pending' OR (status = 'failed' AND retry_count < ?1)"
+            " ORDER BY tenant_id, engram_ref, clause_id LIMIT ?2";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: source scan prepare");
+        }
+        StmtHandle handle(raw);
+        sqlite3_bind_int(handle.get(), 1, cfg_.max_retry);
+        sqlite3_bind_int(handle.get(), 2, cfg_.batch_size);
+        while (sqlite3_step(handle.get()) == SQLITE_ROW) {
+            pending.push_back(SourcePending{col_text(handle.get(), 0), col_text(handle.get(), 1),
+                                            col_text(handle.get(), 2)});
+        }
+    }
+    if (pending.empty()) {
+        return stats;
+    }
+
+    // 3. 逐 unit 取原文。同一 engram 的多个 unit 只解析一次 payload。
+    std::string loaded_engram;
+    std::string loaded_tenant;
+    std::vector<nlohmann::json> loaded_units;
+    const auto units_for = [&](const SourcePending& row) -> std::vector<nlohmann::json> {
+        if (row.engram_ref == loaded_engram && row.tenant_id == loaded_tenant) {
+            return loaded_units;
+        }
+        std::vector<nlohmann::json> parsed;
+        const char* sql =
+            "SELECT payload_inline FROM engrams"
+            " WHERE id = ?1 AND tenant_id = ?2 AND erased_at IS NULL";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: payload prepare");
+        }
+        StmtHandle handle(raw);
+        bind_sv(handle.get(), 1, row.engram_ref);
+        bind_sv(handle.get(), 2, row.tenant_id);
+        if (sqlite3_step(handle.get()) == SQLITE_ROW) {
+            const void* bytes = sqlite3_column_blob(handle.get(), 0);
+            const int length = sqlite3_column_bytes(handle.get(), 0);
+            if (bytes != nullptr && length > 0) {
+                const std::string payload(static_cast<const char*>(bytes),
+                                          static_cast<std::size_t>(length));
+                try {
+                    parsed = nlohmann::json::parse(
+                                 extractor::claim_source_units(payload))
+                                 .get<std::vector<nlohmann::json>>();
+                } catch (const std::exception&) {
+                    parsed.clear();   // 损坏 payload：该 engram 的 unit 全部失败
+                }
+            }
+        }
+        loaded_engram = row.engram_ref;
+        loaded_tenant = row.tenant_id;
+        loaded_units = parsed;
+        return parsed;
+    };
+
+    const auto mark_source_failed = [&](const SourcePending& row) {
+        const char* sql =
+            "UPDATE source_unit_vectors SET status='failed', retry_count=retry_count+1,"
+            "  dim=?5, model=?6, last_attempt_at=?4"
+            " WHERE tenant_id=?1 AND engram_ref=?2 AND clause_id=?3";
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(conn.raw(), sql, -1, &raw, nullptr) != SQLITE_OK) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: source fail prepare");
+        }
+        StmtHandle handle(raw);
+        bind_sv(handle.get(), 1, row.tenant_id);
+        bind_sv(handle.get(), 2, row.engram_ref);
+        bind_sv(handle.get(), 3, row.clause_id);
+        bind_sv(handle.get(), 4, now_iso);
+        sqlite3_bind_int(handle.get(), 5, dim);
+        bind_sv(handle.get(), 6, model);
+        if (sqlite3_step(handle.get()) != SQLITE_DONE) {
+            throw make_sqlite_error(conn.raw(), "embedding_worker: source fail step");
+        }
+        ++stats.source_failed;
+    };
+
+    // 4. 逐条嵌入并写回。
+    for (const auto& row : pending) {
+        const auto units = units_for(row);
+        const auto found = std::ranges::find_if(units, [&](const nlohmann::json& unit) {
+            return unit.value("clause_id", std::string()) == row.clause_id;
+        });
+        if (found == units.end()) {
+            mark_source_failed(row);   // unit 已不在 payload 里（擦除/重建中）
+            continue;
+        }
+        // v3 用 utterance，v1/v2 用 text；两者取其一，缺了就用整行原文。
+        std::string text = found->value("utterance", std::string());
+        if (text.empty()) {
+            text = found->value("text", std::string());
+        }
+        if (text.empty()) {
+            mark_source_failed(row);
+            continue;
+        }
+        try {
+            const EmbeddingResult result = embedder_.embed(std::string_view(text));
+            starling::vector::SourceUnitKey key;
+            key.tenant_id = row.tenant_id;
+            key.engram_ref = row.engram_ref;
+            key.clause_id = row.clause_id;
+            starling::vector::SourceUnitMeta meta;
+            meta.speaker = found->value("speaker", std::string());
+            meta.session_id = found->value("session_id", std::string());
+            meta.observed_at = found->value("observed_at", std::string());
+            source_index_->upsert(conn, key, meta, result.vector, result.model, result.dim);
+            ++stats.source_embedded;
+        } catch (const std::exception&) {
+            mark_source_failed(row);
+        }
+    }
     return stats;
 }
 
