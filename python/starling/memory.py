@@ -186,9 +186,25 @@ class Memory:
         r = self._core.plan_query(text, intent=intent, perspective=perspective,
                                   target=target, subject=subject,
                                   predicate=predicate, k=k, now=now)
+        # 左脑原文条目（形态 S §4.6）：与语句条目并列返回，用 kind 区分。
+        # 语句条目补 kind="statement" 保持向后兼容——旧调用方读 row/score/label
+        # 不受影响。lane 关闭时 source_entries 为空，结构与本改动前等价。
         return {
             "entries": [{"row": e.row, "score": e.score,
-                         "label": e.label.name} for e in r.entries],
+                         "label": e.label.name, "kind": "statement"}
+                        for e in r.entries],
+            "source_entries": [{"kind": "source",
+                                "engram_ref": s.engram_ref,
+                                "clause_id": s.clause_id,
+                                "speaker": s.speaker,
+                                "session_id": s.session_id,
+                                "observed_at": s.observed_at,
+                                "text": s.text,
+                                "provenance": s.provenance,
+                                "score": s.score,
+                                "rrf_score": s.rrf_score,
+                                "rrf_rank": s.rrf_rank}
+                               for s in getattr(r, "source_entries", ())],
             "context_pack": r.context_pack,
             "abstained": r.abstained,
             "abstention_reason": r.receipt.abstention_reason,

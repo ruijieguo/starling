@@ -610,8 +610,12 @@ class DashboardEngine:
             # is deliberately omitted (callers never set q.runtime_health, so it
             # is always the default, and showing it would violate the live-vs-
             # roadmap honesty rule).
+            # 左脑原文条目：dashboard 是扁平结构（与 memory.py 的 {"row": ...}
+            # 不同，spec §4.6 已写明两处结构本就不同）。语句条目补
+            # kind="statement"；lane 关闭时 results 与原结构等价。
             out = {
-                "results": [{"subject": e.row.subject_id,
+                "results": [{"kind": "statement",
+                             "subject": e.row.subject_id,
                              "predicate": e.row.predicate,
                              "object": e.row.object_value,
                              "score": e.score, "label": e.label.name}
@@ -622,6 +626,20 @@ class DashboardEngine:
                 "plan_steps": [{"step": s.step, "detail": s.detail}
                                for s in rc.plan_steps],
                 "scopes_searched": list(rc.scopes_searched),
+                # 左脑原文条目：扁平结构与 results 一致，用 kind 区分。
+                # lane 关闭时恒为空列表。
+                "source_results": [{"kind": "source",
+                                    "engram_ref": s.engram_ref,
+                                    "clause_id": s.clause_id,
+                                    "speaker": s.speaker,
+                                    "session_id": s.session_id,
+                                    "observed_at": s.observed_at,
+                                    "text": s.text,
+                                    "provenance": s.provenance,
+                                    "score": s.score,
+                                    "rrf_score": s.rrf_score,
+                                    "rrf_rank": s.rrf_rank}
+                                   for s in getattr(r, "source_entries", ())],
             }
             out["receipt"] = {
                 "trace_id": rc.trace_id,
@@ -639,6 +657,13 @@ class DashboardEngine:
                     "dropped_by_evidence_erasure": cc.dropped_by_evidence_erasure,
                 },
                 "frontier_masked_count": rc.frontier_masked_count,
+                # 左脑 lane 计数（lane 关闭时全为 0）。
+                "source_candidates": getattr(rc, "source_candidates", 0),
+                "source_selected": getattr(rc, "source_selected", 0),
+                "source_rejected": getattr(rc, "source_rejected", 0),
+                "source_no_time": getattr(rc, "source_no_time", 0),
+                "source_truncated": getattr(rc, "source_truncated", 0),
+                "frontier_visible_engrams": getattr(rc, "frontier_visible_engrams", 0),
                 "evidence_erased_count": rc.evidence_erased_count,
                 "projection_lag_events": rc.projection_lag_events,
                 "degraded_paths": [{"path": d.path, "reason": d.reason,
