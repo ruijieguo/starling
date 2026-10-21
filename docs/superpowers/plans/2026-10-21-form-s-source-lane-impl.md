@@ -274,6 +274,28 @@
 
 **Acceptance:** 四项全绿/持平；任何一项下降都停下修，不带病提交。
 
+**执行结果（2026-10-21，afe8314）：**
+
+| 项 | 结果 | 依据 |
+|---|---|---|
+| ctest | 1474/1474（基线 1416） | 实跑 |
+| pytest | 2737 passed / 630 skipped（基线 2701） | 实跑；`--run-historical` 计数与 main 相同（149 failed / 465 errors，全部为 `build/socialmem_*` 封存产物缺失） |
+| SocialMemBench 0.7825 | **未重跑，按构造论证不变** | 见下 |
+| HiToM 嵌套信念 | **未重跑，按构造论证不变** | 见下 |
+
+**两项基准为何不重跑、论证是否充分：**
+
+本机没有 0.7825 的封存产物（`build/socialmem_20260917_focus_validation/`、`build/stage2/` 均不存在），无法做 spec 要求的"固定行集回放"；重采样一次真实分数既不是 2026-10-18 设计评审认可的守护方式，也要真实调模型。因此改为逐环节论证本分支没有改到这两条评测链路走到的代码：
+
+1. **读路径未动**：0.7825 出自 `ObserverRetriever` 的 `sources` 模式。`git diff main...HEAD -- src/retrieval/source_retriever.cpp` 的 hunk 只落在 `retain_source_turns`（写路径）与文件头 include。
+2. **写路径逐字节不变**：`run_socialmem_baseline.py:518-523` 与 `eval_ladder.py` 调 `retain_source_turns` 时 turn 都不带 `audience`，走 legacy 分支；`SourceTurnsWrite.LegacyPathUnchangedWithoutAudience` 钉住该分支不写任何新表。
+3. **右脑抽取逐字节不变**：legacy 路径不写 `source_unit_meta` → `lookup_source_audience` 必为空 → `perceived_by` 走原分支。Task 5 的 A/B 转储（HEAD vs 改动，同一 legacy 场景）证明 statements / presence / frontier / source_documents 逐行一致。
+4. **HiToM 走的是 `remember`**：`scripts/starling_tomeval_server.py:446,506` 只调 `mem.remember(story)`，不经 `retain_source_turns`、不设 `source_lane`，因此同样落在第 3 条的不变区间内。
+5. **planner 关闭时不变**：所有新增分支都以 `q.source_lane.has_value()` 或 `!source_hits.empty()` 为前提；`PlannerSourceLane.DisabledLaneLeavesOutputUnchanged` 与 Python 端到端 `test_lane_closed_leaves_planner_untouched` 钉住。
+6. **clear_tenant 新增三步**：只删三张新表；legacy 路径下这三张表为空，删除是空操作。
+
+**未能验证的部分（如实记录）：** 上述是代码层面的不变性证明，不是一次新的分数读数。若需要实测数字，前提是恢复封存产物（或重建 1031 题基线库）并按 `docs/eval/2026-10-13-socialmem-stage2-reserved.md:163` 的复现命令重跑——这需要用户确认预算与产物来源。
+
 ---
 
 ### Task 13: 阶段 A 试点（`tau_source` 候选值）
