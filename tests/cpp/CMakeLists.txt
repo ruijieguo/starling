@@ -52,6 +52,7 @@ add_executable(starling_tests
     test_llm_adapter_stream.cpp
     test_json_parser.cpp
     test_claim_contract.cpp
+    test_claim_source_turn_v3.cpp
     test_claim_batching.cpp
     test_claim_batch_target_units.cpp
     test_predicate_coverage_expansion.cpp

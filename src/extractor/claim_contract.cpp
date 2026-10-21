@@ -119,6 +119,9 @@ std::string string_field(const Json& object, const char* name, bool nonempty=tru
 }
 constexpr std::string_view turn_prefix = "@starling/source-turn-v1 ";
 constexpr std::string_view tolerant_turn_prefix = "@starling/source-turn-v2 ";
+// v3（形态 S）：新增必填 audience / session_id / turn_index / provenance，
+// 使听众成为写入即固定的权威元数据。旧 v1/v2 仍可解析（audience 回填为 {speaker}）。
+constexpr std::string_view turns_v3_prefix = "@starling/source-turn-v3 ";
 bool valid_utc_time(const std::string& value);
 bool valid_observation_time(const std::string& value) {
     static const std::regex iso(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?$)");
@@ -146,8 +149,41 @@ Json source_turn(const Json& turn, bool preserve_invalid_time = false) {
         return result;
     } catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
 }
-Json source_turn_metadata(const Json& unit) {
-    Json result=Json::object();
+// v3：在 v1/v2 六字段之外，强制 audience（非空字符串数组）、session_id（非空）、
+// turn_index（非负整数）、provenance（source_time | ingest_clock）。
+Json source_turn_v3(const Json& turn) {
+    try {
+        // v3 字段由本函数校验；这里只借用 v1 的通用字段归一化，需先排除 v3 专属字段。
+        Json stripped = turn;
+        for (const char* key : {"audience", "provenance"}) stripped.erase(key);
+        Json result = source_turn(stripped, /*preserve_invalid_time=*/false);
+        fields(turn,{"speaker","text","audience","session_id","turn_index","provenance","turn_id","observed_at"});
+        const auto& audience = turn.at("audience");
+        require(audience.is_array() && !audience.empty(),
+                "source_span_failure","audience must be a non-empty array");
+        Json normalized = Json::array();
+        for (const auto& member : audience) {
+            require(member.is_string() && !trim(member.get<std::string>()).empty(),
+                    "source_span_failure","audience entries must be non-empty strings");
+            normalized.push_back(member);
+        }
+        require(turn.at("session_id").is_string() && !trim(turn.at("session_id").get<std::string>()).empty(),
+                "source_span_failure","session_id must be a non-empty string");
+        const auto& index = turn.at("turn_index");
+        require(index.is_number_integer() && (index.is_number_unsigned() || index.get<int64_t>() >= 0),
+                "source_span_failure","turn_index must be a nonnegative integer");
+        const auto provenance = turn.at("provenance").get<std::string>();
+        require(provenance == "source_time" || provenance == "ingest_clock",
+                "source_span_failure","provenance must be source_time or ingest_clock");
+        result["audience"] = normalized;
+        result["session_id"] = turn.at("session_id");
+        result["turn_index"] = index;
+        result["provenance"] = provenance;
+        (void)result.dump();
+        return result;
+    } catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
+}
+Json source_turn_metadata(const Json& unit) {    Json result=Json::object();
     for (const char* key : {"speaker","session_id","turn_id","turn_index","observed_at","raw_observed_at","time_status"})
         if (unit.contains(key)) result[key]=unit[key];
     if (result.contains("observed_at") && result["observed_at"].is_string() &&
@@ -184,7 +220,15 @@ Json units(std::string_view payload) {
             const auto p1=line.find(" | ");
             const auto p2=p1==std::string::npos?std::string::npos:line.find(" | ",p1+3);
             const auto p3=p2==std::string::npos?std::string::npos:line.find(" | ",p2+3);
-            if (text.starts_with(turn_prefix) || text.starts_with(tolerant_turn_prefix)) {
+            if (text.starts_with(turns_v3_prefix)) {
+                Json turn;
+                try { turn=source_turn_v3(strict_json(text.substr(turns_v3_prefix.size()),false)); }
+                catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
+                unit.update(source_turn_metadata(turn));
+                unit["utterance"]=turn["text"];
+                unit["audience"]=turn["audience"];
+                unit["provenance"]=turn["provenance"];
+            } else if (text.starts_with(turn_prefix) || text.starts_with(tolerant_turn_prefix)) {
                 Json turn;
                 const bool tolerant=text.starts_with(tolerant_turn_prefix);
                 const auto prefix=tolerant?tolerant_turn_prefix:turn_prefix;
@@ -192,6 +236,8 @@ Json units(std::string_view payload) {
                 catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
                 unit.update(source_turn_metadata(turn));
                 unit["utterance"]=turn["text"];
+                // 旧载荷无听众：保守回填为 {speaker}（只有说话人本人可召回）。
+                unit["audience"]=Json::array({turn["speaker"]});
             } else if (p1!=std::string::npos && p2!=std::string::npos && p3!=std::string::npos &&
                 line.rfind("Session ",0)==0 && line.compare(p2+3,5,"turn ")==0) {
                 const auto session=line.substr(0,p1);
@@ -748,6 +794,13 @@ std::string claim_source_turn_payload(std::string_view turns_json, bool preserve
     std::string payload;
     for (const auto& turn:turns) {
         if (!payload.empty()) payload+='\n';
+        // 带 audience 的 turn 走 v3（听众是权威元数据）；否则保持 v1/v2 行为。
+        if (turn.contains("audience")) {
+            const auto normalized=source_turn_v3(turn);
+            payload+=turns_v3_prefix;
+            payload+=normalized.dump();
+            continue;
+        }
         const auto normalized=source_turn(turn,preserve_invalid_time);
         const auto& observed=normalized["observed_at"];
         const bool invalid=observed.is_string() && !valid_observation_time(observed.get<std::string>());
