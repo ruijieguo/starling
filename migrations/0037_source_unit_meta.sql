@@ -32,15 +32,17 @@ CREATE TABLE IF NOT EXISTS source_unit_vectors (
     tenant_id       TEXT NOT NULL,
     engram_ref      TEXT NOT NULL,
     clause_id       TEXT NOT NULL,
-    dim             INTEGER NOT NULL CHECK (dim > 0),
-    model           TEXT NOT NULL,
+    dim             INTEGER CHECK (dim > 0),      -- pending 时未知，嵌入后必填
+    model           TEXT,                         -- pending 时未知，嵌入后必填
     index_vector    BLOB,
     raw_embedding   BLOB,
     status          TEXT NOT NULL CHECK (status IN ('pending','embedded','failed')),
     retry_count     INTEGER NOT NULL DEFAULT 0,
     last_attempt_at TEXT,
     embedded_at     TEXT,
-    PRIMARY KEY (tenant_id, engram_ref, clause_id)
+    PRIMARY KEY (tenant_id, engram_ref, clause_id),
+    -- 嵌入完成后必须有维度与模型；pending 阶段允许为空。
+    CHECK (status = 'pending' OR (dim IS NOT NULL AND model IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_suv_scan ON source_unit_vectors(tenant_id, status);
 

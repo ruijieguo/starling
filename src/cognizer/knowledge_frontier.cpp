@@ -196,6 +196,30 @@ std::unordered_set<std::string> KnowledgeFrontier::get_group_members_at(
     return groups;
 }
 
+std::unordered_set<std::string> KnowledgeFrontier::group_members_at(
+    std::string_view tenant_id,
+    std::string_view group_id,
+    std::string_view as_of_iso8601) const {
+    // 反向 as-of：某组在给定时刻的成员（写入时展开 group:* 用）。
+    std::unordered_set<std::string> members;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT cognizer_id FROM cognizer_group_membership "
+        " WHERE tenant_id = ?1 AND group_id = ?2 "
+        "   AND joined_at <= ?3 "
+        "   AND (left_at IS NULL OR left_at > ?3)";
+    sqlite3_prepare_v2(adapter_.connection().raw(), sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, tenant_id.data(), static_cast<int>(tenant_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, group_id.data(), static_cast<int>(group_id.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, as_of_iso8601.data(), static_cast<int>(as_of_iso8601.size()), SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        members.emplace(text);
+    }
+    sqlite3_finalize(stmt);
+    return members;
+}
+
 void KnowledgeFrontier::record_explicit_negation(
     std::string_view tenant_id,
     std::string_view cognizer_id,

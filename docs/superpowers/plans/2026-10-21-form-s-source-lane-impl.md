@@ -19,6 +19,7 @@
 - **迁移编号 `0037`**（仓内最新为 `0036`，已确认无冲突）。
 - git 只用显式路径 `git add`；不用 `--no-verify` / `--amend`。
 - 提交门：全量 ctest 与 `pytest tests/python` 绿。**先在当前 HEAD 记录一次基线数，之后只增不减**（不引用历史计划里的旧基线）。
+- 提交门补充（2026-10-21 踩过一次）：`--build` 只编译不安装。**任何 C++ / migration / 绑定改动后、跑 pytest 前，必须先跑 `--python-editable` 重装 `_core`**，否则 pytest 导入的是 `.venv` 里的旧 `.so`，回归是**假绿**。Task 4 因改了 migration 的 DDL 触发过一次假的 NOT NULL 失败。核验方式：`python -c "import starling._core as m; print(m.__file__)"` 确认导入路径，并与 `build-macos/python/starling/_core*.so` 比时间戳。
 - 构建：`python scripts/configure_build.py --build --test`；改 C++/绑定/migration 后必须再跑 `--python-editable` 重装 `_core`。
 
 ---

@@ -61,6 +61,12 @@ public:
         std::string_view cognizer_id,
         std::string_view as_of_iso8601) const;
 
+    // 反向查询：某组在 as_of 时刻的成员集合（写入时展开 group:* 用）。
+    std::unordered_set<std::string> group_members_at(
+        std::string_view tenant_id,
+        std::string_view group_id,
+        std::string_view as_of_iso8601) const;
+
     // 5/5: explicit_not_told (cognizer was specifically NOT told a fact).
     void record_explicit_negation(
         std::string_view tenant_id,

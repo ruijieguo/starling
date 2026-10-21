@@ -90,10 +90,26 @@ def test_vector_status_check_rejects_unknown(rt):
     with sqlite3.connect(str(rt.adapter.db_path)) as c:
         with pytest.raises(sqlite3.IntegrityError):
             c.execute(
-                "INSERT INTO source_unit_vectors (tenant_id, engram_ref, clause_id, dim,"
-                " model, status) VALUES (?,?,?,?,?,?)",
-                (TENANT, "eng-1", "c0", 8, "m", "bogus"),
+                "INSERT INTO source_unit_vectors (tenant_id, engram_ref, clause_id,"
+                " model, status) VALUES (?,?,?,?,?)",
+                (TENANT, "eng-1", "c0", "m", "bogus"),
             )
+
+
+def test_vector_pending_allows_null_dim_and_model(rt):
+    """pending 行在嵌入前不知道维度与模型，必须允许为空。"""
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        c.execute("INSERT INTO source_unit_vectors (tenant_id, engram_ref, clause_id, status)"
+                  " VALUES (?,?,?,?)", (TENANT, "eng-1", "c0", "pending"))
+        assert c.execute("SELECT COUNT(*) FROM source_unit_vectors").fetchone()[0] == 1
+
+
+def test_vector_embedded_requires_dim_and_model(rt):
+    """嵌入完成后必须有维度与模型，否则行不可用于检索。"""
+    with sqlite3.connect(str(rt.adapter.db_path)) as c:
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute("INSERT INTO source_unit_vectors (tenant_id, engram_ref, clause_id, status)"
+                      " VALUES (?,?,?,?)", (TENANT, "eng-1", "c0", "embedded"))
 
 
 def test_dim_check_rejects_zero(rt):

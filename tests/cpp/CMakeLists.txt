@@ -165,6 +165,7 @@ add_executable(starling_tests
     test_context_pack.cpp
     test_retrieval_planner.cpp
     test_source_retriever.cpp
+    test_source_turns_write.cpp
     test_evidence_answer.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp
