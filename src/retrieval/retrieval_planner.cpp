@@ -700,11 +700,11 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
 
     AbstentionInput ab;
     ab.any_candidates = !cands.empty() || source_is_evidence;
-    // 两路分数门槛分别适用：statement 用 tau_recall，source 用 tau_source。
-    ab.max_score = source_is_evidence
-        ? std::max(breakdown.empty() ? 0.0 : breakdown.front().final_score,
-                   q.source_lane->tau_source)
-        : (breakdown.empty() ? 0.0 : breakdown.front().final_score);
+    // 两路门槛分开：语句分数照旧交给 tau_recall；原文证据单独以 source_evidence
+    // 传入。旧实现把两者合成一个 max_score，tau_source < tau_recall 时原文证据
+    // 会被语句门槛误杀（阶段 A 冒烟发现）。
+    ab.max_score = breakdown.empty() ? 0.0 : breakdown.front().final_score;
+    ab.source_evidence = source_is_evidence;
     ab.frontier_denied = need_mask && before_mask > 0 && cands.empty() && !source_is_evidence;
     if (!cands.empty()) {
         bool all_recanted = true;

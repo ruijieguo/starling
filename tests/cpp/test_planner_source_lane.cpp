@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -332,6 +333,29 @@ TEST(PlannerSourceLane, LowScoreSourceAbstainsWhenAlone) {
     const auto r = rig.planner.run(q);
     EXPECT_TRUE(r.abstained);
     EXPECT_EQ(r.receipt.abstention_reason, "low_score");
+}
+
+// 回归（阶段 A 冒烟发现）：原文余弦 0.2 介于 tau_source=0.1 与语句侧
+// tau_recall=0.25 之间。原实现把两路分数合成一个 max_score 交给语句门槛判，
+// 结果原文证据成立却以 low_score 拒答。Stub 嵌入器余弦≈1，单测曾掩盖此问题。
+TEST(PlannerSourceLane, SourceEvidenceBelowStatementThresholdIsNotAbstained) {
+    Rig rig;
+    auto& conn = rig.adapter->connection();
+    seed_engram(conn, "engram-1", {{"alice", "alpha bravo"}});
+    // 查询 "alpha" 嵌入为第 1 维单位向量；索引向量与之余弦恰为 0.2。
+    std::vector<float> weak(8, 0.0F);
+    weak[1] = 0.2F;
+    weak[2] = std::sqrt(1.0F - 0.04F);
+    embed_engram(conn, rig.source_index, "engram-1", weak);
+    grant_presence(*rig.adapter, "engram-1", {"alice", "cog-self"});
+
+    auto q = rig.query();
+    q.text = "alpha";
+    q.source_lane = rig.deps(/*tau=*/0.1);
+    const auto r = rig.planner.run(q);
+    EXPECT_FALSE(r.abstained) << r.receipt.abstention_reason;
+    ASSERT_EQ(r.source_entries.size(), 1U);
+    EXPECT_NEAR(r.source_entries[0].score, 0.2, 1e-5);
 }
 
 TEST(PlannerSourceLane, UnitWithoutTimeIsNotRecalled) {
