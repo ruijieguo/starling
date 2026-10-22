@@ -250,6 +250,31 @@ TEST(ConversePhases, SourceLaneReachesTheProductionPrompt) {
     EXPECT_FALSE(prepared.abstained);
 }
 
+// 阶段 B 的失败机制：前提部分为真的题，原文召回了相关内容（相似度很高），
+// 模型据此作答而不是指出缺失。修法不是调阈值（相似度区分不了"相关但无答案"），
+// 而是在提示里把 [SOURCE] 的语义讲清：它是原话，不是答案；只有原话直接陈述了
+// 答案才可据其作答，否则应说明缺少什么。
+TEST(ConversePhases, SourceLaneAddsRawUtteranceGuidance) {
+    SourceFixture fx;
+    fx.retain("the vault code is 4321");
+    auto with_lane = conv_params("the vault code is 4321");
+    with_lane.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, with_lane);
+    ASSERT_NE(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    // 只在真有原文行时才加这段指引。
+    EXPECT_NE(prepared.prompt.find("raw utterance"), std::string::npos) << prepared.prompt;
+    EXPECT_NE(prepared.prompt.find("directly states"), std::string::npos) << prepared.prompt;
+}
+
+TEST(ConversePhases, NoSourceLinesMeansNoRawUtteranceGuidance) {
+    SourceFixture fx;   // 无任何原文：即使传了 deps，也不该出现 SOURCE 指引
+    auto params = conv_params("hello");
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    EXPECT_EQ(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    EXPECT_EQ(prepared.prompt.find("raw utterance"), std::string::npos) << prepared.prompt;
+}
+
 TEST(ConversePhases, NoSourceLaneLeavesPromptUnchanged) {
     SourceFixture fx;
     fx.retain("the vault code is 4321");
