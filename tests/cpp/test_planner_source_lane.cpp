@@ -338,6 +338,45 @@ TEST(PlannerSourceLane, LowScoreSourceAbstainsWhenAlone) {
 // 回归（阶段 A 冒烟发现）：原文余弦 0.2 介于 tau_source=0.1 与语句侧
 // tau_recall=0.25 之间。原实现把两路分数合成一个 max_score 交给语句门槛判，
 // 结果原文证据成立却以 low_score 拒答。Stub 嵌入器余弦≈1，单测曾掩盖此问题。
+// 500K 扫描（docs/eval/2026-10-22-beam500k-k-budget-sweep.md）显示 k 与字节预算
+// 必须同时放大才能提升渲染率；但 planner 的 q.k 同时决定语句侧候选数（k*5..k*10），
+// 直接调大会连带改变右脑行为。因此左脑需要自己的上限。
+// 默认值钉测：k 与预算的默认来自 500K 离线扫描（k=30 / 32000B → 渲染率 77.6%）。
+// 两者必须同增，单独改任一个都会让扫描结论失效，所以写死在这里防回退。
+TEST(PlannerSourceLane, DefaultsFollowTheSweep) {
+    SourceLaneDeps deps;
+    EXPECT_EQ(deps.k_source, 30);
+    EXPECT_EQ(deps.chunk_byte_budget, 32000);
+    EXPECT_EQ(deps.k_max, 200);
+}
+
+TEST(PlannerSourceLane, SourceLaneHasItsOwnKIndependentOfStatementPath) {
+    Rig rig;
+    auto& conn = rig.adapter->connection();
+    // 12 条原文，问题只与其中第 11 近的一条强相关。
+    for (int idx = 0; idx < 12; ++idx) {
+        seed_engram(conn, "engram-" + std::to_string(idx),
+                    {{"alice", "filler note number " + std::to_string(idx)}});
+        std::vector<float> vec(8, 0.0F);
+        vec[1] = 0.1F;
+        vec[2] = 0.99F;
+        vec[static_cast<std::size_t>(idx) % 8] += 0.01F * static_cast<float>(idx);
+        embed_engram(conn, rig.source_index, "engram-" + std::to_string(idx), vec);
+        grant_presence(*rig.adapter, "engram-" + std::to_string(idx), {"alice", "cog-self"});
+    }
+
+    auto q = rig.query();
+    q.text = "alpha";
+    q.k = 3;                       // 语句侧只需要 3
+    auto deps = rig.deps(/*tau=*/0.1);
+    deps.k_source = 12;            // 左脑要 12
+    deps.chunk_byte_budget = 64000;
+    q.source_lane = deps;
+    const auto r = rig.planner.run(q);
+    // 左脑按自己的 k 取满 12 条，不因 q.k=3 被截到 3 条。
+    EXPECT_EQ(r.source_entries.size(), 12U);
+}
+
 TEST(PlannerSourceLane, SourceEvidenceBelowStatementThresholdIsNotAbstained) {
     Rig rig;
     auto& conn = rig.adapter->connection();

@@ -33,8 +33,16 @@ struct SourceLaneDeps {
     int         dim = 0;
     std::string model;
     double      tau_source = 0.0;   // <= 0 视为未标定，拒绝构造
+    // 左脑自己的候选条数。为 0 时退回用 PlannerQuery::k（旧行为）。
+    // 不直接放大 PlannerQuery::k 的原因：同一个 k 还决定语句侧候选数
+    // （statement_main 取 k*5、semantic_index 取 k*5），会把右脑一起改掉。
+    //
+    // 默认 30 来自 500K 六会话的离线扫描（docs/eval/2026-10-22-beam500k-k-budget-sweep.md）：
+    // k=10/8000B 渲染率 58.9%，k=30/32000B 77.6%。**k 与预算必须同增**——
+    // 只增任一一项都接近无效（长原文在预算处被整行截掉 / 候选集本身不含证据）。
+    int         k_source = 30;
     int         k_max = 200;        // 迭代回填的硬上限
-    int         chunk_byte_budget = 8000;
+    int         chunk_byte_budget = 32000;   // 与 k_source 同源，见上
 };
 
 struct PlannerQuery {

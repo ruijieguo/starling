@@ -446,7 +446,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                     rc.source_degraded_reason = "embedder_mismatch";
                 } else {
                     // 迭代回填：批量倍增，直到凑够 k 或遍历完符合条件集合。
-                    int want = q.k;
+                    // 左脑用自己的 k_source（0 表示沿用 q.k，保持旧行为）。
+                    const int target = deps.k_source > 0 ? deps.k_source : q.k;
+                    int want = target;
                     int fetched_count = 0;
                     while (want <= deps.k_max) {
                         const auto batch = deps.index->search(
@@ -462,11 +464,11 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                             entry.score = hit.score;
                             source_hits.push_back(std::move(entry));
                         }
-                        if (fetched_count >= q.k) { break; }
+                        if (fetched_count >= target) { break; }
                         if (fetched_count < want) { break; }  // 已遍历完
                         want *= 2;
                     }
-                    if (fetched_count >= deps.k_max && fetched_count >= q.k) {
+                    if (fetched_count >= deps.k_max && fetched_count >= target) {
                         rc.source_truncated = 1;
                     }
                 }

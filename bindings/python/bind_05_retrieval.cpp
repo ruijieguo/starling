@@ -360,7 +360,8 @@ void bind_05_retrieval(pybind11::module_& m) {
     py::class_<starling::retrieval::SourceLaneDeps>(m, "SourceLaneDeps")
         .def(py::init([](starling::vector::SourceVectorIndex& index,
                          starling::embedding::EmbeddingAdapter& embedder,
-                         double tau_source, int k_max, int chunk_byte_budget) {
+                         double tau_source, int k_max, int chunk_byte_budget,
+                         int k_source) {
                  starling::retrieval::SourceLaneDeps deps;
                  deps.index = &index;
                  deps.embedder = &embedder;
@@ -369,17 +370,20 @@ void bind_05_retrieval(pybind11::module_& m) {
                  deps.tau_source = tau_source;
                  deps.k_max = k_max;
                  deps.chunk_byte_budget = chunk_byte_budget;
+                 if (k_source > 0) { deps.k_source = k_source; }
                  starling::retrieval::validate_source_lane(deps);
                  return deps;
              }),
              py::keep_alive<1, 2>(), py::keep_alive<1, 3>(),
              py::arg("index"), py::arg("embedder"), py::arg("tau_source"),
-             py::arg("k_max") = 200, py::arg("chunk_byte_budget") = 8000)
+             py::arg("k_max") = 200, py::arg("chunk_byte_budget") = 32000,
+             py::arg("k_source") = 30)
         .def_readonly("dim",               &starling::retrieval::SourceLaneDeps::dim)
         .def_readonly("model",             &starling::retrieval::SourceLaneDeps::model)
         .def_readonly("tau_source",        &starling::retrieval::SourceLaneDeps::tau_source)
         .def_readonly("k_max",             &starling::retrieval::SourceLaneDeps::k_max)
-        .def_readonly("chunk_byte_budget", &starling::retrieval::SourceLaneDeps::chunk_byte_budget);
+        .def_readonly("chunk_byte_budget", &starling::retrieval::SourceLaneDeps::chunk_byte_budget)
+        .def_readonly("k_source",          &starling::retrieval::SourceLaneDeps::k_source);
 
     py::class_<starling::retrieval::PlannerQuery>(m, "PlannerQuery")
         .def(py::init<>())
