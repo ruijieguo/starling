@@ -52,6 +52,7 @@ add_executable(starling_tests
     test_llm_adapter_stream.cpp
     test_json_parser.cpp
     test_claim_contract.cpp
+    test_claim_source_turn_v3.cpp
     test_claim_batching.cpp
     test_claim_batch_target_units.cpp
     test_predicate_coverage_expansion.cpp
@@ -164,6 +165,11 @@ add_executable(starling_tests
     test_context_pack.cpp
     test_retrieval_planner.cpp
     test_source_retriever.cpp
+    test_source_turns_write.cpp
+    test_perceived_by_authority.cpp
+    test_source_vector_index.cpp
+    test_embedding_worker_source_kind.cpp
+    test_planner_source_lane.cpp
     test_evidence_answer.cpp
     test_tom_second_order.cpp
     test_store_foundation.cpp

@@ -39,6 +39,7 @@ _SERIALIZABLE = (
     "db_path", "agent", "tenant", "token", "host", "port",
     "cors_origins", "providers", "roles", "tick_interval_s",
     "vector_backend", "vector_store_path", "gist_thresholds", "ingest_spool_path",
+    "source_lane_enabled", "source_lane_render_time", "source_lane_tau_source",
 )
 
 
@@ -66,6 +67,12 @@ class DashboardConfig:
     # (min_holders=3, min_replay_count=1, min_confidence=0.6). Threaded into
     # run_idle/run_sleep via MemoryCore.gist_thresholds.
     gist_thresholds: dict = field(default_factory=dict)
+    # 形态 S 左脑来源 lane 的三个开关。**默认全关**：tau_source 未经标定前
+    # 不得开启（spec §4.4 硬约束）。render_time 从属于 enabled——单独打开它
+    # 没有意义（没有原文可渲染）。
+    source_lane_enabled: bool = False
+    source_lane_render_time: bool = False
+    source_lane_tau_source: float = 0.0
     config_path: str = ""  # not serialized; where load()/save() persist
 
     # ----- role → provider resolution -----
@@ -150,6 +157,22 @@ class DashboardConfig:
                 pass
             raise
         self.config_path = str(p)
+
+    def validate_source_lane(self) -> None:
+        """左脑 lane 的开关一致性。
+
+        ``tau_source`` 未经标定不得开启（spec §4.4 硬约束）——用一个拍脑袋的
+        阈值上线，等于用一个没有依据的分界线决定"记不记得"。
+        ``render_time`` 从属于 ``enabled``：没有原文可渲染时单独打开它没有意义。
+        """
+        if self.source_lane_enabled:
+            if not (self.source_lane_tau_source > 0):
+                raise RuntimeError(
+                    "source_lane_enabled requires a calibrated "
+                    "source_lane_tau_source (> 0)")
+        elif self.source_lane_render_time:
+            raise RuntimeError(
+                "source_lane_render_time requires source_lane_enabled")
 
     def validate_bind(self) -> None:
         """Refuse to expose a tokenless service on a non-loopback interface."""

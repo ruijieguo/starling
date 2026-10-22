@@ -228,6 +228,50 @@ TEST(OpenAIAdapterHttpTest, ThinkingBudgetReachesExtractionAndGenerationOnlyWhen
     }
 }
 
+// tokenkey 网关不遵守 enable_thinking=false（实测：仍返回推理 token，抽取长提示下
+// 超时/失败）；DeepSeek 只认 thinking={type:"disabled"}。thinking_type 未设置时
+// 请求体不出现该字段，保持服务端默认行为——与 enable_thinking 的约定一致。
+TEST(OpenAIAdapterHttpTest, ThinkingTypeReachesExtractionGenerationAndStream) {
+    ChatServer server(completion("Hello"));
+    if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";
+    OpenAIAdapter plain(server.config(false));
+    EXPECT_TRUE(plain.extract("Extract", "hash").ok);
+    auto disabled = server.config(false);
+    disabled.thinking_type = "disabled";
+    OpenAIAdapter adapter(disabled);
+    EXPECT_TRUE(adapter.extract("Extract", "hash").ok);
+    EXPECT_TRUE(adapter.generate("Generate").ok);
+    server.stop();
+    ASSERT_EQ(server.requests().size(), 3u);
+    EXPECT_FALSE(server.body(0).contains("thinking"));
+    for (std::size_t i = 1; i < 3; ++i) {
+        EXPECT_EQ(server.body(i)["thinking"], nlohmann::json({{"type", "disabled"}}));
+    }
+}
+
+TEST(OpenAIAdapterHttpTest, ThinkingTypeReachesStream) {
+    ChatServer server("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n");
+    if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";
+    auto cfg = server.config(false);
+    cfg.thinking_type = "disabled";
+    OpenAIAdapter adapter(cfg);
+    EXPECT_TRUE(adapter.generate_stream("Generate", [](std::string_view) {}).ok);
+    server.stop();
+    ASSERT_EQ(server.requests().size(), 1u);
+    EXPECT_EQ(server.body(0)["thinking"], nlohmann::json({{"type", "disabled"}}));
+}
+
+TEST(OpenAIAdapterConfigTest, ThinkingTypeRejectsUnknownValues) {
+    OpenAIAdapter::Config cfg;
+    cfg.thinking_type = "maybe";
+    EXPECT_THROW(OpenAIAdapter{cfg}, std::invalid_argument);
+    // thinking 关闭时不能同时给推理预算——两者语义矛盾。
+    OpenAIAdapter::Config conflict;
+    conflict.thinking_type = "disabled";
+    conflict.thinking_budget = 512;
+    EXPECT_THROW(OpenAIAdapter{conflict}, std::invalid_argument);
+}
+
 TEST(OpenAIAdapterHttpTest, ThinkingBudgetReachesStream) {
     ChatServer server("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n");
     if (!server.ready()) GTEST_SKIP() << "loopback listener not permitted";

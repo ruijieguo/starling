@@ -185,7 +185,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& tenant_id, const std::string& holder_id,
              const std::string& interlocutor, const std::string& adapter_name,
              const std::string& source_prefix, const std::string& created_at_iso8601,
-             const std::string& message, int recall_k) {
+             const std::string& message, int recall_k,
+             std::optional<starling::retrieval::SourceLaneDeps> source_lane) {
               starling::memoryops::ConverseParams params;
               params.tenant_id          = tenant_id;
               params.holder_id          = holder_id;
@@ -195,6 +196,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
               params.created_at_iso8601 = created_at_iso8601;
               params.message            = message;
               params.recall_k           = recall_k;
+              // 形态 S：左脑 lane（None = 关闭）。只存指针，调用方须持有 index/embedder。
+              params.source_lane        = std::move(source_lane);
               starling::memoryops::ConversePrepared prep;
               {
                   py::gil_scoped_release release;   // 内含 query-embed 网络
@@ -205,7 +208,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("adapter"), py::arg("semantic"), py::arg("tenant_id"),
           py::arg("holder_id"), py::arg("interlocutor"), py::arg("adapter_name"),
           py::arg("source_prefix"), py::arg("created_at_iso8601"),
-          py::arg("message"), py::arg("recall_k") = 6);
+          py::arg("message"), py::arg("recall_k") = 6,
+          py::arg("source_lane") = py::none());
 
     m.def("memory_generate_stream",
           [](starling::extractor::LLMAdapter& chat_llm, const std::string& prompt,

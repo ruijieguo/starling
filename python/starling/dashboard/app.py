@@ -38,6 +38,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     Inspection routes read the SQLite at `config.db_path` directly (read-only).
     """
     config.validate_bind()
+    # 左脑 lane 的开关一致性在启动时就拒绝，而不是等到第一次摄入才发现。
+    config.validate_source_lane()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

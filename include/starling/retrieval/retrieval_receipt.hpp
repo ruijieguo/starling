@@ -54,6 +54,16 @@ struct RetrievalReceipt {
     // P2.a: count of rows filtered out by apply_frontier_filter. Zero when
     // apply_frontier_filter == false.
     std::int64_t frontier_masked_count{};
+    // ── 左脑来源 lane（形态 S §4.6）。lane 关闭时全为 0/空。──
+    std::int64_t source_candidates{};
+    std::int64_t source_selected{};
+    std::int64_t source_rejected{};
+    std::int64_t source_no_time{};
+    std::int64_t source_truncated{};      // 迭代回填到 k_max 仍未凑够
+    std::int64_t frontier_visible_engrams{};
+    bool         source_partial{};
+    std::string  source_degraded_reason;
+    std::int64_t source_audience_mismatch{};
     Sufficiency  sufficiency_status{Sufficiency::ABSTAINED};
 
     // ── P3.a1 planner 字段(默认空;P1 basic_retrieve 路径不填,旧钉测不变)──

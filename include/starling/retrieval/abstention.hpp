@@ -16,6 +16,10 @@ struct AbstentionInput {
     bool frontier_denied = false;      // mask 遮蔽后候选清零(遮蔽前非零)
     bool only_recanted_evidence = false;  // 全部候选的 cg 状态 recanted
     bool unresolved_conflict = false;  // 最高分候选挂未仲裁 CONFLICTS_WITH 边
+    // 形态 S §4.4：原文证据已由 planner 按 tau_source 判定成立（且实际进入渲染）。
+    // 原文余弦与语句 final_score 不可比，所以它**不再受 tau_recall 约束**；
+    // 语句侧的 recanted / conflict 否决仍然生效（保守）。
+    bool source_evidence = false;
 };
 
 // 返回 "" = 不拒答;否则四 reason 之一(优先级 frontier > recanted > conflict > score)。

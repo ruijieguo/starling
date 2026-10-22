@@ -33,6 +33,10 @@ public:
         std::optional<bool> enable_thinking;  // 未设置时保持服务端默认行为
         // 推理 token 预算,仅在设置时随请求发送;必须为正数,且不得与 enable_thinking=false 同用。
         std::optional<int> thinking_budget;
+        // DeepSeek 风格的推理开关：设置时随请求发送 thinking={"type": <值>}，
+        // 取值 "disabled" | "enabled"。tokenkey 网关不遵守 enable_thinking=false
+        // （实测仍返回推理 token），只认这个字段。未设置时不发送。
+        std::optional<std::string> thinking_type;
 
         // Reads OPENAI_BASE_URL and OPENAI_API_KEY from env. Throws
         // std::runtime_error if api_key is unset.

@@ -661,3 +661,9 @@ R6.7已完成文档、RED、实现及评测：13项新增原生反例包含在13
 新入口核对响应合同、模式、schema哈希和原始内容一致性；不支持、超量、围栏或不健康响应直接失败，不隐式能力探测、不重试或回退。JSON mode只约束传输格式，不能保证来源选择语义正确或满足20条预算。既有显式能力探测API新增空来源列表夹具与可重放证据，真实评测不自动调用它。
 
 本地1395项C++回归、20项绑定/localhost HTTP、14项选择编排和16项QA编排测试通过。R6.8已完成133题结构化来源选择与同期QA：v9为52/133，selector为60/133，净增6.02个百分点；六网络聚类95%区间[-5.60,16.28]，候选正常127/133低于v9的130/133，门槛未通过，不晋升。选择合同失败从R6.7的4题降为3题，均为超过20条预算；Markdown围栏失败为0。来源池、选择提示词、预算及回答政策保持R6.7合同；群体反例、事件角色和裁判规则本轮不改。完整设计见[中文设计](../../superpowers/specs/2026-09-26-socialmem-r68-structured-selection-design.md)，详细结果见[中文评测报告](../../eval/2026-09-26-socialmem-r68-structured-selection.md)，历史R6.7原始结果保留。
+
+## 2026-10-17 双脑检索设计入口（计划，未实现）
+
+计划在 RetrievalPlanner 新增 `engram_chunks` scope（P1）、`PlannerQuery.lanes`（auto/right/left/both）与 `allowed_holders`、类型化候选（statement 与 chunk 各有 identity，不再共用 statement 形状）、跨 lane RRF（k=60）和 Context Pack 第 9 标签 `[SOURCE]`（原文加 observed_at）。chunk 授权在话轮粒度，perspective 可见性用类型化 join 在候选生成处下推并先于排序；右脑现有的 `evidence_json` 子串 mask 不动。四个弃答条件不变，`max_score` 取融合后最高分；右脑 8 标签与现有 lane 语义不变。`lexical_index`（FTS5）、查询改写与当前态/历史态策略属 P2。另有既有缺陷须先修：HISTORY 沿 supersedes 补链处跳过所有未取到的邻居（`retrieval_planner.cpp` fetch_graph_supersedes）。ObserverRetriever 评测专用路径不动。本段描述计划，不代表已经实现或获得新分数。设计见[双脑记忆设计](../../superpowers/specs/2026-10-17-dual-brain-general-memory-design.md)。
+
+**2026-10-18 更新**：上述 `engram_chunks` scope、跨 lane RRF 与第 9 标签暂缓。新计划聚焦召回行的时间呈现：`render_line`、Working Set 的 `relevant_memories` 与 OpenClaw 映射目前都不含时间，计划由一个 C++ 共用的时间格式化策略统一处理；`render_time`、`current_date_in_prompt` 与时间来源修正为三个独立开关，默认关闭。时间来源修正会改变新近度排序（`affect_reranker` 按 `observed_at` 或 `event_time` 计算）。若评测显示原文优于三元组，候选是把已有 SourceTurn 原文通道（`retain_source_turns`、ObserverRetriever 的 `[SOURCE]` 行）引入生产召回，而非新建投影。本段描述计划，不代表已经实现或获得新分数。见[召回带时间：评测先行](../../superpowers/specs/2026-10-18-temporal-recall-rendering-design.md)。

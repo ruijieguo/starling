@@ -81,15 +81,63 @@ TEST(KnowledgeFrontierRecord, GroupMembershipWritesGroupId) {
         "default", "alice", "eng-team",
         "2026-05-26T10:00:00Z", adapter->connection());
 
+    // 迁移 0037 起：写入 cognizer_group_membership 表（带时间维度）。
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(adapter->connection().raw(),
-        "SELECT metadata_json FROM cognizer_frontier_facts "
-        " WHERE fact_kind='membership' AND cognizer_id='alice'",
+        "SELECT group_id, joined_at FROM cognizer_group_membership "
+        " WHERE tenant_id='default' AND cognizer_id='alice'",
         -1, &stmt, nullptr);
-    sqlite3_step(stmt);
-    std::string m(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    std::string gid(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    std::string eff(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
     sqlite3_finalize(stmt);
-    EXPECT_NE(m.find("eng-team"), std::string::npos);
+    EXPECT_EQ(gid, "eng-team");
+    EXPECT_EQ(eff, "2026-05-26T10:00:00Z");
+}
+
+TEST(KnowledgeFrontierRecord, GroupMembershipIdempotent) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    KnowledgeFrontier frontier(*adapter);
+    // 同一 (tenant, group, cognizer, joined_at) 重复写入应幂等（ON CONFLICT DO NOTHING）。
+    frontier.record_group_membership("default", "alice", "eng-team", "2026-05-26T10:00:00Z",
+                                      adapter->connection());
+    frontier.record_group_membership("default", "alice", "eng-team", "2026-05-26T10:00:00Z",
+                                      adapter->connection());
+    const auto cnt = count_table(adapter->connection().raw(),
+        "SELECT COUNT(*) FROM cognizer_group_membership "
+        " WHERE tenant_id='default' AND cognizer_id='alice' AND group_id='eng-team'");
+    EXPECT_EQ(cnt, 1);  // 只有一行，非两行
+}
+
+TEST(KnowledgeFrontierRecord, GetGroupMembersAt) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    KnowledgeFrontier frontier(*adapter);
+    // alice 在 T1 加入 eng-team，T2 加入 design-team。
+    frontier.record_group_membership("default", "alice", "eng-team",    "2026-05-26T10:00:00Z",
+                                      adapter->connection());
+    frontier.record_group_membership("default", "alice", "design-team", "2026-05-27T12:00:00Z",
+                                      adapter->connection());
+    // bob 在 T1 加入 eng-team。
+    frontier.record_group_membership("default", "bob", "eng-team", "2026-05-26T10:00:00Z",
+                                      adapter->connection());
+
+    // as-of 查询：alice 在 T1 之前无组，T1 后只有 eng-team，T2 后有两个。
+    auto before = frontier.get_group_members_at("default", "alice", "2026-05-26T09:00:00Z");
+    EXPECT_EQ(before.size(), 0);
+
+    auto t1 = frontier.get_group_members_at("default", "alice", "2026-05-26T10:00:00Z");
+    EXPECT_EQ(t1.size(), 1);
+    EXPECT_EQ(t1.count("eng-team"), 1);
+
+    auto t2 = frontier.get_group_members_at("default", "alice", "2026-05-27T12:00:00Z");
+    EXPECT_EQ(t2.size(), 2);
+    EXPECT_EQ(t2.count("eng-team"), 1);
+    EXPECT_EQ(t2.count("design-team"), 1);
+
+    // bob 只在 eng-team。
+    auto bob_t2 = frontier.get_group_members_at("default", "bob", "2026-05-27T12:00:00Z");
+    EXPECT_EQ(bob_t2.size(), 1);
+    EXPECT_EQ(bob_t2.count("eng-team"), 1);
 }
 
 TEST(KnowledgeFrontierRecord, ExplicitNegationWritesNotTold) {

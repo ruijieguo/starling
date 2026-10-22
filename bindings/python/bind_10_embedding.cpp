@@ -3,6 +3,7 @@
 // Registration order across bind_01..bind_12 mirrors the original file and is
 // load-bearing (pybind11 requires base classes registered before derived).
 
+#include <memory>
 #include "bind_common.hpp"
 
 #include <utility>
@@ -75,6 +76,16 @@ void bind_10_embedding(pybind11::module_& m) {
                starling::vector::VectorIndex>(m, "SqliteBlobVectorIndex")
         .def(py::init<>());
 
+    // 形态 S §5.2：左脑原文索引。与 VectorIndex 分开的抽象（授权按可见 engram
+    // 集合，不按 holder），评测与 planner 接线需要在 Python 侧构造它。
+    // 抽象基类只注册类型以便 py::isinstance 与继承判定；对象不持有（与上面
+    // VectorIndex 同一写法，仅是本次 diff 新增行需显式忽略未使用告警）。
+    [[maybe_unused]] auto source_index_base =
+        py::class_<starling::vector::SourceVectorIndex>(m, "SourceVectorIndex");
+    py::class_<starling::vector::SqliteSourceVectorIndex,
+               starling::vector::SourceVectorIndex>(m, "SqliteSourceVectorIndex")
+        .def(py::init<>());
+
 #ifdef STARLING_HAS_ZVEC
     // zvec 后端(STARLING_VECTOR_ZVEC=ON 编译时可用)。构造接 store_path + dimension
     // (collection schema 固定维度);default OFF 构建里此类不注册。
@@ -87,7 +98,9 @@ void bind_10_embedding(pybind11::module_& m) {
     py::class_<starling::embedding::EmbeddingStats>(m, "EmbeddingStats")
         .def_readonly("embedded",         &starling::embedding::EmbeddingStats::embedded)
         .def_readonly("failed",           &starling::embedding::EmbeddingStats::failed)
-        .def_readonly("overlaps_created", &starling::embedding::EmbeddingStats::overlaps_created);
+        .def_readonly("overlaps_created", &starling::embedding::EmbeddingStats::overlaps_created)
+        .def_readonly("source_embedded",  &starling::embedding::EmbeddingStats::source_embedded)
+        .def_readonly("source_failed",    &starling::embedding::EmbeddingStats::source_failed);
 
     // EmbeddingWorker holds REFERENCES to adapter/embedder/index — keep_alive on
     // all three (without it you get a use-after-free).
@@ -97,6 +110,22 @@ void bind_10_embedding(pybind11::module_& m) {
                       starling::vector::VectorIndex&>(),
              py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
              py::arg("adapter"), py::arg("embedder"), py::arg("index"))
+        // 带左脑 source 分支的构造：source_index 同样必须 keep_alive（worker 只存指针）。
+        .def(py::init([](starling::persistence::SqliteAdapter& adapter,
+                         starling::embedding::EmbeddingAdapter& embedder,
+                         starling::vector::VectorIndex& index,
+                         starling::vector::SourceVectorIndex& source_index) {
+                 // 返回 unique_ptr：pybind11 接管所有权；裸 `new` 会触发
+                 // cppcoreguidelines-owning-memory。
+                 return std::make_unique<starling::embedding::EmbeddingWorker>(
+                     adapter, embedder, index,
+                     starling::embedding::WorkerConfig(),
+                     &source_index);
+             }),
+             py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
+             py::keep_alive<1, 5>(),
+             py::arg("adapter"), py::arg("embedder"), py::arg("index"),
+             py::arg("source_index"))
         .def("health_json", [](starling::embedding::EmbeddingWorker& s) {
             return s.health(s.connection()).to_json();
         }, py::call_guard<py::gil_scoped_release>())

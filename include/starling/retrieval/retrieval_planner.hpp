@@ -17,8 +17,25 @@
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/retrieval/statement_row.hpp"
 #include "starling/retrieval/temporal_evidence.hpp"
+#include "starling/embedding/embedding_adapter.hpp"
+#include "starling/vector/source_vector_index.hpp"
+
+#include <memory>
 
 namespace starling::retrieval {
+
+// 左脑 lane 的依赖注入。默认 nullopt = lane 关闭，planner 行为与改动前逐字节一致。
+//
+// tau_source 未标定前 lane 不得开启：构造函数里强制校验（§4.4 硬约束）。
+struct SourceLaneDeps {
+    vector::SourceVectorIndex* index = nullptr;
+    embedding::EmbeddingAdapter* embedder = nullptr;
+    int         dim = 0;
+    std::string model;
+    double      tau_source = 0.0;   // <= 0 视为未标定，拒绝构造
+    int         k_max = 200;        // 迭代回填的硬上限
+    int         chunk_byte_budget = 8000;
+};
 
 struct PlannerQuery {
     std::string tenant_id;
@@ -38,6 +55,7 @@ struct PlannerQuery {
                                          // → invalid_scope_filter_mix 拒绝
     AbstentionConfig abstention;
     std::optional<TemporalEvidenceRequest> temporal_evidence; // 默认关闭，只读来源顺序视图。
+    std::optional<SourceLaneDeps>          source_lane;       // 默认 nullopt = 左脑关闭
 };
 
 struct PlannerEntryOut {
@@ -46,10 +64,29 @@ struct PlannerEntryOut {
     ContextPackLabel label = ContextPackLabel::FACT;
 };
 
+// 原文条目（左脑 lane，形态 S §4.2-§4.5）。与语句条目分开承载：原文没有
+// holder/predicate 语义，硬塞进 StatementRow 会伪造字段。
+struct SourceEntryOut {
+    std::string engram_ref;
+    std::string clause_id;
+    std::string speaker;
+    std::string session_id;
+    std::string observed_at;      // 渲染日期用；provenance=ingest_clock 时不渲染
+    std::string text;             // 原话（已转义为单行）
+    std::string provenance;       // source_time | ingest_clock
+    double      score = 0.0;      // 余弦相似度，不是 RRF 分
+    double      rrf_score = 0.0;
+    std::int64_t rrf_rank = 0;
+};
+
+// 左脑 lane 的配置校验；不合法即 throw std::invalid_argument。
+void validate_source_lane(const SourceLaneDeps& deps);
+
 struct PlannerResult {
     std::vector<PlannerEntryOut> entries;
+    std::vector<SourceEntryOut>  source_entries;   // 左脑 lane（lane 关闭时恒空）
     RetrievalReceipt receipt;
-    std::string context_pack;            // 渲染后的 8 标签文本
+    std::string context_pack;            // 渲染后的标签文本
     bool abstained = false;
 };
 

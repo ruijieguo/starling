@@ -31,4 +31,26 @@ TEST(AbstentionGate, FourConditionsAndPriority) {
     EXPECT_EQ(evaluate_abstention(empty), "low_score");
 }
 
+// 形态 S §4.4：原文证据有自己的门槛（tau_source，由 planner 判定后传入），
+// 不得再被语句侧的 tau_recall 否决。两路分数不可比，混在一个 max_score 里
+// 会让任何低于 tau_recall 的原文证据都被拒答。
+TEST(AbstentionGate, SourceEvidenceIsNotVetoedByStatementThreshold) {
+    AbstentionInput in;
+    in.source_evidence = true;      // planner 已按 tau_source 判过
+    in.any_candidates = true;
+    in.max_score = 0.0;             // 没有语句候选
+    EXPECT_EQ(evaluate_abstention(in), "");
+
+    // 语句侧的 recanted / conflict 否决仍然成立（spec：保守）。
+    in.unresolved_conflict = true;
+    EXPECT_EQ(evaluate_abstention(in), "conflict_unresolved");
+}
+
+TEST(AbstentionGate, NoSourceEvidenceKeepsLegacyBehaviour) {
+    AbstentionInput in;             // source_evidence 默认 false
+    in.any_candidates = true;
+    in.max_score = 0.1;
+    EXPECT_EQ(evaluate_abstention(in), "low_score");
+}
+
 }  // namespace starling::retrieval

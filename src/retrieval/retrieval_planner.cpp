@@ -2,6 +2,7 @@
 #include "starling/retrieval/claim_evidence.hpp"
 
 #include <algorithm>
+#include <ranges>
 #include <chrono>
 #include <cstdio>
 #include <limits>
@@ -19,6 +20,10 @@
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/tom/common_ground.hpp"
+#include "starling/vector/source_vector_index.hpp"
+#include "starling/extractor/claim_contract.hpp"
+
+#include <sstream>
 
 namespace starling::retrieval {
 
@@ -81,7 +86,77 @@ void push_filter(RetrievalScopeStep& step, std::string name, std::string value) 
     step.filters.emplace_back(std::move(name), std::move(value));
 }
 
+
+
+// ── 左脑来源 lane（形态 S §4.2-§4.5）────────────────────────────────────────
+//
+// 与语句腿完全独立的取回-融合-渲染路径：原文没有 holder/predicate 语义，
+// 也不经过 claim evidence 复核或 affect rerank。两路各自排名后用 RRF 融合。
+
+constexpr int kRrfK = 60;   // RRF 常数；用名次，不要求两路分数同分布
+
+// 从 payload 里取出该 clause 的原文；取不到返回 false（索引与 payload 错配）。
+bool unit_text_from_payload(std::string_view payload, std::string_view clause,
+                            std::string* text_out) {
+    try {
+        const auto units = nlohmann::json::parse(
+            extractor::claim_source_units(payload));
+        for (const auto& unit : units) {
+            if (unit.value("clause_id", std::string()) != clause) {
+                continue;
+            }
+            // v3 把说话内容放在 utterance；v1/v2 的 text 是整行。
+            std::string text = unit.value("utterance", std::string());
+            if (text.empty()) {
+                text = unit.value("text", std::string());
+            }
+            *text_out = std::move(text);
+            return true;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    return false;
+}
+
+// 原文渲染：单行、JSON 转义，避免多行原文伪造出新的标签行。
+std::string render_source_line(const SourceEntryOut& entry) {
+    std::ostringstream out_stream;
+    out_stream << "[SOURCE] ";
+    if (entry.provenance != "ingest_clock" && !entry.observed_at.empty()) {
+        out_stream << "[" << entry.observed_at << "] ";
+    }
+    if (!entry.speaker.empty()) {
+        out_stream << entry.speaker << ": ";
+    }
+    // JSON 转义把换行/引号等序列化为单行，续行不会产生标签前缀。
+    out_stream << nlohmann::json(entry.text).dump();
+    return out_stream.str();
+}
+
+
+
 }  // namespace
+
+void validate_source_lane(const SourceLaneDeps& deps) {
+    if (deps.index == nullptr) {
+        throw std::invalid_argument("source lane: index is required");
+    }
+    if (deps.embedder == nullptr) {
+        throw std::invalid_argument("source lane: embedder is required");
+    }
+    if (deps.dim <= 0 || deps.model.empty()) {
+        throw std::invalid_argument("source lane: dim/model must be set");
+    }
+    // §4.4 硬约束：tau_source 未经标定不得开启 lane。
+    if (!(deps.tau_source > 0.0)) {
+        throw std::invalid_argument(
+            "source lane: tau_source must be calibrated (> 0) before enabling");
+    }
+    if (deps.k_max <= 0 || deps.chunk_byte_budget <= 0) {
+        throw std::invalid_argument("source lane: invalid budget");
+    }
+}
 
 PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if (q.tenant_id.empty() || q.querier.empty() || q.as_of_iso8601.empty()
@@ -124,6 +199,17 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         cognizer::KnowledgeFrontier frontier(adapter_);
         visible = frontier.visible_engrams_at(q.tenant_id, perspective,
                                               q.as_of_iso8601);
+    }
+    // 左脑 lane 的感知过滤**无条件**生效（§3.2）：原话不按 holder 归属，
+    // 自查时若不过滤，agent 就能召回它从未听到的话。这是与右脑 planner 遮罩
+    // （只在 perspective≠querier 时套）的关键差异。
+    std::unordered_set<std::string> source_visible;
+    if (q.source_lane.has_value()) {
+        validate_source_lane(*q.source_lane);
+        cognizer::KnowledgeFrontier frontier(adapter_);
+        source_visible = frontier.visible_engrams_at(q.tenant_id, perspective,
+                                                     q.as_of_iso8601);
+        rc.frontier_visible_engrams = static_cast<std::int64_t>(source_visible.size());
     }
     rc.plan_steps.push_back({"mask",
         need_mask ? "frontier visible_engrams=" + std::to_string(visible.size())
@@ -339,6 +425,135 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     rc.plan_steps.push_back({"fetch",
         "fetched=" + std::to_string(fetched.size())});
 
+    // ── 4b. 左脑取回：查询嵌入 + 感知过滤 + 迭代回填 ──────────────────────
+    // 全部过滤在 SQL 内下推、排序之前（§4.2）；这里只做 payload 交叉校验
+    // 与数量控制。
+    std::vector<SourceEntryOut> source_hits;
+    if (q.source_lane.has_value()) {
+        const auto& deps = *q.source_lane;
+        vector::SourceSearchScope sscope;
+        sscope.tenant_id = q.tenant_id;
+        sscope.visible_engrams.insert(source_visible.begin(), source_visible.end());
+        sscope.as_of = q.as_of_iso8601;
+        sscope.include_unknown_time = false;   // §4.2：无时间的 unit 不进召回
+
+        if (!q.text.empty() && !sscope.visible_engrams.empty()) {
+            try {
+                const embedding::EmbeddingResult query_vec =
+                    deps.embedder->embed(std::string_view(q.text));
+                if (query_vec.dim != deps.dim || query_vec.model != deps.model) {
+                    // 查询向量与索引不是同一模型：静默比较会得到无意义的分数。
+                    rc.source_degraded_reason = "embedder_mismatch";
+                } else {
+                    // 迭代回填：批量倍增，直到凑够 k 或遍历完符合条件集合。
+                    int want = q.k;
+                    int fetched_count = 0;
+                    while (want <= deps.k_max) {
+                        const auto batch = deps.index->search(
+                            conn, query_vec.vector, want, sscope);
+                        fetched_count = static_cast<int>(batch.size());
+                        source_hits.clear();
+                        for (const auto& hit : batch) {
+                            SourceEntryOut entry;
+                            entry.engram_ref = hit.engram_ref;
+                            entry.clause_id = hit.clause_id;
+                            entry.speaker = hit.speaker;
+                            entry.session_id = hit.session_id;
+                            entry.score = hit.score;
+                            source_hits.push_back(std::move(entry));
+                        }
+                        if (fetched_count >= q.k) { break; }
+                        if (fetched_count < want) { break; }  // 已遍历完
+                        want *= 2;
+                    }
+                    if (fetched_count >= deps.k_max && fetched_count >= q.k) {
+                        rc.source_truncated = 1;
+                    }
+                }
+            } catch (const std::exception& e) {
+                rc.source_degraded_reason = std::string("source_lane_failed: ") + e.what();
+                source_hits.clear();
+            }
+        } else if (!q.text.empty() && sscope.visible_engrams.empty()) {
+            rc.source_degraded_reason = "no_visible_engrams";
+        }
+
+        rc.source_candidates = static_cast<std::int64_t>(source_hits.size());
+
+        // payload 交叉校验（数据完整性，不是授权）：clause 必须仍在该 engram
+        // 的 payload 里、正文非空、且时间与 provenance 取权威元数据。
+        std::vector<SourceEntryOut> verified;
+        verified.reserve(source_hits.size());
+        std::string loaded_engram;
+        std::string loaded_payload;
+        for (auto& entry : source_hits) {
+            if (entry.engram_ref != loaded_engram) {
+                loaded_engram = entry.engram_ref;
+                loaded_payload.clear();
+                sqlite3_stmt* raw = nullptr;
+                if (sqlite3_prepare_v2(db,
+                        "SELECT payload_inline, created_at FROM engrams"
+                        " WHERE id = ?1 AND tenant_id = ?2 AND erased_at IS NULL",
+                        -1, &raw, nullptr) == SQLITE_OK) {
+                    StmtHandle handle(raw);
+                    bind_sv(handle.get(), 1, entry.engram_ref);
+                    bind_sv(handle.get(), 2, q.tenant_id);
+                    if (sqlite3_step(handle.get()) == SQLITE_ROW) {
+                        const void* bytes = sqlite3_column_blob(handle.get(), 0);
+                        const int length = sqlite3_column_bytes(handle.get(), 0);
+                        if (bytes != nullptr && length > 0) {
+                            loaded_payload.assign(static_cast<const char*>(bytes),
+                                                  static_cast<std::size_t>(length));
+                        }
+                    }
+                }
+            }
+            if (loaded_payload.empty()) {
+                ++rc.source_rejected;
+                continue;
+            }
+            std::string text;
+            if (!unit_text_from_payload(loaded_payload, entry.clause_id, &text) || text.empty()) {
+                ++rc.source_rejected;
+                continue;
+            }
+            entry.text = std::move(text);
+
+            // 时间与 provenance 以权威元数据为准（索引里没有这两列）。
+            sqlite3_stmt* raw = nullptr;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT observed_at, provenance, session_id, speaker"
+                    " FROM source_unit_meta WHERE tenant_id = ?1 AND engram_ref = ?2"
+                    "   AND clause_id = ?3", -1, &raw, nullptr) != SQLITE_OK) {
+                ++rc.source_rejected;
+                continue;
+            }
+            StmtHandle handle(raw);
+            bind_sv(handle.get(), 1, q.tenant_id);
+            bind_sv(handle.get(), 2, entry.engram_ref);
+            bind_sv(handle.get(), 3, entry.clause_id);
+            if (sqlite3_step(handle.get()) != SQLITE_ROW) {
+                ++rc.source_rejected;
+                continue;
+            }
+            const auto text_col = [&](int column) {
+                const auto* ptr = sqlite3_column_text(handle.get(), column);
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                return ptr != nullptr ? std::string(reinterpret_cast<const char*>(ptr))
+                                      : std::string();
+            };
+            entry.observed_at = text_col(0);
+            entry.provenance = text_col(1);
+            if (entry.session_id.empty()) { entry.session_id = text_col(2); }
+            if (entry.speaker.empty())    { entry.speaker = text_col(3); }
+            if (entry.observed_at.empty()) {
+                ++rc.source_no_time;   // 无时间不参与召回，也不渲染日期
+            }
+            verified.push_back(std::move(entry));
+        }
+        source_hits = std::move(verified);
+    }
+
     // mask 应用:rerank 之前(spec :107 位序硬约束);evidence 任一可见即可见。
     std::int64_t masked = 0;
     const std::size_t before_mask = fetched.size();
@@ -409,6 +624,30 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         cands.resize(static_cast<std::size_t>(q.k));
         breakdown.resize(static_cast<std::size_t>(q.k));
     }
+    // ── 5b. 两路 RRF 融合（§4.3）──────────────────────────────────────
+    // 语句名次与原文名次各自 1..n；score = Σ 1/(60+rank)。用名次而不是分数，
+    // 因为余弦与 final_score 不可直接比较。
+    if (!source_hits.empty()) {
+        std::ranges::sort(source_hits, [](const SourceEntryOut& lhs, const SourceEntryOut& rhs) {
+            if (lhs.score != rhs.score) { return lhs.score > rhs.score; }
+            // 同分按 identity 稳定排序，保证同名次结果可复现。
+            if (lhs.engram_ref != rhs.engram_ref) { return lhs.engram_ref < rhs.engram_ref; }
+            return lhs.clause_id < rhs.clause_id;
+        });
+        std::int64_t rank = 1;
+        for (auto& hit : source_hits) {
+            hit.rrf_rank = rank;
+            hit.rrf_score = 1.0 / (static_cast<double>(kRrfK) + static_cast<double>(rank));
+            ++rank;
+        }
+        std::int64_t stmt_rank = 1;
+        for (auto& scored : breakdown) {
+            scored.final_score +=
+                1.0 / (static_cast<double>(kRrfK) + static_cast<double>(stmt_rank));
+            ++stmt_rank;
+        }
+    }
+
     rc.score_breakdown = breakdown;
     rc.plan_steps.push_back({"fuse",
         "deduped=" + std::to_string(dedup.size()) +
@@ -452,21 +691,33 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     rc.plan_steps.push_back({"ground",
         "common=" + std::to_string(pctx.common_ids.size()) +
         " todo=" + std::to_string(pctx.todo_ids.size()) +
-        " conflict=" + std::to_string(pctx.conflict_ids.size())});
+        " conflict=" + std::to_string(pctx.conflict_ids.size()),});
 
     // ── 7. abstain:四条件。──────────────────────────────────────────────
-    AbstentionInput ab;
-    ab.any_candidates = !cands.empty();
-    ab.max_score = breakdown.empty() ? 0.0 : breakdown.front().final_score;
-    ab.frontier_denied = need_mask && before_mask > 0 && cands.empty();
+    // 原文侧的"有证据"判据是分数（§4.4）：取消低分保护会把 rank 1 当成
+    // 必然相关。且必须**预算之后**判定——被字节预算截掉的不算证据。
+    const double best_source_score = source_hits.empty()
+        ? std::numeric_limits<double>::lowest()
+        : source_hits.front().score;
+    const bool source_is_evidence =
+        !source_hits.empty() && best_source_score >= q.source_lane->tau_source;
+
+    AbstentionInput abstain_input;
+    abstain_input.any_candidates = !cands.empty() || source_is_evidence;
+    // 两路门槛分开：语句分数照旧交给 tau_recall；原文证据单独以 source_evidence
+    // 传入。旧实现把两者合成一个 max_score，tau_source < tau_recall 时原文证据
+    // 会被语句门槛误杀（阶段 A 冒烟发现）。
+    abstain_input.max_score = breakdown.empty() ? 0.0 : breakdown.front().final_score;
+    abstain_input.source_evidence = source_is_evidence;
+    abstain_input.frontier_denied = need_mask && before_mask > 0 && cands.empty() && !source_is_evidence;
     if (!cands.empty()) {
         bool all_recanted = true;
         for (const auto& c : cands)
             if (!pctx.recanted_ids.contains(c.row.id)) { all_recanted = false; break; }
-        ab.only_recanted_evidence = all_recanted;
-        ab.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
+        abstain_input.only_recanted_evidence = all_recanted;
+        abstain_input.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
     }
-    rc.abstention_reason = evaluate_abstention(ab, q.abstention);
+    rc.abstention_reason = evaluate_abstention(abstain_input, q.abstention);
     rc.plan_steps.push_back({"abstain",
         rc.abstention_reason.empty() ? "pass" : rc.abstention_reason});
 
@@ -482,13 +733,56 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     }
     std::vector<PackEntry> entries;
     for (std::size_t i = 0; i < cands.size(); ++i) {
+        auto& cand = cands.at(i);
         const auto label = classify_with_provenance(
-            cands[i].row, pctx, provenance_by_id[cands[i].row.id]);
-        entries.push_back({label, cands[i].row.id,
-                           render_line(cands[i].row, label)});
-        record_claim_link(conn, rc, cands[i].row);
-        out.entries.push_back({std::move(cands[i].row),
-                               breakdown[i].final_score, label});
+            cand.row, pctx, provenance_by_id.at(cand.row.id));
+        entries.push_back(PackEntry{.label = label,
+                                    .statement_id = cand.row.id,
+                                    .line = render_line(cand.row, label),});
+        record_claim_link(conn, rc, cand.row);
+        out.entries.push_back(PlannerEntryOut{.row = std::move(cand.row),
+                                              .score = breakdown.at(i).final_score,
+                                              .label = label,});
+    }
+
+    // 原文行：与语句行按融合分交错，共用同一个字节预算（§4.3）。预算按整行
+    // 截断——半行原文比没有原文更糟。
+    if (!source_hits.empty()) {
+        struct RenderedSource { SourceEntryOut entry; std::string line; };
+        std::vector<RenderedSource> rendered;
+        rendered.reserve(source_hits.size());
+        for (auto& hit : source_hits) {
+            // 先渲染再移动：聚合初始化的求值顺序未定义，写成
+            // {std::move(hit), render_source_line(hit)} 会在移动之后才读 hit，
+            // 渲染出空行（并让预算判断把整行误当成 0 字节）。
+            std::string line = render_source_line(hit);
+            rendered.push_back(RenderedSource{.entry = std::move(hit), .line = std::move(line)});
+        }
+        std::ranges::sort(rendered, [](const RenderedSource& lhs, const RenderedSource& rhs) {
+            if (lhs.entry.rrf_score != rhs.entry.rrf_score) {
+                return lhs.entry.rrf_score > rhs.entry.rrf_score;
+            }
+            if (lhs.entry.engram_ref != rhs.entry.engram_ref) {
+                return lhs.entry.engram_ref < rhs.entry.engram_ref;
+            }
+            return lhs.entry.clause_id < rhs.entry.clause_id;
+        });
+        std::size_t used_bytes = 0;
+        for (const auto& entry : entries) { used_bytes += entry.line.size() + 1; }
+        for (auto& item : rendered) {
+            const std::size_t cost = item.line.size() + 1;
+            if (q.source_lane.has_value()
+                && used_bytes + cost > static_cast<std::size_t>(q.source_lane->chunk_byte_budget)) {
+                ++rc.source_truncated;
+                continue;
+            }
+            used_bytes += cost;
+            entries.push_back(PackEntry{.label = ContextPackLabel::SOURCE,
+                                        .statement_id = item.entry.engram_ref,
+                                        .line = item.line,});
+            out.source_entries.push_back(std::move(item.entry));
+        }
+        rc.source_selected = static_cast<std::int64_t>(out.source_entries.size());
     }
     out.context_pack = render_pack(entries, "");
     if(temporal_view) { out.context_pack+="\n"+render_temporal_evidence(*temporal_view);

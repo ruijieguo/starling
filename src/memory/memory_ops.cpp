@@ -392,6 +392,7 @@ ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
     query.k             = params.recall_k;
     query.trace_id      = "conv-" + seed_hash.substr(0, 16);
     query.query_id      = "convq-" + seed_hash.substr(16, 16);
+    query.source_lane   = params.source_lane;   // nullopt = 左脑关闭
     retrieval::RetrievalPlanner planner(adapter, semantic);
     const auto plan = planner.run(query);
     prep.context_pack = plan.context_pack;
@@ -640,6 +641,13 @@ ClearTenantOutcome clear_tenant(persistence::SqliteAdapter& adapter,
     static constexpr std::array kSteps{
         Step{.table = "episodic_events", .sql = "DELETE FROM episodic_events WHERE tenant_id=?1"},
         Step{.table = "source_documents", .sql = "DELETE FROM source_documents WHERE tenant_id=?1"},
+        // 0037：左脑原文元数据与派生向量，均引用 engrams 故必须排在它之前。
+        Step{.table = "source_unit_vectors",
+             .sql = "DELETE FROM source_unit_vectors WHERE tenant_id=?1",},
+        Step{.table = "source_unit_meta",
+             .sql = "DELETE FROM source_unit_meta WHERE tenant_id=?1",},
+        Step{.table = "cognizer_group_membership",
+             .sql = "DELETE FROM cognizer_group_membership WHERE tenant_id=?1",},
         Step{.table = "extraction_attempt",
              .sql = "DELETE FROM extraction_attempt WHERE pipeline_run_id IN "
              "(SELECT id FROM governance_pipeline_run WHERE tenant_id=?1)"},

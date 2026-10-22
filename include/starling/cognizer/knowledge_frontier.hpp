@@ -45,14 +45,27 @@ public:
         std::string_view observed_at,
         persistence::Connection& conn);
 
-    // 4/5: group_membership (cognizer belongs to group_id; expressed via
-    // metadata_json={"group_id": ...}).
+    // 4/5: group_membership (cognizer belongs to group_id; 迁移 0037 起写入
+    // cognizer_group_membership 表，带幂等与 effective_from 时间维度)。
     void record_group_membership(
         std::string_view tenant_id,
         std::string_view cognizer_id,
         std::string_view group_id,
         std::string_view at_iso8601,
         persistence::Connection& conn);
+
+    // 查询某 cognizer 在 as_of 时刻的组成员资格（as-of 切面），
+    // 返回 group_id 集合（0037+ cognizer_group_membership 表）。
+    [[nodiscard]] std::unordered_set<std::string> get_group_members_at(
+        std::string_view tenant_id,
+        std::string_view cognizer_id,
+        std::string_view as_of_iso8601) const;
+
+    // 反向查询：某组在 as_of 时刻的成员集合（写入时展开 group:* 用）。
+    [[nodiscard]] std::unordered_set<std::string> group_members_at(
+        std::string_view tenant_id,
+        std::string_view group_id,
+        std::string_view as_of_iso8601) const;
 
     // 5/5: explicit_not_told (cognizer was specifically NOT told a fact).
     void record_explicit_negation(

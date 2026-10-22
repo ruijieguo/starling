@@ -9,6 +9,7 @@
 // 全部属核心语义。Python 仅剩签名归一(datetime→ISO)与绑定转发。
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "starling/governance/stage_timer.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/prospective/policy_engine.hpp"
+#include "starling/retrieval/retrieval_planner.hpp"
 #include "starling/retrieval/semantic_retriever.hpp"
 #include "starling/runtime_health.hpp"
 
@@ -162,6 +164,9 @@ struct ConverseParams {
     std::string created_at_iso8601;   // 签名归一(datetime→ISO)
     std::string message;              // 用户本轮输入
     int recall_k = 6;                 // 注入的相关记忆条数上限
+    // 形态 S：左脑原文 lane。默认 nullopt = 关闭，对话提示与改动前一致。
+    // 只持有 index/embedder 的指针，调用方须在 converse_prepare 期间持有它们。
+    std::optional<retrieval::SourceLaneDeps> source_lane;
 };
 
 struct ConverseOutcome {
