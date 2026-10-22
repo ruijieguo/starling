@@ -8,7 +8,7 @@ std::string evaluate_abstention(const AbstentionInput& in,
     if (in.only_recanted_evidence)  return "only_recanted";
     if (in.unresolved_conflict)     return "conflict_unresolved";
     // 原文证据有自己的门槛，已在 planner 内判过；不再拿语句门槛否决它。
-    if (in.source_evidence) return "";
+    if (in.source_evidence) { return ""; }
     if (!in.any_candidates || in.max_score < cfg.tau_recall) return "low_score";
     return "";
 }

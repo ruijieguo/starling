@@ -189,6 +189,7 @@ std::unordered_set<std::string> KnowledgeFrontier::get_group_members_at(
     sqlite3_bind_text(stmt, 2, cognizer_id.data(), static_cast<int>(cognizer_id.size()), SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, as_of_iso8601.data(), static_cast<int>(as_of_iso8601.size()), SQLITE_TRANSIENT);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         groups.emplace(text);
     }
@@ -213,6 +214,7 @@ std::unordered_set<std::string> KnowledgeFrontier::group_members_at(
     sqlite3_bind_text(stmt, 2, group_id.data(), static_cast<int>(group_id.size()), SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, as_of_iso8601.data(), static_cast<int>(as_of_iso8601.size()), SQLITE_TRANSIENT);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         members.emplace(text);
     }

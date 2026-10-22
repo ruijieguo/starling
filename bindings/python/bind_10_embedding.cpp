@@ -3,6 +3,7 @@
 // Registration order across bind_01..bind_12 mirrors the original file and is
 // load-bearing (pybind11 requires base classes registered before derived).
 
+#include <memory>
 #include "bind_common.hpp"
 
 #include <utility>
@@ -77,7 +78,10 @@ void bind_10_embedding(pybind11::module_& m) {
 
     // 形态 S §5.2：左脑原文索引。与 VectorIndex 分开的抽象（授权按可见 engram
     // 集合，不按 holder），评测与 planner 接线需要在 Python 侧构造它。
-    py::class_<starling::vector::SourceVectorIndex>(m, "SourceVectorIndex");
+    // 抽象基类只注册类型以便 py::isinstance 与继承判定；对象不持有（与上面
+    // VectorIndex 同一写法，仅是本次 diff 新增行需显式忽略未使用告警）。
+    [[maybe_unused]] auto source_index_base =
+        py::class_<starling::vector::SourceVectorIndex>(m, "SourceVectorIndex");
     py::class_<starling::vector::SqliteSourceVectorIndex,
                starling::vector::SourceVectorIndex>(m, "SqliteSourceVectorIndex")
         .def(py::init<>());
@@ -111,8 +115,11 @@ void bind_10_embedding(pybind11::module_& m) {
                          starling::embedding::EmbeddingAdapter& embedder,
                          starling::vector::VectorIndex& index,
                          starling::vector::SourceVectorIndex& source_index) {
-                 return new starling::embedding::EmbeddingWorker(
-                     adapter, embedder, index, starling::embedding::WorkerConfig{},
+                 // 返回 unique_ptr：pybind11 接管所有权；裸 `new` 会触发
+                 // cppcoreguidelines-owning-memory。
+                 return std::make_unique<starling::embedding::EmbeddingWorker>(
+                     adapter, embedder, index,
+                     starling::embedding::WorkerConfig(),
                      &source_index);
              }),
              py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),

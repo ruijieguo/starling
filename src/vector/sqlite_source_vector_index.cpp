@@ -7,6 +7,8 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <utility>
+#include <ranges>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -54,7 +56,7 @@ void SqliteSourceVectorIndex::upsert(
 {
     // dim 必须与向量本身一致：不一致说明调用方搞混了模型或适配器，
     // 静默写入会让检索期按错维度比较。
-    if (dim != static_cast<int>(vec.size())) {
+    if (std::cmp_not_equal(dim, vec.size())) {
         throw std::invalid_argument("SqliteSourceVectorIndex::upsert: dim != vec.size()");
     }
 
@@ -177,7 +179,7 @@ std::vector<SourceVectorHit> SqliteSourceVectorIndex::search(
     std::ranges::sort(hits, [](const SourceVectorHit& lhs, const SourceVectorHit& rhs) {
         return lhs.score > rhs.score;
     });
-    if (static_cast<int>(hits.size()) > top_k) {
+    if (std::cmp_greater(hits.size(), top_k)) {
         hits.resize(static_cast<std::size_t>(top_k));
     }
     return hits;

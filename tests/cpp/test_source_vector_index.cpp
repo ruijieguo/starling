@@ -15,6 +15,7 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <memory>

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // Context Pack 8 标签(13_retrieval.md §核心算法-3):LLM 收到的不是无差别
 // 文本,而是带认识论地位标注的语用结构。classify 为纯函数:行 + 三个成员集
 // (planner 预查的承诺/冲突/共识 id 集)→ 标签;首中即停的优先级链。
@@ -13,7 +14,9 @@
 namespace starling::retrieval {
 
 // SOURCE 必须追加在末尾：现有值的编号被 Python 镜像与快照钉住。
-enum class ContextPackLabel { FACT, BELIEF, HEARSAY, INFERRED, COMMON, TODO, CONFLICT, ABSTAIN, SOURCE };
+enum class ContextPackLabel : std::uint8_t {
+    FACT, BELIEF, HEARSAY, INFERRED, COMMON, TODO, CONFLICT, ABSTAIN, SOURCE
+};
 
 inline const char* to_string(ContextPackLabel v) {
     switch (v) {

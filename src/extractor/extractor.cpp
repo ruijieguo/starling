@@ -336,17 +336,19 @@ std::vector<std::string> lookup_source_audience(
     const char* sql =
         "SELECT DISTINCT audience_json FROM source_unit_meta"
         " WHERE tenant_id = ?1 AND engram_ref = ?2";
-    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
+    if (sqlite3_prepare_v2(conn.raw(), sql, -1, &stmt, nullptr) != SQLITE_OK) { return out; }
     persistence::detail::bind_sv(stmt, 1, tenant_id);
     persistence::detail::bind_sv(stmt, 2, engram_ref);
     std::set<std::string> merged;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        if (text == nullptr) continue;
+        if (text == nullptr) { continue; }
         try {
             for (const auto& member : nlohmann::json::parse(text)) {
-                if (member.is_string()) merged.insert(member.get<std::string>());
+                if (member.is_string()) { merged.insert(member.get<std::string>()); }
             }
+        // NOLINTNEXTLINE(bugprone-empty-catch)
         } catch (const std::exception&) {
             // 损坏的元数据不阻断抽取：退回调用方的默认推断。
         }
@@ -694,7 +696,7 @@ ExtractionRunResult Extractor::persist(
 
     // 单事务(移自原 run):FAILED 仍 COMMIT(attempt 行 + events 持久化),
     // 异常 ROLLBACK(TransactionGuard)。所有 DB 写集中在 LLM 之后。
-    starling::persistence::TransactionGuard tx(conn_);
+    starling::persistence::TransactionGuard guard(conn_);
 
     // 形态 S §3.4b：来源 engram 的权威听众，每次 persist 只查一次（engram 固定）。
     const std::vector<std::string> source_audience =
@@ -913,7 +915,7 @@ ExtractionRunResult Extractor::persist(
             // 在场集合会不一致，可见性被静默放宽（在场是并集）。只覆盖 perceived_by
             // （信息可见性）；scope_parties 是 grounding 群体，语义独立，保持不变。
             // 非来源 engram（普通 remember）查不到记录，行为与改动前逐字节一致。
-            if (!source_audience.empty()) stmt.perceived_by = source_audience;
+            if (!source_audience.empty()) { stmt.perceived_by = source_audience; }
             const ValidationOutcome v = validate_extracted_statement(stmt, policy_);
             if (!v.ok()) {
                 any_rejected_this_attempt = true;
@@ -1035,7 +1037,7 @@ ExtractionRunResult Extractor::persist(
                             holder_tenant_id, run_id, run_started_event_id);
     }
 
-    tx.commit();
+    guard.commit();
     return result;
 }
 

@@ -1281,11 +1281,13 @@ std::string retain_source_turns(persistence::SqliteAdapter& adapter,
     // 任一句带 audience ⇒ 全部必须有（混批拒绝）；否则走旧的按 speaker 分组路径，
     // 保证未使用新字段的既有调用方行为逐字节不变。
     size_t with_audience=0;
-    for (const auto& turn:input) { if (turn.contains("audience")) ++with_audience; }
+    for (const auto& turn:input) {
+        if (turn.contains("audience")) { ++with_audience; }
+    }
     if (with_audience!=0 && with_audience!=input.size()) {
         throw std::invalid_argument("mixed batch: either all turns carry audience or none");
     }
-    const bool v3 = with_audience==input.size() && !input.empty();
+    const bool v3_mode = with_audience==input.size() && !input.empty();
 
     auto& conn=adapter.connection();
     auto date_check=prepare(conn.raw(),"SELECT julianday(?1)");
@@ -1297,28 +1299,33 @@ std::string retain_source_turns(persistence::SqliteAdapter& adapter,
     Json refs=Json::array();
     auto insert=prepare(conn.raw(),"INSERT OR IGNORE INTO source_documents(tenant_id,holder_id,engram_ref,registered_at) VALUES(?1,?2,?3,?4)");
 
-    if (!v3) {
+    if (!v3_mode) {
         // ── 旧路径：按 speaker 分组，行为与改动前一致 ──────────────────────
         std::map<std::string,Json> grouped;
         for (const auto& turn:input) {
             const auto speaker=turn.at("speaker").get<std::string>();
-            if (!allowed.contains(speaker)) throw std::invalid_argument("source speaker outside allowed_holders");
+            if (!allowed.contains(speaker)) {
+                throw std::invalid_argument("source speaker outside allowed_holders");
+            }
             grouped[speaker].push_back(turn);
         }
         (void)validated;
         for (const auto& [holder,turns]:grouped) {
             const auto payload=extractor::claim_source_turn_payload(turns.dump(),preserve_invalid_time);
-            memoryops::RememberParams p;
-            p.tenant_id=tenant_id; p.holder_id=holder; p.adapter_name="source_turns";
-            p.source_prefix="source-"+holder+"-"; p.created_at_iso8601=created_at;
-            p.payload.assign(payload.begin(),payload.end());
-            const auto stored=memoryops::remember_prepare(adapter,p);
-            if (!stored.should_extract || stored.engram_ref.empty())
+            memoryops::RememberParams params;
+            params.tenant_id=tenant_id; params.holder_id=holder; params.adapter_name="source_turns";
+            params.source_prefix="source-"+holder+"-"; params.created_at_iso8601=created_at;
+            params.payload.assign(payload.begin(),payload.end());
+            const auto stored=memoryops::remember_prepare(adapter,params);
+            if (!stored.should_extract || stored.engram_ref.empty()) {
                 throw std::runtime_error("source evidence refused by ingest policy");
+            }
             sqlite3_reset(insert.get()); sqlite3_clear_bindings(insert.get());
             bind_sv(insert.get(),1,tenant_id); bind_sv(insert.get(),2,holder);
             bind_sv(insert.get(),3,stored.engram_ref); bind_sv(insert.get(),4,created_at);
-            if (sqlite3_step(insert.get())!=SQLITE_DONE) throw make_sqlite_error(conn.raw(),"source registration");
+            if (sqlite3_step(insert.get())!=SQLITE_DONE) {
+                throw make_sqlite_error(conn.raw(),"source registration");
+            }
             refs.push_back(stored.engram_ref);
         }
         tx.commit();
@@ -1340,28 +1347,37 @@ std::string retain_source_turns(persistence::SqliteAdapter& adapter,
             const std::string who=raw.get<std::string>();
             // group:* 在此刻展开成当时的成员（§3.2b）：感知是当时的事实，
             // 后来入组者不应看到历史组内对话。
-            if (who.rfind("group:",0)==0) {
-                for (const auto& m:frontier.group_members_at(tenant_id,who.substr(6),when)) {
-                    members.insert(m);
+            if (who.starts_with("group:")) {
+                for (const auto& member:frontier.group_members_at(tenant_id,who.substr(6),when)) {
+                    members.insert(member);
                 }
             } else {
                 members.insert(who);
             }
         }
-        if (members.empty()) throw std::invalid_argument("audience expands to no members");
-        for (const auto& m:members) {
-            if (!allowed.contains(m)) throw std::invalid_argument("audience member outside allowed_holders");
+        if (members.empty()) {
+            throw std::invalid_argument("audience expands to no members");
         }
-        if (!members.contains(speaker)) throw std::invalid_argument("source speaker outside audience");
+        for (const auto& member:members) {
+            if (!allowed.contains(member)) {
+                throw std::invalid_argument("audience member outside allowed_holders");
+            }
+        }
+        if (!members.contains(speaker)) {
+            throw std::invalid_argument("source speaker outside audience");
+        }
         std::string key;
-        for (const auto& m:members) { if (!key.empty()) key+='\x1f'; key+=m; }
-        auto& g=groups[{session,key}];
-        if (g.audience.empty()) g.audience.assign(members.begin(),members.end());
+        for (const auto& member:members) {
+            if (!key.empty()) { key+='\x1f'; }
+            key+=member;
+        }
+        auto& group=groups[{session,key}];
+        if (group.audience.empty()) { group.audience.assign(members.begin(),members.end()); }
         // 展开后的成员写回 turn：契约层只认字面 audience，不认识 group:*，
         // 若原样传递会因"说话人不在听众中"被拒（契约不知道展开规则）。
         Json expanded=turn;
-        expanded["audience"]=Json(g.audience);
-        g.turns.push_back(std::move(expanded));
+        expanded["audience"]=Json(group.audience);
+        group.turns.push_back(std::move(expanded));
     }
 
     auto insert_meta=prepare(conn.raw(),
@@ -1370,25 +1386,28 @@ std::string retain_source_turns(persistence::SqliteAdapter& adapter,
     auto insert_vec=prepare(conn.raw(),
         "INSERT OR IGNORE INTO source_unit_vectors(tenant_id,engram_ref,clause_id,status) VALUES(?1,?2,?3,'pending')");
     size_t audience_rows=0;
-    for (auto& [gkey,g]:groups) {
-        const auto payload=extractor::claim_source_turn_payload(Json(g.turns).dump(),preserve_invalid_time);
+    for (auto& [gkey,group]:groups) {
+        const auto payload=extractor::claim_source_turn_payload(Json(group.turns).dump(),preserve_invalid_time);
         // engram 的代表 holder 取听众里字典序最小者——它只是注册用的稳定身份，
         // 授权一律走 visible_engrams_at（§3.2），不依赖 holder。
-        const std::string holder=g.audience.front();
-        memoryops::RememberParams p;
-        p.tenant_id=tenant_id; p.holder_id=holder; p.adapter_name="source_turns";
-        p.source_prefix="source-"+holder+"-"; p.created_at_iso8601=created_at;
-        p.payload.assign(payload.begin(),payload.end());
-        const auto stored=memoryops::remember_prepare(adapter,p);
-        if (!stored.should_extract || stored.engram_ref.empty())
+        const std::string holder=group.audience.front();
+        memoryops::RememberParams params;
+        params.tenant_id=tenant_id; params.holder_id=holder; params.adapter_name="source_turns";
+        params.source_prefix="source-"+holder+"-"; params.created_at_iso8601=created_at;
+        params.payload.assign(payload.begin(),payload.end());
+        const auto stored=memoryops::remember_prepare(adapter,params);
+        if (!stored.should_extract || stored.engram_ref.empty()) {
             throw std::runtime_error("source evidence refused by ingest policy");
+        }
 
         // 每个听众都登记一份来源文档：多主体下"谁拥有这份原话"是听众集合，不是说话人。
-        for (const auto& who:g.audience) {
+        for (const auto& who:group.audience) {
             sqlite3_reset(insert.get()); sqlite3_clear_bindings(insert.get());
             bind_sv(insert.get(),1,tenant_id); bind_sv(insert.get(),2,who);
             bind_sv(insert.get(),3,stored.engram_ref); bind_sv(insert.get(),4,created_at);
-            if (sqlite3_step(insert.get())!=SQLITE_DONE) throw make_sqlite_error(conn.raw(),"source registration");
+            if (sqlite3_step(insert.get())!=SQLITE_DONE) {
+                throw make_sqlite_error(conn.raw(),"source registration");
+            }
             ++audience_rows;
         }
 
@@ -1396,40 +1415,49 @@ std::string retain_source_turns(persistence::SqliteAdapter& adapter,
         // 不自行编号（否则与读取端的编号可能不一致）。
         const auto units=Json::parse(extractor::claim_source_units(payload));
         std::string earliest;
-        const std::string audience_json=Json(g.audience).dump();
+        const std::string audience_json=Json(group.audience).dump();
         for (const auto& unit:units) {
             const std::string clause=unit.at("clause_id").get<std::string>();
             const std::string observed=unit.value("observed_at",Json(nullptr)).is_string()
-                ? unit["observed_at"].get<std::string>() : std::string();
-            if (!observed.empty() && (earliest.empty() || observed<earliest)) earliest=observed;
+                ? unit.at("observed_at").get<std::string>() : std::string();
+            if (!observed.empty() && (earliest.empty() || observed<earliest)) {
+                earliest=observed;
+            }
             sqlite3_reset(insert_meta.get()); sqlite3_clear_bindings(insert_meta.get());
             bind_sv(insert_meta.get(),1,tenant_id); bind_sv(insert_meta.get(),2,stored.engram_ref);
             bind_sv(insert_meta.get(),3,clause);
             bind_sv(insert_meta.get(),4,unit.value("speaker",holder));
             bind_sv(insert_meta.get(),5,gkey.first);
             bind_sv(insert_meta.get(),6,audience_json);
-            if (unit.contains("turn_index") && unit["turn_index"].is_number())
-                sqlite3_bind_int(insert_meta.get(),7,unit["turn_index"].get<int>());
-            else sqlite3_bind_null(insert_meta.get(),7);
-            if (observed.empty()) sqlite3_bind_null(insert_meta.get(),8);
-            else bind_sv(insert_meta.get(),8,observed);
+            if (const auto turn_it=unit.find("turn_index");
+                turn_it!=unit.end() && turn_it->is_number()) {
+                sqlite3_bind_int(insert_meta.get(),7,turn_it->get<int>());
+            } else {
+                sqlite3_bind_null(insert_meta.get(),7);
+            }
+            if (observed.empty()) { sqlite3_bind_null(insert_meta.get(),8); }
+            else { bind_sv(insert_meta.get(),8,observed); }
             bind_sv(insert_meta.get(),9,unit.value("provenance","source_time"));
-            if (sqlite3_step(insert_meta.get())!=SQLITE_DONE) throw make_sqlite_error(conn.raw(),"source unit meta");
+            if (sqlite3_step(insert_meta.get())!=SQLITE_DONE) {
+                throw make_sqlite_error(conn.raw(),"source unit meta");
+            }
             sqlite3_reset(insert_vec.get()); sqlite3_clear_bindings(insert_vec.get());
             bind_sv(insert_vec.get(),1,tenant_id); bind_sv(insert_vec.get(),2,stored.engram_ref);
             bind_sv(insert_vec.get(),3,clause);
-            if (sqlite3_step(insert_vec.get())!=SQLITE_DONE) throw make_sqlite_error(conn.raw(),"source unit vector");
+            if (sqlite3_step(insert_vec.get())!=SQLITE_DONE) {
+                throw make_sqlite_error(conn.raw(),"source unit vector");
+            }
         }
 
         // 在场记录：按 engram 粒度、用组内最早时间写入。必须在抽取之前完成，
         // 且同一事务同一连接——在场是 INSERT OR IGNORE，先写入者胜（§3.4b）。
-        frontier.record_presence_from_statement(tenant_id,g.audience,stored.engram_ref,
+        frontier.record_presence_from_statement(tenant_id,group.audience,stored.engram_ref,
                                                 earliest.empty()?created_at:earliest,conn);
         refs.push_back(stored.engram_ref);
     }
     tx.commit();
     return Json({{"documents",groups.size()},{"turns",input.size()},{"engram_refs",refs},
-                 {"audience_rows",audience_rows}}).dump();
+                 {"audience_rows",audience_rows},}).dump();
 }
 
 std::vector<std::string> observer_holders(persistence::SqliteAdapter& adapter,

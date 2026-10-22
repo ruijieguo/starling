@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <regex>
+#include <ranges>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -155,7 +156,9 @@ Json source_turn_v3(const Json& turn) {
     try {
         // v3 字段由本函数校验；这里只借用 v1 的通用字段归一化，需先排除 v3 专属字段。
         Json stripped = turn;
-        for (const char* key : {"audience", "provenance"}) stripped.erase(key);
+        for (const char* key : {"audience", "provenance"}) {
+            stripped.erase(key);
+        }
         Json result = source_turn(stripped, /*preserve_invalid_time=*/false);
         fields(turn,{"speaker","text","audience","session_id","turn_index","provenance","turn_id","observed_at"});
         const auto& audience = turn.at("audience");
@@ -169,16 +172,19 @@ Json source_turn_v3(const Json& turn) {
             const std::string raw = member.get<std::string>();
             std::string who(trim(raw));   // trim 返回 view，必须拷成 string 再存
             require(!who.empty(),"source_span_failure","audience entries must be non-empty strings");
-            if (std::find(members.begin(), members.end(), who) == members.end())
+            if (std::ranges::find(members, who) == members.end()) {
                 members.push_back(who);
+            }
         }
         // 说话人必须显式出现在听众里：不做隐式补全，否则存储的 audience 与调用方
         // 声明的不一致，破坏"写入即固定"的审计前提（安全评审 2026-10-21）。
         const auto speaker = result.at("speaker").get<std::string>();
-        require(std::find(members.begin(), members.end(), speaker) != members.end(),
+        require(std::ranges::find(members, speaker) != members.end(),
                 "source_span_failure","speaker must be listed in audience");
         Json normalized = Json::array();
-        for (const auto& who : members) normalized.push_back(who);
+        for (const auto& who : members) {
+            normalized.push_back(who);
+        }
         require(turn.at("session_id").is_string() && !trim(turn.at("session_id").get<std::string>()).empty(),
                 "source_span_failure","session_id must be a non-empty string");
         const auto& index = turn.at("turn_index");
@@ -187,10 +193,10 @@ Json source_turn_v3(const Json& turn) {
         const auto provenance = turn.at("provenance").get<std::string>();
         require(provenance == "source_time" || provenance == "ingest_clock",
                 "source_span_failure","provenance must be source_time or ingest_clock");
-        result["audience"] = normalized;
-        result["session_id"] = turn.at("session_id");
-        result["turn_index"] = index;
-        result["provenance"] = provenance;
+        result.emplace("audience", normalized);
+        result.emplace("session_id", turn.at("session_id"));
+        result.emplace("turn_index", index);
+        result.emplace("provenance", provenance);
         (void)result.dump();
         return result;
     } catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
@@ -229,17 +235,17 @@ Json units(std::string_view payload) {
             //   Session <id> | <speaker> | turn <n> | <utterance>
             // It is metadata only; the full line remains the evidence span.
             const std::string line(text);
-            const auto p1=line.find(" | ");
-            const auto p2=p1==std::string::npos?std::string::npos:line.find(" | ",p1+3);
-            const auto p3=p2==std::string::npos?std::string::npos:line.find(" | ",p2+3);
+            const auto sep1=line.find(" | ");
+            const auto sep2=sep1==std::string::npos?std::string::npos:line.find(" | ",sep1+3);
+            const auto sep3=sep2==std::string::npos?std::string::npos:line.find(" | ",sep2+3);
             if (text.starts_with(turns_v3_prefix)) {
                 Json turn;
                 try { turn=source_turn_v3(strict_json(text.substr(turns_v3_prefix.size()),false)); }
                 catch (const std::exception& e) { throw ContractError("source_span_failure",e.what()); }
                 unit.update(source_turn_metadata(turn));
-                unit["utterance"]=turn["text"];
-                unit["audience"]=turn["audience"];
-                unit["provenance"]=turn["provenance"];
+                unit.emplace("utterance", turn.at("text"));
+                unit.emplace("audience", turn.at("audience"));
+                unit.emplace("provenance", turn.at("provenance"));
             } else if (text.starts_with(turn_prefix) || text.starts_with(tolerant_turn_prefix)) {
                 Json turn;
                 const bool tolerant=text.starts_with(tolerant_turn_prefix);
@@ -249,17 +255,20 @@ Json units(std::string_view payload) {
                 unit.update(source_turn_metadata(turn));
                 unit["utterance"]=turn["text"];
                 // 旧载荷无听众：保守回填为 {speaker}（只有说话人本人可召回）。
-                unit["audience"]=Json::array({turn["speaker"]});
-            } else if (p1!=std::string::npos && p2!=std::string::npos && p3!=std::string::npos &&
-                line.rfind("Session ",0)==0 && line.compare(p2+3,5,"turn ")==0) {
-                const auto session=line.substr(0,p1);
-                const auto speaker=line.substr(p1+3,p2-p1-3);
-                const auto turn_text=line.substr(p2+8,p3-p2-8);
+                unit.emplace("audience", Json::array({turn.at("speaker")}));
+            } else if (sep1!=std::string::npos && sep2!=std::string::npos
+                       && sep3!=std::string::npos && line.starts_with("Session ")
+                       && line.compare(sep2+3,5,"turn ")==0) {
+                const auto session=line.substr(0,sep1);
+                const auto speaker=line.substr(sep1+3,sep2-sep1-3);
+                const auto turn_text=line.substr(sep2+8,sep3-sep2-8);
                 try {
                     std::size_t used=0; const auto turn=std::stoi(turn_text,&used);
                     if (used==turn_text.size() && !speaker.empty()) {
-                        unit["session_id"]=session; unit["speaker"]=speaker; unit["turn_index"]=turn;
-                        unit["utterance"]=line.substr(p3+3);
+                        unit.emplace("session_id", session);
+                        unit.emplace("speaker", speaker);
+                        unit.emplace("turn_index", turn);
+                        unit.emplace("utterance", line.substr(sep3+3));
                     }
                 } catch (...) { /* retain plain source unit */ }
             } else {
@@ -797,7 +806,7 @@ std::string claim_extraction_batch_plan(std::string_view payload, const Validati
 
 
 bool claim_is_explicit_utc_time(const std::string& value) {
-    return valid_utc_time(value) && value.substr(0,4)!="0000";
+    return valid_utc_time(value) && !value.starts_with("0000");
 }
 nlohmann::json claim_strict_json(std::string_view raw) {return strict_json(raw,false);}
 std::string claim_source_turn_payload(std::string_view turns_json, bool preserve_invalid_time) {

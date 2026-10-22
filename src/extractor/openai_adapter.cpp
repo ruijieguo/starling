@@ -29,7 +29,7 @@ void add_thinking_parameter(nlohmann::json& body, const OpenAIAdapter::Config& c
         body["thinking_budget"] = *cfg.thinking_budget;
     }
     if (cfg.thinking_type.has_value()) {
-        body["thinking"] = {{"type", *cfg.thinking_type}};
+        body.emplace("thinking", nlohmann::json{{"type", *cfg.thinking_type}});
     }
 }
 }  // namespace
@@ -58,7 +58,7 @@ OpenAIAdapter::OpenAIAdapter(Config cfg, MonotonicClock clock)
     }
     if (cfg_.thinking_type.has_value()
             && *cfg_.thinking_type != "disabled" && *cfg_.thinking_type != "enabled") {
-        throw std::invalid_argument("thinking_type must be \"disabled\" or \"enabled\"");
+        throw std::invalid_argument(R"(thinking_type must be "disabled" or "enabled")");
     }
     if (cfg_.thinking_budget.has_value() && cfg_.thinking_type == "disabled") {
         throw std::invalid_argument("thinking_budget conflicts with thinking_type=disabled");

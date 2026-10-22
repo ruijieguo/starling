@@ -486,8 +486,11 @@ EmbeddingStats EmbeddingWorker::tick_source_units(persistence::Connection& conn,
         sqlite3_bind_int(handle.get(), 1, cfg_.max_retry);
         sqlite3_bind_int(handle.get(), 2, cfg_.batch_size);
         while (sqlite3_step(handle.get()) == SQLITE_ROW) {
-            pending.push_back(SourcePending{col_text(handle.get(), 0), col_text(handle.get(), 1),
-                                            col_text(handle.get(), 2)});
+            pending.push_back(SourcePending{
+                .tenant_id = col_text(handle.get(), 0),
+                .engram_ref = col_text(handle.get(), 1),
+                .clause_id = col_text(handle.get(), 2),
+            });
         }
     }
     if (pending.empty()) {

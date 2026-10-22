@@ -56,13 +56,13 @@ public:
 
     // 查询某 cognizer 在 as_of 时刻的组成员资格（as-of 切面），
     // 返回 group_id 集合（0037+ cognizer_group_membership 表）。
-    std::unordered_set<std::string> get_group_members_at(
+    [[nodiscard]] std::unordered_set<std::string> get_group_members_at(
         std::string_view tenant_id,
         std::string_view cognizer_id,
         std::string_view as_of_iso8601) const;
 
     // 反向查询：某组在 as_of 时刻的成员集合（写入时展开 group:* 用）。
-    std::unordered_set<std::string> group_members_at(
+    [[nodiscard]] std::unordered_set<std::string> group_members_at(
         std::string_view tenant_id,
         std::string_view group_id,
         std::string_view as_of_iso8601) const;

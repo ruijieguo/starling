@@ -46,19 +46,26 @@ class EmbeddingWorker {
 public:
     // source_index 为空 = 关闭左脑来源 lane（默认），语句分支行为完全不变。
     EmbeddingWorker(persistence::SqliteAdapter& a, EmbeddingAdapter& e,
-                    vector::VectorIndex& idx, WorkerConfig cfg = {},
+                    vector::VectorIndex& idx,
+                    const WorkerConfig& worker_cfg = WorkerConfig(),
                     vector::SourceVectorIndex* source_index = nullptr)
-        : adapter_(a), embedder_(e), index_(idx), cfg_(cfg), source_index_(source_index) {}
+        : adapter_(a), embedder_(e), index_(idx), cfg_(worker_cfg),
+          source_index_(source_index) {}
     EmbeddingStats tick_one_batch(persistence::Connection&, std::string_view now_iso);
     EmbeddingHealth health(persistence::Connection&) const;
     persistence::Connection& connection() { return adapter_.connection(); }  // pybind helper
 private:
     // source 分支：扫 pending/failed 的 unit、取 payload 里的原文、嵌入并写回。
-    EmbeddingStats tick_source_units(persistence::Connection&, std::string_view now_iso);
+    EmbeddingStats tick_source_units(persistence::Connection& conn_handle,
+                                     std::string_view now_iso_utc);
 
+    // worker 不拥有 adapter / embedder / index，只借用（与既有的 adapter_ 同一约定）。
+    // 引用成员是刻意的：换成指针会让每一处调用点都要判空。
+    // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
     persistence::SqliteAdapter& adapter_;
     EmbeddingAdapter& embedder_;
     vector::VectorIndex& index_;
+    // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
     WorkerConfig cfg_;
     vector::SourceVectorIndex* source_index_ = nullptr;
 };

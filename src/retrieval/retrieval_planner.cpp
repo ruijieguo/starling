@@ -2,6 +2,7 @@
 #include "starling/retrieval/claim_evidence.hpp"
 
 #include <algorithm>
+#include <ranges>
 #include <chrono>
 #include <cstdio>
 #include <limits>
@@ -120,17 +121,17 @@ bool unit_text_from_payload(std::string_view payload, std::string_view clause,
 
 // 原文渲染：单行、JSON 转义，避免多行原文伪造出新的标签行。
 std::string render_source_line(const SourceEntryOut& entry) {
-    std::ostringstream os;
-    os << "[SOURCE] ";
+    std::ostringstream out_stream;
+    out_stream << "[SOURCE] ";
     if (entry.provenance != "ingest_clock" && !entry.observed_at.empty()) {
-        os << "[" << entry.observed_at << "] ";
+        out_stream << "[" << entry.observed_at << "] ";
     }
     if (!entry.speaker.empty()) {
-        os << entry.speaker << ": ";
+        out_stream << entry.speaker << ": ";
     }
     // JSON 转义把换行/引号等序列化为单行，续行不会产生标签前缀。
-    os << nlohmann::json(entry.text).dump();
-    return os.str();
+    out_stream << nlohmann::json(entry.text).dump();
+    return out_stream.str();
 }
 
 
@@ -628,19 +629,22 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     // 因为余弦与 final_score 不可直接比较。
     if (!source_hits.empty()) {
         std::ranges::sort(source_hits, [](const SourceEntryOut& lhs, const SourceEntryOut& rhs) {
-            if (lhs.score != rhs.score) return lhs.score > rhs.score;
+            if (lhs.score != rhs.score) { return lhs.score > rhs.score; }
             // 同分按 identity 稳定排序，保证同名次结果可复现。
-            if (lhs.engram_ref != rhs.engram_ref) return lhs.engram_ref < rhs.engram_ref;
+            if (lhs.engram_ref != rhs.engram_ref) { return lhs.engram_ref < rhs.engram_ref; }
             return lhs.clause_id < rhs.clause_id;
         });
-        for (std::size_t i = 0; i < source_hits.size(); ++i) {
-            source_hits[i].rrf_rank = static_cast<std::int64_t>(i) + 1;
-            source_hits[i].rrf_score =
-                1.0 / (static_cast<double>(kRrfK) + static_cast<double>(i + 1));
+        std::int64_t rank = 1;
+        for (auto& hit : source_hits) {
+            hit.rrf_rank = rank;
+            hit.rrf_score = 1.0 / (static_cast<double>(kRrfK) + static_cast<double>(rank));
+            ++rank;
         }
-        for (std::size_t i = 0; i < cands.size(); ++i) {
-            breakdown[i].final_score +=
-                1.0 / (static_cast<double>(kRrfK) + static_cast<double>(i + 1));
+        std::int64_t stmt_rank = 1;
+        for (auto& scored : breakdown) {
+            scored.final_score +=
+                1.0 / (static_cast<double>(kRrfK) + static_cast<double>(stmt_rank));
+            ++stmt_rank;
         }
     }
 
@@ -687,7 +691,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     rc.plan_steps.push_back({"ground",
         "common=" + std::to_string(pctx.common_ids.size()) +
         " todo=" + std::to_string(pctx.todo_ids.size()) +
-        " conflict=" + std::to_string(pctx.conflict_ids.size())});
+        " conflict=" + std::to_string(pctx.conflict_ids.size()),});
 
     // ── 7. abstain:四条件。──────────────────────────────────────────────
     // 原文侧的"有证据"判据是分数（§4.4）：取消低分保护会把 rank 1 当成
@@ -698,22 +702,22 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     const bool source_is_evidence =
         !source_hits.empty() && best_source_score >= q.source_lane->tau_source;
 
-    AbstentionInput ab;
-    ab.any_candidates = !cands.empty() || source_is_evidence;
+    AbstentionInput abstain_input;
+    abstain_input.any_candidates = !cands.empty() || source_is_evidence;
     // 两路门槛分开：语句分数照旧交给 tau_recall；原文证据单独以 source_evidence
     // 传入。旧实现把两者合成一个 max_score，tau_source < tau_recall 时原文证据
     // 会被语句门槛误杀（阶段 A 冒烟发现）。
-    ab.max_score = breakdown.empty() ? 0.0 : breakdown.front().final_score;
-    ab.source_evidence = source_is_evidence;
-    ab.frontier_denied = need_mask && before_mask > 0 && cands.empty() && !source_is_evidence;
+    abstain_input.max_score = breakdown.empty() ? 0.0 : breakdown.front().final_score;
+    abstain_input.source_evidence = source_is_evidence;
+    abstain_input.frontier_denied = need_mask && before_mask > 0 && cands.empty() && !source_is_evidence;
     if (!cands.empty()) {
         bool all_recanted = true;
         for (const auto& c : cands)
             if (!pctx.recanted_ids.contains(c.row.id)) { all_recanted = false; break; }
-        ab.only_recanted_evidence = all_recanted;
-        ab.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
+        abstain_input.only_recanted_evidence = all_recanted;
+        abstain_input.unresolved_conflict = pctx.conflict_ids.contains(cands.front().row.id);
     }
-    rc.abstention_reason = evaluate_abstention(ab, q.abstention);
+    rc.abstention_reason = evaluate_abstention(abstain_input, q.abstention);
     rc.plan_steps.push_back({"abstain",
         rc.abstention_reason.empty() ? "pass" : rc.abstention_reason});
 
@@ -729,13 +733,16 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     }
     std::vector<PackEntry> entries;
     for (std::size_t i = 0; i < cands.size(); ++i) {
+        auto& cand = cands.at(i);
         const auto label = classify_with_provenance(
-            cands[i].row, pctx, provenance_by_id[cands[i].row.id]);
-        entries.push_back({label, cands[i].row.id,
-                           render_line(cands[i].row, label)});
-        record_claim_link(conn, rc, cands[i].row);
-        out.entries.push_back({std::move(cands[i].row),
-                               breakdown[i].final_score, label});
+            cand.row, pctx, provenance_by_id.at(cand.row.id));
+        entries.push_back(PackEntry{.label = label,
+                                    .statement_id = cand.row.id,
+                                    .line = render_line(cand.row, label),});
+        record_claim_link(conn, rc, cand.row);
+        out.entries.push_back(PlannerEntryOut{.row = std::move(cand.row),
+                                              .score = breakdown.at(i).final_score,
+                                              .label = label,});
     }
 
     // 原文行：与语句行按融合分交错，共用同一个字节预算（§4.3）。预算按整行
@@ -749,7 +756,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
             // {std::move(hit), render_source_line(hit)} 会在移动之后才读 hit，
             // 渲染出空行（并让预算判断把整行误当成 0 字节）。
             std::string line = render_source_line(hit);
-            rendered.push_back({std::move(hit), std::move(line)});
+            rendered.push_back(RenderedSource{.entry = std::move(hit), .line = std::move(line)});
         }
         std::ranges::sort(rendered, [](const RenderedSource& lhs, const RenderedSource& rhs) {
             if (lhs.entry.rrf_score != rhs.entry.rrf_score) {
@@ -770,7 +777,9 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                 continue;
             }
             used_bytes += cost;
-            entries.push_back({ContextPackLabel::SOURCE, item.entry.engram_ref, item.line});
+            entries.push_back(PackEntry{.label = ContextPackLabel::SOURCE,
+                                        .statement_id = item.entry.engram_ref,
+                                        .line = item.line,});
             out.source_entries.push_back(std::move(item.entry));
         }
         rc.source_selected = static_cast<std::int64_t>(out.source_entries.size());
