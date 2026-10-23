@@ -188,6 +188,14 @@ class DashboardEngine:
                                 adapter_name="dashboard", source_prefix="dash-",
                                 vector_backend=config.vector_backend,
                                 vector_store_path=(config.vector_store_path or None))
+        # 左脑 lane 读写两端：必须在 rebuild_embedder 之前登记，embedder 一到位
+        # 就按它是否与标定一致决定 lane 是否生效（不一致时读写都不碰原文）。
+        if getattr(config, "source_lane_enabled", False):
+            self._core.enable_source_lane(
+                tau_source=config.source_lane_tau_source,
+                model=config.source_lane_model, dim=config.source_lane_dim,
+                k_source=config.source_lane_k_source,
+                chunk_byte_budget=config.source_lane_chunk_byte_budget)
         # P2.o 后台维护 tick(写→读闭环的离线半边);start_background_tick 启动。
         self._tick_thread: threading.Thread | None = None
         self._tick_stop: threading.Event | None = None
@@ -958,6 +966,9 @@ class DashboardEngine:
             # 形态 S §6.3：transcript 是来源通道的第一个消费者。开关关闭时
             # 完全走原有路径（clean_turns → chunk_dialogue → remember），
             # 不写任何来源表；开启时先用带时间的版本把逐话轮写入左脑。
+            # 写入以配置为准、而非以 lane 是否生效为准：原文是记忆本身，不该因为
+            # 一时配错了 embedder 就丢掉。未生效时 source_unit_vectors 留 pending，
+            # 换回标定模型后 worker 会补嵌入（模型变更的行由 worker 重置）。
             if getattr(self._cfg, "source_lane_enabled", False):
                 self._retain_transcript_turns(
                     lines, job=job, project=project, generation=generation)
@@ -1054,6 +1065,15 @@ class DashboardEngine:
     def health(self):
         """Current RuntimeHealth (read-only; forwards to the live supervisor)."""
         return self._rt.health()
+
+    def source_lane_status(self) -> dict:
+        """左脑 lane 是否真正生效。配置开着不等于生效：embedder 与标定模型不一致时
+        lane 静默不工作，这里把原因摆出来，免得「开了却没用」无从察觉。"""
+        with self._lock:
+            core = self._core
+            return {"configured": bool(getattr(self._cfg, "source_lane_enabled", False)),
+                    "active": core.source_lane is not None,
+                    "inactive_reason": core.source_lane_inactive_reason}
 
     def events(self) -> list:
         """Snapshot of the supervisor transition log (read-only passthrough)."""

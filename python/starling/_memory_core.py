@@ -76,6 +76,10 @@ def parse_now(now: "Optional[str | datetime]") -> datetime:
     return dt
 
 
+# 左脑 lane 开放的 intent（形态 S spec §2）。converse 固定走 FACT_LOOKUP。
+_SOURCE_LANE_INTENTS = frozenset({"FACT_LOOKUP", "HISTORY", "PREFERENCE", "ABSTAIN_CHECK"})
+
+
 class MemoryCore:
     """Command core over ONE runtime/WAL writer.
 
@@ -113,6 +117,13 @@ class MemoryCore:
         self.semantic = None
         self.completor = None
         self.worker = None
+        # 形态 S 左脑 lane。enable_source_lane() 开启；None = 关闭（读路径不检索原文、
+        # worker 不嵌入原文）。只在当前 embedder 与标定一致时才真正生效，见
+        # _rebuild_source_lane。
+        self._source_lane_cfg: Optional[dict] = None
+        self.source_idx = None
+        self.source_lane = None              # _core.SourceLaneDeps | None
+        self.source_lane_inactive_reason = ""
 
     def set_embedder(self, emb) -> None:
         """(Re)build the embedder-dependent components as one consistent set,
@@ -124,7 +135,50 @@ class MemoryCore:
                                       self._vector_store_path)
         self.semantic = _core.SemanticRetriever(self.rt.adapter, emb, self.idx)
         self.completor = _core.PatternCompletor(self.rt.adapter, self.semantic)
-        self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)
+        self._rebuild_source_lane()
+
+    def enable_source_lane(self, *, tau_source: float, model: str, dim: int,
+                           k_source: int = 30, chunk_byte_budget: int = 32000,
+                           k_max: int = 200) -> None:
+        """开启左脑 lane（形态 S）。``tau_source`` 只对标定时的嵌入模型有效，
+        因此同时记下 ``model``/``dim``：当前 embedder 与之不符时 lane 不生效
+        （读写都不碰原文），原因见 ``source_lane_inactive_reason``。"""
+        if not (tau_source > 0):
+            raise ValueError("source lane requires a calibrated tau_source (> 0)")
+        self._source_lane_cfg = {"tau_source": float(tau_source), "model": model,
+                                 "dim": int(dim), "k_source": int(k_source),
+                                 "chunk_byte_budget": int(chunk_byte_budget),
+                                 "k_max": int(k_max)}
+        if self.emb is not None:
+            self._rebuild_source_lane()
+
+    def _rebuild_source_lane(self) -> None:
+        """按当前 embedder 重建 worker 与 lane 依赖。
+
+        worker 只在 lane 生效时带 source 分支：嵌入原文要花真金白银的嵌入调用，
+        lane 关闭时不该替一条不读的通道付费。"""
+        cfg = self._source_lane_cfg
+        emb = self.emb
+        self.source_lane = None
+        self.source_idx = None
+        reason = ""
+        if cfg is None:
+            reason = "disabled"
+        elif emb.model() != cfg["model"] or emb.dim() != cfg["dim"]:
+            # 阈值是相似度分界线，换模型后分数分布不同，旧阈值没有意义。
+            reason = (f"embedder {emb.model()}/{emb.dim()} != calibrated "
+                      f"{cfg['model']}/{cfg['dim']}")
+        else:
+            self.source_idx = _core.SqliteSourceVectorIndex()
+            self.source_lane = _core.SourceLaneDeps(
+                self.source_idx, emb, cfg["tau_source"], cfg["k_max"],
+                cfg["chunk_byte_budget"], cfg["k_source"])
+        self.source_lane_inactive_reason = reason
+        if self.source_idx is not None:
+            self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx,
+                                                self.source_idx)
+        else:
+            self.worker = _core.EmbeddingWorker(self.rt.adapter, emb, self.idx)
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None) -> dict:
         """Core-owned belief/general-fact/episodic remember pipeline."""
@@ -237,6 +291,11 @@ class MemoryCore:
         q.k = k
         q.trace_id = str(uuid.uuid4())
         q.query_id = str(uuid.uuid4())
+        # 左脑只对「我自己经历过什么」类 intent 开（形态 S spec §2，照搬父 spec）。
+        # 他人信念、元信念、共同基础、承诺、规范是右脑的社会推理，不该被原话直接
+        # 顶替。planner 本身不按 intent 门控，所以在这里挡。
+        if intent in _SOURCE_LANE_INTENTS:
+            q.source_lane = self.source_lane
         planner = _core.RetrievalPlanner(self.rt.adapter, self.semantic)
         return planner.run(q)
 
@@ -260,7 +319,8 @@ class MemoryCore:
             tenant_id=self.tenant, holder_id=holder_id,
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
-            created_at_iso8601=created_iso, message=message, recall_k=k)
+            created_at_iso8601=created_iso, message=message, recall_k=k,
+            source_lane=self.source_lane)
 
     def generate_stream(self, chat_llm, prompt: str, on_token=None):
         """三相之二(锁外):纯网络,绑定释放 GIL、逐 delta 回调。"""
@@ -302,7 +362,8 @@ class MemoryCore:
             interlocutor=interlocutor or "",
             adapter_name=self.adapter_name, source_prefix=self.source_prefix,
             created_at_iso8601=created_iso, message=message, recall_k=k,
-            policy=_build_policy(self._extraction), on_token=on_token)
+            policy=_build_policy(self._extraction), on_token=on_token,
+            source_lane=self.source_lane)
 
     def tick(self, now: str) -> dict:
         """Advance background workers: embed pending + fire due commitments +

@@ -135,7 +135,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
              const std::string& source_prefix, const std::string& created_at_iso8601,
              const std::string& message, int recall_k,
              const starling::extractor::ValidationPolicy& policy,
-             const py::object& on_token) {
+             const py::object& on_token,
+             std::optional<starling::retrieval::SourceLaneDeps> source_lane) {
               starling::memoryops::ConverseParams p;
               p.tenant_id          = tenant_id;
               p.holder_id          = holder_id;
@@ -145,6 +146,9 @@ void bind_13_memory_ops(pybind11::module_& m) {
               p.created_at_iso8601 = created_at_iso8601;
               p.message            = message;
               p.recall_k           = recall_k;
+              // 形态 S：左脑 lane（None = 关闭）。与 memory_converse_prepare 同约定：
+              // 只存指针，调用方须持有 index/embedder。
+              p.source_lane        = std::move(source_lane);
               auto sink = make_token_sink(on_token);
               starling::memoryops::ConverseOutcome r;
               {
@@ -168,7 +172,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("adapter_name"), py::arg("source_prefix"),
           py::arg("created_at_iso8601"), py::arg("message"), py::arg("recall_k") = 6,
           py::arg("policy") = starling::extractor::ValidationPolicy{},
-          py::arg("on_token") = py::none());
+          py::arg("on_token") = py::none(),
+          py::arg("source_lane") = py::none());
 
     // 三相拆分(2026-07-05 锁外生成):host 在 prepare/commit 段持引擎锁、
     // generate 段释放——三个绑定共享单体的语义(C++ 内联同三相)。
