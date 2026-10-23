@@ -406,11 +406,21 @@ Vitals 聚合积压与永久失败数。**要求**：任何"没检索到"的查�
 
 | 开关 | 默认 | 说明 |
 |---|---|---|
-| `source_lane.enabled` | `false` | 关闭即不检索、不渲染 |
+| `source_lane.enabled` | **`true`**（2026-10-23 起；此前 `false`） | 关闭即不检索、不渲染 |
 | `source_lane.render_time` | `false` | 从属于 enabled |
 | `current_date_in_prompt` | `false` | 独立 |
 
 **上线额外门槛**：`tau_source` 未标定前 lane 不得开启（§4.4）。
+
+**2026-10-23 默认开启（用户裁定）**：阶段 B 的 C3（弃答错误上界 ≤ 25%）在两个独立数据集上都没过，
+C1、C2 均过。BEAM-500K 留出集测得可答题 +0.361、弃答错误 2→10/58
+（`docs/eval/2026-10-23-lane-tradeoff-results.md`），用户选择带着这份已知代价开启，弃答修复另行在
+BEAM-1M 上做。
+
+默认标定组：`tau_source=0.56`、`text-embedding-v4`/1024、`k_source=30`、`chunk_byte_budget=32000`。
+阈值只对标定时的嵌入模型有效，**当前 embedder 与标定模型不一致时 lane 不生效**（读写都不碰原文），
+原因经 `DashboardEngine.source_lane_status()` 暴露。dashboard 摄入的写入以配置为准（原文照写），
+换回标定模型后由 worker 补嵌入。
 
 ## 8. 与右脑及不变量
 

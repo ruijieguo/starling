@@ -40,6 +40,8 @@ _SERIALIZABLE = (
     "cors_origins", "providers", "roles", "tick_interval_s",
     "vector_backend", "vector_store_path", "gist_thresholds", "ingest_spool_path",
     "source_lane_enabled", "source_lane_render_time", "source_lane_tau_source",
+    "source_lane_model", "source_lane_dim", "source_lane_k_source",
+    "source_lane_chunk_byte_budget",
 )
 
 
@@ -67,12 +69,19 @@ class DashboardConfig:
     # (min_holders=3, min_replay_count=1, min_confidence=0.6). Threaded into
     # run_idle/run_sleep via MemoryCore.gist_thresholds.
     gist_thresholds: dict = field(default_factory=dict)
-    # 形态 S 左脑来源 lane 的三个开关。**默认全关**：tau_source 未经标定前
-    # 不得开启（spec §4.4 硬约束）。render_time 从属于 enabled——单独打开它
-    # 没有意义（没有原文可渲染）。
-    source_lane_enabled: bool = False
+    # 形态 S 左脑来源 lane。**默认开启**（用户 2026-10-23 裁定，依据
+    # docs/eval/2026-10-23-lane-tradeoff-results.md：BEAM-500K 留出集上可答题
+    # +0.361，弃答错误 2→10/58，C1/C2 过、C3 过不了——带着已知代价开启）。
+    # tau_source 只对标定时的嵌入模型有效：source_lane_model/dim 记下它，
+    # 当前 embedder 与之不符时 lane 不生效（见 MemoryCore.enable_source_lane）。
+    # render_time 从属于 enabled——单独打开它没有意义（没有原文可渲染）。
+    source_lane_enabled: bool = True
     source_lane_render_time: bool = False
-    source_lane_tau_source: float = 0.0
+    source_lane_tau_source: float = 0.56          # 阶段 A 标定（LongMemEval），阶段 B 沿用
+    source_lane_model: str = "text-embedding-v4"
+    source_lane_dim: int = 1024
+    source_lane_k_source: int = 30                # 500K 扫描选定（k/预算耦合）
+    source_lane_chunk_byte_budget: int = 32000
     config_path: str = ""  # not serialized; where load()/save() persist
 
     # ----- role → provider resolution -----

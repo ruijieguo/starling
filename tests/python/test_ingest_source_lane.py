@@ -80,8 +80,8 @@ _STUB = ('[{"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Bob",
 
 def _engine(tmp_path, spool, *, lane_on: bool):
     cfg = DashboardConfig(db_path=str(tmp_path / "ingest.db"), token="")
+    cfg.source_lane_enabled = lane_on      # 默认开启；关闭分支显式关
     if lane_on:
-        cfg.source_lane_enabled = True
         cfg.source_lane_tau_source = 0.3
     eng = DashboardEngine(cfg)
     eng._ingest_spool = spool
@@ -161,6 +161,7 @@ def test_lane_on_discards_job_when_cleared_after_claim(tmp_path):
 def test_config_rejects_enabled_without_calibrated_tau():
     cfg = DashboardConfig()
     cfg.source_lane_enabled = True
+    cfg.source_lane_tau_source = 0.0         # 默认已标定为 0.56，这里显式清零
     import pytest
     with pytest.raises(RuntimeError, match="tau_source"):
         cfg.validate_source_lane()
@@ -168,24 +169,106 @@ def test_config_rejects_enabled_without_calibrated_tau():
 
 def test_config_rejects_render_time_without_enabled():
     cfg = DashboardConfig()
+    cfg.source_lane_enabled = False          # 默认开启，这里显式关
     cfg.source_lane_render_time = True
     import pytest
     with pytest.raises(RuntimeError, match="requires source_lane_enabled"):
         cfg.validate_source_lane()
 
 
-def test_config_defaults_are_all_off():
+def test_config_defaults_enable_calibrated_lane():
+    """默认开启（用户 2026-10-23 裁定）：阈值、模型与 BEAM 验收时一致。
+
+    钉住这些值，是因为它们一起构成「标定」——单改其中一个（例如换嵌入模型而
+    不重标阈值）就让阈值失去依据。"""
     cfg = DashboardConfig()
-    assert cfg.source_lane_enabled is False
+    assert cfg.source_lane_enabled is True
     assert cfg.source_lane_render_time is False
-    assert cfg.source_lane_tau_source == 0.0
+    assert cfg.source_lane_tau_source == 0.56
+    assert (cfg.source_lane_model, cfg.source_lane_dim) == ("text-embedding-v4", 1024)
+    assert (cfg.source_lane_k_source, cfg.source_lane_chunk_byte_budget) == (30, 32000)
     cfg.validate_source_lane()   # 默认配置本身合法
+
+
+def test_config_round_trips_source_lane_fields(tmp_path):
+    p = tmp_path / "cfg.json"
+    cfg = DashboardConfig(db_path=str(tmp_path / "x.db"), token="t")
+    cfg.source_lane_enabled = False
+    cfg.source_lane_k_source = 12
+    cfg.save(str(p))
+    back = DashboardConfig.load(str(p))
+    assert back.source_lane_enabled is False
+    assert back.source_lane_k_source == 12
+
+
+def test_lane_inactive_when_embedder_differs_from_calibration(tmp_path):
+    """stub embedder（无嵌入配置）≠ 标定模型 → lane 不生效：读路径不检索原文、
+    worker 不嵌入原文。默认开启因此不改变没配嵌入的部署与既有测试。"""
+    cfg = DashboardConfig(db_path=str(tmp_path / "x.db"), token="")
+    eng = DashboardEngine(cfg)
+    st = eng.source_lane_status()
+    assert st["configured"] is True and st["active"] is False
+    assert "stub/8" in st["inactive_reason"]
+    assert eng._core.source_lane is None
+
+
+def test_lane_active_when_embedder_matches_calibration(tmp_path):
+    """embedder 与标定一致 → lane 生效：converse/plan_query 都带上 SourceLaneDeps，
+    worker 带 source 分支（原文会被嵌入）。用 stub 的 model/dim 作「标定」，
+    只验接线，不依赖网络。"""
+    from starling._memory_core import MemoryCore  # noqa: F401  确认符号存在
+    cfg = DashboardConfig(db_path=str(tmp_path / "x.db"), token="")
+    cfg.source_lane_model, cfg.source_lane_dim = "stub", 8
+    eng = DashboardEngine(cfg)
+    st = eng.source_lane_status()
+    assert st == {"configured": True, "active": True, "inactive_reason": ""}
+    lane = eng._core.source_lane
+    assert (lane.model, lane.dim, lane.tau_source) == ("stub", 8, 0.56)
+    assert (lane.k_source, lane.chunk_byte_budget) == (30, 32000)
+
+    # 空库：planner 收到了 lane 但没有可见原文——降级原因是「没东西」而非「没接线」。
+    res = eng._core.plan_query("who owns auth?", intent="FACT_LOOKUP")
+    assert res.receipt.source_degraded_reason == "no_visible_engrams"
+
+    # 写→嵌入：原文进库后，worker 的 source 分支把它嵌入。
+    spool = tmp_path / "spool"
+    eng._ingest_spool = spool
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response(_STUB, True, "")
+    eng.llm = fake
+    _job(tmp_path, spool)
+    assert eng._ingest_drain_once() == "done"
+    eng._core.tick("2099-01-01T00:00:00Z")
+    assert _count(eng._db_path,
+                  "SELECT COUNT(*) FROM source_unit_vectors WHERE status='embedded'") == 2
+
+    # 读：原文已嵌入后 planner 真的检索到了候选（关闭态恒为 0）。
+    res = eng._core.plan_query("who owns auth?", intent="FACT_LOOKUP", now="2099-01-01T00:00:00Z")
+    assert res.receipt.source_degraded_reason == ""
+    assert res.receipt.source_candidates >= 1
+
+    # intent 门控（spec §2）：社会推理类 intent 不走左脑，即便原文就在库里。
+    res = eng._core.plan_query("what does Bob believe?", intent="BELIEF_OF_OTHER",
+                               target="Bob", now="2099-01-01T00:00:00Z")
+    assert res.receipt.source_candidates == 0
+    assert not res.source_entries
+
+
+def test_lane_off_converse_prompt_has_no_source_lines(tmp_path):
+    """显式关闭时读路径与改动前一致：converse 提示里没有任何 [SOURCE] 行。"""
+    cfg = DashboardConfig(db_path=str(tmp_path / "x.db"), token="")
+    cfg.source_lane_enabled = False
+    cfg.source_lane_model, cfg.source_lane_dim = "stub", 8
+    eng = DashboardEngine(cfg)
+    assert eng._core.source_lane is None
+    assert eng.source_lane_status()["inactive_reason"] == "disabled"
 
 
 def test_engine_refuses_to_start_with_uncalibrated_lane(tmp_path):
     """直接构造引擎（不经 create_app）同样受硬约束。"""
     import pytest
     cfg = DashboardConfig(db_path=str(tmp_path / "x.db"), token="")
-    cfg.source_lane_enabled = True          # 开启但 tau_source 仍为 0
+    cfg.source_lane_enabled = True
+    cfg.source_lane_tau_source = 0.0        # 开启但阈值未标定
     with pytest.raises(RuntimeError, match="tau_source"):
         DashboardEngine(cfg)
