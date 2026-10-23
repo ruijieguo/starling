@@ -554,8 +554,19 @@ class DashboardEngine:
             chat = self._resolve_chat(provider)
             prepared = self._core.converse_prepare(
                 message, holder=holder, interlocutor=interlocutor, k=k, now=now)
-        gen_resp = self._core.generate_stream(chat, prepared.prompt, on_token)  # ② 锁外
-        with self._lock:                                    # ③ 抽取 + 写
+        # ② 锁外:前提核验(网络)。判定「所问细节是否被直接陈述过」,判为未陈述
+        # 时把本轮指令从「作答」改成「说明记忆里有什么、缺什么」。放在锁外是
+        # 因为它是第二次 LLM 往返,与生成段同性质。关闭时完全不调用、prompt 不变。
+        prompt = prepared.prompt
+        if self._cfg.support_check_enabled:
+            check_cfg = self._core.SupportCheckConfig()
+            check_cfg.enabled = True
+            verdict = self._core.memory_check_support(
+                chat, message, prepared.context_pack, check_cfg)
+            prompt = self._core.memory_apply_support_verdict(
+                prompt, message, verdict, check_cfg)
+        gen_resp = self._core.generate_stream(chat, prompt, on_token)  # ③ 锁外
+        with self._lock:                                    # ④ 抽取 + 写
             return self._core.converse_commit(
                 message, prepared, gen_resp, holder=holder,
                 interlocutor=interlocutor, k=k, now=now)

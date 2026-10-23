@@ -189,3 +189,56 @@ def test_engine_refuses_to_start_with_uncalibrated_lane(tmp_path):
     cfg.source_lane_enabled = True          # 开启但 tau_source 仍为 0
     with pytest.raises(RuntimeError, match="tau_source"):
         DashboardEngine(cfg)
+
+
+def test_support_check_defaults_off_and_no_llm_call(monkeypatch):
+    """前提核验默认关闭：不额外调用 LLM，作答提示与开启前逐字节一致。
+
+    钉住两件容易回归的事：①开关默认 False（每轮不该凭空多一次 LLM 调用）；
+    ②关闭时 apply_support_verdict 是恒等函数（提示不该被任何路径改写）。
+    """
+    from starling import _core
+
+    cfg = DashboardConfig()
+    assert cfg.support_check_enabled is False
+
+    check_cfg = _core.SupportCheckConfig()
+    assert check_cfg.enabled is False
+
+    # 关闭时不发请求:FakeLLMAdapter 若被调用会返回一条会被解析成
+    # "unsupported" 的响应;verdict.checked 仍是 False 就证明它没被碰过。
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response('{"verdict":"unsupported","reason":"x"}', True)
+    verdict = _core.memory_check_support(fake, "q", "e", check_cfg)
+    assert verdict.checked is False
+    assert verdict.supported is False
+
+    prompt = "HEAD\n\n<recalled_memory>\n[SOURCE] x\n</recalled_memory>\n\nUser: q\nAssistant:"
+    assert _core.memory_apply_support_verdict(prompt, "q", verdict, check_cfg) == prompt
+
+
+def test_support_check_enabled_rewrites_only_when_unsupported():
+    """上一条的对照:同一个假适配器,开启后**确实**会判、会改写。
+
+    没有这一条,上一条的「没改写」可能只是因为假适配器从没生效过。
+    """
+    from starling import _core
+
+    check_cfg = _core.SupportCheckConfig()
+    check_cfg.enabled = True
+    check_cfg.unsupported_instruction = "NOT STATED MARKER"
+    prompt = "HEAD\n\n<recalled_memory>\n[SOURCE] x\n</recalled_memory>\n\nUser: q\nAssistant:"
+
+    unsupported = _core.FakeLLMAdapter()
+    unsupported.set_default_response('{"verdict":"unsupported","reason":"x"}', True)
+    v_un = _core.memory_check_support(unsupported, "q", "e", check_cfg)
+    assert v_un.checked and v_un.ok and not v_un.supported
+    rewritten = _core.memory_apply_support_verdict(prompt, "q", v_un, check_cfg)
+    assert "NOT STATED MARKER" in rewritten
+    assert rewritten.index("NOT STATED MARKER") < rewritten.index("User: q")
+
+    supported = _core.FakeLLMAdapter()
+    supported.set_default_response('{"verdict":"supported","reason":"y"}', True)
+    v_ok = _core.memory_check_support(supported, "q", "e", check_cfg)
+    assert v_ok.checked and v_ok.ok and v_ok.supported
+    assert _core.memory_apply_support_verdict(prompt, "q", v_ok, check_cfg) == prompt

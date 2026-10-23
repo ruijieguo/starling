@@ -179,6 +179,46 @@ void bind_13_memory_ops(pybind11::module_& m) {
         .def_readonly("created_at_iso8601",
                        &starling::memoryops::ConversePrepared::created_at_iso8601);
 
+    // ── 前提核验 ──
+    // 核验是一次网络调用，host 必须在**锁外**调用它（分相路径在 prepare 与
+    // generate 之间）。默认 enabled=False：不调用、prompt 逐字节不变。
+    py::class_<starling::memoryops::SupportCheckConfig>(m, "SupportCheckConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled",
+                       &starling::memoryops::SupportCheckConfig::enabled)
+        .def_readwrite("unsupported_instruction",
+                       &starling::memoryops::SupportCheckConfig::unsupported_instruction);
+
+    py::class_<starling::memoryops::SupportVerdict>(m, "SupportVerdict")
+        .def_readonly("checked",           &starling::memoryops::SupportVerdict::checked)
+        .def_readonly("supported",         &starling::memoryops::SupportVerdict::supported)
+        .def_readonly("ok",                &starling::memoryops::SupportVerdict::ok)
+        .def_readonly("error",             &starling::memoryops::SupportVerdict::error)
+        .def_readonly("rationale",         &starling::memoryops::SupportVerdict::rationale)
+        .def_readonly("prompt_tokens",     &starling::memoryops::SupportVerdict::prompt_tokens)
+        .def_readonly("completion_tokens", &starling::memoryops::SupportVerdict::completion_tokens);
+
+    m.def("memory_check_support",
+          [](starling::extractor::LLMAdapter& chat_llm,
+             const std::string& question, const std::string& context_pack,
+             const starling::memoryops::SupportCheckConfig& cfg) {
+              py::gil_scoped_release release;   // 内含 LLM 网络往返
+              return starling::memoryops::check_support(chat_llm, question,
+                                                        context_pack, cfg);
+          },
+          py::arg("chat_llm"), py::arg("question"), py::arg("context_pack"),
+          py::arg("cfg") = starling::memoryops::SupportCheckConfig{});
+
+    m.def("memory_apply_support_verdict",
+          [](const std::string& prompt, const std::string& question,
+             const starling::memoryops::SupportVerdict& verdict,
+             const starling::memoryops::SupportCheckConfig& cfg) {
+              return starling::memoryops::apply_support_verdict(prompt, question,
+                                                                verdict, cfg);
+          },
+          py::arg("prompt"), py::arg("question"), py::arg("verdict"),
+          py::arg("cfg") = starling::memoryops::SupportCheckConfig{});
+
     m.def("memory_converse_prepare",
           [](starling::persistence::SqliteAdapter& adapter,
              starling::retrieval::SemanticRetriever& semantic,

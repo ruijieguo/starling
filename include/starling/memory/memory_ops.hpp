@@ -154,6 +154,55 @@ RememberOutcome remember_all(
     const RememberParams& params, const RememberPrompts& prompts,
     const extractor::ValidationPolicy& policy = {});
 
+// ── 前提核验(support check) ──
+//
+// 解决的是**前提半真诱答**:弃答题里,题目前提部分为真(「6 月 14 日与 HR 的通话」
+// 确有其事,只是没聊具体议题),左脑以很高的相似度召回相关原话,模型据此作答而不
+// 指出所问细节从未被陈述。相似度阈值区分不了「相关但无答案」——BEAM-100K 上 8 道
+// 弃答失败中 7 道如此,BEAM-500K 上 3/12;两次改提示措辞(2e268c5)均无效。
+//
+// 因此不再靠提示措辞,改为**在生成前独立判定一次**,并由判定结果**改写本轮指令**:
+// 判定「未被直接陈述」时,提示从「回答问题」变成「说明记忆里实际有什么、缺什么」。
+// 这是结构性方案而非措辞微调:判定与生成是两次独立调用,前者只看证据,后者拿判定。
+//
+// 为什么不是「不支持就拒答」的硬闸:BEAM 的弃答 rubric 奖励的是说出实际存在什么
+// (「Based on the provided chat, there is no information related to ...」),不是
+// 什么都不说。纯拦截会让本已受益的 9 项能力一起被砍。
+//
+// 开关默认关闭:cost 是每轮多一次 LLM 调用,且效果尚未在留出集上验证。
+struct SupportCheckConfig {
+    bool   enabled = false;      // 默认关闭,提示逐字节不变
+    // 判定为「未直接陈述」时,在作答提示里追加的指令。留空用内置默认(见 .cpp)。
+    std::string unsupported_instruction;
+};
+
+// 判定结果。ok=false 表示判定调用本身失败(网络/解析),调用方应**按原样作答**
+// (fail-open:核验失败不该让用户失去一次正常回答)。
+struct SupportVerdict {
+    bool        checked = false;        // 是否真的判过(开关关闭时为 false)
+    bool        supported = false;      // 题目所问的具体细节是否被直接陈述过
+    bool        ok = true;              // 判定调用是否成功
+    std::string error;                  // ok=false 时的错误码
+    std::string rationale;              // 判定给出的简短理由(供轨迹/调试)
+    int         prompt_tokens = 0;
+    int         completion_tokens = 0;
+};
+
+// 用 chat 适配器判一次「题目所问的具体细节,是否在 context_pack 里被直接陈述过」。
+// 只读,不持写事务,不访问数据库。判定提示与作答提示分离(判定侧不看作答历史)。
+SupportVerdict check_support(extractor::LLMAdapter& chat_llm,
+                             std::string_view question,
+                             std::string_view context_pack,
+                             const SupportCheckConfig& cfg = {});
+
+// 把判定结果落到本轮作答提示上。supported / 未判过 → 原样返回 prompt(逐字节不变);
+// 判为 unsupported → 在 "User: <question>" 前插入 unsupported_instruction。
+// 纯字符串函数,便于单测钉住「开关关闭时提示不变」。
+std::string apply_support_verdict(std::string_view prompt,
+                                  std::string_view question,
+                                  const SupportVerdict& verdict,
+                                  const SupportCheckConfig& cfg = {});
+
 // ── converse — chat-with-memory turn (Phase 2c) ──
 struct ConverseParams {
     std::string tenant_id;
@@ -167,6 +216,12 @@ struct ConverseParams {
     // 形态 S：左脑原文 lane。默认 nullopt = 关闭，对话提示与改动前一致。
     // 只持有 index/embedder 的指针，调用方须在 converse_prepare 期间持有它们。
     std::optional<retrieval::SourceLaneDeps> source_lane;
+    // 前提核验。默认关闭 = 不额外调用、提示逐字节不变。见 check_support()。
+    // 注意：核验是一次网络调用，**不得在持锁的 prepare/commit 段内做**。
+    // 单体 converse() 会自行在 prepare 与 generate 之间插入；分相调用方
+    // （dashboard 的 _converse_phased）必须在锁外自行调用 check_support +
+    // apply_support_verdict，两者的等效性见 test_converse_phases.cpp。
+    std::optional<SupportCheckConfig> support_check;
 };
 
 struct ConverseOutcome {
@@ -246,6 +301,7 @@ ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
 // 二阶提示注入防御:中和召回文本里的围栏定界符 token,使存储数据无法伪造
 // <recalled_memory> 开/闭标签提前闭合围栏(converse 拼 prompt 前调用)。导出以便单测。
 std::string neutralize_recall_fence(std::string_view context_pack);
+
 
 struct TickOutcome {
     int embedded = 0;

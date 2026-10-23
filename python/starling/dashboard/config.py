@@ -40,6 +40,7 @@ _SERIALIZABLE = (
     "cors_origins", "providers", "roles", "tick_interval_s",
     "vector_backend", "vector_store_path", "gist_thresholds", "ingest_spool_path",
     "source_lane_enabled", "source_lane_render_time", "source_lane_tau_source",
+    "support_check_enabled",
 )
 
 
@@ -73,6 +74,11 @@ class DashboardConfig:
     source_lane_enabled: bool = False
     source_lane_render_time: bool = False
     source_lane_tau_source: float = 0.0
+    # 前提核验（support check）。默认关闭：关闭时不额外调用任何 LLM，对话提示
+    # 逐字节不变。开启后每轮多一次 LLM 调用（判定「所问细节是否被直接陈述过」），
+    # 判为未陈述时把本轮指令从「作答」改成「说明记忆里有什么、缺什么」。
+    # 与 source_lane 独立：它作用于**作答层**，不改变检索。
+    support_check_enabled: bool = False
     config_path: str = ""  # not serialized; where load()/save() persist
 
     # ----- role → provider resolution -----
