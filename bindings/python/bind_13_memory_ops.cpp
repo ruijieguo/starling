@@ -187,6 +187,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
         // memory_generate_stream(grounded=True) 过滤，commit 会自行剥掉。
         .def_readonly("grounded",     &starling::memoryops::ConversePrepared::grounded);
 
+    // 返回 None = 证据块未闭合（截断在摘录阶段，无回复）。
     m.def("strip_evidence_block", &starling::memoryops::strip_evidence_block,
           py::arg("reply"));
 

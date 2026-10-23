@@ -247,13 +247,16 @@ inline constexpr std::string_view kGroundedAnswerInstruction =
     "Reasoning, calculations, summaries and suggestions built from the copied lines "
     "are fine.\nAssistant:";
 
-// 去掉回复开头的 <evidence> 块。没有块、或块没闭合时原样返回——格式不合不能
-// 吞掉回复（失败语义 A：用户已看到的回复不丢）。
-std::string strip_evidence_block(std::string_view reply);
+// 去掉回复开头的 <evidence> 块。
+// - 没写块：原样返回（模型没遵从格式，回复本身仍可用）。
+// - 块已闭合：返回块之后的作答。
+// - 块没闭合：返回 nullopt。这说明生成在摘录阶段就被截断、还没开始作答；原样返回
+//   会把半截摘录当成回复泄漏给用户。converse_commit 把它当作无回复的失败轮。
+std::optional<std::string> strip_evidence_block(std::string_view reply);
 
 // 流式版的 strip_evidence_block：把开头的证据块挡在下游之外，其后的 delta 原样透传。
 // 与 strip_evidence_block 同一判据：开头不是开标签就整段放行；块到结束都没闭合，
-// finish() 时原样补发。
+// finish() 时丢弃（不泄漏）。
 class EvidenceStreamFilter {
 public:
     explicit EvidenceStreamFilter(extractor::TokenSink downstream);

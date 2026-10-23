@@ -331,11 +331,16 @@ TEST(GroundedAnswer, StripRemovesLeadingBlockOnly) {
               "use <evidence> tags");
 }
 
-TEST(GroundedAnswer, StripKeepsReplyWhenFormatIsWrong) {
-    // 没写块 / 块没闭合：原样返回，不吞回复（失败语义 A）。
+TEST(GroundedAnswer, StripKeepsReplyWhenNoBlock) {
+    // 没写块：模型没遵从格式，但回复本身可用，原样返回。
     EXPECT_EQ(strip_evidence_block("Plain reply."), "Plain reply.");
-    EXPECT_EQ(strip_evidence_block("<evidence>never closed"), "<evidence>never closed");
     EXPECT_EQ(strip_evidence_block(""), "");
+}
+
+TEST(GroundedAnswer, StripReportsTruncatedBlockAsNoReply) {
+    // 块没闭合 = 截断在摘录阶段：没有回复，绝不把半截摘录当回复返回。
+    EXPECT_FALSE(strip_evidence_block("<evidence>\nthing: X\nlines: the user said").has_value());
+    EXPECT_FALSE(strip_evidence_block("  <evidence>").has_value());
 }
 
 namespace {
@@ -367,7 +372,13 @@ TEST(GroundedAnswer, StreamFilterHidesBlockAcrossTokenSplits) {
 TEST(GroundedAnswer, StreamFilterPassesThroughWhenNoBlock) {
     EXPECT_EQ(run_filter({"Hel", "lo there"}), "Hello there");
     EXPECT_EQ(run_filter({"<", "b>bold</b>"}), "<b>bold</b>");   // 像标签但不是
-    EXPECT_EQ(run_filter({"<evidence>never closed"}), "<evidence>never closed");
+}
+
+TEST(GroundedAnswer, StreamFilterDropsTruncatedBlock) {
+    // 截断在摘录阶段：流式也不泄漏半截摘录。
+    EXPECT_EQ(run_filter({"<evid", "ence>\nthing: X\nlines: the user"}), "");
+    // 开头比开标签还短、生成就结束了：不是证据块，原样放行。
+    EXPECT_EQ(run_filter({"<ev"}), "<ev");
 }
 
 TEST(GroundedAnswer, CommitStripsBlockFromReplyAndMemory) {
@@ -391,6 +402,24 @@ TEST(GroundedAnswer, CommitStripsBlockFromReplyAndMemory) {
     EXPECT_EQ(row_count(fx.adapter->connection(),
                         "SELECT COUNT(*) FROM engrams WHERE payload_inline LIKE '%Not recorded.%'"),
               1);
+}
+
+TEST(GroundedAnswer, CommitTreatsTruncatedBlockAsFailedTurn) {
+    Fixture fx;
+    ConversePrepared prepared;
+    prepared.created_at_iso8601 = "2026-06-01T10:00:00Z";
+    prepared.grounded = true;
+    const extractor::LLMResponse gen{
+        .raw_xml = "<evidence>\nthing: plan\nlines: the user said they would",
+        .ok = true, .completion_tokens = 4096};
+    const auto outcome = converse_commit(*fx.adapter, fx.extraction, "extract",
+                                         conv_params("what is the plan?"), prepared, gen);
+    EXPECT_FALSE(outcome.ok);
+    EXPECT_EQ(outcome.error, "evidence_truncated");
+    EXPECT_TRUE(outcome.reply.empty());
+    EXPECT_EQ(outcome.gen_completion_tokens, 4096);   // 成本照记
+    // 与 generate 失败同语义：什么都不沉淀。
+    EXPECT_EQ(row_count(fx.adapter->connection(), "SELECT COUNT(*) FROM engrams"), 0);
 }
 
 TEST(GroundedAnswer, CommitLeavesUngroundedReplyUntouched) {

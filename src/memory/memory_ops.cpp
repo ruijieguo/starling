@@ -1,7 +1,6 @@
 #include "starling/memory/memory_ops.hpp"
 
 #include <array>
-#include <cctype>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -448,16 +447,14 @@ ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
 namespace {
 
 std::string_view skip_leading_space(std::string_view text) {
-    std::size_t lead = 0;
-    while (lead < text.size() && std::isspace(static_cast<unsigned char>(text[lead])) != 0) {
-        ++lead;
-    }
-    return text.substr(lead);
+    // 与 std::isspace 的 C locale 集合一致：空格、\t \n \v \f \r。
+    const std::size_t lead = text.find_first_not_of(" \t\n\v\f\r");
+    return lead == std::string_view::npos ? std::string_view{} : text.substr(lead);
 }
 
 }  // namespace
 
-std::string strip_evidence_block(std::string_view reply) {
+std::optional<std::string> strip_evidence_block(std::string_view reply) {
     // 只认最前面的一个块：模型若在作答正文里引用了这两个标签，正文不受影响。
     const std::string_view head = skip_leading_space(reply);
     if (!head.starts_with(kEvidenceOpen)) {
@@ -465,7 +462,9 @@ std::string strip_evidence_block(std::string_view reply) {
     }
     const std::size_t close = head.find(kEvidenceClose, kEvidenceOpen.size());
     if (close == std::string_view::npos) {
-        return std::string(reply);       // 块没闭合：宁可多给也不吞掉整段回复
+        // 块没闭合 = 生成在摘录阶段就被截断，模型还没开始作答。原样返回会把半截
+        // 摘录当成回复泄漏给用户（开发评估 32 题撞上限中的 18 题），所以视为无回复。
+        return std::nullopt;
     }
     return std::string(skip_leading_space(head.substr(close + kEvidenceClose.size())));
 }
@@ -541,14 +540,19 @@ void EvidenceStreamFilter::flush_as_passthrough() {
 }
 
 void EvidenceStreamFilter::finish() {
-    // 生成结束仍有积压：块没闭合或开头太短。与 strip_evidence_block 一致——原样放行。
+    // 生成结束仍有积压。与 strip_evidence_block 同一判据：
+    // - 仍在块内（开标签已出现、闭标签没来）：截断在摘录阶段，丢弃，不泄漏；
+    // - 尚未判定（开头比开标签还短）：不是证据块，原样放行。
     if (!downstream_ || buffer_.empty()) {
         return;
     }
     std::string pending;
     pending.swap(buffer_);
+    const bool in_block = state_ == State::kInBlock;
     state_ = State::kPassthrough;
-    downstream_(pending);
+    if (!in_block) {
+        downstream_(pending);
+    }
 }
 
 ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
@@ -575,15 +579,26 @@ ConverseOutcome converse_commit(persistence::SqliteAdapter& adapter,
         outcome.error = gen_resp.error.empty() ? "generate_failed" : gen_resp.error;
         return outcome;   // generate 失败 → 干净的无回复轮,什么都不沉淀
     }
-    outcome.ok = true;
-    // 证据块是作答的草稿，不是回复：既不给用户看，也不沉淀进记忆（否则下一轮
-    // 会把自己摘抄的原文当成「助手说过的话」再抽一遍）。
-    outcome.reply = prepared.grounded ? strip_evidence_block(gen_resp.raw_xml)
-                                      : gen_resp.raw_xml;
     outcome.gen_prompt_tokens     = gen_resp.prompt_tokens;     // 2b 成本采集(回复生成段)
     outcome.gen_completion_tokens = gen_resp.completion_tokens;
     outcome.gen_total_tokens      = gen_resp.total_tokens;
     outcome.gen_latency_ms        = gen_resp.latency_ms;
+    // 证据块是作答的草稿，不是回复：既不给用户看，也不沉淀进记忆（否则下一轮
+    // 会把自己摘抄的原文当成「助手说过的话」再抽一遍）。
+    if (prepared.grounded) {
+        auto stripped = strip_evidence_block(gen_resp.raw_xml);
+        if (!stripped.has_value()) {
+            // 截断在摘录阶段：没有回复可给，按 generate 失败处理，什么都不沉淀。
+            // 成本字段照填——这次调用的 token 真花了。
+            outcome.ok = false;
+            outcome.error = "evidence_truncated";
+            return outcome;
+        }
+        outcome.reply = std::move(*stripped);
+    } else {
+        outcome.reply = gen_resp.raw_xml;
+    }
+    outcome.ok = true;
 
     // ── 4. remember the exchange (write) ── 失败语义 A:remember 失败绝不
     // 丢用户已看到的回复;记忆缺失记为可观测的 remember_error。
