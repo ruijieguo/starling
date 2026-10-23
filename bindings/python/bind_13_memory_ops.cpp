@@ -182,7 +182,13 @@ void bind_13_memory_ops(pybind11::module_& m) {
         .def_readonly("context_pack", &starling::memoryops::ConversePrepared::context_pack)
         .def_readonly("abstained",    &starling::memoryops::ConversePrepared::abstained)
         .def_readonly("created_at_iso8601",
-                       &starling::memoryops::ConversePrepared::created_at_iso8601);
+                       &starling::memoryops::ConversePrepared::created_at_iso8601)
+        // 先引用、后作答：为 true 时回复开头有 <evidence> 块，流式回调须经
+        // memory_generate_stream(grounded=True) 过滤，commit 会自行剥掉。
+        .def_readonly("grounded",     &starling::memoryops::ConversePrepared::grounded);
+
+    m.def("strip_evidence_block", &starling::memoryops::strip_evidence_block,
+          py::arg("reply"));
 
     m.def("memory_converse_prepare",
           [](starling::persistence::SqliteAdapter& adapter,
@@ -218,16 +224,27 @@ void bind_13_memory_ops(pybind11::module_& m) {
 
     m.def("memory_generate_stream",
           [](starling::extractor::LLMAdapter& chat_llm, const std::string& prompt,
-             const py::object& on_token) {
+             const py::object& on_token, bool grounded) {
               auto sink = make_token_sink(on_token);
               starling::extractor::LLMResponse resp;
-              {
+              if (!grounded || !sink) {
                   py::gil_scoped_release release;   // 纯网络段
                   resp = chat_llm.generate_stream(prompt, sink);
+                  return resp;
+              }
+              // 证据块不进流式回调：与单体 converse 同一个过滤器。raw_xml 仍是完整
+              // 输出（含块），由 converse_commit 剥掉——commit 是回复的唯一权威。
+              starling::memoryops::EvidenceStreamFilter filter(sink);
+              {
+                  py::gil_scoped_release release;
+                  resp = chat_llm.generate_stream(
+                      prompt, [&filter](std::string_view delta) { filter(delta); });
+                  filter.finish();
               }
               return resp;
           },
-          py::arg("chat_llm"), py::arg("prompt"), py::arg("on_token") = py::none());
+          py::arg("chat_llm"), py::arg("prompt"), py::arg("on_token") = py::none(),
+          py::arg("grounded") = false);
 
     m.def("memory_converse_commit",
           [](starling::persistence::SqliteAdapter& adapter,

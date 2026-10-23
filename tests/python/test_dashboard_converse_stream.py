@@ -93,3 +93,37 @@ def test_stream_generate_failure_is_done_with_no_reply(tmp_path, monkeypatch):
     assert done["type"] == "done"
     assert done["ok"] is False and done["error"] == "boom"
     assert done["statement_ids"] == []
+
+
+def test_stream_hides_evidence_block_when_grounded(tmp_path, monkeypatch):
+    """先引用、后作答：召回里有原文行时模型先写 <evidence> 块。块既不进 token 流、
+    也不进 done 帧的 reply，流式拼接仍等于最终回复。"""
+    import json as _json
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = DashboardConfig(db_path=str(tmp_path / "g.db"), token="")
+    cfg.source_lane_model, cfg.source_lane_dim = "stub", 8   # 让 lane 在 stub 下生效
+    cfg.source_lane_tau_source = 0.01                       # stub 相似度不按语义，放低门槛
+    eng = DashboardEngine(cfg)
+    turns = [{"speaker": "self", "text": "Bob owns auth.", "session_id": "s1",
+              "turn_index": 0, "audience": ["self"], "provenance": "source_time",
+              "turn_id": None, "observed_at": "2026-06-01T10:00:00Z"}]
+    _core.retain_source_turns(eng._rt.adapter, cfg.tenant, ["self"],
+                              _json.dumps(turns), turns[0]["observed_at"])
+    eng._core.tick("2099-01-01T00:00:00Z")
+    chat = _core.FakeLLMAdapter()
+    chat.set_default_response(
+        "<evidence>\nthing: auth owner\nlines: Bob owns auth.\n</evidence>\n\nBob owns auth.",
+        True, "")
+    extraction = _core.FakeLLMAdapter()
+    extraction.set_default_response(_STUB_JSON, True, "")
+    eng.llm = extraction
+    eng._core.chat_llm = chat
+    client = TestClient(create_app(cfg, engine=eng))
+    with client.websocket_connect("/ws/converse") as ws:
+        ws.send_json({"message": "Bob owns auth."})       # 与原文逐字相同：stub 下必命中
+        deltas, done = _drain(ws)
+    assert done["ok"] is True
+    assert "[SOURCE]" in done["context_pack"]       # 真的走了原文 lane
+    assert done["reply"] == "Bob owns auth."
+    assert "".join(deltas) == done["reply"]
+    assert all("<evidence>" not in d for d in deltas)
