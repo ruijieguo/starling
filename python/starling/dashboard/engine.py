@@ -559,11 +559,11 @@ class DashboardEngine:
         # 因为它是第二次 LLM 往返,与生成段同性质。关闭时完全不调用、prompt 不变。
         prompt = prepared.prompt
         if self._cfg.support_check_enabled:
-            check_cfg = self._core.SupportCheckConfig()
+            check_cfg = _core.SupportCheckConfig()
             check_cfg.enabled = True
-            verdict = self._core.memory_check_support(
+            verdict = _core.memory_check_support(
                 chat, message, prepared.context_pack, check_cfg)
-            prompt = self._core.memory_apply_support_verdict(
+            prompt = _core.memory_apply_support_verdict(
                 prompt, message, verdict, check_cfg)
         gen_resp = self._core.generate_stream(chat, prompt, on_token)  # ③ 锁外
         with self._lock:                                    # ④ 抽取 + 写

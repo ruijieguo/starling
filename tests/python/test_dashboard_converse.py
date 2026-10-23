@@ -100,3 +100,56 @@ def test_converse_409_when_llm_unconfigured(tmp_path, monkeypatch):
     c = TestClient(create_app(cfg, engine=eng))
     r = c.post("/api/converse", json={"message": "hi"})
     assert r.status_code == 409 and r.json()["detail"] == "llm_not_configured"
+
+
+def test_converse_support_check_wiring(tmp_path, monkeypatch):
+    """dashboard 锁外接线：开关开启时核验被调用、判为 unsupported 时作答提示被改写；
+    关闭时两者都不发生。只验接线，不验判定质量（那需要真模型）。"""
+    import starling.dashboard.engine as engine_mod
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    seen = {"check_calls": 0, "gen_prompts": []}
+
+    real_check = engine_mod._core.memory_check_support
+
+    def spy_check(chat, message, context_pack, cfg):
+        seen["check_calls"] += 1
+        return real_check(chat, message, context_pack, cfg)
+
+    def run(enabled):
+        seen["check_calls"] = 0
+        seen["gen_prompts"].clear()
+        cfg = DashboardConfig(db_path=str(tmp_path / f"sc_{enabled}.db"), token="")
+        cfg.support_check_enabled = enabled
+        eng = DashboardEngine(cfg)
+        chat = _core.FakeLLMAdapter()
+        # 核验与作答共用这个假适配器：返回 unsupported 判定（作答时被当作回复文本）。
+        chat.set_default_response('{"verdict":"unsupported","reason":"x"}', True, "")
+        extract = _core.FakeLLMAdapter()
+        extract.set_default_response(_STUB_JSON, True, "")
+        eng.llm = extract
+        eng._core.chat_llm = chat
+
+        real_gen = eng._core.generate_stream
+
+        def spy_gen(chat_llm, prompt, on_token=None):
+            seen["gen_prompts"].append(prompt)
+            return real_gen(chat_llm, prompt, on_token)
+
+        monkeypatch.setattr(eng._core, "generate_stream", spy_gen)
+        monkeypatch.setattr(engine_mod._core, "memory_check_support", spy_check)
+        out = eng.converse("what agenda did we discuss?")
+        assert out["ok"] is True
+        return list(seen["gen_prompts"]), seen["check_calls"]
+
+    prompts_off, calls_off = run(False)
+    assert calls_off == 0                                   # 关闭：不核验
+    assert len(prompts_off) == 1
+    assert "independent check" not in prompts_off[0]        # 关闭：提示未改写
+
+    prompts_on, calls_on = run(True)
+    assert calls_on == 1                                    # 开启：核验一次
+    assert len(prompts_on) == 1
+    assert "independent check" in prompts_on[0]             # 判为 unsupported → 改写
+    # 改写只是在 User 轮之前插入，其余与关闭时一致。
+    assert prompts_on[0].index("independent check") < prompts_on[0].index("User: what agenda")
