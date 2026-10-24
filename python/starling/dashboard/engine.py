@@ -562,7 +562,8 @@ class DashboardEngine:
             chat = self._resolve_chat(provider)
             prepared = self._core.converse_prepare(
                 message, holder=holder, interlocutor=interlocutor, k=k, now=now)
-        gen_resp = self._core.generate_stream(chat, prepared.prompt, on_token)  # ② 锁外
+        gen_resp = self._core.generate_stream(                               # ② 锁外
+            chat, prepared.prompt, on_token, grounded=prepared.grounded)
         with self._lock:                                    # ③ 抽取 + 写
             return self._core.converse_commit(
                 message, prepared, gen_resp, holder=holder,

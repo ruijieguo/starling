@@ -281,6 +281,155 @@ TEST(ConversePhases, NoSourceLaneLeavesPromptUnchanged) {
     const auto prepared = converse_prepare(*fx.adapter, fx.semantic,
                                            conv_params("the vault code is 4321"));
     EXPECT_EQ(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    EXPECT_FALSE(prepared.grounded);
+    // 无原文行：提示收尾与改动前逐字节一致。
+    EXPECT_TRUE(prepared.prompt.ends_with("\nUser: the vault code is 4321\nAssistant:"))
+        << prepared.prompt;
+}
+
+// ── 先引用、后作答（弃答修复 v2）──────────────────────────────────────────────
+
+TEST(GroundedAnswer, SourceLinesTurnOnEvidenceInstruction) {
+    SourceFixture fx;
+    fx.retain("the vault code is 4321");
+    auto params = conv_params("the vault code is 4321");
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    ASSERT_NE(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    EXPECT_TRUE(prepared.grounded);
+    // 指令在 User 轮之后（本轮输出格式），提示仍以 Assistant: 收尾。
+    const auto user_at = prepared.prompt.find("\nUser: ");
+    const auto instr_at = prepared.prompt.find("<evidence> block");
+    ASSERT_NE(user_at, std::string::npos);
+    ASSERT_NE(instr_at, std::string::npos);
+    EXPECT_LT(user_at, instr_at);
+    EXPECT_TRUE(prepared.prompt.ends_with("\nAssistant:"));
+}
+
+TEST(GroundedAnswer, NoSourceLinesNoEvidenceInstruction) {
+    SourceFixture fx;   // 有 deps 但无原文
+    auto params = conv_params("hello");
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    EXPECT_FALSE(prepared.grounded);
+    EXPECT_EQ(prepared.prompt.find("<evidence>"), std::string::npos);
+}
+
+TEST(GroundedAnswer, InstructionDoesNotEchoBenchmarkRefusalPhrasing) {
+    // 防措辞拟合：指令不得教模型说评测 rubric 的固定拒答句式。
+    const std::string instr(kGroundedAnswerInstruction);
+    EXPECT_EQ(instr.find("no information related"), std::string::npos);
+    EXPECT_EQ(instr.find("Based on the provided chat"), std::string::npos);
+}
+
+TEST(GroundedAnswer, StripRemovesLeadingBlockOnly) {
+    EXPECT_EQ(strip_evidence_block("<evidence>\nX: none\n</evidence>\n\nNot recorded."),
+              "Not recorded.");
+    EXPECT_EQ(strip_evidence_block("  \n<evidence>a</evidence>reply"), "reply");
+    // 正文里提到标签不受影响：只认最前面的块。
+    EXPECT_EQ(strip_evidence_block("<evidence>a</evidence>use <evidence> tags"),
+              "use <evidence> tags");
+}
+
+TEST(GroundedAnswer, StripKeepsReplyWhenNoBlock) {
+    // 没写块：模型没遵从格式，但回复本身可用，原样返回。
+    EXPECT_EQ(strip_evidence_block("Plain reply."), "Plain reply.");
+    EXPECT_EQ(strip_evidence_block(""), "");
+}
+
+TEST(GroundedAnswer, StripReportsTruncatedBlockAsNoReply) {
+    // 块没闭合 = 截断在摘录阶段：没有回复，绝不把半截摘录当回复返回。
+    EXPECT_FALSE(strip_evidence_block("<evidence>\nthing: X\nlines: the user said").has_value());
+    EXPECT_FALSE(strip_evidence_block("  <evidence>").has_value());
+}
+
+namespace {
+std::string run_filter(const std::vector<std::string>& deltas) {
+    std::string out;
+    EvidenceStreamFilter filter([&out](std::string_view delta) { out.append(delta); });
+    for (const auto& delta : deltas) {
+        filter(delta);
+    }
+    filter.finish();
+    return out;
+}
+}  // namespace
+
+TEST(GroundedAnswer, StreamFilterHidesBlockAcrossTokenSplits) {
+    const std::string full = "<evidence>\nthing: X\nlines: none\n</evidence>\n\nNot recorded.";
+    // 逐字符切：开标签、闭标签、块后空白都跨 delta。
+    std::vector<std::string> chars;
+    for (const char ch : full) {
+        chars.emplace_back(1, ch);
+    }
+    EXPECT_EQ(run_filter(chars), "Not recorded.");
+    EXPECT_EQ(run_filter({full}), "Not recorded.");
+    EXPECT_EQ(run_filter({"<evid", "ence>x</evi", "dence>", "\n", "\n", "Hi"}), "Hi");
+    // 流式结果与非流式剥块一致。
+    EXPECT_EQ(run_filter(chars), strip_evidence_block(full));
+}
+
+TEST(GroundedAnswer, StreamFilterPassesThroughWhenNoBlock) {
+    EXPECT_EQ(run_filter({"Hel", "lo there"}), "Hello there");
+    EXPECT_EQ(run_filter({"<", "b>bold</b>"}), "<b>bold</b>");   // 像标签但不是
+}
+
+TEST(GroundedAnswer, StreamFilterDropsTruncatedBlock) {
+    // 截断在摘录阶段：流式也不泄漏半截摘录。
+    EXPECT_EQ(run_filter({"<evid", "ence>\nthing: X\nlines: the user"}), "");
+    // 开头比开标签还短、生成就结束了：不是证据块，原样放行。
+    EXPECT_EQ(run_filter({"<ev"}), "<ev");
+}
+
+TEST(GroundedAnswer, CommitStripsBlockFromReplyAndMemory) {
+    Fixture fx;
+    ConversePrepared prepared;
+    prepared.created_at_iso8601 = "2026-06-01T10:00:00Z";
+    prepared.grounded = true;
+    const extractor::LLMResponse gen{
+        .raw_xml = "<evidence>\nthing: secret plan\nlines: none\n</evidence>\n\nNot recorded.",
+        .ok = true};
+    const auto outcome = converse_commit(*fx.adapter, fx.extraction, "extract",
+                                         conv_params("what is the plan?"), prepared, gen);
+    ASSERT_TRUE(outcome.ok);
+    EXPECT_EQ(outcome.reply, "Not recorded.");
+    // 沉淀进记忆的对话（engram 原文）里也不能有证据块，否则下一轮会把自己的
+    // 摘抄当成助手说过的话再抽一遍。
+    EXPECT_EQ(row_count(fx.adapter->connection(), "SELECT COUNT(*) FROM engrams"), 1);
+    EXPECT_EQ(row_count(fx.adapter->connection(),
+                        "SELECT COUNT(*) FROM engrams WHERE payload_inline LIKE '%<evidence>%'"),
+              0);
+    EXPECT_EQ(row_count(fx.adapter->connection(),
+                        "SELECT COUNT(*) FROM engrams WHERE payload_inline LIKE '%Not recorded.%'"),
+              1);
+}
+
+TEST(GroundedAnswer, CommitTreatsTruncatedBlockAsFailedTurn) {
+    Fixture fx;
+    ConversePrepared prepared;
+    prepared.created_at_iso8601 = "2026-06-01T10:00:00Z";
+    prepared.grounded = true;
+    const extractor::LLMResponse gen{
+        .raw_xml = "<evidence>\nthing: plan\nlines: the user said they would",
+        .ok = true, .completion_tokens = 4096};
+    const auto outcome = converse_commit(*fx.adapter, fx.extraction, "extract",
+                                         conv_params("what is the plan?"), prepared, gen);
+    EXPECT_FALSE(outcome.ok);
+    EXPECT_EQ(outcome.error, "evidence_truncated");
+    EXPECT_TRUE(outcome.reply.empty());
+    EXPECT_EQ(outcome.gen_completion_tokens, 4096);   // 成本照记
+    // 与 generate 失败同语义：什么都不沉淀。
+    EXPECT_EQ(row_count(fx.adapter->connection(), "SELECT COUNT(*) FROM engrams"), 0);
+}
+
+TEST(GroundedAnswer, CommitLeavesUngroundedReplyUntouched) {
+    Fixture fx;
+    ConversePrepared prepared;
+    prepared.created_at_iso8601 = "2026-06-01T10:00:00Z";
+    const extractor::LLMResponse gen{.raw_xml = "<evidence>kept</evidence>as-is", .ok = true};
+    const auto outcome = converse_commit(*fx.adapter, fx.extraction, "extract",
+                                         conv_params("q"), prepared, gen);
+    EXPECT_EQ(outcome.reply, "<evidence>kept</evidence>as-is");
 }
 
 }  // namespace starling::memoryops

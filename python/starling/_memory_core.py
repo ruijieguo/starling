@@ -322,9 +322,12 @@ class MemoryCore:
             created_at_iso8601=created_iso, message=message, recall_k=k,
             source_lane=self.source_lane)
 
-    def generate_stream(self, chat_llm, prompt: str, on_token=None):
-        """三相之二(锁外):纯网络,绑定释放 GIL、逐 delta 回调。"""
-        return _core.memory_generate_stream(chat_llm, prompt, on_token)
+    def generate_stream(self, chat_llm, prompt: str, on_token=None, *, grounded: bool = False):
+        """三相之二(锁外):纯网络,绑定释放 GIL、逐 delta 回调。
+
+        grounded 取 prepare 返回的 ``prepared.grounded``:为 True 时回复开头的
+        <evidence> 块不进 on_token(commit 会从最终回复里剥掉)。"""
+        return _core.memory_generate_stream(chat_llm, prompt, on_token, grounded)
 
     def converse_commit(self, message: str, prepared, gen_resp, *, holder=None,
                         interlocutor=None, k: int = 6, now=None) -> dict:

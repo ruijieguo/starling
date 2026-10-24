@@ -220,6 +220,59 @@ struct ConversePrepared {
     // params.created_at_iso8601),保证幂等键/召回种子与 prepare 阶段同刻——
     // 即使调用方在 prepare/commit 两次传入的 now 发生漂移,也不产生分叉。
     std::string created_at_iso8601;
+    // 本轮是否要求「先引用、后作答」(召回里出现了 [SOURCE] 行)。为 true 时模型
+    // 会先写一个 <evidence> 块；commit 与流式回调都要把它从用户可见回复里剥掉。
+    bool grounded = false;
+};
+
+// 先引用、后作答（弃答修复 v2，见 docs/eval/2026-10-23-abstention-v2-diagnosis.md）。
+//
+// 失败机制：讲用户过去某件事 X 的细节时，模型拿 X 的外围原话（X 存在、何时、和谁）
+// 拼出「X 的细节」。v1 用独立判定拦截，但判定没有作答时的推理能力，把综合/推理题也
+// 判成「未陈述」。这里把核对合进作答本身：先摘出与所问对象相关的原话，再作答；
+// 讲用户过去的具体细节时只能说摘出的原话里有的东西。推理、计算、建议不受此约束。
+inline constexpr std::string_view kEvidenceOpen  = "<evidence>";
+inline constexpr std::string_view kEvidenceClose = "</evidence>";
+inline constexpr std::string_view kGroundedAnswerInstruction =
+    "\n\nBefore you reply, write an <evidence> block. Inside it, name the specific "
+    "thing the user is asking about, then copy the recalled lines that are about that "
+    "thing itself — not lines that only mention the same person, place, date or topic. "
+    "If no recalled line is about it, write \"none\". Close the block with </evidence>, "
+    "then write your reply. The user never sees the block.\n"
+    "In the reply, any specific detail you state about the user's own past — what was "
+    "said, done, planned, decided or felt — must appear in the lines you copied. If the "
+    "user asked for such details and the block has none, say what the recalled memory "
+    "does contain about the topic and that the specific details were not recorded; do "
+    "not fill them in from general knowledge or from advice given at the time. "
+    "Reasoning, calculations, summaries and suggestions built from the copied lines "
+    "are fine.\nAssistant:";
+
+// 去掉回复开头的 <evidence> 块。
+// - 没写块：原样返回（模型没遵从格式，回复本身仍可用）。
+// - 块已闭合：返回块之后的作答。
+// - 块没闭合：返回 nullopt。这说明生成在摘录阶段就被截断、还没开始作答；原样返回
+//   会把半截摘录当成回复泄漏给用户。converse_commit 把它当作无回复的失败轮。
+std::optional<std::string> strip_evidence_block(std::string_view reply);
+
+// 流式版的 strip_evidence_block：把开头的证据块挡在下游之外，其后的 delta 原样透传。
+// 与 strip_evidence_block 同一判据：开头不是开标签就整段放行；块到结束都没闭合，
+// finish() 时丢弃（不泄漏）。
+class EvidenceStreamFilter {
+public:
+    explicit EvidenceStreamFilter(extractor::TokenSink downstream);
+    void operator()(std::string_view delta);
+    void finish();
+
+private:
+    enum class State : std::uint8_t { kUndecided, kInBlock, kPassthrough };
+    void pass_through(std::string_view delta);
+    bool decide_opening();               // false = 尚未进入块（继续攒或已放行）
+    void release_after_close();
+    void flush_as_passthrough();
+    extractor::TokenSink downstream_;
+    std::string buffer_;
+    State state_ = State::kUndecided;
+    bool skip_leading_ws_ = false;
 };
 
 // 相位 1(recall)+ 相位 2(inject):只读,不持写事务。开头即 fail-fast 写门校验——
