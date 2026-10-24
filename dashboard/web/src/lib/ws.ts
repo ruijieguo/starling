@@ -112,11 +112,14 @@ export type ConverseStreamHandlers = {
 	onToken: (delta: string) => void;
 	onDone: (outcome: ConverseResponse) => void;
 	onError: (code: string) => void;
+	/** 可选。生成前至多一次:'grounding' = 模型先写用户看不到的证据块,首个 token 前会有一段等待。 */
+	onStatus?: (status: string) => void;
 };
 
 /**
  * 流式 converse(#37):一次性连接 /ws/converse,鉴权(首帧 token)→ 发请求 →
- * 收 {type:token,delta} 增量 / {type:done,...outcome} / {type:error,error}。
+ * 收可选的 {type:status,status}(首个 token 之前至多一次)、{type:token,delta} 增量 /
+ * {type:done,...outcome} / {type:error,error}。
  * 与广播 /ws 不同——这是 per-turn、per-client 的请求/响应流,完结即关闭(非重连)。
  * 返回 cancel 函数:调用即关闭(converse 服务端仍跑完并落库,只是不再收帧)。
  * onDone / onError 至多触发一次(settled 守卫,涵盖连接错误/中途关闭)。
@@ -139,7 +142,8 @@ export function streamConverse(
 		ws.send(JSON.stringify(req));
 	};
 	ws.onmessage = (m) => {
-		let msg: { type?: string; delta?: string; error?: string } & Partial<ConverseResponse>;
+		let msg: { type?: string; delta?: string; error?: string; status?: string } &
+			Partial<ConverseResponse>;
 		try {
 			msg = JSON.parse(m.data);
 		} catch {
@@ -147,6 +151,8 @@ export function streamConverse(
 		}
 		if (msg.type === 'token') {
 			handlers.onToken(msg.delta ?? '');
+		} else if (msg.type === 'status') {
+			if (msg.status) handlers.onStatus?.(msg.status);
 		} else if (msg.type === 'done') {
 			settle(() => handlers.onDone(msg as ConverseResponse));
 			ws.close();

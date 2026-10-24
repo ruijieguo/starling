@@ -10,6 +10,8 @@
 		text: string;
 		trace?: ConverseResponse;
 		streaming?: boolean;
+		/** 'grounding' = 模型正在写用户看不到的证据块(首个字之前的等待)。 */
+		status?: string;
 	};
 	let turns = $state<Turn[]>([]);
 	let input = $state('');
@@ -46,6 +48,9 @@
 		streamConverse(
 			{ message: msg, ...(chatProvider ? { provider: chatProvider } : {}) },
 			{
+				onStatus: (status) => {
+					turns[idx].status = status;
+				},
 				onToken: (delta) => {
 					turns[idx].text += delta;
 				},
@@ -88,7 +93,10 @@
 							? 'bg-brand-tint text-fg'
 							: 'border border-border bg-surface text-fg'}"
 					>
-						<span class="whitespace-pre-wrap">{t.text}</span>{#if t.streaming}<span
+						{#if t.streaming && !t.text && t.status === 'grounding'}<span
+								class="text-subtle"
+								role="status">正在核对记忆…</span
+							>{/if}<span class="whitespace-pre-wrap">{t.text}</span>{#if t.streaming}<span
 								class="ml-0.5 inline-block animate-pulse text-subtle">▌</span
 							>{/if}
 					</div>

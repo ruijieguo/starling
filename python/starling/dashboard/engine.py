@@ -547,8 +547,8 @@ class DashboardEngine:
             return _build_chat_adapter(cfg)
         return self._core.chat_llm or self._core.llm
 
-    def _converse_phased(self, message: str, *, on_token=None, holder=None,
-                         interlocutor=None, k: int = 6, now=None,
+    def _converse_phased(self, message: str, *, on_token=None, on_status=None,
+                         holder=None, interlocutor=None, k: int = 6, now=None,
                          provider: str | None = None) -> dict:
         """converse/converse_stream 共享实现:三段化落锁,与 remember(也在
         LLM 调用期间持锁)不同——生成段(网络/延时)现在在锁外运行,只有
@@ -562,6 +562,10 @@ class DashboardEngine:
             chat = self._resolve_chat(provider)
             prepared = self._core.converse_prepare(
                 message, holder=holder, interlocutor=interlocutor, k=k, now=now)
+        if on_status is not None and prepared.grounded:
+            # 先引用后作答：模型先写一段用户看不到的证据块，流式过滤器会把它挡住，
+            # 用户那边是一段空白等待。先告诉前端「正在核对记忆」，让这段等待看得见。
+            on_status("grounding")
         gen_resp = self._core.generate_stream(                               # ② 锁外
             chat, prepared.prompt, on_token, grounded=prepared.grounded)
         with self._lock:                                    # ③ 抽取 + 写
@@ -575,7 +579,7 @@ class DashboardEngine:
                                      interlocutor=interlocutor, k=k, now=now,
                                      provider=provider)
 
-    def converse_stream(self, message: str, *, on_token, holder=None,
+    def converse_stream(self, message: str, *, on_token, on_status=None, holder=None,
                         interlocutor=None, k: int = 6, now=None,
                         provider: str | None = None) -> dict:
         """Streaming converse: on_token(delta:str) fires per token during the
@@ -586,10 +590,15 @@ class DashboardEngine:
         on_token runs on the C++ worker thread (the binding re-acquires the GIL
         per delta), so it must be cheap and thread-safe — the WS bridge hands
         each delta to the event loop via call_soon_threadsafe and never touches
-        the DB or socket from inside the callback."""
-        return self._converse_phased(message, on_token=on_token, holder=holder,
-                                     interlocutor=interlocutor, k=k, now=now,
-                                     provider=provider)
+        the DB or socket from inside the callback.
+
+        on_status(status:str), if given, fires at most once, before generation:
+        "grounding" when this turn writes a hidden evidence block first (the
+        stream stays silent until the block closes). Same threading rules as
+        on_token — it runs off the event loop."""
+        return self._converse_phased(message, on_token=on_token, on_status=on_status,
+                                     holder=holder, interlocutor=interlocutor, k=k,
+                                     now=now, provider=provider)
 
     def recall(self, query: str, *, perspective="first_person", k=10, mode="semantic",
                holder=None) -> list:

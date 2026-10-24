@@ -86,6 +86,46 @@ describe('streamConverse', () => {
 		expect(ws.readyState).toBe(3); // closed by streamConverse on done
 	});
 
+	it('dispatches a status frame to onStatus without treating it as a token', () => {
+		const events: string[] = [];
+		streamConverse(
+			{ message: 'hi' },
+			{
+				onStatus: (s) => events.push('status:' + s),
+				onToken: (d) => events.push('token:' + d),
+				onDone: () => events.push('done'),
+				onError: () => {
+					throw new Error('should not error');
+				}
+			}
+		);
+		const ws = FakeWS.last!;
+		ws.onopen!();
+		ws.onmessage!({ data: JSON.stringify({ type: 'status', status: 'grounding' }) });
+		ws.onmessage!({ data: JSON.stringify({ type: 'token', delta: 'Hi' }) });
+		ws.onmessage!({ data: JSON.stringify({ type: 'done', ok: true, reply: 'Hi', statement_ids: [] }) });
+		expect(events).toEqual(['status:grounding', 'token:Hi', 'done']);
+	});
+
+	it('tolerates a status frame when no onStatus handler is given', () => {
+		const deltas: string[] = [];
+		streamConverse(
+			{ message: 'hi' },
+			{
+				onToken: (d) => deltas.push(d),
+				onDone: () => {},
+				onError: () => {
+					throw new Error('should not error');
+				}
+			}
+		);
+		const ws = FakeWS.last!;
+		ws.onopen!();
+		ws.onmessage!({ data: JSON.stringify({ type: 'status', status: 'grounding' }) });
+		ws.onmessage!({ data: JSON.stringify({ type: 'token', delta: 'ok' }) });
+		expect(deltas).toEqual(['ok']);
+	});
+
 	it('dispatches an error frame and settles exactly once (the close it triggers is a no-op)', () => {
 		let code = '';
 		let count = 0;
