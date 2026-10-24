@@ -254,13 +254,20 @@ inline constexpr std::string_view kGroundedAnswerInstruction =
 // 总结要覆盖大量记录，摘录本身就很长，回答因此被压短。总结的价值在于覆盖面，
 // 不在于逐条引证，所以对这类请求不加证据块（提示与先引用后作答之前逐字节一致）。
 //
-// 判定只看用户本轮输入，按产品语义列出「要求概括/总览」的说法（英文小写子串匹配）。
-// 关键词表在看任何评测题面之前写成并提交，评测只用来检验它，不用来调它。
-inline constexpr std::array<std::string_view, 12> kSummaryRequestMarkers = {
+// 判定只看用户本轮输入，按产品语义列出「要求概括/总览」的说法，做子串匹配（ASCII 部分
+// 不区分大小写）。英文表在看任何评测题面之前写成并提交，评测只用来检验它，不用来调它。
+//
+// 中文（简体与繁体）按同一产品语义补入。没有中文评测数据，这部分**未经任何评测检验**。
+// 带「一下」的说法是为了避开「回顾性」「梳理」作名词时的误判。误判的代价是该轮
+// 不加证据块，即退回到先引用后作答之前的行为，不会比改动前更差。
+inline constexpr auto kSummaryRequestMarkers = std::to_array<std::string_view>({
     "summarize", "summarise", "summary", "summaries", "recap", "overview",
     "give me a rundown", "sum up", "sum it up", "in a nutshell",
     "high-level picture", "big picture",
-};
+    "总结", "概括", "概述", "汇总", "小结", "归纳", "总览", "复盘",
+    "梳理一下", "回顾一下",
+    "總結", "匯總", "總覽", "歸納", "復盤", "回顧一下",
+});
 
 // message 是否为总结类请求（不区分大小写）。
 bool is_summary_request(std::string_view message);

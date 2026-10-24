@@ -448,6 +448,27 @@ TEST(SummaryExempt, IgnoresOrdinaryQuestions) {
     EXPECT_FALSE(is_summary_request(""));
 }
 
+TEST(SummaryExempt, DetectsChineseSummaryRequests) {
+    EXPECT_TRUE(is_summary_request("帮我总结一下这周的进展"));
+    EXPECT_TRUE(is_summary_request("能概括下我们讨论的方案吗"));
+    EXPECT_TRUE(is_summary_request("把预算相关的内容汇总给我"));
+    EXPECT_TRUE(is_summary_request("回顾一下我们上次聊了什么"));
+    EXPECT_TRUE(is_summary_request("幫我總結一下"));               // 繁体
+}
+
+TEST(SummaryExempt, IgnoresOrdinaryChineseQuestions) {
+    EXPECT_FALSE(is_summary_request("我的牙医预约是哪天？"));
+    EXPECT_FALSE(is_summary_request("这次回顾性研究用的是哪个数据集？"));   // 「回顾」作名词修饰
+    EXPECT_FALSE(is_summary_request("我选的是哪个场地？"));
+}
+
+TEST(SummaryExempt, CaseFoldingLeavesNonAsciiBytesIntact) {
+    // 西里尔字母在 UTF-8 locale 下会被 std::tolower 改写；ASCII 折叠必须保证
+    // 非 ASCII 输入照常判定（这里没有关键词，应为 false，且不崩溃）。
+    EXPECT_FALSE(is_summary_request("Сводка ÉTÉ"));
+    EXPECT_TRUE(is_summary_request("ÉTÉ SUMMARY"));
+}
+
 TEST(SummaryExempt, SummaryRequestWithSourcesIsNotGrounded) {
     SourceFixture fx;
     fx.retain("summarize the vault code is 4321");
