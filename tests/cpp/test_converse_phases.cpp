@@ -432,4 +432,44 @@ TEST(GroundedAnswer, CommitLeavesUngroundedReplyUntouched) {
     EXPECT_EQ(outcome.reply, "<evidence>kept</evidence>as-is");
 }
 
+
+// ── 总结类请求豁免先引用后作答 ────────────────────────────────────────────────
+
+TEST(SummaryExempt, DetectsSummaryRequests) {
+    EXPECT_TRUE(is_summary_request("Can you summarize my progress on the thesis?"));
+    EXPECT_TRUE(is_summary_request("Give me a RECAP of what we discussed"));
+    EXPECT_TRUE(is_summary_request("What's the big picture of my budget plans?"));
+    EXPECT_TRUE(is_summary_request("sum up the trip planning so far"));
+}
+
+TEST(SummaryExempt, IgnoresOrdinaryQuestions) {
+    EXPECT_FALSE(is_summary_request("When is my dentist appointment?"));
+    EXPECT_FALSE(is_summary_request("Which option did I pick for the venue?"));
+    EXPECT_FALSE(is_summary_request(""));
+}
+
+TEST(SummaryExempt, SummaryRequestWithSourcesIsNotGrounded) {
+    SourceFixture fx;
+    fx.retain("summarize the vault code is 4321");
+    auto params = conv_params("summarize the vault code is 4321");
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    ASSERT_NE(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    EXPECT_FALSE(prepared.grounded);
+    EXPECT_EQ(prepared.prompt.find("<evidence>"), std::string::npos);
+    // 豁免后提示与先引用后作答之前一致：原文指引仍在，结尾是普通的 Assistant:。
+    EXPECT_NE(prepared.prompt.find("raw utterance"), std::string::npos);
+    EXPECT_TRUE(prepared.prompt.ends_with("\nUser: summarize the vault code is 4321\nAssistant:"));
+}
+
+TEST(SummaryExempt, OrdinaryQuestionWithSourcesStaysGrounded) {
+    SourceFixture fx;
+    fx.retain("the vault code is 4321");
+    auto params = conv_params("the vault code is 4321");
+    params.source_lane = fx.deps();
+    const auto prepared = converse_prepare(*fx.adapter, fx.semantic, params);
+    ASSERT_NE(prepared.context_pack.find("[SOURCE]"), std::string::npos);
+    EXPECT_TRUE(prepared.grounded);
+}
+
 }  // namespace starling::memoryops
