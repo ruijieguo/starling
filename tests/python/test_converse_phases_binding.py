@@ -64,3 +64,6 @@ def test_is_summary_request_binding_matches_native_rule():
     assert _core.is_summary_request("Can you give me a summary of my progress?")
     assert _core.is_summary_request("RECAP the plan")
     assert not _core.is_summary_request("When is my dentist appointment?")
+    # 中文经 pybind 以 UTF-8 传入，判定与 C++ 一致。
+    assert _core.is_summary_request("帮我总结一下这周的进展")
+    assert not _core.is_summary_request("我的牙医预约是哪天？")

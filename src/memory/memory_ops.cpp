@@ -448,9 +448,12 @@ ConversePrepared converse_prepare(persistence::SqliteAdapter& adapter,
 }
 
 bool is_summary_request(std::string_view message) {
+    // 只折叠 ASCII 大写。std::tolower 受全局 locale 影响：实测在 macOS 的 UTF-8 locale 下，
+    // 它会改写西里尔、拉丁扩展等多字节序列中的字节，把输入变成非法 UTF-8。中文首字节
+    // 0xE4–0xE9 恰好不受影响，但不能依赖这种巧合；关键词表本身也只需要折叠 ASCII。
     std::string lowered(message);
-    std::ranges::transform(lowered, lowered.begin(), [](unsigned char chr) {
-        return static_cast<char>(std::tolower(chr));
+    std::ranges::transform(lowered, lowered.begin(), [](char chr) {
+        return (chr >= 'A' && chr <= 'Z') ? static_cast<char>(chr - 'A' + 'a') : chr;
     });
     return std::ranges::any_of(kSummaryRequestMarkers, [&lowered](std::string_view marker) {
         return lowered.find(marker) != std::string::npos;
