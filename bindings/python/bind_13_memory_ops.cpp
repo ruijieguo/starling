@@ -190,6 +190,9 @@ void bind_13_memory_ops(pybind11::module_& m) {
     // 返回 None = 证据块未闭合（截断在摘录阶段，无回复）。
     m.def("strip_evidence_block", &starling::memoryops::strip_evidence_block,
           py::arg("reply"));
+    // 总结类请求豁免先引用后作答的判定（与 converse_prepare 同一函数）。
+    m.def("is_summary_request", &starling::memoryops::is_summary_request,
+          py::arg("message"));
 
     m.def("memory_converse_prepare",
           [](starling::persistence::SqliteAdapter& adapter,

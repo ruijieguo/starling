@@ -57,3 +57,10 @@ def test_generate_stream_relays_tokens(tmp_path):
     seen: list[str] = []
     gen = core.generate_stream(fake, prepared.prompt, seen.append)
     assert gen.ok and "".join(seen) == gen.raw_xml
+
+
+def test_is_summary_request_binding_matches_native_rule():
+    """绑定与 converse_prepare 用的是同一个 C++ 函数：总结请求豁免先引用后作答。"""
+    assert _core.is_summary_request("Can you give me a summary of my progress?")
+    assert _core.is_summary_request("RECAP the plan")
+    assert not _core.is_summary_request("When is my dentist appointment?")
