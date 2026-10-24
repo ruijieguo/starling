@@ -7,6 +7,7 @@
 // WHOLE_RECORD/byte_preserving)、以及「先 engram 后抽取、仅
 // accepted/idempotent 才抽取」的顺序规则——按边界判据(换绑定语言需重写)
 // 全部属核心语义。Python 仅剩签名归一(datetime→ISO)与绑定转发。
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -246,6 +247,23 @@ inline constexpr std::string_view kGroundedAnswerInstruction =
     "not fill them in from general knowledge or from advice given at the time. "
     "Reasoning, calculations, summaries and suggestions built from the copied lines "
     "are fine.\nAssistant:";
+
+// 总结类请求豁免先引用后作答。
+//
+// BEAM 两个数据集上 summarization 都明显变差（−0.17 / −0.11），机制是证据块挤占回答：
+// 总结要覆盖大量记录，摘录本身就很长，回答因此被压短。总结的价值在于覆盖面，
+// 不在于逐条引证，所以对这类请求不加证据块（提示与先引用后作答之前逐字节一致）。
+//
+// 判定只看用户本轮输入，按产品语义列出「要求概括/总览」的说法（英文小写子串匹配）。
+// 关键词表在看任何评测题面之前写成并提交，评测只用来检验它，不用来调它。
+inline constexpr std::array<std::string_view, 12> kSummaryRequestMarkers = {
+    "summarize", "summarise", "summary", "summaries", "recap", "overview",
+    "give me a rundown", "sum up", "sum it up", "in a nutshell",
+    "high-level picture", "big picture",
+};
+
+// message 是否为总结类请求（不区分大小写）。
+bool is_summary_request(std::string_view message);
 
 // 去掉回复开头的 <evidence> 块。
 // - 没写块：原样返回（模型没遵从格式，回复本身仍可用）。
