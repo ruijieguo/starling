@@ -30,13 +30,20 @@ def _client_with_fake(db, *, ok=True, body=_STUB_JSON, error=""):
     return TestClient(create_app(cfg, engine=eng))
 
 
-def _drain(ws):
-    """Collect token deltas until the terminal frame; return (deltas, terminal)."""
+def _drain(ws, frames=None):
+    """Collect token deltas until the terminal frame; return (deltas, terminal).
+
+    Status frames are skipped here; pass `frames` (a list) to record every
+    non-terminal frame type in arrival order."""
     deltas = []
     while True:
         msg = ws.receive_json()
+        if frames is not None and msg["type"] in ("token", "status"):
+            frames.append(msg["type"] if msg["type"] == "token" else f"status:{msg['status']}")
         if msg["type"] == "token":
             deltas.append(msg["delta"])
+        elif msg["type"] == "status":
+            continue
         else:
             return deltas, msg
 
@@ -119,11 +126,27 @@ def test_stream_hides_evidence_block_when_grounded(tmp_path, monkeypatch):
     eng.llm = extraction
     eng._core.chat_llm = chat
     client = TestClient(create_app(cfg, engine=eng))
+    frames: list = []
     with client.websocket_connect("/ws/converse") as ws:
         ws.send_json({"message": "Bob owns auth."})       # 与原文逐字相同：stub 下必命中
-        deltas, done = _drain(ws)
+        deltas, done = _drain(ws, frames)
     assert done["ok"] is True
     assert "[SOURCE]" in done["context_pack"]       # 真的走了原文 lane
     assert done["reply"] == "Bob owns auth."
     assert "".join(deltas) == done["reply"]
     assert all("<evidence>" not in d for d in deltas)
+    # 先引用后作答的这一轮：恰好一个 grounding 状态帧，且排在首个 token 之前。
+    assert frames.count("status:grounding") == 1
+    assert frames[0] == "status:grounding"
+
+
+def test_stream_sends_no_status_when_not_grounded(tmp_path, monkeypatch):
+    """没有原文行（不走先引用后作答）时，不发状态帧——协议与改动前一致。"""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = _client_with_fake(str(tmp_path / "n.db"))
+    frames: list = []
+    with client.websocket_connect("/ws/converse") as ws:
+        ws.send_json({"message": "who owns auth?"})
+        _deltas, done = _drain(ws, frames)
+    assert done["type"] == "done"
+    assert not any(f.startswith("status:") for f in frames)

@@ -143,6 +143,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         # never fan out to every dashboard. Auth mirrors /ws (in-band token as
         # the first text frame). Protocol: client sends one JSON request
         # {message, provider?, holder?, interlocutor?, k?}; server replies
+        # optionally {"type":"status","status":"grounding"} (once, before any
+        # token: the model is writing a hidden evidence block first), then
         # {"type":"token","delta":...} ×N then {"type":"done", ...outcome}, or
         # {"type":"error","error":...}. The reply still persists (remember runs
         # after the stream) — disconnect mid-stream does not abort the turn.
@@ -190,12 +192,17 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             # Runs on the C++ worker thread (binding re-acquires the GIL per
             # delta). Only hand the delta to the loop — never touch the socket
             # or DB from here.
-            loop.call_soon_threadsafe(queue.put_nowait, delta)
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "delta": delta})
+
+        def on_status(status: str) -> None:
+            # Same queue as tokens, so call_soon_threadsafe ordering guarantees the
+            # status frame reaches the client before the first token of the reply.
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "status", "status": status})
 
         def run_blocking() -> None:
             try:
                 box["result"] = eng.converse_stream(
-                    message, on_token=on_token, holder=holder,
+                    message, on_token=on_token, on_status=on_status, holder=holder,
                     interlocutor=interlocutor, k=k, provider=provider)
             except Exception as exc:  # surfaced to the client as an error frame
                 box["error"] = exc
@@ -216,7 +223,7 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             if disconnected:
                 continue
             try:
-                await ws.send_json({"type": "token", "delta": item})
+                await ws.send_json(item)
             except Exception:  # noqa: BLE001 — client closed; finish server-side quietly
                 disconnected = True
         if disconnected:
