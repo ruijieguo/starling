@@ -234,18 +234,26 @@ struct ConversePrepared {
 // 讲用户过去的具体细节时只能说摘出的原话里有的东西。推理、计算、建议不受此约束。
 inline constexpr std::string_view kEvidenceOpen  = "<evidence>";
 inline constexpr std::string_view kEvidenceClose = "</evidence>";
+//
+// 压缩版（2026-10-24）：原版要求整行抄录，开发集上证据块占 completion 的 67%
+// （中位 6 行 × 约 163 字符）。每次调用的总 token 只多约 9%（prompt 约 7.4K 占大头），
+// 但输出 token 约为原来的 4 倍，直接拖慢回复。现在每条只写日期和陈述相关事实的
+// 那几个词（≤ 15 词，约为原整行的四成），条数不设上限，以免伤到需要列出很多条的
+// 排序类问题。判据不变：讲用户过去的细节必须出自列出的条目。
 inline constexpr std::string_view kGroundedAnswerInstruction =
-    "\n\nBefore you reply, write an <evidence> block. Inside it, name the specific "
-    "thing the user is asking about, then copy the recalled lines that are about that "
-    "thing itself — not lines that only mention the same person, place, date or topic. "
-    "If no recalled line is about it, write \"none\". Close the block with </evidence>, "
-    "then write your reply. The user never sees the block.\n"
+    "\n\nBefore you reply, write an <evidence> block. Keep it short. Inside it, first "
+    "name in a few words the specific thing the user is asking about. Then list the "
+    "recalled lines that are about that thing itself — not lines that only mention the "
+    "same person, place, date or topic. Do not copy whole lines: for each one, write "
+    "only its date and the few words (at most 15) that state the relevant fact. If no "
+    "recalled line is about it, write \"none\". Close the block with </evidence>, then "
+    "write your reply. The user never sees the block.\n"
     "In the reply, any specific detail you state about the user's own past — what was "
-    "said, done, planned, decided or felt — must appear in the lines you copied. If the "
+    "said, done, planned, decided or felt — must come from the lines you listed. If the "
     "user asked for such details and the block has none, say what the recalled memory "
     "does contain about the topic and that the specific details were not recorded; do "
     "not fill them in from general knowledge or from advice given at the time. "
-    "Reasoning, calculations, summaries and suggestions built from the copied lines "
+    "Reasoning, calculations, summaries and suggestions built from the listed lines "
     "are fine.\nAssistant:";
 
 // 总结类请求豁免先引用后作答。

@@ -322,6 +322,16 @@ TEST(GroundedAnswer, InstructionDoesNotEchoBenchmarkRefusalPhrasing) {
     EXPECT_EQ(instr.find("Based on the provided chat"), std::string::npos);
 }
 
+TEST(GroundedAnswer, InstructionAsksForCompactCitations) {
+    // 压缩版：不整行抄录，每条只写日期和相关的几个词。
+    const std::string instr(kGroundedAnswerInstruction);
+    EXPECT_NE(instr.find("Do not copy whole lines"), std::string::npos);
+    EXPECT_NE(instr.find("at most 15"), std::string::npos);
+    // 开头保持不变：评测脚本靠它从提示中定位并去掉指令。
+    EXPECT_TRUE(instr.starts_with("\n\nBefore you reply, write an <evidence> block"));
+    EXPECT_TRUE(instr.ends_with("\nAssistant:"));
+}
+
 TEST(GroundedAnswer, StripRemovesLeadingBlockOnly) {
     EXPECT_EQ(strip_evidence_block("<evidence>\nX: none\n</evidence>\n\nNot recorded."),
               "Not recorded.");
