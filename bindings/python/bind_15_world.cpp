@@ -121,6 +121,7 @@ void bind_15_world(pybind11::module_& m) {
     // 快照文件，传入 dict 里这些条目会指向已不存在的文件（悬空条目）。调用方遇到
     // 异常后应当重新加载磁盘上的注册表，而不是继续使用手里的 dict。
     m.def("world_take_snapshot",
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
           [](const py::dict& reg, const std::string& world, const std::string& kind,
              const std::string& reason, const std::string& note) {
               auto registry = reg_in(reg);
