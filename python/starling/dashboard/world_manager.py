@@ -1,8 +1,35 @@
 """世界管理：注册表读改写 + 世界切换时的引擎生命周期（W1）。
 
-注册表、快照、保留策略都在 C++（`_core.world_*`）；这里只做 Python 才能做的事：
-切换时重建 DashboardEngine（停线程、释放 C++ 写连接、开新库、失败回滚）。
+注册表、快照、保留策略、租户不变式都在 C++（`_core.world_*`）；这里只做 Python 才能做
+的事：切换时重建 DashboardEngine（停线程、等在飞请求、释放 C++ 写连接、开新库、失败回滚）。
 设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §8
+
+引擎租约（lease）
+-----------------
+每个用到引擎的请求在整个生命周期里持一份租约：线程池排队、remember 的锁外抽取、
+/ws/converse 的锁外生成、最后的提交，全在租约之内。切换先置 switching（此后新租约一律
+拒绝，路由回 503 world_switching），再等在途租约归零，然后才丢旧引擎。只等引擎锁是不够
+的：锁外阶段不持引擎锁，旧实现会在这类请求还在飞时就完成切换，请求随后写进旧世界，
+旧 Runtime 也一直活着，切回原世界就是同一个库上两条写连接。
+
+租约按请求发放，不按 WebSocket 连接：长连接的对话 socket 在两轮之间不持租约，不挡切换。
+后台 tick / 摄入线程不是租约，切换用 quiesce 停它们。
+
+锁顺序（全局唯一，任何代码都不得反向持有）
+------------------------------------------
+  1. manager.lock（RLock）：activate / create / delete / take_snapshot / delete_snapshot，
+     以及 lifespan 关停。可能被占几秒到几十秒（VACUUM、等租约），所以事件循环上的代码
+     从不拿它。
+  2. manager._gate（Lock，短）：只保护 switching 标志和租约计数，持有期间不做任何 I/O、
+     不建引擎、不拿别的锁。_drained 是建在它上面的 Condition：切换等租约归零时 wait 会
+     放开 _gate，所以「等租约」从不持着 _gate。
+  3. manager._build_lock（Lock）：惰性建引擎（engine 还是 None 时第一条请求来建）。只由已
+     拿到租约的请求在放开 _gate 之后持有；切换从不拿它（切换等租约归零时没有人在建）。
+  4. engine._lock（RLock，DashboardEngine 内部）：由持租约的请求和后台线程持有。切换从不
+     拿它：quiesce 在不持引擎锁的情况下 join 后台线程（线程分段拿锁，持锁 join 会卡住）。
+
+  持租约的代码不得去拿 manager.lock：切换持着 manager.lock 等租约归零，反过来就是死锁
+  （超时后 ingest_busy）。
 """
 from __future__ import annotations
 
@@ -11,6 +38,7 @@ import gc
 import logging
 import os
 import threading
+import time
 import weakref
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -20,10 +48,15 @@ from starling.dashboard.engine import DashboardEngine
 
 logger = logging.getLogger(__name__)
 
+# 切换等在途请求（租约）归零的上限。超时：清标志、恢复旧引擎的后台线程、回 ingest_busy。
+_LEASE_DRAIN_TIMEOUT_S = 30.0
+# 丢掉旧引擎后等旧 Runtime 被回收的宽限：异常回溯、刚返回的栈帧可能还短暂引用着它。
+_RUNTIME_RELEASE_GRACE_S = 1.0
+
 
 class WorldSwitchError(Exception):
     """code: "world_not_found" | "ingest_busy" | "world_open_failed"
-    | "snapshot_unsupported_backend" | "world_switching" """
+    | "world_tenant_mismatch" | "world_switching" """
 
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -75,6 +108,47 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class EngineLease:
+    """一份引擎租约。`with lease as engine:` 或手动 `release()`；release 幂等。
+
+    release 先丢掉自己对引擎的引用、再归还计数：计数一归零，切换就会丢旧引擎并断言旧
+    Runtime 已回收，租约对象本身（可能还挂在某个栈帧或异常回溯上）不能再钉住它。
+    调用方自己的局部变量要在 release 之前清掉（见 /ws/converse、/api/config）。"""
+
+    __slots__ = ("_owner", "engine")
+
+    def __init__(self, owner, engine) -> None:
+        self._owner = owner          # WorldManager；无注册表（:memory:）时为 None，不计数
+        self.engine = engine
+
+    def release(self) -> None:
+        owner, self._owner = self._owner, None
+        self.engine = None
+        if owner is not None:
+            owner._return_lease()
+
+    def __enter__(self):
+        return self.engine
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
+def engine_lease(state, *, build=None) -> EngineLease:
+    """路由取引擎的唯一入口。有 WorldManager 时经它发租约（切换中抛
+    WorldSwitchError("world_switching")）；没有（:memory: 等无注册表的库）时没有切换，
+    返回不计数的租约。build(config) -> engine 给出时，engine 还是 None 就惰性建一个并写回
+    app.state（命令路由用）；不给时原样返回 app.state.engine（可能是 None）。"""
+    worlds = getattr(state, "worlds", None)
+    if worlds is not None:
+        return worlds.lease(build=build)
+    engine = state.engine
+    if engine is None and build is not None:
+        engine = build(state.config)
+        state.engine = engine
+    return EngineLease(None, engine)
+
+
 class WorldManager:
     def __init__(self, app_state, registry_path: str) -> None:
         self._state = app_state
@@ -83,11 +157,14 @@ class WorldManager:
         self.lock = threading.RLock()
         self.workers_enabled = False
         self.on_tick = None
-        # 切换窗口标志：activate 动引擎期间为 True（见 _switch_window）。路由据此对新请求
-        # 回 503 world_switching，而不是在 engine 暂时为 None 时按旧 config 惰性重建引擎。
-        # 读它不加锁（事件循环上读，不能阻塞）；写它只在 _gate 内。
+        # 切换窗口标志：activate 动引擎期间为 True（见 _switch_window）。此时新租约一律拒绝，
+        # 路由回 503 world_switching，而不是在 engine 暂时为 None 时按旧 config 惰性重建引擎。
+        # 只读标志的检视路由（inspect._cfg）不加锁读；写它和发租约只在 _gate 内。
         self.switching = False
         self._gate = threading.Lock()
+        self._drained = threading.Condition(self._gate)   # 租约归零时 notify
+        self._leases = 0
+        self._build_lock = threading.Lock()
 
     def load(self) -> dict:
         return _core.world_load_registry(self.registry_path)
@@ -106,25 +183,53 @@ class WorldManager:
         default = reg["worlds"][reg["default"]]
         return dataclasses.replace(cfg, db_path=default["db_path"], tenant=default["tenant"])
 
-    @contextmanager
-    def engine_gate(self):
-        """路由里惰性建引擎的门：切换中 → 抛 WorldSwitchError("world_switching")；
-        否则放行，并在 with 体内（检查 engine、必要时建引擎、写回 app.state）阻止切换
-        置位——切换要等这里的惰性构建完成，之后才读 app.state.engine，所以不会漏掉
-        一个正在建的引擎，建完的旧配置引擎也不会在切换之后才写回去。
+    def lease(self, *, build=None) -> EngineLease:
+        """发一份引擎租约（见模块文档）。切换中抛 WorldSwitchError("world_switching")。
 
-        _gate 只被「置/清标志」和这里的惰性构建持有，从不与管理锁嵌套持有的方向相反
-        （切换先拿管理锁再拿 _gate，这里只拿 _gate），所以不会死锁。它不是管理锁：
-        管理锁在快照期间会被占上几秒，而调用方在事件循环上，不能被它阻塞。"""
+        build 见 engine_lease。计数先于惰性构建增加：切换置位后等租约归零，也就等到了
+        正在进行的构建，构建完写回的引擎会被切换当作旧引擎接手，不会在切换之后才冒出来。
+        _gate 只在计数时短暂持有（调用方可能在事件循环上），构建在 _build_lock 下进行。"""
         with self._gate:
             if self.switching:
                 raise WorldSwitchError("world_switching")
-            yield
+            self._leases += 1
+        lease = EngineLease(self, None)
+        try:
+            engine = self._state.engine
+            if engine is None and build is not None:
+                with self._build_lock:
+                    engine = self._state.engine
+                    if engine is None:
+                        engine = build(self._state.config)
+                        self._state.engine = engine
+            lease.engine = engine
+        except BaseException:
+            lease.release()
+            raise
+        return lease
+
+    def _return_lease(self) -> None:
+        with self._gate:
+            self._leases -= 1
+            if self._leases == 0:
+                self._drained.notify_all()
+
+    def _drain_leases(self) -> None:
+        """等在途租约归零（切换窗口内调用，标志已置位，不会再有新租约）。超过
+        _LEASE_DRAIN_TIMEOUT_S 抛 ingest_busy。Condition.wait 放开 _gate，不挡归还。"""
+        deadline = time.monotonic() + _LEASE_DRAIN_TIMEOUT_S
+        with self._gate:
+            while self._leases > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise WorldSwitchError(
+                        "ingest_busy", f"{self._leases} request(s) still in flight")
+                self._drained.wait(remaining)
 
     @contextmanager
     def _switch_window(self):
-        """activate 动引擎的整个区间。进入时等在途的惰性构建完成，之后新请求一律 503；
-        任何退出路径（成功、ingest_busy、world_open_failed）都清标志。"""
+        """activate 动引擎的整个区间：进入时置标志（此后新租约一律拒绝），任何退出路径
+        （成功、ingest_busy、world_open_failed、world_tenant_mismatch）都清标志。"""
         with self._gate:
             self.switching = True
         try:
@@ -144,38 +249,36 @@ class WorldManager:
         self._start_workers(engine, self._state.config)
 
     def activate(self, name: str) -> None:
-        """切换活动世界（spec §8.1）：停线程 → 等在飞请求 → 丢旧引擎 → 建新引擎。
+        """切换活动世界（spec §8.1）：校验租户 → 停线程 → 等在飞请求 → 丢旧引擎 → 建新引擎。
 
-        抛 WorldSwitchError：world_not_found（未登记）、ingest_busy（后台线程 5 秒内
-        没停下，状态不前进）、world_open_failed（新世界打不开，或注册表写不进去，
-        都已回到旧世界）。
+        抛 WorldSwitchError：world_not_found（未登记）、world_tenant_mismatch（新世界的库里
+        有别的租户的行，spec §2.1，状态不前进）、ingest_busy（后台线程 5 秒内没停下，或在途
+        请求 _LEASE_DRAIN_TIMEOUT_S 内没结束，状态不前进）、world_open_failed（新世界打不开，
+        或注册表写不进去，都已回到旧世界）。
 
         发布顺序：开新库 → 存注册表 → 发布 config/engine 并起线程。注册表是「当前是
         哪个世界」的唯一持久记录，必须先落盘再对外生效：若先发布再存、存又失败
         （磁盘满、目录不可写），就会出现注册表说 A、引擎实际在写 B 的分叉——此后
         「切回 A」被当成 no-op，写入全进 B，B 的目录还能被删掉。
 
-        顺序是「先 quiesce，再拿引擎锁」，不能反过来：tick 线程在 tick() 与
-        _sample_backpressure() 之间、摄入线程在逐块 remember() 之间都会放开引擎锁再
-        重新去拿，切换线程若持着引擎锁 join，线程卡在拿锁上退不出，必然等满 5 秒后
-        误报 ingest_busy。线程停稳之后再拿引擎锁，只剩一个作用：等在飞的路由请求
-        （它们持锁）结束。
+        顺序是「先 quiesce，再等在途请求」：后台线程不是租约，quiesce 停它们；quiesce 不持
+        引擎锁 join（tick 线程在 tick() 与 _sample_backpressure() 之间、摄入线程在逐块
+        remember() 之间都会放开引擎锁再重新去拿，持锁 join 会卡满 5 秒误报 ingest_busy）。
+        线程先停，等请求的这段时间里就不会再有新的摄入 job 开始写旧世界。
+
+        等在途请求等的是租约（见模块文档），不是引擎锁：remember 的抽取段、converse 的
+        生成段都在引擎锁外，持锁段之外的请求也要等完。超时（_LEASE_DRAIN_TIMEOUT_S）恢复
+        旧引擎的后台线程，状态不前进，回 ingest_busy。
 
         关键事实：DashboardEngine.close() 不释放 C++ SQLite 句柄，只有丢掉最后一个
-        引用并 gc.collect() 才会。所以这里丢引用，并断言旧 Runtime 的弱引用已失效，
-        没失效只记 warning（见下）。
+        引用并 gc.collect() 才会。所以这里丢引用，并断言旧 Runtime 的弱引用已失效。
+        租约归零之后已没有请求持有旧引擎；仍短暂可达（刚返回的栈帧、异常回溯）时在
+        _RUNTIME_RELEASE_GRACE_S 内重试回收，还没失效才记 warning。
 
         切换窗口：从开始动引擎到新引擎发布（或回滚完成）之间 `self.switching` 为 True，
-        此时 app.state.engine 暂时是 None 而 config 还是旧的。路由的惰性建引擎
-        （commands._engine）和 inspect 的引擎读取据此回 503 world_switching，否则会按旧
-        config 造出旧世界的引擎写回 app.state，与注册表、config 错位。标志的置位会等
-        在途的惰性构建完成（见 engine_gate），所以不会漏掉一个正在建的引擎。
-
-        已知限制：/ws/converse 的锁外生成阶段持有旧引擎的引用，切换只等得到持锁段。
-        若切换时恰有一轮对话在锁外生成，切换会先返回；这轮对话在旧引擎上完成提交
-        （写进旧世界，归属正确），旧 Runtime 在它结束前不会被回收，所以 rt_ref()
-        非空只记 warning、不报错。SQLite 本身允许多连接，即便立刻切回同一世界也不会
-        损坏数据，只是暂时违反「进程内单写连接」的约定。
+        新租约一律拒绝（路由回 503 world_switching），检视路由同样回 503。否则窗口里
+        app.state.engine 暂时是 None 而 config 还是旧的，惰性建引擎会造出旧世界的引擎写回
+        app.state，与注册表、config 错位。正在进行的惰性构建持着租约，切换会等它建完。
         """
         with self.lock:
             reg = self.load()
@@ -183,37 +286,66 @@ class WorldManager:
                 raise WorldSwitchError("world_not_found", name)
             # 已是活动世界才 no-op，且要看 live config 而不只看注册表的 active：两者一旦
             # 分叉（注册表说 A、引擎实际在写 B），只信注册表就会把「切回 A」当成已完成，
-            # 之后的写入全落进 B。
+            # 之后的写入全落进 B。库相同、租户不同同样不是「已激活」。
+            entry = reg["worlds"][name]
+            cfg = self._state.config
             if (reg["active"] == name and self._state.engine is not None
-                    and _same_db(self._state.config.db_path, reg["worlds"][name]["db_path"])):
+                    and _same_db(cfg.db_path, entry["db_path"])
+                    and cfg.tenant == entry["tenant"]):
                 return
             with self._switch_window():
                 self._swap_engine(reg, name)
 
+    def _verify_tenant(self, entry: dict) -> None:
+        """租户不变式（spec §2.1，C++ world_verify_tenant）。在动旧引擎之前做：拒开时
+        什么都没变。库读不出按「新世界打不开」报 world_open_failed。"""
+        try:
+            _core.world_verify_tenant(entry["db_path"], entry["tenant"])
+        except _core.WorldStoreError as exc:
+            code = _core.world_store_error_code(exc)
+            if code == "world_tenant_mismatch":
+                raise WorldSwitchError("world_tenant_mismatch", str(exc)) from exc
+            raise WorldSwitchError("world_open_failed", str(exc)) from exc
+
+    def _release_old_runtime(self, rt_ref) -> None:
+        gc.collect()
+        deadline = time.monotonic() + _RUNTIME_RELEASE_GRACE_S
+        while rt_ref() is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+            gc.collect()
+        if rt_ref() is not None:
+            # C++ 连接没释放：同进程里会暂时有第二条写连接
+            logger.warning("old runtime still referenced after switch")
+
     def _swap_engine(self, reg: dict, name: str) -> None:
         """activate 的主体，调用时已持管理锁并处于切换窗口内（标志已置位）。
-        engine 必须在标志置位之后才读：置位会等在途的惰性构建完成。"""
+        engine 与 config 都在租约归零之后才定稿：等待期间惰性构建可能刚写回一个引擎，
+        在途的配置请求也可能刚改过 config。"""
+        self._verify_tenant(reg["worlds"][name])
+        quiesced = self._state.engine
+        if quiesced is not None and not quiesced.quiesce():
+            # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
+            # 这个字符串映射），detail 点名实际卡住的线程。
+            stuck = "/".join(getattr(quiesced, "quiesce_stuck", ())) or "background"
+            self._restart_workers(quiesced)
+            raise WorldSwitchError("ingest_busy", f"{stuck} thread did not stop in 5s")
+        try:
+            self._drain_leases()
+        except WorldSwitchError:
+            if quiesced is not None:
+                self._restart_workers(quiesced)
+            raise
+        quiesced = None
         old_engine = self._state.engine
         old_cfg = self._state.config
         new_cfg = dataclasses.replace(old_cfg)
         new_cfg.db_path = reg["worlds"][name]["db_path"]
         new_cfg.tenant = reg["worlds"][name]["tenant"]
         if old_engine is not None:
-            if not old_engine.quiesce():
-                # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
-                # 这个字符串映射），detail 点名实际卡住的线程。
-                stuck = "/".join(getattr(old_engine, "quiesce_stuck", ())) or "background"
-                self._restart_workers(old_engine)
-                raise WorldSwitchError("ingest_busy", f"{stuck} thread did not stop in 5s")
-            with old_engine._lock:           # 等在飞请求结束
-                pass
             rt_ref = weakref.ref(old_engine._rt)
             self._state.engine = None
             old_engine = None
-            gc.collect()
-            if rt_ref() is not None:
-                # C++ 连接没释放：同进程里会暂时有第二条写连接
-                logger.warning("old runtime still referenced after switch")
+            self._release_old_runtime(rt_ref)
         try:
             new_engine = DashboardEngine(new_cfg)
         except Exception as exc:
@@ -268,12 +400,26 @@ class WorldManager:
             self.save(_core.world_delete(reg, self.registry_dir, name))
 
     def take_snapshot(self, name: str, note: str) -> dict:
+        """拍快照。是否支持当前向量后端由 C++ 判（snapshot_unsupported_backend）。
+
+        C++ 返回时新快照文件已落盘（保留策略也可能已删掉旧快照文件）；注册表存不下来时
+        删掉新文件再把错误抛出去，否则它没有登记、列不出来。已被保留策略删掉的旧快照
+        回不来：它们的注册项仍在旧注册表里，列表把它们标成 missing，可以照常删除。"""
         with self.lock:
-            if getattr(self._state.config, "vector_backend", "sqlite") == "zvec":
-                raise WorldSwitchError("snapshot_unsupported_backend", "vector_backend=zvec")
             reg = self.load()
-            out = _core.world_take_snapshot(reg, name, "manual", "manual", note)
-            self.save(out["registry"])
+            backend = getattr(self._state.config, "vector_backend", "sqlite")
+            out = _core.world_take_snapshot(reg, name, "manual", "manual", note,
+                                            vector_backend=backend)
+            try:
+                self.save(out["registry"])
+            except Exception:
+                try:
+                    _core.world_discard_snapshot_file(out["registry"], name,
+                                                      out["snapshot"]["id"])
+                except Exception:  # noqa: BLE001 — 补偿失败不能盖掉原始错误
+                    logger.exception("cannot discard unregistered snapshot %s",
+                                     out["snapshot"]["id"])
+                raise
             return out["snapshot"]
 
     def delete_snapshot(self, name: str, snapshot_id: str) -> None:

@@ -454,17 +454,21 @@ def test_activate_does_not_hold_engine_lock_while_joining_workers(tmp_path, monk
 
 
 def test_activate_waits_for_in_flight_request(tmp_path, monkeypatch):
-    """在飞请求（持引擎锁）结束之前，旧引擎不能被丢弃。"""
+    """在飞请求（持租约）结束之前，旧引擎不能被丢弃；结束之后旧 Runtime 必须真的被释放。
+    请求不一定持着引擎锁（remember 的抽取段、converse 的生成段都在锁外），所以等的是
+    租约而不是引擎锁。"""
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
     mgr.create("sim-1", "")
-    eng = state.engine
+    old_rt = weakref.ref(state.engine._rt)
     holding, release = threading.Event(), threading.Event()
 
     def _request():
-        with eng._lock:
+        with mgr.lease() as eng:
+            assert eng is state.engine
             holding.set()
             release.wait(10)
+            del eng                      # 请求结束：引用随栈帧一起走
 
     req = threading.Thread(target=_request, daemon=True)
     req.start()
@@ -472,12 +476,17 @@ def test_activate_waits_for_in_flight_request(tmp_path, monkeypatch):
     done = threading.Event()
     switcher = threading.Thread(target=lambda: (mgr.activate("sim-1"), done.set()), daemon=True)
     switcher.start()
-    assert not done.wait(0.3), "请求还没结束，切换不该完成"
-    assert state.engine is eng
+    # 不能只看「切换还没返回」：丢掉旧引擎后切换会在宽限期内等旧 Runtime 回收，同样
+    # 不会立即返回。要看旧引擎此刻仍在 app.state 上——不等租约的实现会立即把它丢成 None。
+    for _ in range(3):
+        assert not done.wait(0.4), "请求还没结束，切换不该完成"
+        assert state.engine is not None and state.config.tenant == "default"
+        assert mgr.switching is True
     release.set()
     assert done.wait(10)
-    assert state.config.tenant == "sim-1"
     req.join(5)
+    assert state.config.tenant == "sim-1" and mgr.switching is False
+    assert old_rt() is None, "等到请求结束才丢旧引擎，旧 Runtime 必须已释放"
 
 
 def test_quiesce_stops_threads(tmp_path):
@@ -592,13 +601,16 @@ def test_manager_snapshot_roundtrip(tmp_path, monkeypatch):
 
 
 def test_snapshot_rejects_zvec_backend(tmp_path, monkeypatch):
+    """拒绝由 C++ 给出（WorldStoreError），WorldManager 只把当前配置的后端传过去。"""
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
     state.config.vector_backend = "zvec"
-    with pytest.raises(WorldSwitchError) as ei:
+    with pytest.raises(_core.WorldStoreError) as ei:
         mgr.take_snapshot("default", "")
-    assert ei.value.code == "snapshot_unsupported_backend"
+    assert _code(ei.value) == "snapshot_unsupported_backend"
     assert mgr.load()["snapshots"].get("default", []) == []
+    snap_dir = mgr.load()["worlds"]["default"]["snapshot_dir"]
+    assert not os.path.isdir(snap_dir) or os.listdir(snap_dir) == []
 
 
 def test_concurrent_snapshots_do_not_lose_entries(tmp_path, monkeypatch):
@@ -1141,3 +1153,336 @@ def test_routes_list_survives_one_unreadable_world_db(tmp_path):
     assert rows["default"]["db_bytes"] > 0                      # 好的世界照常有统计
     assert client.delete("/api/worlds/sim-1", params={"confirm": "sim-1"}).status_code == 200
     assert [w["name"] for w in client.get("/api/worlds").json()["worlds"]] == ["default"]
+
+
+# ───────────────────────── Codex 审查修复轮 ─────────────────────────
+
+def _insert_foreign_engram(db_path: str, tenant: str) -> None:
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "INSERT INTO engrams(id,tenant_id,content_hash,source_kind,ingest_policy,"
+        "ingest_mode,privacy_class,retention_mode,created_at,source_item_id) "
+        "VALUES('x-1',?,'hx','conversation','default','inline','normal','audit_retain',"
+        "'2026-10-25T00:00:00Z','x-1')", (tenant,))
+    con.commit()
+    con.close()
+
+
+def _migrated_world_db(mgr, name: str) -> str:
+    db = mgr.load()["worlds"][name]["db_path"]
+    adapter = _core.SqliteAdapter.open(db)   # 跑迁移建库
+    del adapter
+    gc.collect()
+    return db
+
+
+# ── I6：zvec 拒绝在 C++ 里 ──
+
+def test_binding_take_snapshot_refuses_non_sqlite_backend_in_cpp(tmp_path):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    reg = _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    _core.SqliteAdapter.open(reg["worlds"]["sim-1"]["db_path"])
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_take_snapshot(reg, "sim-1", vector_backend="zvec")
+    assert _code(ei.value) == "snapshot_unsupported_backend"
+    assert os.listdir(reg["worlds"]["sim-1"]["snapshot_dir"]) == []
+
+
+# ── I1：租户不变式在激活时校验 ──
+
+def test_activate_refuses_world_with_foreign_tenant_rows(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    _insert_foreign_engram(_migrated_world_db(mgr, "sim-1"), "intruder")
+    engine, cfg = app.state.engine, app.state.config
+    r = client.post("/api/worlds/sim-1/activate")
+    assert (r.status_code, r.json()["detail"]) == (409, "world_tenant_mismatch")
+    assert app.state.engine is engine and app.state.config is cfg     # 状态不前进
+    assert mgr.load()["active"] == "default" and mgr.switching is False
+    assert client.post("/api/tick", json={}).status_code == 200      # 旧世界照常服务
+
+
+def test_binding_verify_tenant(tmp_path):
+    db = str(tmp_path / "w.db")
+    _core.world_verify_tenant(db, "sim-1")                          # 库不存在：新世界，放行
+    _core.SqliteAdapter.open(db)
+    _core.world_verify_tenant(db, "sim-1")
+    _insert_foreign_engram(db, "intruder")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_verify_tenant(db, "sim-1")
+    assert _code(ei.value) == "world_tenant_mismatch" and "engrams" in str(ei.value)
+
+
+def test_activate_noop_also_compares_tenant(tmp_path, monkeypatch):
+    """live config 指着同一个库、租户却与注册表不一致：不是「已激活」，要按注册表的租户
+    重建引擎。只比 db_path 的话这次切换被当成 no-op，此后写入都带着错的租户。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    mgr.activate("sim-1")
+    state.config.tenant = "drifted"                 # 人为造出租户分叉，库路径不变
+    old_engine = state.engine
+    mgr.activate("sim-1")
+    assert state.engine is not old_engine
+    assert state.config.tenant == "sim-1" and state.engine._core.tenant == "sim-1"
+
+
+# ── I2 / I3：快照的崩溃残留与保存失败补偿 ──
+
+def test_snapshot_save_failure_discards_new_file_and_is_json_500(tmp_path, monkeypatch):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    before = mgr.load()
+    snap_dir = before["worlds"]["default"]["snapshot_dir"]
+    monkeypatch.setattr(mgr, "save", _boom_save)
+    r = client.post("/api/worlds/default/snapshots", json={})
+    assert r.status_code == 500 and r.json() == {"detail": "internal_error"}
+    monkeypatch.undo()
+    assert mgr.load() == before
+    leftovers = [n for n in os.listdir(snap_dir)] if os.path.isdir(snap_dir) else []
+    assert leftovers == [], "注册表没存下来，新快照文件必须删掉，否则就是列不出来的孤儿"
+
+
+def test_snapshot_sweeps_crash_leftovers(tmp_path, monkeypatch):
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, _state = _manager(tmp_path)
+    first = mgr.take_snapshot("default", "")
+    snap_dir = os.path.dirname(first["path"])
+    partial = os.path.join(snap_dir, "20260101T000000Z-dead.db.partial")
+    orphan = os.path.join(snap_dir, "20260101T000000Z-beef.db")
+    for path in (partial, orphan):
+        with open(path, "w") as fh:
+            fh.write("x")
+    second = mgr.take_snapshot("default", "")
+    assert not os.path.exists(partial) and not os.path.exists(orphan)
+    assert os.path.exists(first["path"]) and os.path.exists(second["path"])
+
+
+def test_routes_report_missing_snapshot_file_and_allow_delete(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    snap = client.post("/api/worlds/default/snapshots", json={}).json()
+    path = app.state.worlds.load()["snapshots"]["default"][0]["path"]
+    os.remove(path)
+    listed = client.get("/api/worlds/default/snapshots").json()["snapshots"]
+    assert len(listed) == 1
+    assert listed[0]["missing"] is True and listed[0]["size_bytes"] == 0
+    assert client.get("/api/worlds").json()["worlds"][0]["snapshot_bytes"] == 0
+    assert client.delete(f"/api/worlds/default/snapshots/{snap['id']}").status_code == 200
+    assert client.get("/api/worlds/default/snapshots").json() == {"snapshots": []}
+
+
+# ── I5：切换窗口内所有检视路由都回 503 ──
+
+def _force_switching(mgr, value: bool) -> None:
+    with mgr._gate:
+        mgr.switching = value
+
+
+@pytest.mark.parametrize("path", ["/api/overview", "/api/statements", "/api/engrams",
+                                  "/api/vitals", "/api/brain_map"])
+def test_inspect_sql_routes_503_during_switch_window(tmp_path, path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    assert client.get(path).status_code == 200
+    _force_switching(app.state.worlds, True)
+    try:
+        r = client.get(path)
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+    finally:
+        _force_switching(app.state.worlds, False)
+
+
+# ── I8：注入的引擎必须与引导后的 config 一致 ──
+
+def test_create_app_rejects_engine_for_another_db(tmp_path):
+    eng = DashboardEngine(DashboardConfig(db_path=str(tmp_path / "other.db"), token="",
+                                          tick_interval_s=0, source_lane_enabled=False))
+    with pytest.raises(ValueError) as ei:
+        create_app(_cfg(tmp_path), engine=eng)
+    assert "other.db" in str(ei.value) and "dashboard.db" in str(ei.value)
+
+
+def test_create_app_rejects_engine_when_registry_overrides_shared_config(tmp_path):
+    """生产形态的隐患：引擎与 create_app 共用同一个 cfg 对象，bootstrap 原地把它改成注册表
+    里的活动世界，而引擎早已按改之前的路径开了库。比 cfg 字段永远相等，必须比引擎实际
+    打开的库。"""
+    create_app(_cfg(tmp_path))                        # 注册表：default -> dashboard.db
+    cfg = _cfg(tmp_path)
+    cfg.db_path = str(tmp_path / "elsewhere.db")
+    eng = DashboardEngine(cfg)
+    with pytest.raises(ValueError):
+        create_app(cfg, engine=eng)
+
+
+def test_create_app_accepts_matching_injected_engine(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg, engine=DashboardEngine(cfg))
+    assert app.state.engine is not None
+
+
+# ── C1：引擎租约覆盖整个请求 ──
+
+def test_activate_times_out_on_stuck_lease_and_old_world_keeps_working(tmp_path, monkeypatch):
+    import starling.dashboard.world_manager as wm
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    monkeypatch.setattr(wm, "_LEASE_DRAIN_TIMEOUT_S", 0.3)
+    mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    mgr.workers_enabled = True
+    eng, cfg = state.engine, state.config
+    eng.start_background_tick(60.0)
+    eng.start_ingest_worker()
+    mgr.create("sim-1", "")
+    holding, release = threading.Event(), threading.Event()
+
+    def _request():
+        with mgr.lease():
+            holding.set()
+            release.wait(10)
+
+    req = threading.Thread(target=_request, daemon=True)
+    req.start()
+    assert holding.wait(5)
+    try:
+        with pytest.raises(WorldSwitchError) as ei:
+            mgr.activate("sim-1")
+        assert ei.value.code == "ingest_busy" and "1 request" in ei.value.detail
+        assert state.engine is eng and state.config is cfg
+        assert mgr.load()["active"] == "default" and mgr.switching is False
+        assert eng._tick_thread is not None and eng._tick_thread.is_alive()
+        assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+    finally:
+        release.set()
+        req.join(5)
+    _remember(eng, "Bob owns auth")                    # 旧世界照常工作
+    with mgr.lease() as again:                         # 窗口关了，新租约照常发
+        assert again is eng
+    assert eng.quiesce() is True
+
+
+def test_new_request_during_lease_drain_gets_503(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    holding, release = threading.Event(), threading.Event()
+
+    def _request():
+        with mgr.lease():
+            holding.set()
+            release.wait(10)
+
+    req = threading.Thread(target=_request, daemon=True)
+    req.start()
+    assert holding.wait(5)
+    switcher = threading.Thread(target=lambda: mgr.activate("sim-1"), daemon=True)
+    switcher.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not mgr.switching and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert mgr.switching is True                   # 切换在等租约归零
+        for method, path in (("post", "/api/tick"), ("post", "/api/recall"),
+                             ("get", "/api/overview"), ("get", "/api/runtime_health")):
+            kwargs = {"json": {"query": "x"}} if path == "/api/recall" else (
+                {"json": {}} if method == "post" else {})
+            r = getattr(client, method)(path, **kwargs)
+            assert (r.status_code, r.json()["detail"]) == (503, "world_switching"), path
+    finally:
+        release.set()
+        req.join(5)
+        switcher.join(15)
+    assert app.state.config.tenant == "sim-1"
+    assert client.post("/api/tick", json={}).status_code == 200
+
+
+def test_ws_converse_refused_during_switch_window_gets_world_switching_frame(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response(_STUB, True, "")
+    app.state.engine.llm = fake
+    _force_switching(app.state.worlds, True)
+    try:
+        with client.websocket_connect("/ws/converse") as ws:
+            ws.send_json({"message": "who owns auth?"})
+            assert ws.receive_json() == {"type": "error", "error": "world_switching"}
+    finally:
+        _force_switching(app.state.worlds, False)
+    with client.websocket_connect("/ws/converse") as ws:     # 窗口一过照常对话
+        ws.send_json({"message": "who owns auth?"})
+        while (msg := ws.receive_json())["type"] in ("token", "status"):
+            pass
+        assert msg["type"] == "done"
+
+
+def test_config_hot_swap_holds_a_lease(tmp_path, monkeypatch):
+    app, _cfgfile = _config_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    _force_switching(app.state.worlds, True)
+    try:
+        r = client.post("/api/config", json=_CFG_BODY)
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+        r = client.delete("/api/config/provider/default")
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+    finally:
+        _force_switching(app.state.worlds, False)
+    assert client.post("/api/config", json=_CFG_BODY).status_code == 200
+
+
+def test_slow_remember_spanning_a_switch_then_switching_back_leaves_one_runtime(
+        tmp_path, monkeypatch):
+    """remember 的抽取段在引擎锁外：旧实现只等持锁段，切换先返回，这条请求之后在旧引擎
+    上提交，旧 Runtime 一直活着；再切回原世界就是同一个库上的两条写连接。租约让切换等
+    整条请求结束。"""
+    import starling.dashboard.world_manager as wm
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response(_STUB, True, "")
+    fake.set_delay_ms(800)                              # 锁外抽取段拉长
+    app.state.engine.llm = fake
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    runtimes = [weakref.ref(app.state.engine._rt)]
+    real_cls = wm.DashboardEngine
+
+    def _track(cfg):
+        engine = real_cls(cfg)
+        runtimes.append(weakref.ref(engine._rt))
+        return engine
+    monkeypatch.setattr(wm, "DashboardEngine", _track)
+    del fake
+
+    remembered: list = []
+    req = threading.Thread(target=lambda: remembered.append(
+        client.post("/api/remember", json={"text": "Bob owns auth"})), daemon=True)
+    req.start()
+    time.sleep(0.4)                                     # 已进锁外抽取段
+    switched = threading.Event()
+    switcher = threading.Thread(target=lambda: (mgr.activate("sim-1"), switched.set()),
+                                daemon=True)
+    switcher.start()
+    assert not switched.wait(0.2), "remember 还在飞，切换不该完成"
+    # 不等租约的实现此刻已把旧引擎丢成 None（只是在宽限期里等旧 Runtime 回收）。
+    assert app.state.engine is not None and app.state.config.tenant == "default"
+    req.join(15)
+    assert switched.wait(15)
+    switcher.join(5)
+    assert remembered and remembered[0].status_code == 200
+    gc.collect()
+    assert runtimes[0]() is None, "请求结束后旧 Runtime 必须已释放"
+    # 写入归属正确：切换前开始的请求写进旧世界
+    default_db = mgr.load()["worlds"]["default"]["db_path"]
+    con = sqlite3.connect(f"file:{default_db}?mode=ro", uri=True)
+    assert con.execute("SELECT COUNT(*) FROM engrams").fetchone()[0] == 1
+    con.close()
+
+    mgr.activate("default")                             # 切回原世界
+    gc.collect()
+    alive = [ref for ref in runtimes if ref() is not None]
+    assert len(alive) == 1 and alive[0]() is app.state.engine._rt

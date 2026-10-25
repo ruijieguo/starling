@@ -53,7 +53,7 @@ def test_runtime_health_reflects_drain(client):
 
 
 def test_runtime_health_503_when_no_engine(tmp_path):
-    # engine=None + _engine_or_none is non-lazy (returns app.state.engine as-is)
+    # engine=None + the inspect lease is non-lazy (hands back app.state.engine as-is)
     # + tick_interval_s=0 (lifespan never builds an engine) → the route MUST 503.
     # Health/events are in-memory; no live engine = nothing to read.
     cfg = DashboardConfig(db_path=str(tmp_path / "rh2.db"), token="",

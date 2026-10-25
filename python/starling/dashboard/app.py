@@ -30,12 +30,37 @@ def _ws_origin_allowed(origin: str, cors_origins: list[str]) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
 
 
+def _require_engine_matches(engine: object, config: DashboardConfig) -> None:
+    """注入的引擎必须打开的就是引导后的活动世界。bootstrap_worlds 会把 config 原地改成
+    注册表里的活动世界；按改之前的路径建好的引擎若照收，app.state.config（检视路由读它）
+    和引擎（命令路由写它）从第一个请求起就指着两个库。
+
+    比引擎实际打开的库（_db_path）和实际使用的租户（_core.tenant），不只比 _cfg：生产
+    形态里引擎与 create_app 共用同一个 config 对象，bootstrap 改完它两边的字段仍然相等，
+    引擎却早已开着旧库。测试替身可能只实现部分接口，缺的字段不比。"""
+    import os
+    core = getattr(engine, "_core", None)
+    engine_cfg = getattr(engine, "_cfg", None)
+    opened = [getattr(engine, "_db_path", None), getattr(engine_cfg, "db_path", None)]
+    tenants = [getattr(core, "tenant", None), getattr(engine_cfg, "tenant", None)]
+    for path in filter(None, opened):
+        if os.path.realpath(path) != os.path.realpath(config.db_path):
+            raise ValueError(f"injected engine opened {path!r}, but the active world's "
+                             f"database is {config.db_path!r}")
+    for tenant in filter(None, tenants):
+        if tenant != config.tenant:
+            raise ValueError(f"injected engine uses tenant {tenant!r}, but the active "
+                             f"world's tenant is {config.tenant!r}")
+
+
 def create_app(config: DashboardConfig, *, engine: object | None = None) -> FastAPI:
     """Build the dashboard app.
 
     `engine` (a `DashboardEngine`) is the engine owner for command routes; when
     None it is lazily built from `config` at first command use (production).
     Inspection routes read the SQLite at `config.db_path` directly (read-only).
+    An injected engine must have opened the active world's database (after the
+    worlds registry rewrote `config`); otherwise ValueError.
     """
     config.validate_bind()
     # 左脑 lane 的开关一致性在启动时就拒绝，而不是等到第一次摄入才发现。
@@ -44,8 +69,11 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     # 生产入口 run_dashboard.py 先 create_app(cfg) 再 DashboardEngine(cfg)，两者共用
     # 同一个 cfg，所以引擎自然打开活动世界的库。:memory: 等无父目录的库没有地方放
     # 注册表，bootstrap 返回 None，app.state.worlds 保持 None（路由据此回 503）。
-    from starling.dashboard.world_manager import WorldManager, bootstrap_worlds
+    from starling.dashboard.world_manager import (WorldManager, WorldSwitchError,
+                                                  bootstrap_worlds, engine_lease)
     registry_path = bootstrap_worlds(config)
+    if engine is not None:
+        _require_engine_matches(engine, config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -203,7 +231,15 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         except (TypeError, ValueError):
             k = 6
 
-        eng = app.state.engine
+        # 本轮持一份引擎租约（按轮，不按连接：长连接在两轮之间不挡切换）。切换中拒绝，
+        # 给前端一个可识别的错误帧。租约在工作线程里、引擎用完的那一刻归还（见
+        # run_blocking），协程被取消也不会提前放走仍在跑的这一轮。
+        try:
+            lease = engine_lease(app.state)
+        except WorldSwitchError as exc:
+            await ws.send_json({"type": "error", "error": exc.code})
+            await ws.close()
+            return
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         done = object()
@@ -221,16 +257,25 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "status", "status": status})
 
         def run_blocking() -> None:
+            engine = lease.engine
             try:
-                box["result"] = eng.converse_stream(
+                box["result"] = engine.converse_stream(
                     message, on_token=on_token, on_status=on_status, holder=holder,
                     interlocutor=interlocutor, k=k, provider=provider)
             except Exception as exc:  # surfaced to the client as an error frame
-                box["error"] = exc
+                # 只留错误码：异常的回溯里有引擎的栈帧，留着它就钉住了旧 Runtime。
+                box["error"] = ("llm_not_configured" if isinstance(exc, _LLMNotConfigured)
+                                else "converse_failed")
             finally:
+                del engine
+                lease.release()
                 loop.call_soon_threadsafe(queue.put_nowait, done)
 
-        loop.run_in_executor(None, run_blocking)
+        try:
+            loop.run_in_executor(None, run_blocking)
+        except BaseException:
+            lease.release()
+            raise
 
         # Drain deltas until the worker signals done. call_soon_threadsafe
         # preserves order, so every delta is dequeued before `done`. If the
@@ -251,9 +296,7 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             return
 
         if "error" in box:
-            code = "llm_not_configured" if isinstance(box["error"], _LLMNotConfigured) \
-                else "converse_failed"
-            await ws.send_json({"type": "error", "error": code})
+            await ws.send_json({"type": "error", "error": box["error"]})
             await ws.close()
             return
         result = box.get("result") or {}

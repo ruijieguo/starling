@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from functools import partial
 
 from anyio import to_thread
@@ -27,6 +28,7 @@ _STATUS = {
     "world_not_found": 404, "snapshot_not_found": 404,
     "world_exists": 409, "world_protected": 409, "ingest_busy": 409,
     "snapshot_unsupported_backend": 409, "invalid_retention": 409,
+    "world_tenant_mismatch": 409,
     "insufficient_disk": 507, "world_switching": 503,
     "world_open_failed": 500, "snapshot_failed": 500, "registry_corrupt": 500,
 }
@@ -92,16 +94,27 @@ def _world_row(name: str, entry: dict, snaps: list[dict], active: bool) -> dict:
            "created_at": entry.get("created_at", ""), "active": active,
            "db_bytes": stats["db_bytes"], "live_bytes": stats["live_bytes"],
            "statements": stats["statements"], "engrams": stats["engrams"],
-           "snapshots": len(snaps), "snapshot_bytes": sum(s["size_bytes"] for s in snaps)}
+           "snapshots": len(snaps),
+           "snapshot_bytes": sum(s["size_bytes"] for s in snaps if not _snapshot_missing(s))}
     if stats_error:
         row["stats_error"] = True
     return row
 
 
+def _snapshot_missing(snap: dict) -> bool:
+    # 注册项还在、文件已不在（保存失败的补偿删掉了被保留策略清理过的旧文件、手工删除）。
+    return not os.path.exists(snap["path"])
+
+
 def _snapshot_row(snap: dict) -> dict:
-    # 白名单：条目里的 path 是服务器上的绝对路径，不外露。
-    return {key: snap[key] for key in ("id", "kind", "reason", "note", "created_at",
-                                       "world_time", "size_bytes")}
+    # 白名单：条目里的 path 是服务器上的绝对路径，不外露。文件缺失的条目照常列出（还能
+    # 从界面删掉），size_bytes 记 0，并带 missing: true（只在缺失的行上出现的附加字段）。
+    row = {key: snap[key] for key in ("id", "kind", "reason", "note", "created_at",
+                                      "world_time", "size_bytes")}
+    if _snapshot_missing(snap):
+        row["size_bytes"] = 0
+        row["missing"] = True
+    return row
 
 
 def _list_worlds(mgr) -> dict:

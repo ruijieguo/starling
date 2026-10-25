@@ -15,7 +15,7 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from starling.dashboard.world_manager import WorldSwitchError
+from starling.dashboard.world_manager import WorldSwitchError, engine_lease
 
 
 def _now_iso() -> str:
@@ -77,48 +77,42 @@ class CommitmentBody(BaseModel):
     stmt_id: str            # ACTIVE 承诺手动流转(fulfill/withdraw);非 ACTIVE → 409
 
 
-def _engine(request: Request):
-    """Return the DashboardEngine, building it lazily from config.
+def _build_engine(config):
+    from starling.dashboard.engine import DashboardEngine
+    return DashboardEngine(config)
+
+
+async def _engine(request: Request):
+    """依赖项：持一份引擎租约，覆盖整个请求（线程池排队、锁外的 LLM 阶段、最后的提交），
+    请求结束（响应发出）后归还。engine 还是 None 时按当前 config 惰性建一个。
 
     Single-process only: under `uvicorn --workers N` each worker would build
     its own engine writing the same SQLite. Run one worker.
 
-    世界切换窗口（旧引擎已丢、新引擎未发布）里 app.state.engine 是 None 而
-    app.state.config 还是旧的：此时惰性重建会造出旧世界的引擎并写回 app.state，
-    与刚切换到的世界错位。所以有 WorldManager 时经 engine_gate 判断：切换中 → 503
-    world_switching；否则在门内检查并建引擎，与切换的「置位 + 读引擎」互斥（切换不会
-    漏掉一个正在建的惰性引擎）。engine_gate 是个只被持有几行代码的小锁，不是管理锁
-    （管理锁在快照期间会被占上几秒，而本函数在事件循环上跑，不能阻塞）。
+    世界切换中（见 WorldManager.lease）→ 503 world_switching：切换要等在途租约全部归还
+    才丢旧引擎，窗口里的新请求不能再拿到旧引擎，也不能按旧 config 惰性重建一个。
+
+    取租约与进入 try 之间不能有 await：任务在那里被取消，租约就永远不归还，此后每次切换
+    都会等满超时回 ingest_busy。所以同步取（与旧实现一样，惰性构建在事件循环上做）。
     """
-    state = request.app.state
-    worlds = getattr(state, "worlds", None)
-    if worlds is None:
-        return _lazy_engine(state)
     try:
-        with worlds.engine_gate():
-            return _lazy_engine(state)
+        lease = engine_lease(request.app.state, build=_build_engine)
     except WorldSwitchError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail=exc.code) from exc
-
-
-def _lazy_engine(state):
-    eng = state.engine
-    if eng is None:
-        from starling.dashboard.engine import DashboardEngine
-        eng = DashboardEngine(state.config)
-        state.engine = eng
-    return eng
+    try:
+        yield lease.engine
+    finally:
+        lease.release()
 
 
 def build_commands_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
     @router.post("/remember")
-    async def remember(body: RememberBody, request: Request):
+    async def remember(body: RememberBody, request: Request, eng=Depends(_engine)):
         from starling.dashboard.engine import _LLMNotConfigured
         from starling import _core
-        eng = _engine(request)
         try:
             r = await to_thread.run_sync(partial(
                 eng.remember, body.text, holder=body.holder,
@@ -134,8 +128,7 @@ def build_commands_router(require_token) -> APIRouter:
         return r
 
     @router.post("/recall")
-    async def recall(body: RecallBody, request: Request):
-        eng = _engine(request)
+    async def recall(body: RecallBody, request: Request, eng=Depends(_engine)):
         if body.intent:
             # intent 以 C++ QueryIntent 枚举为单一源;非法值在这里挡成 422,
             # 否则 plan_query 的 getattr 会 AttributeError → 500。
@@ -159,9 +152,8 @@ def build_commands_router(require_token) -> APIRouter:
         return {"results": out}
 
     @router.post("/converse")
-    async def converse(body: ConverseBody, request: Request):
+    async def converse(body: ConverseBody, request: Request, eng=Depends(_engine)):
         from starling.dashboard.engine import _LLMNotConfigured
-        eng = _engine(request)
         try:
             r = await to_thread.run_sync(partial(
                 eng.converse, body.message, holder=body.holder,
@@ -177,8 +169,7 @@ def build_commands_router(require_token) -> APIRouter:
         return r
 
     @router.post("/tick")
-    async def tick(body: TickBody, request: Request):
-        eng = _engine(request)
+    async def tick(body: TickBody, request: Request, eng=Depends(_engine)):
         payload = await to_thread.run_sync(eng.tick, body.now or _now_iso())
         await _broadcast(request, "tick", payload)
         if payload["fired"]:
@@ -187,26 +178,24 @@ def build_commands_router(require_token) -> APIRouter:
 
     @router.get("/working_set")
     async def working_set(request: Request, interlocutor: str, goal: str | None = None,
-                          token_budget: int = 2000, holder: str | None = None):
-        eng = _engine(request)
+                          token_budget: int = 2000, holder: str | None = None,
+                          eng=Depends(_engine)):
         return await to_thread.run_sync(partial(
             eng.working_set, interlocutor, goal=goal, token_budget=token_budget,
             holder=holder))
 
     @router.post("/forget")
-    async def forget(body: ForgetBody, request: Request):
-        eng = _engine(request)
+    async def forget(body: ForgetBody, request: Request, eng=Depends(_engine)):
         r = await to_thread.run_sync(partial(eng.forget, body.ids, now=body.now))
         await _broadcast(request, "statement_forgotten", r)
         return r
 
     @router.post("/clear_memory")
-    async def clear_memory(body: ClearMemoryBody, request: Request):
+    async def clear_memory(body: ClearMemoryBody, request: Request, eng=Depends(_engine)):
         # 设置页「危险区」:物理清空当前租户的全部记忆(保留 self 认知体),并把该租户
         # spool 里尚未 claim 的会话 job 移到 discarded/。confirm 必须等于当前租户名。
         from starling import _core
         from starling.dashboard.engine import ClearConfirmMismatch
-        eng = _engine(request)
         try:
             r = await to_thread.run_sync(partial(eng.clear_memory, confirm=body.confirm))
         except ClearConfirmMismatch:
@@ -222,38 +211,35 @@ def build_commands_router(require_token) -> APIRouter:
 
     # ── 片 6 干预集:触发式安全写(全经 engine self._lock 串行) ─────────────
     @router.post("/review")
-    async def review(body: ReviewBody, request: Request):
+    async def review(body: ReviewBody, request: Request, eng=Depends(_engine)):
         # approve:review_requested→approved(守卫幂等;非该态返回 approved=0)。
-        eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.approve_review, body.stmt_id))
         await _broadcast(request, "statement_added", {"statement_ids": [body.stmt_id]})
         return r
 
     @router.post("/replay_trigger")
-    async def replay_trigger(body: ReplayTriggerBody, request: Request):
+    async def replay_trigger(body: ReplayTriggerBody, request: Request, eng=Depends(_engine)):
         # 手动触发 replay;持写锁整段(操作者发起)。新批次 → 刷新梦境/生命周期。
-        eng = _engine(request)
         mode = body.mode if body.mode in ("sleep", "idle") else "idle"
         r = await to_thread.run_sync(partial(eng.run_replay, mode))
         await _broadcast(request, "tick", r)
         return r
 
     @router.post("/reconsolidate")
-    async def reconsolidate(body: ReconsolidateBody, request: Request):
+    async def reconsolidate(body: ReconsolidateBody, request: Request, eng=Depends(_engine)):
         # 请求再固化(发 reconsolidate.requested 事件,引擎异步开可塑窗)。每次发新 uuid
         # request_id;真正的重复去重在引擎侧按 stmt_id+tenant 归并到同一窗口(open_or_append),
         # 故连点不会建重复窗口(非「当日去重」——那个键因 uuid 唯一从不命中)。
-        eng = _engine(request)
         r = await to_thread.run_sync(partial(
             eng.request_reconsolidation, body.stmt_id, request_id=uuid.uuid4().hex))
         await _broadcast(request, "tick", {"reconsolidate_requested": body.stmt_id})
         return r
 
     @router.post("/commitment/fulfill")
-    async def commitment_fulfill(body: CommitmentBody, request: Request):
+    async def commitment_fulfill(body: CommitmentBody, request: Request,
+                                 eng=Depends(_engine)):
         # 手动 fulfill:ACTIVE→FULFILLED(核心 CommitmentEngine 原子守卫)。非 ACTIVE 不
         # 改状态 → 409(不广播);成功广播 commitment_transition 供面板即时刷新。
-        eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.fulfill_commitment, body.stmt_id))
         if not r["acted"]:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not_active")
@@ -262,10 +248,10 @@ def build_commands_router(require_token) -> APIRouter:
         return r
 
     @router.post("/commitment/withdraw")
-    async def commitment_withdraw(body: CommitmentBody, request: Request):
+    async def commitment_withdraw(body: CommitmentBody, request: Request,
+                                  eng=Depends(_engine)):
         # 手动 withdraw:ACTIVE→WITHDRAWN(释放承诺 → 它保护的记忆此后可衰减)。同样
         # ACTIVE-only:非 ACTIVE → 409,不广播。
-        eng = _engine(request)
         r = await to_thread.run_sync(partial(eng.withdraw_commitment, body.stmt_id))
         if not r["acted"]:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="not_active")
