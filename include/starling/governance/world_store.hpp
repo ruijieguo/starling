@@ -30,6 +30,7 @@ private:
 // code 取值：invalid_world_name | world_exists | world_not_found | world_protected
 //           | registry_corrupt | invalid_retention | snapshot_not_found
 //           | insufficient_disk | snapshot_failed | world_tenant_mismatch
+//           | invalid_snapshot_kind
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2
@@ -128,7 +129,13 @@ struct SnapshotOptions {
 //    否则删掉 partial 并抛 snapshot_failed。
 // 6. fs::rename(partial, <id>.db)，填 size_bytes、world_time、created_at。
 // 7. 插到 reg.snapshots[world] 的开头（最新在前），然后调用 apply_retention。
+//    成功的快照一定返回它的条目：修剪失败（旧快照路径无法解析或删不掉）在这里
+//    被吞掉，不外抛。列表与磁盘仍一致（每个旧快照先删文件再摘注册项），只是
+//    暂时多出几份，下一次 take_snapshot 或显式 apply_retention 会重试。
 // 8. 不负责 save_registry，由调用方保存。
+// opts.kind 不是 "manual" / "auto" 时在写任何文件之前抛 invalid_snapshot_kind
+// （保留策略只认 "auto"，拼错会悄悄丢掉回滚锚点保护）。
+// fs::space 返回「未知」（uintmax_t(-1)，FUSE / 网络文件系统）时跳过磁盘守卫。
 // 任何 SQLite 错误都转成 snapshot_failed，并保证不留下 partial 文件。
 SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
                             const SnapshotOptions& opts);

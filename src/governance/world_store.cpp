@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <system_error>
@@ -63,9 +64,10 @@ std::string compact_now() { return format_utc_now("%Y%m%dT%H%M%SZ"); }
 
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
 // 返回 true 表示已执行删除；确认 target 越界（被篡改的注册表、指向外部的
-// 符号链接）时返回 false，什么都不碰。路径解析本身出错（EACCES、ELOOP 等）时
-// 无法判断是否越界，抛 snapshot_failed，由调用方保留注册项，数据不会被悄悄
-// 遗弃在磁盘上。
+// 符号链接）时返回 false，什么都不碰。路径解析出错（EACCES、ELOOP 等）时无法
+// 判断是否越界，删除本身失败（EACCES、EBUSY 等）时文件仍在盘上，两种情况都抛
+// snapshot_failed（不抛裸 filesystem_error，上层按 code 映射），由调用方保留
+// 注册项，数据不会被悄悄遗弃在磁盘上。
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool remove_within(const fs::path& base, const fs::path& target) {
     std::error_code err;
@@ -81,7 +83,11 @@ bool remove_within(const fs::path& base, const fs::path& target) {
     }
     const fs::path rel = real_target.lexically_relative(real_base);
     if (rel.empty() || rel == "." || *rel.begin() == "..") { return false; }
-    fs::remove_all(real_target);
+    (void)fs::remove_all(real_target, err);
+    if (err) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot remove " + real_target.string() + ": " + err.message());
+    }
     return true;
 }
 
@@ -308,6 +314,16 @@ std::string world_time_on(sqlite3* dbh, const std::string& tenant) {
     return {};
 }
 
+// 可用字节数。标准允许 fs::space 在 FUSE / 网络文件系统上返回 uintmax_t(-1)
+// 表示「未知」，直接转成 int64 会得到 -1，让每次快照都被误拒为 insufficient_disk。
+// 未知或超出 int64 的值一律按「足够」处理，等于跳过守卫。
+std::int64_t available_bytes(const fs::path& dir) {
+    const std::uintmax_t avail = fs::space(dir).available;
+    constexpr auto kCeiling = static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max());
+    return avail > kCeiling ? std::numeric_limits<std::int64_t>::max()
+                            : static_cast<std::int64_t>(avail);
+}
+
 // 与该世界已有快照（注册项或磁盘文件）不重名的 id。
 std::string fresh_snapshot_id(const Registry& reg, const std::string& world,
                               const fs::path& dir) {
@@ -488,7 +504,12 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
     if (found == reg.worlds.end()) {
         throw WorldStoreError("world_not_found", "world '" + world + "' is not registered");
     }
-    // 先校验保留份数：否则快照写完才在修剪时发现配置非法，留下无人登记的文件。
+    // 先校验入参与保留份数：否则快照写完才发现配置非法，留下无人登记的文件。
+    // kind 拼错（"Auto"）不能静默当成 manual：保留策略只认 "auto"，会丢掉回滚锚点保护。
+    if (opts.kind != "manual" && opts.kind != "auto") {
+        throw WorldStoreError("invalid_snapshot_kind",
+                              "kind must be 'manual' or 'auto', got '" + opts.kind + "'");
+    }
     require_valid_retention(reg.snapshot_retention);
     const WorldEntry& entry = found->second;
     const fs::path dir = entry.snapshot_dir;
@@ -512,9 +533,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
 
         auto source = open_read_only(entry.db_path);
         const std::int64_t live = live_bytes_of(source.get());
-        const std::int64_t avail = opts.free_space
-            ? opts.free_space(dir)
-            : static_cast<std::int64_t>(fs::space(dir).available);
+        const std::int64_t avail = opts.free_space ? opts.free_space(dir) : available_bytes(dir);
         if (avail < 3 * live) {
             throw WorldStoreError("insufficient_disk",
                                   "need " + std::to_string(3 * live) + " bytes free in " +
@@ -564,7 +583,15 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
 
     auto& list = reg.snapshots[world];
     list.insert(list.begin(), snap);
-    (void)apply_retention(reg, world);
+    // 快照已落盘并登记，成功的快照必须把条目返回给调用方。修剪失败（旧快照路径
+    // 无法解析或无法删除，WorldStoreError snapshot_failed）不外抛：apply_retention
+    // 逐个「先删文件、再摘注册项」，失败时列表与磁盘仍一致，只是暂时多出几份，
+    // 下一次 take_snapshot 或显式 apply_retention 会重试。
+    try {
+        (void)apply_retention(reg, world);
+    } catch (const WorldStoreError& retention_err) {
+        (void)retention_err;   // 见上：留待下次修剪重试
+    }
     return snap;
 }
 

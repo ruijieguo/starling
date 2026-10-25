@@ -16,6 +16,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -444,13 +445,31 @@ TEST(WorldRetention, AllManualDropsOldest) {
     EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t3", "t2"}));
 }
 
+// 未超限时一个都不能删。用 2 份 manual（保留 5）：若去掉「总数 <= N 不删」的守卫，
+// 第一轮没有 auto 可删，第二轮会把 manual 全删掉，本用例就会失败。
+// （只放一份 auto 是个空洞用例：它本身就是回滚锚点，守卫在不在都不会被删。）
 TEST(WorldRetention, UnderLimitIsNoop) {
     const TempDir tmp;
     auto reg = registry_with_world(tmp, "sim-1");
     const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
-    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t1", "auto")};
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t2", "manual"), fake_snapshot(dir, "t1", "manual")};
     EXPECT_TRUE(apply_retention(reg, "sim-1").empty());
-    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t2", "t1"}));
+    EXPECT_TRUE(fs::exists(dir / "t1.db"));
+    EXPECT_TRUE(fs::exists(dir / "t2.db"));
+}
+
+// 恰好等于保留份数：不删（边界是 <=，不是 <）。
+TEST(WorldRetention, ExactlyAtLimitIsNoop) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 3;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t3", "manual"), fake_snapshot(dir, "t2", "auto"),
+                              fake_snapshot(dir, "t1", "manual")};
+    EXPECT_TRUE(apply_retention(reg, "sim-1").empty());
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 3U);
+    EXPECT_TRUE(fs::exists(dir / "t1.db"));
 }
 
 TEST(WorldRetention, TakeSnapshotAppliesRetention) {
@@ -458,8 +477,13 @@ TEST(WorldRetention, TakeSnapshotAppliesRetention) {
     auto reg = registry_with_world(tmp, "sim-1");
     reg.snapshot_retention = 2;
     seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
-    for (int idx = 0; idx < 3; ++idx) { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }
+    SnapshotEntry latest;
+    for (int idx = 0; idx < 3; ++idx) { latest = take_snapshot(reg, "sim-1", SnapshotOptions{}); }
     EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
+    // 新快照必须插在列表开头（最新在前）。若误用 push_back，它会成为「最旧」的那份，
+    // 在修剪时被删掉：返回的条目指向已不存在的文件，且不在 front()。
+    EXPECT_TRUE(fs::exists(latest.path));
+    EXPECT_EQ(reg.snapshots.at("sim-1").front().id, latest.id);
     std::size_t files = 0;
     for (const auto& entry : fs::directory_iterator(reg.worlds.at("sim-1").snapshot_dir)) {
         (void)entry;
@@ -602,6 +626,103 @@ TEST(WorldSnapshot, CorruptDbFailsWithoutPartialOrEntry) {
               "snapshot_failed");
     EXPECT_TRUE(fs::is_empty(world.snapshot_dir));
     EXPECT_EQ(reg.snapshots.count("sim-1"), 0U);
+}
+
+// 真实的 VACUUM 失败：库的中间几页被写坏（第 1 页完好，所以 page_count 等头部
+// 信息仍可读，守卫和打开都通过），VACUUM INTO 读到坏页时报 "malformed"，并且此时
+// SQLite 已经创建了 0 字节的 .partial。必须删掉它，也不能登记。
+// 这是唯一真正走到 catch 里 fs::remove(partial) 的用例；上面那个「不是 SQLite 的
+// 文件」在 PRAGMA page_count 就失败，partial 还没赋值，删掉清理代码它也照样通过。
+TEST(WorldSnapshot, VacuumFailureLeavesNoPartialAndNoEntry) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 50);
+    ASSERT_GT(fs::file_size(world.db_path), 16U * 4096U);
+
+    {   // 第 3~10 页（0 起算偏移 2*4096 起）写入确定性的随机字节。
+        std::mt19937 gen(12345);
+        std::fstream file(world.db_path, std::ios::in | std::ios::out | std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        file.seekp(2 * 4096);
+        for (int idx = 0; idx < 8 * 4096; ++idx) {
+            file.put(static_cast<char>(gen() & 0xFFU));
+        }
+    }
+
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }),
+              "snapshot_failed");
+    EXPECT_TRUE(fs::is_empty(world.snapshot_dir))
+        << "VACUUM 失败后残留了文件";
+    EXPECT_TRUE(reg.snapshots.count("sim-1") == 0 || reg.snapshots.at("sim-1").empty());
+}
+
+// kind 拼错不能悄悄当成 manual：保留策略只认 "auto"，会丢掉回滚锚点保护。
+TEST(WorldSnapshot, RejectsUnknownKindBeforeWriting) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    for (const char* bad : {"Auto", "AUTO", "manual ", "", "scene"}) {
+        SnapshotOptions opts;
+        opts.kind = bad;
+        EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", opts); }),
+                  "invalid_snapshot_kind") << "kind='" << bad << "'";
+    }
+    EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
+    EXPECT_EQ(reg.snapshots.count("sim-1"), 0U);
+}
+
+// 成功的快照一定返回它的条目：修剪失败（这里用自指符号链接让旧快照路径无法解析，
+// 触发 ELOOP）不能把异常抛给调用方，否则新快照已落盘并登记，返回值却丢了。
+TEST(WorldSnapshot, RetentionFailureStillReturnsTheNewSnapshot) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 2;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+
+    SnapshotEntry stuck = fake_snapshot(dir, "t1", "manual");
+    fs::remove(stuck.path);
+    fs::create_symlink("t1.db", stuck.path);   // 指向自己
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t2", "manual"), stuck};
+
+    SnapshotEntry snap;
+    ASSERT_NO_THROW(snap = take_snapshot(reg, "sim-1", SnapshotOptions{}));
+    EXPECT_TRUE(fs::exists(snap.path));
+    ASSERT_EQ(reg.snapshots.at("sim-1").size(), 3U);   // 修剪没成功：暂时多一份
+    EXPECT_EQ(reg.snapshots.at("sim-1").front().id, snap.id);
+    // 列表与磁盘一致：卡住的那份仍登记着（没被摘掉），下次修剪会重试。
+    EXPECT_EQ(reg.snapshots.at("sim-1").back().id, "t1");
+
+    // 显式调用 apply_retention 仍然 fail loud，只是 take_snapshot 不再外抛它。
+    EXPECT_EQ(code_of([&] { (void)apply_retention(reg, "sim-1"); }), "snapshot_failed");
+}
+
+// remove_within 的删除本身失败（目录不可写）时抛带 code 的 WorldStoreError，
+// 不能是裸 std::filesystem::filesystem_error——HTTP 层按 code 映射。
+// 注册项必须保留（文件还在盘上，不能悄悄遗弃）。
+TEST(WorldSnapshotDelete, RemoveFailureIsTypedAndKeepsEntry) {
+    if (::geteuid() == 0) { GTEST_SKIP() << "root 不受目录权限限制"; }
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    const fs::path locked = dir / "locked-snap";
+    fs::create_directories(locked);
+    { std::ofstream out(locked / "inner.db"); out << "x"; }
+    SnapshotEntry snap;
+    snap.id = "locked";
+    snap.path = locked.string();
+    snap.kind = "manual";
+    reg.snapshots["sim-1"].push_back(snap);
+
+    fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec,
+                    fs::perm_options::replace);   // 去掉写权限：unlink 内部文件会 EACCES
+    const std::string code = code_of([&] { delete_snapshot(reg, "sim-1", "locked"); });
+    fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);   // 让 TempDir 能清理
+
+    EXPECT_EQ(code, "snapshot_failed");
+    ASSERT_EQ(reg.snapshots.at("sim-1").size(), 1U);   // 文件还在，注册项不能摘
+    EXPECT_TRUE(fs::exists(locked / "inner.db"));
 }
 
 // default 世界的快照目录由 ensure_registry 登记但不创建，首次快照要补建。
