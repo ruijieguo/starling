@@ -5,9 +5,10 @@ import { NAV_GROUPS, matchesHref, activeNavItem } from './nav';
 describe('NAV_GROUPS — 类脑 IA', () => {
 	const allHrefs = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.href));
 
-	it('has 11 groups in memory-flow order, 原始数据·证据 landed between 总览 and 对话', () => {
+	it('has 12 groups in memory-flow order, 世界·会话 then 原始数据·证据 between 总览 and 对话', () => {
 		expect(NAV_GROUPS.map((g) => g.title)).toEqual([
 			'总览',
+			'世界 · 会话',
 			'原始数据 · 证据',
 			'对话',
 			'短期记忆 · 海马',
@@ -31,6 +32,13 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 
 	it('surfaces /engrams (T0a — 原始数据·证据, un-dormanted)', () => {
 		expect(allHrefs).toContain('/engrams');
+	});
+
+	it('surfaces /worlds (W1/W2 — 世界 · 会话)', () => {
+		expect(allHrefs).toContain('/worlds');
+		const worldGroup = NAV_GROUPS.find((g) => g.title === '世界 · 会话');
+		expect(worldGroup).toBeDefined();
+		expect(worldGroup!.items).toEqual([{ href: '/worlds', label: '世界', icon: 'globe' }]);
 	});
 
 	it('orphans no existing route in the reorg', () => {

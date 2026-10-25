@@ -7,6 +7,12 @@ import { wsConn } from './health';
  * commitment_transition / memory_cleared)+ app.py 后台循环的 tick + converse 流
  * 完结后补广播的 statement_added。lib/feed.ts 的 switch 也正好覆盖这七种。
  *
+ * W1/W2 追加两种,来自 routes/worlds.py:
+ *   world_switched   {active}        切换世界成功 —— 整个数据源变了,各页都应刷新
+ *   snapshot_created {world, id}     快照成功
+ * 二者都归入 mutatesMemory 的「会改变可见状态」一侧(只有 recall 是纯读),
+ * feed.ts 同步补了两条文案。
+ *
  * 收窄为联合类型而非 string:页面里的事件名字面量此前完全不受 svelte-check 校验,
  * 打错一个字母就是静默失效且三门全绿(T8 review M3)。注意 /ws/converse 是另一条
  * socket、另一套 type(token/done/error),由 streamConverse 自带类型处理,不属此表。
@@ -18,7 +24,9 @@ export const WS_EVENT_TYPES = [
 	'recall',
 	'commitment_transition',
 	'commitment_fired',
-	'memory_cleared'
+	'memory_cleared',
+	'world_switched',
+	'snapshot_created'
 ] as const;
 export type WsEventType = (typeof WS_EVENT_TYPES)[number];
 
