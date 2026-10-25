@@ -542,3 +542,208 @@ def test_persistable_config_keeps_default_world(tmp_path, monkeypatch):
     assert out.db_path == str(tmp_path / "dashboard.db")
     assert out.tenant == "default"
     assert state.config.tenant == "sim-1"      # 运行时 config 不被改动
+
+
+# ───────────────────────── W1 Task 5：/api/worlds 路由 ─────────────────────────
+
+def _client(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    return TestClient(app), app
+
+
+def test_routes_list_create_activate_delete(tmp_path):
+    client, app = _client(tmp_path)
+    body = client.get("/api/worlds").json()
+    assert body["active"] == "default" and body["snapshot_retention"] == 5
+    assert [w["name"] for w in body["worlds"]] == ["default"]
+
+    assert client.post("/api/worlds", json={"name": "Bad"}).json()["detail"] == "invalid_world_name"
+    row = client.post("/api/worlds", json={"name": "sim-1", "label": "模拟"}).json()
+    assert row["name"] == "sim-1" and row["active"] is False and row["engrams"] == 0
+    assert client.post("/api/worlds", json={"name": "sim-1"}).status_code == 409
+
+    r = client.post("/api/worlds/sim-1/activate")
+    assert r.status_code == 200 and r.json() == {"active": "sim-1"}
+    assert app.state.config.tenant == "sim-1"
+    assert client.post("/api/worlds/nope/activate").status_code == 404
+
+    r = client.delete("/api/worlds/sim-1", params={"confirm": "sim-1"})
+    assert r.status_code == 409 and r.json()["detail"] == "world_protected"
+    client.post("/api/worlds/default/activate")
+    r = client.delete("/api/worlds/sim-1", params={"confirm": "wrong"})
+    assert r.status_code == 400 and r.json()["detail"] == "confirm_mismatch"
+    r = client.delete("/api/worlds/sim-1", params={"confirm": "sim-1"})
+    assert r.status_code == 200
+    assert [w["name"] for w in client.get("/api/worlds").json()["worlds"]] == ["default"]
+
+
+def test_routes_snapshots(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)   # 建库
+    snap = client.post("/api/worlds/default/snapshots", json={"note": "n1"}).json()
+    assert snap["kind"] == "manual" and snap["note"] == "n1" and snap["size_bytes"] > 0
+    listed = client.get("/api/worlds/default/snapshots").json()["snapshots"]
+    assert [s["id"] for s in listed] == [snap["id"]]
+    assert client.get("/api/worlds").json()["worlds"][0]["snapshots"] == 1
+    assert client.delete(f"/api/worlds/default/snapshots/{snap['id']}").status_code == 200
+    assert client.delete("/api/worlds/default/snapshots/missing").status_code == 404
+    assert client.post("/api/worlds/nope/snapshots", json={}).status_code == 404
+
+
+def test_routes_snapshot_refused_for_zvec(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.config.vector_backend = "zvec"
+    r = client.post("/api/worlds/default/snapshots", json={})
+    assert r.status_code == 409 and r.json()["detail"] == "snapshot_unsupported_backend"
+
+
+def test_routes_require_token(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.token = "s3cret"
+    client = TestClient(create_app(cfg))
+    assert client.get("/api/worlds").status_code == 401
+    assert client.get("/api/worlds", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_routes_never_accept_paths(tmp_path):
+    client, _app = _client(tmp_path)
+    # 名称校验本身就挡掉了路径；这里钉住它，防止将来放宽。
+    for evil in ("../x", "a/b", "/abs"):
+        assert client.post("/api/worlds", json={"name": evil}).status_code in (400, 404, 422)
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/api/worlds"),
+    ("post", "/api/worlds"),
+    ("post", "/api/worlds/default/activate"),
+    ("delete", "/api/worlds/default?confirm=default"),
+    ("get", "/api/worlds/default/snapshots"),
+    ("post", "/api/worlds/default/snapshots"),
+    ("delete", "/api/worlds/default/snapshots/x"),
+])
+def test_routes_503_when_world_manager_absent(method, path):
+    """:memory: 库没有注册表（app.state.worlds 为 None）：全部路由回 503，不是 AttributeError。"""
+    app = create_app(DashboardConfig(db_path=":memory:", token="", tick_interval_s=0))
+    assert app.state.worlds is None
+    kwargs = {"json": {"name": "sim-1"}} if (method, path) == ("post", "/api/worlds") else {}
+    r = getattr(TestClient(app), method)(path, **kwargs)
+    assert r.status_code == 503 and r.json()["detail"] == "worlds_unavailable"
+
+
+def test_routes_worldrow_shape_and_stats(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    _remember(app.state.engine, "Bob is responsible for auth")
+    client.post("/api/worlds", json={"name": "sim-1"})
+    rows = {w["name"]: w for w in client.get("/api/worlds").json()["worlds"]}
+    assert list(rows) == ["default", "sim-1"]
+    keys = {"name", "label", "tenant", "created_at", "active", "db_bytes", "live_bytes",
+            "statements", "engrams", "snapshots", "snapshot_bytes"}
+    assert set(rows["default"]) == keys and set(rows["sim-1"]) == keys
+    assert rows["default"]["active"] is True and rows["sim-1"]["active"] is False
+    assert rows["default"]["engrams"] >= 1 and rows["default"]["db_bytes"] > 0
+    assert rows["sim-1"]["engrams"] == 0 and rows["sim-1"]["db_bytes"] == 0   # 库未建
+    assert rows["sim-1"]["tenant"] == "sim-1"
+
+
+def test_routes_snapshot_rows_hide_server_paths_and_sum_bytes(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    first = client.post("/api/worlds/default/snapshots", json={"note": "a"}).json()
+    second = client.post("/api/worlds/default/snapshots", json={"note": "b"}).json()
+    assert set(first) == {"id", "kind", "reason", "note", "created_at", "world_time", "size_bytes"}
+    listed = client.get("/api/worlds/default/snapshots").json()["snapshots"]
+    stamps = [s["created_at"] for s in listed]
+    assert stamps == sorted(stamps, reverse=True)            # 降序
+    assert {s["id"] for s in listed} == {first["id"], second["id"]}
+    row = client.get("/api/worlds").json()["worlds"][0]
+    assert row["snapshots"] == 2
+    assert row["snapshot_bytes"] == first["size_bytes"] + second["size_bytes"]
+
+
+def test_routes_snapshot_body_is_optional(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    r = client.post("/api/worlds/default/snapshots")          # 无 body
+    assert r.status_code == 200 and r.json()["note"] == ""
+
+
+def test_routes_confirm_mismatch_does_not_touch_manager(tmp_path, monkeypatch):
+    client, app = _client(tmp_path)
+    client.post("/api/worlds", json={"name": "sim-1"})
+
+    def _boom(*_a, **_k):
+        raise AssertionError("manager must not be called")
+    monkeypatch.setattr(app.state.worlds, "delete", _boom)
+    assert client.delete("/api/worlds/sim-1").json()["detail"] == "confirm_mismatch"   # 缺 confirm
+    r = client.delete("/api/worlds/sim-1", params={"confirm": "other"})
+    assert r.status_code == 400 and r.json()["detail"] == "confirm_mismatch"
+
+
+@pytest.mark.parametrize("code,status", [
+    ("ingest_busy", 409), ("world_open_failed", 500), ("world_not_found", 404),
+    ("snapshot_unsupported_backend", 409),
+])
+def test_routes_activate_maps_switch_errors(tmp_path, monkeypatch, code, status):
+    client, app = _client(tmp_path)
+
+    def _raise(_name):
+        raise WorldSwitchError(code, "x")
+    monkeypatch.setattr(app.state.worlds, "activate", _raise)
+    r = client.post("/api/worlds/default/activate")
+    assert r.status_code == status and r.json()["detail"] == code
+
+
+def test_routes_snapshot_insufficient_disk_is_507(tmp_path, monkeypatch):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+
+    def _no_space(*_args, **_kwargs):
+        # C++ 的 free_space 钩子没有暴露给 Python，没法真造出磁盘不足；这里在绑定边界
+        # 抛出同形异常（what() 形如 "<code>: <detail>"），只验证路由的 507 映射。
+        raise _core.WorldStoreError("insufficient_disk: need 3x live bytes")
+    monkeypatch.setattr(_core, "world_take_snapshot", _no_space)
+    r = client.post("/api/worlds/default/snapshots", json={})
+    assert r.status_code == 507 and r.json()["detail"] == "insufficient_disk"
+    monkeypatch.undo()
+    assert client.get("/api/worlds/default/snapshots").json()["snapshots"] == []   # 没留下条目
+
+
+def test_routes_unknown_error_code_falls_back_to_500(tmp_path, monkeypatch):
+    client, app = _client(tmp_path)
+
+    def _raise(_name):
+        raise WorldSwitchError("something_new")
+    monkeypatch.setattr(app.state.worlds, "activate", _raise)
+    r = client.post("/api/worlds/default/activate")
+    assert r.status_code == 500 and r.json()["detail"] == "something_new"
+
+
+def test_routes_broadcast_world_switched_and_snapshot_created(tmp_path):
+    cfg = _cfg(tmp_path)
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            client.post("/api/worlds", json={"name": "sim-1"})
+            assert client.post("/api/worlds/sim-1/activate").status_code == 200
+            msg = ws.receive_json()
+            assert msg == {"type": "world_switched", "payload": {"active": "sim-1"}}
+
+            snap = client.post("/api/worlds/sim-1/snapshots", json={}).json()
+            msg = ws.receive_json()
+            assert msg == {"type": "snapshot_created",
+                           "payload": {"world": "sim-1", "id": snap["id"]}}
+
+
+def test_routes_failed_operations_do_not_broadcast(tmp_path):
+    app = create_app(_cfg(tmp_path))
+    sent = []
+
+    async def _record(message):
+        sent.append(message)
+    app.state.ws_manager.broadcast = _record
+    client = TestClient(app)
+    assert client.post("/api/worlds/nope/activate").status_code == 404
+    assert client.post("/api/worlds/nope/snapshots", json={}).status_code == 404
+    assert sent == []
