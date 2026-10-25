@@ -747,3 +747,11 @@ def test_routes_failed_operations_do_not_broadcast(tmp_path):
     assert client.post("/api/worlds/nope/activate").status_code == 404
     assert client.post("/api/worlds/nope/snapshots", json={}).status_code == 404
     assert sent == []
+
+
+def test_routes_list_snapshots_unknown_world_is_404(tmp_path):
+    client, _app = _client(tmp_path)
+    r = client.get("/api/worlds/nope/snapshots")
+    assert r.status_code == 404 and r.json()["detail"] == "world_not_found"
+    # 已登记但从未拍过快照的世界：空列表，不是 404
+    assert client.get("/api/worlds/default/snapshots").json() == {"snapshots": []}
