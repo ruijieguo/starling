@@ -13,9 +13,11 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <random>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -62,6 +64,27 @@ std::string compact_now() { return format_utc_now("%Y%m%dT%H%M%SZ"); }
 
 // ---- 路径 ----------------------------------------------------------------
 
+// lexically_normal 之后去掉末尾的分隔符（"/a/b/" → "/a/b"），否则 lexically_relative 会把
+// 末尾的空文件名当成一级目录。根目录保持原样。
+fs::path normalized(const fs::path& path) {
+    fs::path out = path.lexically_normal();
+    if (!out.has_filename() && out.has_parent_path() && out != out.root_path()) {
+        out = out.parent_path();
+    }
+    return out;
+}
+
+// target 严格位于 base 之下（两者都已规范化；相等不算）。
+bool strictly_under(const fs::path& base, const fs::path& target) {
+    const fs::path rel = target.lexically_relative(base);
+    return !rel.empty() && rel != "." && *rel.begin() != "..";
+}
+
+// 字面判断，不解析符号链接：注册表校验只看写在 worlds.json 里的路径本身。
+bool lexically_within(const fs::path& base, const fs::path& target) {
+    return strictly_under(normalized(base), normalized(target));
+}
+
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
 // 返回 true 表示已执行删除；确认 target 越界（被篡改的注册表、指向外部的
 // 符号链接）时返回 false，什么都不碰。路径解析出错（EACCES、ELOOP 等）时无法
@@ -81,8 +104,7 @@ bool remove_within(const fs::path& base, const fs::path& target) {
         throw WorldStoreError("snapshot_failed",
                               "cannot resolve " + target.string() + ": " + err.message());
     }
-    const fs::path rel = real_target.lexically_relative(real_base);
-    if (rel.empty() || rel == "." || *rel.begin() == "..") { return false; }
+    if (!strictly_under(real_base, real_target)) { return false; }
     (void)fs::remove_all(real_target, err);
     if (err) {
         throw WorldStoreError("snapshot_failed",
@@ -198,9 +220,11 @@ void require_valid_retention(int retention) {
     }
 }
 
-// load 与 save 共用的不变式：load 拒绝的注册表，save 也不能写出去覆盖
-// 好文件。
-void validate(const Registry& reg) {
+// 与注册表所在目录无关的不变式。registry_from_json（绑定层的 dict 入口）只能做这一层；
+// load / save 另加 validate_layout。load 拒绝的注册表，save 也不能写出去覆盖好文件。
+// retention 放在路径检查之前：retention 非法的注册表报 invalid_retention，不被路径问题
+// 盖成 registry_corrupt。
+void validate_shape(const Registry& reg) {
     if (!reg.worlds.contains(reg.default_world)) {
         corrupt("default world '" + reg.default_world + "' is not registered");
     }
@@ -208,6 +232,170 @@ void validate(const Registry& reg) {
         corrupt("active world '" + reg.active + "' is not registered");
     }
     require_valid_retention(reg.snapshot_retention);
+    for (const auto& [name, world] : reg.worlds) {
+        // default 的键是固定的（"default"），不是用户起的名字。
+        if (name != reg.default_world && !is_valid_world_name(name)) {
+            corrupt("world name '" + name + "' does not match [a-z0-9][a-z0-9_-]{0,31}");
+        }
+        if (!fs::path(world.db_path).is_absolute()) {
+            corrupt("db_path of '" + name + "' is not absolute: " + world.db_path);
+        }
+        if (!fs::path(world.snapshot_dir).is_absolute()) {
+            corrupt("snapshot_dir of '" + name + "' is not absolute: " + world.snapshot_dir);
+        }
+    }
+    for (const auto& [owner, list] : reg.snapshots) {
+        const auto found = reg.worlds.find(owner);
+        if (found == reg.worlds.end()) {
+            corrupt("snapshots listed for unregistered world '" + owner + "'");
+        }
+        for (const auto& snap : list) {
+            if (snap.kind != "manual" && snap.kind != "auto") {
+                corrupt("snapshot '" + snap.id + "' of '" + owner + "' has kind '" + snap.kind +
+                        "'");
+            }
+            if (!lexically_within(found->second.snapshot_dir, snap.path)) {
+                corrupt("snapshot '" + snap.id + "' of '" + owner + "' lies outside " +
+                        found->second.snapshot_dir + ": " + snap.path);
+            }
+        }
+    }
+}
+
+// 世界目录布局：每个世界的 snapshot_dir、以及非 default 世界的 db_path，在字面上都位于
+// <registry_dir>/worlds/<name>/ 之下。default 的库保持原地（spec §0.1），不受此限；但它的
+// 快照目录同样固定在 worlds/<default>/ 下——否则把它改成 "/"，删除快照、保留策略和残留
+// 清扫就能删到任意位置。
+void validate_layout(const Registry& reg, const fs::path& registry_dir) {
+    const fs::path worlds_root = fs::absolute(registry_dir) / "worlds";
+    for (const auto& [name, world] : reg.worlds) {
+        const fs::path home = worlds_root / name;
+        if (!lexically_within(worlds_root, home)) {
+            corrupt("world '" + name + "' has no home under " + worlds_root.string());
+        }
+        if (name != reg.default_world && !lexically_within(home, world.db_path)) {
+            corrupt("db_path of '" + name + "' lies outside " + home.string() + ": " +
+                    world.db_path);
+        }
+        if (!lexically_within(home, world.snapshot_dir)) {
+            corrupt("snapshot_dir of '" + name + "' lies outside " + home.string() + ": " +
+                    world.snapshot_dir);
+        }
+    }
+}
+
+// 注册表文件所在目录（与 ensure_registry / create_world 推导世界目录的方式一致）。
+fs::path registry_dir_of(const fs::path& registry_path) {
+    return fs::absolute(registry_path).parent_path();
+}
+
+// delete_world 递归删除的根 <registry_dir>/worlds 解析符号链接之后必须仍在注册表目录
+// 之下：worlds/ 本身若是指向外部的符号链接，remove_within 两侧都解析到外部，会把外部的
+// <name> 目录当成合法子目录删掉。
+void require_inside_registry(const fs::path& root, const fs::path& base) {
+    std::error_code err;
+    const fs::path real_root = fs::weakly_canonical(root, err);
+    if (err) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot resolve " + root.string() + ": " + err.message());
+    }
+    const fs::path real_base = fs::weakly_canonical(base, err);
+    if (err) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot resolve " + base.string() + ": " + err.message());
+    }
+    if (!strictly_under(real_root, real_base)) {
+        throw WorldStoreError("snapshot_failed", base.string() + " resolves to " +
+                                                     real_base.string() + ", outside " +
+                                                     real_root.string());
+    }
+}
+
+// 快照 id 的形状：20261025T011200Z-a1b2（compact_now + "-" + 4 位小写十六进制）。
+bool looks_like_snapshot_id(std::string_view stem) {
+    constexpr std::size_t kIdLength = 21;
+    if (stem.size() != kIdLength) { return false; }
+    const auto digit = [](char chr) { return chr >= '0' && chr <= '9'; };
+    const auto hex = [&digit](char chr) { return digit(chr) || (chr >= 'a' && chr <= 'f'); };
+    for (std::size_t pos = 0; pos < kIdLength; ++pos) {
+        const char chr = stem.at(pos);
+        bool good = false;
+        if (pos == 8) { good = chr == 'T'; }
+        else if (pos == 15) { good = chr == 'Z'; }
+        else if (pos == 16) { good = chr == '-'; }
+        else if (pos > 16) { good = hex(chr); }
+        else { good = digit(chr); }
+        if (!good) { return false; }
+    }
+    return true;
+}
+
+bool ends_with(std::string_view text, std::string_view suffix) {
+    return text.size() >= suffix.size() &&
+           text.substr(text.size() - suffix.size()) == suffix;
+}
+
+// take_snapshot 前清扫上次崩溃的残留（见 world_store.hpp take_snapshot 第 1b 步）。
+// 返回删掉的文件数；任何错误只记日志，不外抛。
+std::size_t sweep_leftovers(const Registry& reg, const std::string& world, const fs::path& dir) {
+    // 按路径和 id 两种方式认「已登记」：任一命中都不删，宁可漏扫也不误删登记过的快照。
+    std::set<std::string> referenced;
+    std::set<std::string> referenced_ids;
+    if (const auto listed = reg.snapshots.find(world); listed != reg.snapshots.end()) {
+        for (const auto& snap : listed->second) {
+            referenced.insert(normalized(snap.path).string());
+            referenced_ids.insert(snap.id);
+        }
+    }
+    std::vector<fs::path> victims;
+    std::error_code err;
+    fs::directory_iterator iter(dir, err);
+    const fs::directory_iterator done;
+    for (; !err && iter != done; iter.increment(err)) {
+        const fs::directory_entry& item = *iter;
+        std::error_code status_err;
+        // 只碰普通文件：符号链接（我们从不创建）一概跳过，免得经它删到登记过的快照。
+        if (item.is_symlink(status_err) || !item.is_regular_file(status_err)) { continue; }
+        const std::string name = item.path().filename().string();
+        constexpr std::string_view kPartial = ".db.partial";
+        constexpr std::string_view kFinal = ".db";
+        if (ends_with(name, kPartial)) {
+            if (looks_like_snapshot_id(std::string_view(name).substr(0, name.size() - kPartial.size()))) {
+                victims.push_back(item.path());
+            }
+        } else if (ends_with(name, kFinal)) {
+            const std::string stem = name.substr(0, name.size() - kFinal.size());
+            if (looks_like_snapshot_id(stem) && !referenced_ids.contains(stem) &&
+                !referenced.contains(normalized(item.path()).string())) {
+                victims.push_back(item.path());
+            }
+        }
+    }
+    std::size_t swept = 0;
+    for (const auto& victim : victims) {
+        try {
+            if (remove_within(dir, victim)) { ++swept; }
+        } catch (const WorldStoreError& sweep_err) {
+            std::cerr << "[world_store] cannot sweep " << victim.string() << ": "
+                      << sweep_err.what() << "\n";
+        }
+    }
+    if (swept > 0) {
+        std::cerr << "[world_store] swept " << swept << " leftover snapshot file(s) in "
+                  << dir.string() << "\n";
+    }
+    return swept;
+}
+
+// SQL 标识符加双引号（内部的双引号写两遍）。表名来自库文件自己的 sqlite_master。
+std::string quote_identifier(const std::string& name) {
+    std::string out = "\"";
+    for (const char chr : name) {
+        out += chr;
+        if (chr == '"') { out += '"'; }
+    }
+    out += '"';
+    return out;
 }
 
 std::string random_hex() {
@@ -346,7 +534,9 @@ Registry load_registry(const fs::path& registry_path) {
     std::ifstream file(registry_path);
     if (!file) { corrupt("cannot open " + registry_path.string()); }
     const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    return registry_from_json(text);
+    Registry reg = registry_from_json(text);
+    validate_layout(reg, registry_dir_of(registry_path));
+    return reg;
 }
 
 // ---- JSON 文本接口（绑定层用） ---------------------------------------------
@@ -360,7 +550,7 @@ Registry registry_from_json(const std::string& text) {
     } catch (const Json::exception& err) {
         corrupt(err.what());
     }
-    validate(reg);
+    validate_shape(reg);
     return reg;
 }
 
@@ -373,7 +563,8 @@ std::string snapshot_entry_to_json(const SnapshotEntry& entry) {
 }
 
 void save_registry(const fs::path& registry_path, const Registry& reg) {
-    validate(reg);
+    validate_shape(reg);
+    validate_layout(reg, registry_dir_of(registry_path));
     const fs::path dir = registry_path.parent_path();
     if (!dir.empty()) { fs::create_directories(dir); }
     const fs::path tmp = dir / (".worlds-" + random_hex() + ".tmp");
@@ -447,8 +638,11 @@ void delete_world(Registry& reg, const fs::path& registry_dir, const std::string
     }
     // 先删目录再摘注册项：目录删到一半失败时注册表仍是完整的，可重试。
     // 删除目标固定为 <registry_dir>/worlds/<name>，不读注册项里的路径，
-    // 所以被篡改的 db_path / snapshot_dir 碰不到外部目录。
-    const fs::path base = fs::absolute(registry_dir) / "worlds";
+    // 所以被篡改的 db_path / snapshot_dir 碰不到外部目录。worlds/ 本身被换成指向外部的
+    // 符号链接时，先在这里拒绝（抛 snapshot_failed，注册项保留）。
+    const fs::path root = fs::absolute(registry_dir);
+    const fs::path base = root / "worlds";
+    require_inside_registry(root, base);
     (void)remove_within(base, base / name);
     reg.worlds.erase(name);
     reg.snapshots.erase(name);
@@ -498,6 +692,38 @@ WorldStats world_stats(const std::string& db_path, const std::string& tenant) {
     return stats;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void verify_world_tenant(const std::string& db_path, const std::string& tenant) {
+    std::error_code err;
+    if (!fs::exists(db_path, err)) { return; }   // 新世界：库留到首次激活才建
+    try {
+        const auto handle = open_read_only(db_path);
+        std::vector<std::string> tables;
+        {
+            persistence::Stmt list(handle.get(),
+                "SELECT tbl.name FROM sqlite_master AS tbl WHERE tbl.type = 'table' "
+                "AND EXISTS (SELECT 1 FROM pragma_table_info(tbl.name) AS col "
+                "WHERE col.name = 'tenant_id') ORDER BY tbl.name");
+            while (list.step_row()) { tables.push_back(column_text(list.raw(), 0)); }
+        }
+        for (const auto& table : tables) {
+            persistence::Stmt probe(handle.get(),
+                ("SELECT 1 FROM " + quote_identifier(table) +
+                 " WHERE tenant_id IS NOT NULL AND tenant_id <> ?1 LIMIT 1").c_str());
+            probe.bind(tenant);
+            if (probe.step_row()) {
+                throw WorldStoreError("world_tenant_mismatch",
+                                      "table '" + table + "' in " + db_path +
+                                          " holds rows of a tenant other than '" + tenant + "'");
+            }
+        }
+    } catch (const WorldStoreError&) {
+        throw;
+    } catch (const std::exception& ex) {
+        throw WorldStoreError("snapshot_failed", db_path + ": " + ex.what());
+    }
+}
+
 SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
                             const SnapshotOptions& opts) {
     const auto found = reg.worlds.find(world);
@@ -509,6 +735,12 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
     if (opts.kind != "manual" && opts.kind != "auto") {
         throw WorldStoreError("invalid_snapshot_kind",
                               "kind must be 'manual' or 'auto', got '" + opts.kind + "'");
+    }
+    // 向量在库文件之外的后端（zvec）拍出来的快照缺向量，不是完整的世界（spec §12）。
+    if (opts.vector_backend != "sqlite") {
+        throw WorldStoreError("snapshot_unsupported_backend",
+                              "vector_backend '" + opts.vector_backend + "' keeps vectors "
+                              "outside the database file");
     }
     require_valid_retention(reg.snapshot_retention);
     const WorldEntry& entry = found->second;
@@ -530,6 +762,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
     try {
         // default 世界的快照目录由 ensure_registry 登记但不创建，首次快照时补建。
         fs::create_directories(dir);
+        (void)sweep_leftovers(reg, world, dir);
 
         auto source = open_read_only(entry.db_path);
         const std::int64_t live = live_bytes_of(source.get());
@@ -590,7 +823,9 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
     try {
         (void)apply_retention(reg, world);
     } catch (const WorldStoreError& retention_err) {
-        (void)retention_err;   // 见上：留待下次修剪重试
+        // 见上：留待下次修剪重试。越界的注册项会一直卡住修剪，记下来才看得见。
+        std::cerr << "[world_store] retention for '" << world
+                  << "' deferred: " << retention_err.what() << "\n";
     }
     return snap;
 }
@@ -622,12 +857,16 @@ std::vector<std::string> apply_retention(Registry& reg, const std::string& world
         if (iter->kind != "auto") { victims.push_back(iter->id); }
     }
 
-    // 逐个「先删文件、再摘注册项」：中途失败时内存里的列表仍与磁盘一致。
+    // 逐个「先删文件、再摘注册项」：中途失败时内存里的列表仍与磁盘一致。路径越界时
+    // fail closed：文件没删，摘掉注册项就再也无法经注册表清理它。
     const fs::path dir = found->second.snapshot_dir;
     for (const auto& victim : victims) {
         const auto pos = std::ranges::find_if(
             list, [&victim](const SnapshotEntry& snap) { return snap.id == victim; });
-        (void)remove_within(dir, pos->path);
+        if (!remove_within(dir, pos->path)) {
+            throw WorldStoreError("snapshot_failed", "snapshot '" + victim + "' path " +
+                                                         pos->path + " is outside " + dir.string());
+        }
         list.erase(pos);
         removed.push_back(victim);
     }
@@ -649,9 +888,37 @@ void delete_snapshot(Registry& reg, const std::string& world, const std::string&
     if (pos == list.end()) {
         throw WorldStoreError("snapshot_not_found", "snapshot '" + snapshot_id + "' not found");
     }
-    // 先删文件再摘注册项；路径越界（被篡改的注册表）时文件不动，注册项照摘。
-    (void)remove_within(found->second.snapshot_dir, pos->path);
+    // 先删文件再摘注册项。文件已经不在了（保存失败后的补偿、手工删除）照摘；路径越界
+    // （被篡改的注册表）时 fail closed：文件不动，注册项保留。
+    if (!remove_within(found->second.snapshot_dir, pos->path)) {
+        throw WorldStoreError("snapshot_failed", "snapshot '" + snapshot_id + "' path " +
+                                                     pos->path + " is outside " +
+                                                     found->second.snapshot_dir);
+    }
     list.erase(pos);
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void discard_snapshot_file(const Registry& reg, const std::string& world,
+                           const std::string& snapshot_id) {
+    const auto found = reg.worlds.find(world);
+    if (found == reg.worlds.end()) {
+        throw WorldStoreError("world_not_found", "world '" + world + "' is not registered");
+    }
+    const auto listed = reg.snapshots.find(world);
+    if (listed == reg.snapshots.end()) {
+        throw WorldStoreError("snapshot_not_found", "snapshot '" + snapshot_id + "' not found");
+    }
+    const auto pos = std::ranges::find_if(
+        listed->second, [&snapshot_id](const SnapshotEntry& snap) { return snap.id == snapshot_id; });
+    if (pos == listed->second.end()) {
+        throw WorldStoreError("snapshot_not_found", "snapshot '" + snapshot_id + "' not found");
+    }
+    if (!remove_within(found->second.snapshot_dir, pos->path)) {
+        throw WorldStoreError("snapshot_failed", "snapshot '" + snapshot_id + "' path " +
+                                                     pos->path + " is outside " +
+                                                     found->second.snapshot_dir);
+    }
 }
 
 }  // namespace starling::governance

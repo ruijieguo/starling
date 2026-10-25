@@ -30,8 +30,8 @@ private:
 // code 取值：invalid_world_name | world_exists | world_not_found | world_protected
 //           | registry_corrupt | invalid_retention | snapshot_not_found
 //           | insufficient_disk | snapshot_failed | invalid_snapshot_kind
-//           | world_tenant_mismatch（预留：W3/W5 把快照/分叉作为世界打开时校验租户用，
-//             W1/W2 不会抛出）
+//           | world_tenant_mismatch（verify_world_tenant：库里有别的租户的行）
+//           | snapshot_unsupported_backend（take_snapshot：vector_backend 不是 sqlite）
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2
@@ -63,6 +63,15 @@ struct Registry {
 };
 
 [[nodiscard]] bool is_valid_world_name(std::string_view name);
+// load 与 save 用同一套校验（registry_corrupt / invalid_retention）：
+//   - default / active 已登记，snapshot_retention >= 2；
+//   - 除 default 外每个世界名都满足 is_valid_world_name；
+//   - 每个 db_path / snapshot_dir 都是绝对路径；
+//   - 非 default 世界的 db_path 与 snapshot_dir 在字面上位于 <registry_dir>/worlds/<name>/ 之下，
+//     default 世界的 snapshot_dir 同样位于 <registry_dir>/worlds/<default>/ 之下（它的库保持原地，
+//     db_path 不受此限）；registry_dir 取注册表文件所在目录；
+//   - 每份快照的 kind 是 manual / auto，path 在字面上位于所属世界的 snapshot_dir 之下；
+//   - snapshots 的每个键都是已登记的世界。
 [[nodiscard]] Registry load_registry(const std::filesystem::path& registry_path);
 void save_registry(const std::filesystem::path& registry_path, const Registry& reg);
 // 注册表文件不存在时，创建只含 default 世界的注册表并保存。
@@ -78,7 +87,9 @@ WorldEntry create_world(Registry& reg, const std::filesystem::path& registry_dir
                         std::string_view now_iso);
 // 拒绝删除 default 和当前活动世界，抛 world_protected。
 // 删除注册项、对应的快照列表，并删除 <registry_dir>/worlds/<name>/ 整个目录。
-// 只删 registry_dir 之下的路径（防止注册表被篡改后删到外部目录）。
+// 只删 registry_dir 之下的路径（防止注册表被篡改后删到外部目录）：<registry_dir>/worlds
+// 本身解析后（例如它是指向外部的符号链接）不在 registry_dir 之下时抛 snapshot_failed，
+// 什么都不删，注册项保留。
 void delete_world(Registry& reg, const std::filesystem::path& registry_dir,
                   const std::string& name);
 void set_active(Registry& reg, const std::string& name);
@@ -108,6 +119,12 @@ struct WorldStats {
 // 表不存在时（库是空的、未迁移），对应计数为 0。
 [[nodiscard]] WorldStats world_stats(const std::string& db_path, const std::string& tenant);
 
+// 租户不变式（spec §2.1）：一个世界库里只允许有该世界自己的租户。只读打开 db_path，
+// 逐个检查带 tenant_id 列的表，发现 tenant_id 非空且不等于 tenant 的行就抛
+// world_tenant_mismatch（detail 点名第一张违规的表）。库文件不存在（新世界，首次激活）
+// 时直接通过。库读不出时抛 snapshot_failed（与 world_stats 同一约定）。
+void verify_world_tenant(const std::string& db_path, const std::string& tenant);
+
 // 世界时刻水位：source_unit_meta 存在且有非空 observed_at 时取 MAX(observed_at)，
 // 否则取 engrams 的 MAX(created_at)，都没有则为空字符串。只读，按 tenant 过滤。
 [[nodiscard]] std::string snapshot_world_time(const std::string& db_path,
@@ -117,13 +134,23 @@ struct SnapshotOptions {
     std::string kind = "manual";      // "manual" | "auto"
     std::string reason = "manual";
     std::string note;
+    // 向量后端。只有 "sqlite" 的向量在库文件里，其余（zvec）快照会缺向量，拒绝。
+    std::string vector_backend = "sqlite";
     // 测试注入用：返回可用字节数。为空时用 std::filesystem::space(dir).available。
     std::function<std::int64_t(const std::filesystem::path&)> free_space;
 };
 
-// 1. 取世界；不存在抛 world_not_found。
+// 1. 取世界；不存在抛 world_not_found。kind 非法抛 invalid_snapshot_kind，
+//    vector_backend 不是 "sqlite" 抛 snapshot_unsupported_backend，保留份数非法抛
+//    invalid_retention，三者都在任何文件 I/O 之前。
+// 1b. 清扫 snapshot_dir 里上次崩溃留下的残留：名字形如快照 id 的 <id>.db.partial，
+//    以及没有任何注册项引用的 <id>.db（改名之后、调用方存注册表之前崩溃的产物，没有
+//    元数据，列不出来）。只认快照 id 形状的文件名，别的文件一概不碰；每个删除都经
+//    remove_within（不出 snapshot_dir）。清扫失败只记日志，不影响本次快照。
+//    调用方必须按世界串行化快照（WorldManager 的管理锁），否则会把并发快照刚改好名、
+//    还没登记的文件当成残留。
 // 2. 只读打开 db_path，计算 live_bytes；free_space(snapshot_dir) < 3 * live_bytes 时
-//    抛 insufficient_disk（不写任何文件）。
+//    抛 insufficient_disk（不写任何文件）。恰好 3 倍放行。
 // 3. id = compact_now() + "-" + 4 位随机十六进制；与该世界已有的 id 重复时重新生成。
 // 4. 删掉残留的 <id>.db.partial，再用只读连接执行 VACUUM INTO ?（绑定参数）写到 partial。
 // 5. 关闭连接，再用只读连接打开 partial，PRAGMA integrity_check 必须为 "ok"，
@@ -146,10 +173,18 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
 //   - 总数 <= N：不删。
 //   - 超出部分从最旧的开始删，优先删 auto；auto 删完还超出时才删 manual，从最旧的开始。
 //   - 但列表里有 auto 时，至少保留最新的 1 份 auto（回滚锚点）。
+// 逐个「先删文件、再摘注册项」。路径解析后越出 snapshot_dir（被篡改的注册项、指向外部
+// 的符号链接）时抛 snapshot_failed 并保留该注册项：文件没删，摘掉注册项就再也清不掉它。
 std::vector<std::string> apply_retention(Registry& reg, const std::string& world);
 
-// 删除一份快照（注册项 + 文件）。不存在时抛 snapshot_not_found。
-// 只删 snapshot_dir 之下的文件（防篡改，规则同 delete_world）。
+// 删除一份快照（注册项 + 文件）。不存在时抛 snapshot_not_found。文件已经不在了也照删
+// 注册项。只删 snapshot_dir 之下的文件：越界时抛 snapshot_failed，注册项保留。
 void delete_snapshot(Registry& reg, const std::string& world, const std::string& snapshot_id);
+
+// 只删一份快照的文件，不动注册表（reg 是 const）。给 take_snapshot 成功、调用方却没能
+// 存下注册表时做补偿：新文件没有登记，不删就成了列不出来的孤儿。不存在抛
+// world_not_found / snapshot_not_found，越出 snapshot_dir 抛 snapshot_failed。
+void discard_snapshot_file(const Registry& reg, const std::string& world,
+                           const std::string& snapshot_id);
 
 }  // namespace starling::governance

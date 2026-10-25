@@ -115,21 +115,33 @@ void bind_15_world(pybind11::module_& m) {
                               "world_time"_a = stats.world_time);
           }, py::arg("db_path"), py::arg("tenant"));
 
+    // 租户不变式（spec §2.1）：只读扫一遍库，有别的租户的行抛 world_tenant_mismatch。
+    // 2.6GB 的生产库约 90ms，释放 GIL。库文件不存在时直接通过。
+    m.def("world_verify_tenant",
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+          [](const std::string& db_path, const std::string& tenant) {
+              const py::gil_scoped_release release;
+              gov::verify_world_tenant(db_path, tenant);
+          }, py::arg("db_path"), py::arg("tenant"));
+
     // 快照会 VACUUM 整库，可能要几秒，期间释放 GIL。
-    // take_snapshot 先写快照文件、插入条目，最后才执行保留策略。保留策略失败
-    // （清理旧快照时路径无法解析或删不掉）由 C++ 吞掉：成功的快照一定返回条目，
-    // 注册表与磁盘仍一致，只是暂时多出几份旧快照，下次快照或保留策略会重试。
-    // 因此抛出异常只表示快照本身没拍成（磁盘不足、库损坏、kind 非法等），
-    // 此时磁盘上没有新文件，传入的 dict 也未被改动。
+    // take_snapshot 先清扫上次崩溃的残留、写快照文件、插入条目，最后才执行保留策略。
+    // 保留策略失败（清理旧快照时路径无法解析、删不掉或越界）由 C++ 吞掉：成功的快照
+    // 一定返回条目，注册表与磁盘仍一致，只是暂时多出几份旧快照，下次快照或保留策略
+    // 会重试。因此抛出异常只表示快照本身没拍成（磁盘不足、库损坏、kind 非法、
+    // vector_backend 不是 sqlite 等），此时磁盘上没有新文件，传入的 dict 也未被改动。
+    // vector_backend 由调用方按当前配置传入；拒绝与否由 C++ 判（snapshot_unsupported_backend）。
     m.def("world_take_snapshot",
           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
           [](const py::dict& reg, const std::string& world, const std::string& kind,
-             const std::string& reason, const std::string& note) {
+             const std::string& reason, const std::string& note,
+             const std::string& vector_backend) {
               auto registry = reg_in(reg);
               gov::SnapshotOptions opts;
               opts.kind = kind;
               opts.reason = reason;
               opts.note = note;
+              opts.vector_backend = vector_backend;
               gov::SnapshotEntry snap;
               {
                   const py::gil_scoped_release release;
@@ -138,7 +150,17 @@ void bind_15_world(pybind11::module_& m) {
               return py::dict("registry"_a = reg_out(registry),
                               "snapshot"_a = to_py(gov::snapshot_entry_to_json(snap)));
           }, py::arg("registry"), py::arg("world"), py::arg("kind") = "manual",
-          py::arg("reason") = "manual", py::arg("note") = "");
+          py::arg("reason") = "manual", py::arg("note") = "",
+          py::kw_only(), py::arg("vector_backend") = "sqlite");
+
+    // 只删一份快照的文件，注册表不动（不返回新注册表）。给 take_snapshot 成功、
+    // world_save_registry 却失败时做补偿：新文件没登记，不删就是列不出来的孤儿。
+    m.def("world_discard_snapshot_file",
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+          [](const py::dict& reg, const std::string& world, const std::string& snapshot_id) {
+              const auto registry = reg_in(reg);
+              gov::discard_snapshot_file(registry, world, snapshot_id);
+          }, py::arg("registry"), py::arg("world"), py::arg("snapshot_id"));
 
     m.def("world_delete_snapshot",
           [](const py::dict& reg, const std::string& world, const std::string& snapshot_id) {
