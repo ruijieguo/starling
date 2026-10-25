@@ -58,15 +58,23 @@ std::string iso_now() { return format_utc_now("%Y-%m-%dT%H:%M:%SZ"); }
 // ---- 路径 ----------------------------------------------------------------
 
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
-// 返回 true 表示已执行删除；被篡改的注册表把路径指到外部时返回 false，
-// 什么都不碰。
+// 返回 true 表示已执行删除；确认 target 越界（被篡改的注册表、指向外部的
+// 符号链接）时返回 false，什么都不碰。路径解析本身出错（EACCES、ELOOP 等）时
+// 无法判断是否越界，抛 snapshot_failed，由调用方保留注册项，数据不会被悄悄
+// 遗弃在磁盘上。
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 bool remove_within(const fs::path& base, const fs::path& target) {
     std::error_code err;
     const fs::path real_base = fs::weakly_canonical(base, err);
-    if (err) { return false; }
+    if (err) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot resolve " + base.string() + ": " + err.message());
+    }
     const fs::path real_target = fs::weakly_canonical(target, err);
-    if (err) { return false; }
+    if (err) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot resolve " + target.string() + ": " + err.message());
+    }
     const fs::path rel = real_target.lexically_relative(real_base);
     if (rel.empty() || rel == "." || *rel.begin() == "..") { return false; }
     fs::remove_all(real_target);
@@ -158,9 +166,6 @@ Registry registry_from_json(const Json& root) {
     for (const auto& [name, node] : worlds->items()) {
         reg.worlds.emplace(name, world_from_json(name, node));
     }
-    if (!reg.worlds.contains(reg.default_world)) {
-        corrupt("default world '" + reg.default_world + "' is not registered");
-    }
 
     const auto snapshots = root.find("snapshots");
     if (snapshots != root.end()) {
@@ -174,7 +179,15 @@ Registry registry_from_json(const Json& root) {
     return reg;
 }
 
+// load 与 save 共用的不变式：load 拒绝的注册表，save 也不能写出去覆盖
+// 好文件。
 void validate(const Registry& reg) {
+    if (!reg.worlds.contains(reg.default_world)) {
+        corrupt("default world '" + reg.default_world + "' is not registered");
+    }
+    if (!reg.worlds.contains(reg.active)) {
+        corrupt("active world '" + reg.active + "' is not registered");
+    }
     if (reg.snapshot_retention < 2) {
         throw WorldStoreError("invalid_retention",
                               "snapshot_retention must be >= 2, got " +

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 
 namespace starling::governance {
@@ -38,6 +39,11 @@ public:
 private:
     fs::path path_;
 };
+
+std::string slurp(const fs::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
 
 std::string code_of(const std::function<void()>& action) {
     try { action(); } catch (const WorldStoreError& err) { return err.code(); }
@@ -167,6 +173,9 @@ TEST(WorldRegistry, SetActiveAndDeleteGuards) {
     EXPECT_EQ(code_of([&] { delete_world(reg, tmp.path(), "default"); }), "world_protected");
     EXPECT_EQ(code_of([&] { delete_world(reg, tmp.path(), "nope"); }), "world_not_found");
     set_active(reg, "default");
+    // 先放一条快照记录，否则下面「快照列表随世界一起删除」的断言永远成立。
+    reg.snapshots["sim-1"].push_back(SnapshotEntry{});
+    ASSERT_EQ(reg.snapshots.count("sim-1"), 1U);
     const auto dir = tmp.path() / "worlds" / "sim-1";
     ASSERT_TRUE(fs::exists(dir));
     delete_world(reg, tmp.path(), "sim-1");
@@ -203,6 +212,50 @@ TEST(WorldRegistry, DeleteRefusesSymlinkEscapingRegistryDir) {
     delete_world(reg, tmp.path(), "sim-1");
     EXPECT_TRUE(fs::exists(outside.path() / "keep.txt"));
     EXPECT_EQ(reg.worlds.count("sim-1"), 0U);
+}
+
+// 路径解析本身出错（这里用自指符号链接触发 ELOOP）时无法判断是否越界：
+// 必须 fail loud 并保留注册项，不能悄悄摘掉注册项而把数据遗弃在磁盘上。
+TEST(WorldRegistry, DeleteFailsLoudWhenPathCannotBeResolved) {
+    const TempDir tmp;
+    const auto reg_path = tmp.path() / "worlds.json";
+    auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    reg.snapshots["sim-1"].push_back(SnapshotEntry{});
+    fs::remove_all(tmp.path() / "worlds" / "sim-1");
+    fs::create_symlink("sim-1", tmp.path() / "worlds" / "sim-1");   // 指向自己
+    EXPECT_EQ(code_of([&] { delete_world(reg, tmp.path(), "sim-1"); }), "snapshot_failed");
+    EXPECT_EQ(reg.worlds.count("sim-1"), 1U);
+    EXPECT_EQ(reg.snapshots.count("sim-1"), 1U);
+}
+
+TEST(WorldRegistry, DanglingActiveFailsLoud) {
+    const TempDir tmp;
+    const auto reg_path = tmp.path() / "worlds.json";
+    { std::ofstream out(reg_path); out << R"({"version":1,"default":"default","active":"ghost","snapshot_retention":5,"worlds":{"default":{"tenant":"default","db_path":"/x","snapshot_dir":"/y","label":"","created_at":""}},"snapshots":{}})"; }
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "registry_corrupt");
+    EXPECT_EQ(code_of([&] {
+        (void)ensure_registry(reg_path, tmp.path() / "d.db", "default");
+    }), "registry_corrupt");
+}
+
+// save 与 load 的不变式必须一致：load 会拒绝的注册表，save 也不能写出去覆盖好文件。
+TEST(WorldRegistry, SaveRefusesWhatLoadWouldReject) {
+    const TempDir tmp;
+    const auto reg_path = tmp.path() / "worlds.json";
+    const auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    const std::string before = slurp(reg_path);
+
+    Registry missing_default = reg;
+    missing_default.default_world = "ghost";
+    EXPECT_EQ(code_of([&] { save_registry(reg_path, missing_default); }), "registry_corrupt");
+
+    Registry dangling_active = reg;
+    dangling_active.active = "ghost";
+    EXPECT_EQ(code_of([&] { save_registry(reg_path, dangling_active); }), "registry_corrupt");
+
+    EXPECT_EQ(slurp(reg_path), before);   // 好文件原封不动
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "<no throw>");
 }
 
 }  // namespace
