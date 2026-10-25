@@ -3,7 +3,11 @@
 
 #include "starling/governance/world_store.hpp"
 
+#include "starling/persistence/sqlite_adapter.hpp"
+#include "starling/persistence/stmt.hpp"
+
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <unistd.h>
 
@@ -13,6 +17,7 @@
 #include <functional>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace starling::governance {
 namespace {
@@ -256,6 +261,436 @@ TEST(WorldRegistry, SaveRefusesWhatLoadWouldReject) {
 
     EXPECT_EQ(slurp(reg_path), before);   // 好文件原封不动
     EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "<no throw>");
+}
+
+// ---- W2：快照、保留策略与世界统计 ------------------------------------------
+
+// 用真实迁移建一个有数据的世界库，保证快照测的是 Starling 真实的 schema。
+void seed_world_db(const fs::path& db_path, const std::string& tenant, int engram_rows) {
+    auto adapter = persistence::SqliteAdapter::open(db_path);
+    auto& conn = adapter->connection();
+    for (int idx = 0; idx < engram_rows; ++idx) {
+        // source_item_id 必须各不相同：idx_engrams_source_identity 是
+        // (tenant_id, adapter_name, source_item_id, source_version, chunk_index) 唯一索引，
+        // 只填必填列时后四列全是默认值 ''/0，第二行就会撞唯一约束（已实测）。
+        persistence::Stmt ins(conn.raw(),
+            "INSERT INTO engrams(id,tenant_id,content_hash,source_kind,ingest_policy,"
+            "ingest_mode,privacy_class,retention_mode,created_at,source_item_id) "
+            "VALUES(?1,?2,?3,'conversation','default','inline','normal','audit_retain',?4,?1)");
+        ins.bind("eng-" + std::to_string(idx), tenant, "h" + std::to_string(idx),
+                 "2026-10-2" + std::to_string(idx % 5) + "T00:00:00Z");
+        ins.step_done();
+    }
+}
+
+Registry registry_with_world(const TempDir& tmp, const std::string& name) {
+    auto reg = ensure_registry(tmp.path() / "worlds.json", tmp.path() / "dashboard.db",
+                               "default");
+    if (name != "default") {
+        (void)create_world(reg, tmp.path(), name, "", "2026-10-25T01:00:00Z");
+    }
+    return reg;
+}
+
+std::int64_t count_rows(const std::string& db_path, const char* sql) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(("file:" + db_path + "?mode=ro").c_str(), &raw,
+                              SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr), SQLITE_OK);
+    persistence::SqliteHandle handle(raw);
+    persistence::Stmt query(raw, sql);
+    EXPECT_TRUE(query.step_row());
+    return sqlite3_column_int64(query.raw(), 0);
+}
+
+TEST(WorldSnapshot, ProducesIntactCompactCopy) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 5);
+
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    EXPECT_EQ(snap.kind, "manual");
+    EXPECT_TRUE(fs::exists(snap.path));
+    EXPECT_GT(snap.size_bytes, 0);
+    EXPECT_EQ(snap.world_time, "2026-10-24T00:00:00Z");   // engrams MAX(created_at)
+    EXPECT_EQ(fs::path(snap.path).parent_path(), fs::path(world.snapshot_dir));
+    EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM engrams"), 5);
+    EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM pragma_integrity_check "
+                                    "WHERE integrity_check='ok'"), 1);
+    // 不留 partial。
+    for (const auto& entry : fs::directory_iterator(world.snapshot_dir)) {
+        EXPECT_EQ(entry.path().extension(), ".db") << entry.path();
+    }
+    ASSERT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+    EXPECT_EQ(reg.snapshots.at("sim-1").front().id, snap.id);
+}
+
+TEST(WorldSnapshot, SnapshotIsIndependentOfLaterWrites) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 2);
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    seed_world_db(world.db_path, "sim-1", 0);   // 重开库不改变行
+    {
+        auto adapter = persistence::SqliteAdapter::open(world.db_path);
+        persistence::Stmt del(adapter->connection().raw(), "DELETE FROM engrams");
+        del.step_done();
+    }
+    EXPECT_EQ(count_rows(world.db_path, "SELECT COUNT(*) FROM engrams"), 0);
+    EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM engrams"), 2);
+}
+
+TEST(WorldSnapshot, TakenWhileWriterHoldsOpenTransaction) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 1);
+    auto adapter = persistence::SqliteAdapter::open(world.db_path);
+    adapter->connection().begin_immediate();
+    persistence::Stmt ins(adapter->connection().raw(),
+        "INSERT INTO engrams(id,tenant_id,content_hash,source_kind,ingest_policy,"
+        "ingest_mode,privacy_class,retention_mode,created_at,source_item_id) "
+        "VALUES('uncommitted','sim-1','hx','conversation','default','inline','normal',"
+        "'audit_retain','2026-10-25T00:00:00Z','uncommitted')");
+    ins.step_done();
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});   // 不能报错
+    adapter->connection().rollback();
+    EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM engrams"), 1);   // 不含未提交行
+}
+
+TEST(WorldSnapshot, PathWithSpacesAndQuotes) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    auto& world = reg.worlds.at("sim-1");
+    world.snapshot_dir = (tmp.path() / "worlds" / "sim-1" / "it's a dir").string();
+    fs::create_directories(world.snapshot_dir);
+    seed_world_db(world.db_path, "sim-1", 1);
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    EXPECT_TRUE(fs::exists(snap.path));
+}
+
+TEST(WorldSnapshot, DiskGuardRefusesWithoutWriting) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 3);
+    SnapshotOptions opts;
+    opts.free_space = [](const fs::path&) -> std::int64_t { return 1; };
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", opts); }), "insufficient_disk");
+    EXPECT_TRUE(fs::is_empty(world.snapshot_dir));
+    EXPECT_EQ(reg.snapshots.count("sim-1") == 0 || reg.snapshots.at("sim-1").empty(), true);
+}
+
+TEST(WorldSnapshot, UnknownWorldAndMissingDb) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "nope", SnapshotOptions{}); }),
+              "world_not_found");
+    // 库文件还没创建（世界从未激活）：拒绝，并且不留 partial。
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }),
+              "snapshot_failed");
+    EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
+}
+
+// 保留策略不需要真实快照文件，构造注册项即可。
+SnapshotEntry fake_snapshot(const fs::path& dir, const std::string& stamp,
+                            const std::string& kind) {
+    SnapshotEntry snap;
+    snap.id = stamp;
+    snap.path = (dir / (stamp + ".db")).string();
+    snap.kind = kind;
+    snap.reason = kind;
+    snap.created_at = stamp;
+    { std::ofstream out(snap.path); out << "x"; }
+    return snap;
+}
+
+std::vector<std::string> ids_of(const std::vector<SnapshotEntry>& snaps) {
+    std::vector<std::string> out;
+    for (const auto& snap : snaps) { out.push_back(snap.id); }
+    return out;
+}
+
+TEST(WorldRetention, PrefersDroppingAutoKeepsNewestAuto) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 3;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    // 列表最新在前：t5..t1
+    reg.snapshots["sim-1"] = {
+        fake_snapshot(dir, "t5", "manual"), fake_snapshot(dir, "t4", "auto"),
+        fake_snapshot(dir, "t3", "manual"), fake_snapshot(dir, "t2", "auto"),
+        fake_snapshot(dir, "t1", "manual"),
+    };
+    const auto removed = apply_retention(reg, "sim-1");
+    // 超出 2 份：先删最旧的 auto t2；auto 只剩 t4，必须保留；再删最旧的 manual t1。
+    EXPECT_EQ(removed, (std::vector<std::string>{"t2", "t1"}));
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t5", "t4", "t3"}));
+    EXPECT_FALSE(fs::exists(dir / "t2.db"));
+    EXPECT_FALSE(fs::exists(dir / "t1.db"));
+    EXPECT_TRUE(fs::exists(dir / "t4.db"));
+}
+
+TEST(WorldRetention, AllManualDropsOldest) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 2;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t3", "manual"),
+                              fake_snapshot(dir, "t2", "manual"),
+                              fake_snapshot(dir, "t1", "manual")};
+    EXPECT_EQ(apply_retention(reg, "sim-1"), (std::vector<std::string>{"t1"}));
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t3", "t2"}));
+}
+
+TEST(WorldRetention, UnderLimitIsNoop) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t1", "auto")};
+    EXPECT_TRUE(apply_retention(reg, "sim-1").empty());
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+}
+
+TEST(WorldRetention, TakeSnapshotAppliesRetention) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 2;
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    for (int idx = 0; idx < 3; ++idx) { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
+    std::size_t files = 0;
+    for (const auto& entry : fs::directory_iterator(reg.worlds.at("sim-1").snapshot_dir)) {
+        (void)entry;
+        ++files;
+    }
+    EXPECT_EQ(files, 2U);
+}
+
+TEST(WorldSnapshotDelete, RemovesEntryAndFile) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    EXPECT_EQ(code_of([&] { delete_snapshot(reg, "sim-1", "missing"); }), "snapshot_not_found");
+    delete_snapshot(reg, "sim-1", snap.id);
+    EXPECT_FALSE(fs::exists(snap.path));
+    EXPECT_TRUE(reg.snapshots.at("sim-1").empty());
+}
+
+TEST(WorldStats, CountsTenantRowsAndHandlesMissingDb) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    const auto empty = world_stats(world.db_path, "sim-1");   // 文件不存在
+    EXPECT_EQ(empty.db_bytes, 0);
+    EXPECT_EQ(empty.engrams, 0);
+    seed_world_db(world.db_path, "sim-1", 4);
+    const auto stats = world_stats(world.db_path, "sim-1");
+    EXPECT_EQ(stats.engrams, 4);
+    EXPECT_EQ(stats.statements, 0);
+    EXPECT_GT(stats.db_bytes, 0);
+    EXPECT_GT(stats.live_bytes, 0);
+    EXPECT_EQ(world_stats(world.db_path, "other").engrams, 0);   // 按租户过滤
+}
+
+// ---- W2 补充：简报之外的边界 ------------------------------------------------
+
+void run_sql(sqlite3* handle, const char* sql) {
+    char* msg = nullptr;
+    const int code = sqlite3_exec(handle, sql, nullptr, nullptr, &msg);
+    const std::string detail = msg != nullptr ? msg : "";
+    sqlite3_free(msg);
+    ASSERT_EQ(code, SQLITE_OK) << detail;
+}
+
+// 在已迁移的世界库上执行 SQL。
+void exec_sql(const std::string& db_path, const char* sql) {
+    auto adapter = persistence::SqliteAdapter::open(db_path);
+    run_sql(adapter->connection().raw(), sql);
+}
+
+// 不经迁移，直接建一个只有手写表的「旧库」。
+void exec_sql_unmigrated(const std::string& db_path, const char* sql) {
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(db_path.c_str(), &raw), SQLITE_OK);
+    const persistence::SqliteHandle handle(raw);
+    run_sql(raw, sql);
+}
+
+// source_unit_meta 有非空 observed_at 时，水位取它而不是 engrams.created_at。
+TEST(WorldSnapshot, WorldTimePrefersSourceUnitMetaObservedAt) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 2);   // engrams MAX(created_at) = 2026-10-21
+    exec_sql(world.db_path,
+             "INSERT INTO source_unit_meta(tenant_id,engram_ref,clause_id,speaker,session_id,"
+             "audience_json,observed_at) VALUES('sim-1','eng-0','c0','a','s1','[]',"
+             "'2031-01-02T03:04:05Z'),('sim-1','eng-1','c0','a','s1','[]',NULL),"
+             "('sim-1','eng-1','c1','a','s1','[]','')");
+    EXPECT_EQ(snapshot_world_time(world.db_path, "sim-1"), "2031-01-02T03:04:05Z");
+    EXPECT_EQ(snapshot_world_time(world.db_path, "other"), "");   // 按租户过滤
+    EXPECT_EQ(take_snapshot(reg, "sim-1", SnapshotOptions{}).world_time,
+              "2031-01-02T03:04:05Z");
+}
+
+// 迁移停在 36 的库没有 source_unit_meta：不能靠 SQL 报错，要回落到 engrams。
+TEST(WorldSnapshot, WorldTimeOnDbWithoutSourceUnitMetaTable) {
+    const TempDir tmp;
+    const std::string db_path = (tmp.path() / "legacy.db").string();
+    exec_sql_unmigrated(db_path,
+             "CREATE TABLE engrams(id TEXT, tenant_id TEXT, created_at TEXT);"
+             "INSERT INTO engrams VALUES('a','t1','2026-01-01T00:00:00Z'),"
+             "('b','t1','2026-03-01T00:00:00Z'),('c','t2','2027-01-01T00:00:00Z');");
+    EXPECT_EQ(snapshot_world_time(db_path, "t1"), "2026-03-01T00:00:00Z");
+    const auto stats = world_stats(db_path, "t1");   // 没有 statements 表
+    EXPECT_EQ(stats.engrams, 2);
+    EXPECT_EQ(stats.statements, 0);
+    EXPECT_EQ(snapshot_world_time((tmp.path() / "absent.db").string(), "t1"), "");
+}
+
+// 注册表可被手改：db_path 里的 % ? # 不能被当成 URI 语法。
+TEST(WorldSnapshot, DbPathWithUriSpecialCharacters) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    auto& world = reg.worlds.at("sim-1");
+    const fs::path odd_dir = tmp.path() / "a#b?c%d";
+    fs::create_directories(odd_dir);
+    world.db_path = (odd_dir / "w%41.db").string();
+    seed_world_db(world.db_path, "sim-1", 2);
+    EXPECT_EQ(world_stats(world.db_path, "sim-1").engrams, 2);
+    const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM engrams"), 2);
+}
+
+// 磁盘守卫看活数据量，不看文件大小：删表后文件大、活数据小。
+TEST(WorldSnapshot, DiskGuardUsesLiveBytesNotFileSize) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    seed_world_db(world.db_path, "sim-1", 1);
+    exec_sql(world.db_path,
+             "CREATE TABLE junk(blob BLOB);"
+             "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<400) "
+             "INSERT INTO junk SELECT zeroblob(4096) FROM seq;"
+             "DROP TABLE junk;");
+    const auto stats = world_stats(world.db_path, "sim-1");
+    ASSERT_GT(stats.db_bytes, stats.live_bytes * 3) << "freelist 没有撑大文件";
+
+    SnapshotOptions tight;   // 恰好 3 倍活数据量：够
+    tight.free_space = [&](const fs::path&) { return 3 * stats.live_bytes; };
+    const auto snap = take_snapshot(reg, "sim-1", tight);
+    EXPECT_TRUE(fs::exists(snap.path));
+    EXPECT_LT(snap.size_bytes, stats.db_bytes);   // 快照是紧凑的
+
+    SnapshotOptions short_by_one;   // 少 1 字节：拒
+    short_by_one.free_space = [&](const fs::path&) { return 3 * stats.live_bytes - 1; };
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", short_by_one); }),
+              "insufficient_disk");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+}
+
+// 不是 SQLite 的文件：snapshot_failed，不留 partial，不登记。
+TEST(WorldSnapshot, CorruptDbFailsWithoutPartialOrEntry) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    { std::ofstream out(world.db_path); out << "this is not a sqlite database at all, nope"; }
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }),
+              "snapshot_failed");
+    EXPECT_TRUE(fs::is_empty(world.snapshot_dir));
+    EXPECT_EQ(reg.snapshots.count("sim-1"), 0U);
+}
+
+// default 世界的快照目录由 ensure_registry 登记但不创建，首次快照要补建。
+TEST(WorldSnapshot, DefaultWorldSnapshotDirCreatedOnDemand) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "default");
+    const auto& world = reg.worlds.at("default");
+    ASSERT_FALSE(fs::exists(world.snapshot_dir));
+    seed_world_db(world.db_path, "default", 1);
+    const auto snap = take_snapshot(reg, "default", SnapshotOptions{});
+    EXPECT_TRUE(fs::exists(snap.path));
+}
+
+// 保留份数非法时在写任何文件之前拒绝，不能先写出快照再在修剪时才发现。
+TEST(WorldSnapshot, InvalidRetentionRefusedBeforeWriting) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    reg.snapshot_retention = 1;
+    EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, "sim-1", SnapshotOptions{}); }),
+              "invalid_retention");
+    EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
+    EXPECT_EQ(code_of([&] { (void)apply_retention(reg, "sim-1"); }), "invalid_retention");
+}
+
+TEST(WorldSnapshot, ExplicitKindReasonAndNoteAreRecorded) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    SnapshotOptions opts;
+    opts.kind = "auto";
+    opts.reason = "scene_boundary";
+    opts.note = "进入第二幕";
+    const auto snap = take_snapshot(reg, "sim-1", opts);
+    EXPECT_EQ(snap.kind, "auto");
+    EXPECT_EQ(snap.reason, "scene_boundary");
+    EXPECT_EQ(snap.note, "进入第二幕");
+    EXPECT_EQ(snap.created_at.size(), 20U);   // 2026-10-25T01:12:00Z
+    EXPECT_EQ(snap.id.size(), 21U);           // 20261025T011200Z-a1b2
+}
+
+// 全是 auto 时：只保最新的 N 份，被删的是最旧的。
+TEST(WorldRetention, AllAutoDropsOldestKeepsNewest) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 2;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t4", "auto"), fake_snapshot(dir, "t3", "auto"),
+                              fake_snapshot(dir, "t2", "auto"), fake_snapshot(dir, "t1", "auto")};
+    EXPECT_EQ(apply_retention(reg, "sim-1"), (std::vector<std::string>{"t1", "t2"}));
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t4", "t3"}));
+}
+
+// 唯一一份 auto 是回滚锚点：manual 再多也只删 manual，宁可只剩锚点 + 最新 manual。
+TEST(WorldRetention, SoleAutoSurvivesManualFlood) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 2;
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    reg.snapshots["sim-1"] = {fake_snapshot(dir, "t5", "manual"), fake_snapshot(dir, "t4", "manual"),
+                              fake_snapshot(dir, "t3", "manual"), fake_snapshot(dir, "t2", "manual"),
+                              fake_snapshot(dir, "t1", "auto")};
+    EXPECT_EQ(apply_retention(reg, "sim-1"), (std::vector<std::string>{"t2", "t3", "t4"}));
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), (std::vector<std::string>{"t5", "t1"}));
+    EXPECT_TRUE(fs::exists(dir / "t1.db"));
+}
+
+// 被篡改的注册项指向 snapshot_dir 之外：外部文件不能被删。
+TEST(WorldSnapshotDelete, RefusesPathOutsideSnapshotDir) {
+    const TempDir tmp;
+    const TempDir outside;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const fs::path victim = outside.path() / "precious.db";
+    { std::ofstream out(victim); out << "x"; }
+    SnapshotEntry snap;
+    snap.id = "evil";
+    snap.path = victim.string();
+    snap.kind = "manual";
+    reg.snapshots["sim-1"].push_back(snap);
+    delete_snapshot(reg, "sim-1", "evil");
+    EXPECT_TRUE(fs::exists(victim));
+    EXPECT_TRUE(reg.snapshots.at("sim-1").empty());
+}
+
+TEST(WorldSnapshotDelete, UnknownWorldAndNoSnapshotList) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    EXPECT_EQ(code_of([&] { delete_snapshot(reg, "nope", "x"); }), "world_not_found");
+    EXPECT_EQ(code_of([&] { delete_snapshot(reg, "sim-1", "x"); }), "snapshot_not_found");
 }
 
 }  // namespace
