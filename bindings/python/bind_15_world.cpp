@@ -116,8 +116,10 @@ void bind_15_world(pybind11::module_& m) {
 
     // 快照会 VACUUM 整库，可能要几秒，期间释放 GIL。
     // take_snapshot 先写快照文件、插入条目，最后才执行保留策略。保留策略失败
-    // （清理旧快照时路径无法解析）时异常抛出，传入的 dict 不会被更新，新快照文件
-    // 留在磁盘上但没有登记，属于孤儿文件；调用方按失败处理即可，不要重试同一份。
+    // （清理旧快照时路径无法解析）时异常抛出，返回值丢失，传入的 dict 也不会被更新：
+    // 新快照文件留在磁盘上但没有登记（孤儿文件）；保留策略失败前若已删掉部分旧
+    // 快照文件，传入 dict 里这些条目会指向已不存在的文件（悬空条目）。调用方遇到
+    // 异常后应当重新加载磁盘上的注册表，而不是继续使用手里的 dict。
     m.def("world_take_snapshot",
           [](const py::dict& reg, const std::string& world, const std::string& kind,
              const std::string& reason, const std::string& note) {
