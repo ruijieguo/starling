@@ -15,6 +15,8 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from starling.dashboard.world_manager import WorldSwitchError
+
 
 def _now_iso() -> str:
     """Current UTC time as an ISO-8601 'Z' string (tick default)."""
@@ -80,12 +82,32 @@ def _engine(request: Request):
 
     Single-process only: under `uvicorn --workers N` each worker would build
     its own engine writing the same SQLite. Run one worker.
+
+    世界切换窗口（旧引擎已丢、新引擎未发布）里 app.state.engine 是 None 而
+    app.state.config 还是旧的：此时惰性重建会造出旧世界的引擎并写回 app.state，
+    与刚切换到的世界错位。所以有 WorldManager 时经 engine_gate 判断：切换中 → 503
+    world_switching；否则在门内检查并建引擎，与切换的「置位 + 读引擎」互斥（切换不会
+    漏掉一个正在建的惰性引擎）。engine_gate 是个只被持有几行代码的小锁，不是管理锁
+    （管理锁在快照期间会被占上几秒，而本函数在事件循环上跑，不能阻塞）。
     """
-    eng = request.app.state.engine
+    state = request.app.state
+    worlds = getattr(state, "worlds", None)
+    if worlds is None:
+        return _lazy_engine(state)
+    try:
+        with worlds.engine_gate():
+            return _lazy_engine(state)
+    except WorldSwitchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=exc.code) from exc
+
+
+def _lazy_engine(state):
+    eng = state.engine
     if eng is None:
         from starling.dashboard.engine import DashboardEngine
-        eng = DashboardEngine(request.app.state.config)
-        request.app.state.engine = eng
+        eng = DashboardEngine(state.config)
+        state.engine = eng
     return eng
 
 

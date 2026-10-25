@@ -24,7 +24,7 @@ _STATUS = {
     "world_not_found": 404, "snapshot_not_found": 404,
     "world_exists": 409, "world_protected": 409, "ingest_busy": 409,
     "snapshot_unsupported_backend": 409, "invalid_retention": 409,
-    "insufficient_disk": 507,
+    "insufficient_disk": 507, "world_switching": 503,
     "world_open_failed": 500, "snapshot_failed": 500, "registry_corrupt": 500,
 }
 

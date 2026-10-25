@@ -11,6 +11,11 @@ from starling.dashboard import queries
 
 
 def _engine_or_none(request: Request):
+    # 世界切换窗口内 engine 暂时是 None：回 503 world_switching，而不是让调用方把它当成
+    # 「引擎还没建」。只读标志，不碰管理锁（本函数在事件循环上跑，不能阻塞）。
+    worlds = getattr(request.app.state, "worlds", None)
+    if worlds is not None and worlds.switching:
+        raise HTTPException(status_code=503, detail="world_switching")
     return request.app.state.engine
 
 

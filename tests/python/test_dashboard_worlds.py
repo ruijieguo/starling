@@ -173,15 +173,48 @@ def test_lifespan_enables_workers_and_switch_restarts_them(tmp_path, monkeypatch
     with TestClient(app):                              # 进入 lifespan
         assert worlds.workers_enabled is True and worlds.on_tick is not None
         old = app.state.engine
+        old_rt = weakref.ref(old._rt)
+        old_threads = (old._tick_thread, old._ingest_thread)
+        del old                                        # 测试自己不能钉住旧引擎
         worlds.create("sim-1", "")
         worlds.activate("sim-1")
+        assert old_rt() is None, "第一次切换就必须释放旧 Runtime"
         new = app.state.engine
-        assert new is not old
-        assert old._tick_thread is None and old._ingest_thread is None
+        assert all(t is not None and not t.is_alive() for t in old_threads)
         assert new._tick_thread is not None and new._tick_thread.is_alive()
         assert new._ingest_thread is not None and new._ingest_thread.is_alive()
     assert worlds.workers_enabled is False
     assert new._tick_thread is None and new._ingest_thread is None   # 关停时已停
+
+
+@pytest.mark.parametrize("shape", ["injected", "assigned_after_create"])
+@pytest.mark.parametrize("tick", [0, 60.0])
+def test_lifespan_first_switch_releases_old_runtime(tmp_path, monkeypatch, caplog, tick, shape):
+    """lifespan 在 yield 处挂起期间，它的局部变量一直活着：若其中有 eng 指向启动时的
+    引擎，第一次切换就钉住旧 Runtime（第二次才正常释放），默认世界的 C++ 写连接留下，
+    切回默认世界就是同一个库文件上的两条写连接。覆盖生产形态（create_app(cfg) 之后
+    再给 app.state.engine 赋值）和注入形态，tick 开/关各一遍。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    cfg = _cfg(tmp_path)
+    cfg.tick_interval_s = tick
+    if shape == "injected":
+        app = create_app(cfg, engine=DashboardEngine(cfg))
+    else:
+        app = create_app(cfg)
+        app.state.engine = DashboardEngine(cfg)
+    worlds = app.state.worlds
+    with TestClient(app):
+        worlds.create("sim-1", "")
+        old_rt = weakref.ref(app.state.engine._rt)
+        with caplog.at_level("WARNING"):
+            worlds.activate("sim-1")
+        assert old_rt() is None
+        assert "old runtime still referenced" not in caplog.text
+        default_rt = weakref.ref(app.state.engine._rt)
+        with caplog.at_level("WARNING"):
+            worlds.activate("default")                 # 切回默认世界，同一个库文件
+        assert default_rt() is None
+        assert "old runtime still referenced" not in caplog.text
 
 
 def test_activate_switches_engine_and_isolates_data(tmp_path, monkeypatch):
@@ -237,27 +270,132 @@ def test_activate_unknown_world(tmp_path, monkeypatch):
 def test_activate_rolls_back_when_new_world_fails_to_open(tmp_path, monkeypatch):
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    mgr.workers_enabled = True
+    state.engine.start_background_tick(60.0)
+    state.engine.start_ingest_worker()
+    _remember(state.engine, "Bob owns auth")
     mgr.create("sim-1", "")
     # 让新世界的库文件是一个目录：SqliteAdapter.open 必然失败
     reg = mgr.load()
     os.makedirs(reg["worlds"]["sim-1"]["db_path"])
+    old_cfg = state.config
     with pytest.raises(WorldSwitchError) as ei:
         mgr.activate("sim-1")
     assert ei.value.code == "world_open_failed"
     assert state.engine is not None
-    assert state.config.tenant == "default"
+    assert state.config is old_cfg and state.config.tenant == "default"
     assert mgr.load()["active"] == "default"
+    assert mgr.switching is False
+    # 回滚回来的引擎真能用：读得到切换前写进去的数据、还能再写、健康、线程在跑
+    assert state.engine.health().name == "READY"
+    _remember(state.engine, "Carol owns billing")
+    con = sqlite3.connect(f"file:{state.config.db_path}?mode=ro", uri=True)
+    assert con.execute("SELECT COUNT(*) FROM engrams").fetchone()[0] == 2
+    con.close()
+    assert state.engine._tick_thread is not None and state.engine._tick_thread.is_alive()
+    assert state.engine._ingest_thread is not None and state.engine._ingest_thread.is_alive()
+    assert state.engine.quiesce() is True
+
+
+def test_activate_rollback_failure_surfaces_as_world_open_failed(tmp_path, monkeypatch):
+    """新世界打不开、回滚重建旧世界也失败：仍是 WorldSwitchError（路由只映射它），
+    不是裸异常；engine 留 None，config 仍是旧世界，之后惰性重建得到的是旧世界。"""
+    import starling.dashboard.world_manager as wm
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    real = wm.DashboardEngine
+
+    def _always_fail(_cfg):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wm, "DashboardEngine", _always_fail)
+    old_cfg = state.config
+    with pytest.raises(WorldSwitchError) as ei:
+        mgr.activate("sim-1")
+    assert ei.value.code == "world_open_failed"
+    assert "disk on fire" in ei.value.detail
+    assert state.engine is None and state.config is old_cfg
+    assert mgr.load()["active"] == "default" and mgr.switching is False
+    monkeypatch.setattr(wm, "DashboardEngine", real)
+    assert real(state.config).health().name == "READY"      # 旧世界的库并没有被破坏
 
 
 def test_activate_refuses_when_ingest_will_not_stop(tmp_path, monkeypatch):
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    mgr.workers_enabled = True
+    eng, cfg = state.engine, state.config
+    eng.start_background_tick(60.0)
+    eng.start_ingest_worker()
     mgr.create("sim-1", "")
-    monkeypatch.setattr(state.engine, "quiesce", lambda timeout_s=5.0: False)
+
+    def _stopped_but_reports_busy(timeout_s=5.0):
+        eng.stop_ingest_worker()
+        eng.stop_background_tick()
+        return False
+    monkeypatch.setattr(eng, "quiesce", _stopped_but_reports_busy)
     with pytest.raises(WorldSwitchError) as ei:
         mgr.activate("sim-1")
     assert ei.value.code == "ingest_busy"
     assert mgr.load()["active"] == "default"
+    assert state.engine is eng and state.config is cfg      # 状态不前进
+    assert mgr.switching is False
+    # 失败后必须把后台线程恢复出来，否则摄入悄悄停摆
+    assert eng._tick_thread is not None and eng._tick_thread.is_alive()
+    assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+    monkeypatch.undo()
+    assert eng.quiesce() is True
+
+
+class _StuckThread:
+    """join 不动、一直 is_alive 的线程替身。"""
+    def join(self, timeout=None):
+        pass
+
+    def is_alive(self):
+        return True
+
+
+def test_ingest_busy_detail_names_the_stuck_thread(tmp_path, monkeypatch):
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    eng = state.engine
+    eng._tick_thread, eng._tick_stop = _StuckThread(), threading.Event()   # 卡的是 tick
+    with pytest.raises(WorldSwitchError) as ei:
+        mgr.activate("sim-1")
+    assert ei.value.code == "ingest_busy"                   # 前端按这个字符串映射，码不变
+    assert "tick" in ei.value.detail and "ingest" not in ei.value.detail
+    eng._tick_thread = eng._tick_stop = None
+    eng._ingest_thread, eng._ingest_stop = _StuckThread(), threading.Event()
+    with pytest.raises(WorldSwitchError) as ei:
+        mgr.activate("sim-1")
+    assert "ingest" in ei.value.detail and "tick" not in ei.value.detail
+    eng._ingest_thread = eng._ingest_stop = None
+
+
+def test_switching_flag_spans_the_whole_swap_and_clears_on_every_exit(tmp_path, monkeypatch):
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    assert mgr.switching is False
+    seen = []
+    real_quiesce = state.engine.quiesce
+
+    def _spy(timeout_s=5.0):
+        seen.append(mgr.switching)
+        return real_quiesce(timeout_s)
+    monkeypatch.setattr(state.engine, "quiesce", _spy)
+    mgr.activate("sim-1")
+    assert seen == [True]                    # 停线程阶段就已经拒绝新请求
+    assert mgr.switching is False
+    with pytest.raises(WorldSwitchError):    # world_not_found 路径：根本没置位过
+        mgr.activate("nope")
+    assert mgr.switching is False
+    mgr.activate("sim-1")                    # 已是活动世界的 no-op
+    assert mgr.switching is False
 
 
 def test_activate_does_not_hold_engine_lock_while_joining_workers(tmp_path, monkeypatch):
@@ -683,7 +821,7 @@ def test_routes_confirm_mismatch_does_not_touch_manager(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("code,status", [
     ("ingest_busy", 409), ("world_open_failed", 500), ("world_not_found", 404),
-    ("snapshot_unsupported_backend", 409),
+    ("snapshot_unsupported_backend", 409), ("world_switching", 503),
 ])
 def test_routes_activate_maps_switch_errors(tmp_path, monkeypatch, code, status):
     client, app = _client(tmp_path)
@@ -755,3 +893,97 @@ def test_routes_list_snapshots_unknown_world_is_404(tmp_path):
     assert r.status_code == 404 and r.json()["detail"] == "world_not_found"
     # 已登记但从未拍过快照的世界：空列表，不是 404
     assert client.get("/api/worlds/default/snapshots").json() == {"snapshots": []}
+
+
+# ── 切换窗口：engine=None 到新 engine 发布之间，请求不得惰性重建出旧配置的引擎 ──
+
+def test_requests_get_503_world_switching_during_the_swap_window(tmp_path, monkeypatch):
+    """窗口里 app.state.engine 是 None 而 app.state.config 还是旧的。_engine() 若此时
+    惰性重建，会用旧配置造一个默认世界的引擎写回 app.state：activate 返回后，注册表和
+    config 都说是 sim-1，真正的引擎却写着默认世界，activate 刚建好的引擎被丢成孤儿
+    （它的 tick/摄入线程还在跑）。窗口内应当 503 world_switching。"""
+    import starling.dashboard.engine as engmod
+    import starling.dashboard.world_manager as wm
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    real = engmod.DashboardEngine
+    building, proceed = threading.Event(), threading.Event()
+    lazy_builds = []
+
+    def _slow_open(cfg):
+        if cfg.tenant == "sim-1":
+            building.set()
+            assert proceed.wait(15)
+        return real(cfg)
+
+    def _spy_lazy(cfg):
+        lazy_builds.append(cfg.tenant)       # commands._engine 惰性重建走这里
+        return real(cfg)
+    monkeypatch.setattr(wm, "DashboardEngine", _slow_open)
+    monkeypatch.setattr(engmod, "DashboardEngine", _spy_lazy)
+    outcome: list = []
+    switcher = threading.Thread(target=lambda: outcome.append(mgr.activate("sim-1")), daemon=True)
+    switcher.start()
+    try:
+        assert building.wait(10)
+        assert app.state.engine is None      # 窗口确实打开了：旧引擎已丢、新引擎未建好
+        for method, path in (("post", "/api/tick"), ("get", "/api/runtime_health"),
+                             ("get", "/api/ingest_status")):
+            kwargs = {"json": {}} if method == "post" else {}
+            r = getattr(client, method)(path, **kwargs)
+            assert (r.status_code, r.json()["detail"]) == (503, "world_switching"), path
+        assert app.state.engine is None and lazy_builds == []
+    finally:
+        proceed.set()
+        switcher.join(15)
+    assert outcome == [None]
+    new = app.state.engine
+    assert new is not None and new._cfg is app.state.config
+    assert new._cfg.tenant == "sim-1" and lazy_builds == []
+    assert client.post("/api/tick", json={}).status_code == 200      # 窗口一过，正常服务
+    assert client.get("/api/runtime_health").status_code == 200
+    assert new.quiesce() is True
+
+
+def test_lazy_engine_build_still_works_when_not_switching(tmp_path):
+    client, app = _client(tmp_path)
+    assert app.state.engine is None
+    assert client.post("/api/tick", json={}).status_code == 200
+    assert app.state.engine is not None and app.state.engine._cfg is app.state.config
+
+
+def test_lazy_build_and_switch_do_not_race_on_a_never_built_engine(tmp_path, monkeypatch):
+    """engine 从未建过（惰性）时，切换开始的那一刻若有惰性构建正在进行，切换要等它
+    建完再接手，而不是并行再建一个、互相覆盖。"""
+    import starling.dashboard.engine as engmod
+    client, app = _client(tmp_path)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    real = engmod.DashboardEngine
+    in_build, proceed = threading.Event(), threading.Event()
+    built = []
+
+    def _slow(cfg):
+        built.append(cfg.tenant)
+        if len(built) == 1:
+            in_build.set()
+            assert proceed.wait(15)
+        return real(cfg)
+    monkeypatch.setattr(engmod, "DashboardEngine", _slow)
+    import starling.dashboard.world_manager as wm
+    monkeypatch.setattr(wm, "DashboardEngine", _slow)
+    lazy = threading.Thread(target=lambda: client.post("/api/tick", json={}), daemon=True)
+    lazy.start()
+    assert in_build.wait(10)
+    switch = threading.Thread(target=lambda: mgr.activate("sim-1"), daemon=True)
+    switch.start()
+    time.sleep(0.3)
+    assert built == ["default"]              # 切换还在等惰性构建，没有并行再建
+    proceed.set()
+    lazy.join(15)
+    switch.join(15)
+    assert built == ["default", "sim-1"]
+    assert app.state.engine._cfg.tenant == "sim-1" and app.state.config.tenant == "sim-1"
+    assert app.state.engine.quiesce() is True

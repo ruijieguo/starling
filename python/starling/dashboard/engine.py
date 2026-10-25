@@ -225,6 +225,9 @@ class DashboardEngine:
             config.ingest_spool_root(), config.tenant)
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
+        # 最近一次 quiesce() 没停下的线程名（"ingest" / "tick"），供调用方在
+        # ingest_busy 里点名；每次 quiesce 开头重置，所以不会读到上一轮的陈旧值。
+        self.quiesce_stuck: tuple[str, ...] = ()
         self._ingest_remember_ms_total = 0      # observability: see _ingest_drain_once
         self._ingest_throttle_s = 5.0           # gap after each processed job (dashboard breathing room)
         self._ingest_max_attempts = 5           # bounded retry before dead-lettering to failed/
@@ -1073,6 +1076,7 @@ class DashboardEngine:
 
         timeout_s 暂时只为接口预留：stop_* 内部的 join 超时写死 5.0 秒，不在此扩展
         它们的签名。"""
+        self.quiesce_stuck = ()
         ingest, tick = self._ingest_thread, self._tick_thread
         ingest_stop, tick_stop = self._ingest_stop, self._tick_stop
         self.stop_ingest_worker()
@@ -1085,6 +1089,8 @@ class DashboardEngine:
         if tick_alive:
             self._tick_thread, self._tick_stop = tick, tick_stop
             tick_stop.clear()
+        self.quiesce_stuck = tuple(name for name, alive in (("ingest", ingest_alive),
+                                                            ("tick", tick_alive)) if alive)
         return not (ingest_alive or tick_alive)
 
     def working_set(self, interlocutor, *, goal=None, token_budget=2000, holder=None) -> dict:

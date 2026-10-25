@@ -83,6 +83,10 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         eng = app.state.engine
         if eng is not None and hasattr(eng, "start_ingest_worker"):
             eng.start_ingest_worker()
+        # lifespan 在 yield 处挂起期间，它的局部变量一直活着。eng 若还指着启动时的引擎，
+        # 第一次切换就丢不掉旧 Runtime（C++ 写连接留下，切回该世界即同库两条写连接），
+        # 第二次切换才正常释放。关停段会按当时的 app.state.engine 重新取。
+        del eng
         if app.state.worlds is not None:
             # 线程已起：此后切换世界才需要为新引擎重启它们。无 lifespan 的
             # TestClient(app) 不会走到这里，切换也就不会凭空起线程。

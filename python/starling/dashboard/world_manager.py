@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import weakref
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from starling import _core
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class WorldSwitchError(Exception):
     """code: "world_not_found" | "ingest_busy" | "world_open_failed"
-    | "snapshot_unsupported_backend" """
+    | "snapshot_unsupported_backend" | "world_switching" """
 
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -76,6 +77,11 @@ class WorldManager:
         self.lock = threading.RLock()
         self.workers_enabled = False
         self.on_tick = None
+        # 切换窗口标志：activate 动引擎期间为 True（见 _switch_window）。路由据此对新请求
+        # 回 503 world_switching，而不是在 engine 暂时为 None 时按旧 config 惰性重建引擎。
+        # 读它不加锁（事件循环上读，不能阻塞）；写它只在 _gate 内。
+        self.switching = False
+        self._gate = threading.Lock()
 
     def load(self) -> dict:
         return _core.world_load_registry(self.registry_path)
@@ -93,6 +99,33 @@ class WorldManager:
         reg = self.load()
         default = reg["worlds"][reg["default"]]
         return dataclasses.replace(cfg, db_path=default["db_path"], tenant=default["tenant"])
+
+    @contextmanager
+    def engine_gate(self):
+        """路由里惰性建引擎的门：切换中 → 抛 WorldSwitchError("world_switching")；
+        否则放行，并在 with 体内（检查 engine、必要时建引擎、写回 app.state）阻止切换
+        置位——切换要等这里的惰性构建完成，之后才读 app.state.engine，所以不会漏掉
+        一个正在建的引擎，建完的旧配置引擎也不会在切换之后才写回去。
+
+        _gate 只被「置/清标志」和这里的惰性构建持有，从不与管理锁嵌套持有的方向相反
+        （切换先拿管理锁再拿 _gate，这里只拿 _gate），所以不会死锁。它不是管理锁：
+        管理锁在快照期间会被占上几秒，而调用方在事件循环上，不能被它阻塞。"""
+        with self._gate:
+            if self.switching:
+                raise WorldSwitchError("world_switching")
+            yield
+
+    @contextmanager
+    def _switch_window(self):
+        """activate 动引擎的整个区间。进入时等在途的惰性构建完成，之后新请求一律 503；
+        任何退出路径（成功、ingest_busy、world_open_failed）都清标志。"""
+        with self._gate:
+            self.switching = True
+        try:
+            yield
+        finally:
+            with self._gate:
+                self.switching = False
 
     def _start_workers(self, engine, cfg) -> None:
         if not self.workers_enabled:
@@ -120,6 +153,12 @@ class WorldManager:
         引用并 gc.collect() 才会。所以这里丢引用，并断言旧 Runtime 的弱引用已失效，
         没失效只记 warning（见下）。
 
+        切换窗口：从开始动引擎到新引擎发布（或回滚完成）之间 `self.switching` 为 True，
+        此时 app.state.engine 暂时是 None 而 config 还是旧的。路由的惰性建引擎
+        （commands._engine）和 inspect 的引擎读取据此回 503 world_switching，否则会按旧
+        config 造出旧世界的引擎写回 app.state，与注册表、config 错位。标志的置位会等
+        在途的惰性构建完成（见 engine_gate），所以不会漏掉一个正在建的引擎。
+
         已知限制：/ws/converse 的锁外生成阶段持有旧引擎的引用，切换只等得到持锁段。
         若切换时恰有一轮对话在锁外生成，切换会先返回；这轮对话在旧引擎上完成提交
         （写进旧世界，归属正确），旧 Runtime 在它结束前不会被回收，所以 rt_ref()
@@ -132,37 +171,54 @@ class WorldManager:
                 raise WorldSwitchError("world_not_found", name)
             if reg["active"] == name and self._state.engine is not None:
                 return
-            old_engine = self._state.engine
-            old_cfg = self._state.config
-            new_cfg = dataclasses.replace(old_cfg)
-            new_cfg.db_path = reg["worlds"][name]["db_path"]
-            new_cfg.tenant = reg["worlds"][name]["tenant"]
-            if old_engine is not None:
-                if not old_engine.quiesce():
-                    # 摄入线程没停下：恢复后台线程，状态不前进
-                    self._restart_workers(old_engine)
-                    raise WorldSwitchError("ingest_busy", "ingest worker did not stop in 5s")
-                with old_engine._lock:           # 等在飞请求结束
-                    pass
-                rt_ref = weakref.ref(old_engine._rt)
-                self._state.engine = None
-                old_engine = None
-                gc.collect()
-                if rt_ref() is not None:
-                    # C++ 连接没释放：同进程里会暂时有第二条写连接
-                    logger.warning("old runtime still referenced after switch")
+            with self._switch_window():
+                self._swap_engine(reg, name)
+
+    def _swap_engine(self, reg: dict, name: str) -> None:
+        """activate 的主体，调用时已持管理锁并处于切换窗口内（标志已置位）。
+        engine 必须在标志置位之后才读：置位会等在途的惰性构建完成。"""
+        old_engine = self._state.engine
+        old_cfg = self._state.config
+        new_cfg = dataclasses.replace(old_cfg)
+        new_cfg.db_path = reg["worlds"][name]["db_path"]
+        new_cfg.tenant = reg["worlds"][name]["tenant"]
+        if old_engine is not None:
+            if not old_engine.quiesce():
+                # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
+                # 这个字符串映射），detail 点名实际卡住的线程。
+                stuck = "/".join(getattr(old_engine, "quiesce_stuck", ())) or "background"
+                self._restart_workers(old_engine)
+                raise WorldSwitchError("ingest_busy", f"{stuck} thread did not stop in 5s")
+            with old_engine._lock:           # 等在飞请求结束
+                pass
+            rt_ref = weakref.ref(old_engine._rt)
+            self._state.engine = None
+            old_engine = None
+            gc.collect()
+            if rt_ref() is not None:
+                # C++ 连接没释放：同进程里会暂时有第二条写连接
+                logger.warning("old runtime still referenced after switch")
+        try:
+            new_engine = DashboardEngine(new_cfg)
+        except Exception as exc:
+            # 新世界打不开：回到旧世界。回滚本身也可能失败（旧库同样打不开）——此时
+            # engine 留 None、config 仍是旧世界，路由之后惰性重建；对调用方仍然是
+            # WorldSwitchError（路由只映射它），不能让裸异常漏出去变成 500 且无 detail。
             try:
-                new_engine = DashboardEngine(new_cfg)
-            except Exception as exc:
-                # 新世界打不开：回到旧世界
                 self._state.engine = DashboardEngine(old_cfg)
-                self._start_workers(self._state.engine, old_cfg)
-                raise WorldSwitchError("world_open_failed", str(exc)) from exc
-            self._state.config = new_cfg
-            self._state.engine = new_engine
-            self._start_workers(new_engine, new_cfg)
-            reg = _core.world_set_active(reg, name)
-            self.save(reg)
+            except Exception as rollback_exc:
+                self._state.engine = None
+                raise WorldSwitchError(
+                    "world_open_failed",
+                    f"{exc}; rollback to the previous world also failed: {rollback_exc}",
+                ) from exc
+            self._start_workers(self._state.engine, old_cfg)
+            raise WorldSwitchError("world_open_failed", str(exc)) from exc
+        self._state.config = new_cfg
+        self._state.engine = new_engine
+        self._start_workers(new_engine, new_cfg)
+        reg = _core.world_set_active(reg, name)
+        self.save(reg)
 
     def create(self, name: str, label: str) -> dict:
         with self.lock:
