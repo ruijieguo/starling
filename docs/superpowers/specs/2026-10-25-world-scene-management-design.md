@@ -188,7 +188,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 场景边界自动快照是"能回滚到任意场景之前"的前提：没有它，手动快照只能回到拍过的点。
 
-成本：实测 0.16 秒 / 57MB（当前库）。**代价随记忆量线性增长**，`statement_vectors` 已占 29MB/57MB，是主要增长项。
+成本：实测 0.16 秒 / 57MB（当前库）。**快照体积 ≈ 活数据量，不是库文件大小**——57MB 来自 2.4GB 库里 97.7% 是 freelist；库若已被 `VACUUM` 压过，快照与库文件基本同大（实测 65.6MB 的紧凑副本拍出 65.6MB / 282 毫秒）。**代价随记忆量线性增长**，`statement_vectors` 已占 29MB/57MB，是主要增长项。
 
 ### 4.4 保留 N 份
 
@@ -198,7 +198,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 ### 4.5 磁盘守卫
 
-拍快照前检查：`free_space > 3 × 当前快照体积`，否则拒绝并回 507。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。
+拍快照前检查：`free_space > 3 × live_bytes`，否则拒绝并回 507。`live_bytes = (page_count - freelist_count) × page_size`，**不是库文件大小，也不是"当前快照体积"**——后者在还没有任何快照时无定义，且会让一个 2.4GB / 97.7% freelist 的库通过一个本该拒绝它的检查。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。`fs::space` 返回"未知"（`uintmax_t(-1)`，FUSE / 网络文件系统）时跳过守卫。
 
 ---
 
