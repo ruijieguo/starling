@@ -299,14 +299,14 @@ void require_inside_registry(const fs::path& root, const fs::path& base) {
         throw WorldStoreError("snapshot_failed",
                               "cannot resolve " + root.string() + ": " + err.message());
     }
-    const fs::path real_base = fs::weakly_canonical(base, err);
+    const fs::path real_worlds = fs::weakly_canonical(base, err);
     if (err) {
         throw WorldStoreError("snapshot_failed",
                               "cannot resolve " + base.string() + ": " + err.message());
     }
-    if (!strictly_under(real_root, real_base)) {
+    if (!strictly_under(real_root, real_worlds)) {
         throw WorldStoreError("snapshot_failed", base.string() + " resolves to " +
-                                                     real_base.string() + ", outside " +
+                                                     real_worlds.string() + ", outside " +
                                                      real_root.string());
     }
 }
@@ -712,9 +712,14 @@ void verify_world_tenant(const std::string& db_path, const std::string& tenant) 
                  " WHERE tenant_id IS NOT NULL AND tenant_id <> ?1 LIMIT 1").c_str());
             probe.bind(tenant);
             if (probe.step_row()) {
-                throw WorldStoreError("world_tenant_mismatch",
-                                      "table '" + table + "' in " + db_path +
-                                          " holds rows of a tenant other than '" + tenant + "'");
+                std::string detail = "table '";
+                detail += table;
+                detail += "' in ";
+                detail += db_path;
+                detail += " holds rows of a tenant other than '";
+                detail += tenant;
+                detail += "'";
+                throw WorldStoreError("world_tenant_mismatch", detail);
             }
         }
     } catch (const WorldStoreError&) {
