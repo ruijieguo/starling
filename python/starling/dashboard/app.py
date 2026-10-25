@@ -40,6 +40,12 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     config.validate_bind()
     # 左脑 lane 的开关一致性在启动时就拒绝，而不是等到第一次摄入才发现。
     config.validate_source_lane()
+    # 世界注册表引导：必须在 create_app 内、引擎建立之前原地把 config 改成活动世界。
+    # 生产入口 run_dashboard.py 先 create_app(cfg) 再 DashboardEngine(cfg)，两者共用
+    # 同一个 cfg，所以引擎自然打开活动世界的库。:memory: 等无父目录的库没有地方放
+    # 注册表，bootstrap 返回 None，app.state.worlds 保持 None（路由据此回 503）。
+    from starling.dashboard.world_manager import WorldManager, bootstrap_worlds
+    registry_path = bootstrap_worlds(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -67,6 +73,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
                         mgr.broadcast({"type": "tick", "payload": stats}), loop)
 
                 eng.start_background_tick(config.tick_interval_s, _on_tick)
+                if app.state.worlds is not None:
+                    app.state.worlds.on_tick = _on_tick   # 切换世界后新引擎沿用同一广播
         # dogfood 子项 A(Task 3):spool ingest worker——独立于 tick_interval_s
         # (codex:关掉维护 tick 不该连带禁掉摄入,两者是不同的闭环)。只要有引擎
         # (刚才按 tick 建的,或外部注入的),就启动它;tick_interval_s=0 时引擎
@@ -75,7 +83,15 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         eng = app.state.engine
         if eng is not None and hasattr(eng, "start_ingest_worker"):
             eng.start_ingest_worker()
+        if app.state.worlds is not None:
+            # 线程已起：此后切换世界才需要为新引擎重启它们。无 lifespan 的
+            # TestClient(app) 不会走到这里，切换也就不会凭空起线程。
+            app.state.worlds.workers_enabled = True
         yield
+        if app.state.worlds is not None:
+            # 等进行中的切换收尾，并禁止收尾之后再起线程。
+            with app.state.worlds.lock:
+                app.state.worlds.workers_enabled = False
         eng = app.state.engine
         if eng is not None:
             # D-P2-6: enter DRAINING on host shutdown — post-yield, NOT a signal
@@ -95,6 +111,7 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
     app = FastAPI(title="Starling Dashboard", version="0.1.0", lifespan=lifespan)
     app.state.config = config
     app.state.engine = engine
+    app.state.worlds = WorldManager(app.state, registry_path) if registry_path else None
 
     if config.cors_origins:
         app.add_middleware(

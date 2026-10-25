@@ -1062,6 +1062,31 @@ class DashboardEngine:
         self._ingest_thread = None
         self._ingest_stop = None
 
+    def quiesce(self, timeout_s: float = 5.0) -> bool:
+        """停后台 tick 与摄入线程（世界切换前用）。两个线程都确认退出返回 True；
+        任一线程 join 超时仍存活返回 False——调用方据此拒绝切换（ingest_busy）。
+        stop_* 不管 join 成败都会清句柄，所以先留住线程引用，事后再判 is_alive。
+
+        失败时除了句柄，还要把停止事件一并放回并撤销（clear）：stop_* 已经 set 了它，
+        卡住的线程一旦脱困就会看到停止信号而退出；而句柄非空会让调用方回滚时的
+        start_* 直接 no-op，于是摄入/维护悄悄停摆。撤销后线程脱困会继续正常循环。
+
+        timeout_s 暂时只为接口预留：stop_* 内部的 join 超时写死 5.0 秒，不在此扩展
+        它们的签名。"""
+        ingest, tick = self._ingest_thread, self._tick_thread
+        ingest_stop, tick_stop = self._ingest_stop, self._tick_stop
+        self.stop_ingest_worker()
+        self.stop_background_tick()
+        ingest_alive = ingest is not None and ingest.is_alive()
+        tick_alive = tick is not None and tick.is_alive()
+        if ingest_alive:
+            self._ingest_thread, self._ingest_stop = ingest, ingest_stop
+            ingest_stop.clear()
+        if tick_alive:
+            self._tick_thread, self._tick_stop = tick, tick_stop
+            tick_stop.clear()
+        return not (ingest_alive or tick_alive)
+
     def working_set(self, interlocutor, *, goal=None, token_budget=2000, holder=None) -> dict:
         """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""
         with self._lock:

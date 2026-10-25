@@ -35,8 +35,10 @@ def pytest_runtest_teardown():
 
 @pytest.fixture(autouse=True)
 def isolate_dashboard_ingest_spool(tmp_path, monkeypatch):
-    """Dashboard tests must never inspect or mutate the user's live spool."""
+    """Dashboard tests must never inspect or mutate the user's live spool
+    (nor write a worlds registry into the user's real ~/.starling)."""
     monkeypatch.setenv("STARLING_DASH_INGEST_SPOOL", str(tmp_path / "ingest-spool"))
+    monkeypatch.setenv("STARLING_WORLDS_REGISTRY", str(tmp_path / "worlds.json"))
 
 
 @pytest.fixture

@@ -83,6 +83,13 @@ def _merge_provider(dst: dict, body: ProviderFields) -> None:
         dst["enable_thinking"] = body.enable_thinking
 
 
+def _persist(request: Request, cfg) -> None:
+    """写 starling.json。活动世界只记在注册表里：config 里的 db_path/tenant 是
+    活动世界的值，直接 save 会把它写成「默认世界」，重启后丢掉真正的默认世界。"""
+    worlds = getattr(request.app.state, "worlds", None)
+    (worlds.persistable_config(cfg) if worlds is not None else cfg).save()
+
+
 def build_config_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -110,7 +117,7 @@ def build_config_router(require_token) -> APIRouter:
                           "similarity_threshold", "entity_gist_enabled")
                 if body.gist_thresholds.get(k) is not None
             }
-        cfg.save()                                   # persist starling.json (0600)
+        _persist(request, cfg)                       # persist starling.json (0600)
         # Hot-swap only the live roles whose resolved provider changed: a role
         # was (re)bound, or its currently-bound provider was edited.
         touched_providers = set(body.providers or {})
@@ -151,7 +158,7 @@ def build_config_router(require_token) -> APIRouter:
         unbound = [r for r, n in cfg.roles.items() if n == name]
         for r in unbound:
             cfg.roles[r] = ""
-        cfg.save()
+        _persist(request, cfg)
         if eng is not None and unbound:
             def _apply() -> None:
                 if "extraction" in unbound:
