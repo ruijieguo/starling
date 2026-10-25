@@ -718,7 +718,7 @@ void verify_world_tenant(const std::string& db_path, const std::string& tenant) 
                 detail += db_path;
                 detail += " holds rows of a tenant other than '";
                 detail += tenant;
-                detail += "'";
+                detail += '\'';
                 throw WorldStoreError("world_tenant_mismatch", detail);
             }
         }
