@@ -87,12 +87,20 @@ const ERROR_MESSAGES: Record<string, string> = {
 	ingest_busy: '摄入任务正在进行，暂时不能切换，请稍后再试',
 	world_open_failed: '新世界打不开，已留在原世界',
 	snapshot_unsupported_backend: '当前向量后端（zvec）不支持快照',
-	insufficient_disk: '磁盘空间不足，快照需要至少 3 倍于数据量的可用空间'
+	insufficient_disk: '磁盘空间不足，快照需要至少 3 倍于数据量的可用空间',
+	snapshot_not_found: '快照不存在'
 };
 
-/** 后端错误码 → 中文提示(toast 用);未知码兜底为「操作失败：<detail>」。 */
+/**
+ * 后端错误码 → 中文提示(toast 用);未知码兜底为「操作失败：<detail>」。
+ * 用 Object.hasOwn 而非 `ERROR_MESSAGES[detail] ?? …`:detail 来自响应体,
+ * 'constructor' / 'toString' / '__proto__' 会命中原型链上继承来的函数或对象,
+ * `??` 不会回退,函数就被当作提示返回了。
+ */
 export function worldErrorMessage(detail: string): string {
-	return ERROR_MESSAGES[detail] ?? `操作失败：${detail}`;
+	return Object.hasOwn(ERROR_MESSAGES, detail)
+		? ERROR_MESSAGES[detail]
+		: `操作失败：${detail}`;
 }
 
 /**

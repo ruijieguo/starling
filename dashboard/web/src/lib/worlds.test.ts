@@ -60,6 +60,17 @@ describe('错误文案', () => {
 		expect(worldErrorMessage('insufficient_disk')).toContain('3 倍');
 		expect(worldErrorMessage('weird')).toBe('操作失败：weird');
 	});
+	it('snapshot_not_found（契约里 DELETE 快照的 404）有中文文案', () => {
+		expect(worldErrorMessage('snapshot_not_found')).toBe('快照不存在');
+	});
+	it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+		'继承来的键 %s 不是错误码，走兜底而不是返回函数',
+		(k) => {
+			const msg = worldErrorMessage(k);
+			expect(typeof msg).toBe('string');
+			expect(msg).toBe(`操作失败：${k}`);
+		}
+	);
 	it('从 ApiError 提取 detail', () => {
 		expect(apiDetail(new ApiError(409, '/api/worlds', '409 world_exists'))).toBe('world_exists');
 		expect(apiDetail(new Error('x'))).toBe('Error: x');
