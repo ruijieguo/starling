@@ -21,5 +21,6 @@ void bind_11_neocortex(pybind11::module_& m);
 void bind_12_prospective(pybind11::module_& m);
 void bind_13_memory_ops(pybind11::module_& m);
 void bind_14_governance(pybind11::module_& m);
+void bind_15_world(pybind11::module_& m);
 
 }  // namespace starling::bindings

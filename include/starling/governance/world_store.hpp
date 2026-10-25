@@ -81,6 +81,18 @@ void delete_world(Registry& reg, const std::filesystem::path& registry_dir,
                   const std::string& name);
 void set_active(Registry& reg, const std::string& name);
 
+// ---- JSON 文本（绑定层的序列化入口，格式与 worlds.json 逐字一致） -------------
+//
+// 绑定层把注册表在 Python dict 与 Registry 之间转换时只走这四个函数，序列化
+// 因此只有 C++ 一份实现。
+[[nodiscard]] std::string registry_to_json(const Registry& reg);
+// 解析并校验（与 load_registry 同一套检查）：JSON 语法错误、字段缺失或类型不符、
+// 默认/活动世界未登记抛 registry_corrupt，snapshot_retention < 2 抛 invalid_retention。
+[[nodiscard]] Registry registry_from_json(const std::string& text);
+// 单个世界/快照的 JSON，与注册表里对应条目逐字一致（世界条目不含 name，name 是注册表的键）。
+[[nodiscard]] std::string world_entry_to_json(const WorldEntry& entry);
+[[nodiscard]] std::string snapshot_entry_to_json(const SnapshotEntry& entry);
+
 // ---- 世界统计与快照（W2） --------------------------------------------------
 
 struct WorldStats {

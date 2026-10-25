@@ -138,7 +138,7 @@ WorldEntry world_from_json(const std::string& name, const Json& node) {
     return world;
 }
 
-Json registry_to_json(const Registry& reg) {
+Json registry_to_node(const Registry& reg) {
     Json worlds = Json::object();
     for (const auto& [name, world] : reg.worlds) { worlds.emplace(name, world_to_json(world)); }
     Json snapshots = Json::object();
@@ -155,7 +155,7 @@ Json registry_to_json(const Registry& reg) {
                 {"snapshots", std::move(snapshots)},};
 }
 
-Registry registry_from_json(const Json& root) {
+Registry registry_from_node(const Json& root) {
     if (!root.is_object()) { corrupt("top-level value is not an object"); }
     Registry reg;
     reg.version = root.value("version", 1);
@@ -330,14 +330,30 @@ Registry load_registry(const fs::path& registry_path) {
     std::ifstream file(registry_path);
     if (!file) { corrupt("cannot open " + registry_path.string()); }
     const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    return registry_from_json(text);
+}
+
+// ---- JSON 文本接口（绑定层用） ---------------------------------------------
+
+std::string registry_to_json(const Registry& reg) { return registry_to_node(reg).dump(); }
+
+Registry registry_from_json(const std::string& text) {
     Registry reg;
     try {
-        reg = registry_from_json(Json::parse(text));
+        reg = registry_from_node(Json::parse(text));
     } catch (const Json::exception& err) {
         corrupt(err.what());
     }
     validate(reg);
     return reg;
+}
+
+std::string world_entry_to_json(const WorldEntry& entry) {
+    return world_to_json(entry).dump();
+}
+
+std::string snapshot_entry_to_json(const SnapshotEntry& entry) {
+    return snapshot_to_json(entry).dump();
 }
 
 void save_registry(const fs::path& registry_path, const Registry& reg) {
@@ -352,7 +368,7 @@ void save_registry(const fs::path& registry_path, const Registry& reg) {
             // 文件一创建就收紧权限，内容写入前不留宽权限窗口。
             fs::permissions(tmp, fs::perms::owner_read | fs::perms::owner_write,
                             fs::perm_options::replace);
-            out << registry_to_json(reg).dump(2);
+            out << registry_to_node(reg).dump(2);
             out.flush();
             if (!out) { throw std::runtime_error("cannot write " + tmp.string()); }
         }
