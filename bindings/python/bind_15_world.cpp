@@ -9,7 +9,8 @@
 //    world_save_registry。
 //  - WorldStoreError 带稳定的 code（见 world_store.hpp）。save_registry /
 //    ensure_registry 遇到的 I/O 失败（filesystem_error、runtime_error）没有专门的
-//    code，原样传播，由 HTTP 层映射为 500，这里不伪装成 WorldStoreError。
+//    code，原样传播，这里不伪装成 WorldStoreError。调用方（routes/worlds.py 的
+//    _run）把它们统一兜成 JSON 500 internal_error，异常文本只进服务端日志。
 
 #include "bind_common.hpp"
 

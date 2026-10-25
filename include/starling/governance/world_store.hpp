@@ -29,8 +29,9 @@ private:
 };
 // code 取值：invalid_world_name | world_exists | world_not_found | world_protected
 //           | registry_corrupt | invalid_retention | snapshot_not_found
-//           | insufficient_disk | snapshot_failed | world_tenant_mismatch
-//           | invalid_snapshot_kind
+//           | insufficient_disk | snapshot_failed | invalid_snapshot_kind
+//           | world_tenant_mismatch（预留：W3/W5 把快照/分叉作为世界打开时校验租户用，
+//             W1/W2 不会抛出）
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2

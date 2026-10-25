@@ -438,8 +438,9 @@ def test_activate_does_not_hold_engine_lock_while_joining_workers(tmp_path, monk
     switcher = threading.Thread(target=_switch, daemon=True)
     switcher.start()
     try:
-        time.sleep(0.2)                 # 切换线程已在排队等引擎锁（在飞段还没结束）
-        go_first.set()                  # 在飞段结束，切换线程拿到锁
+        time.sleep(0.2)                 # 切换线程此刻已在 quiesce 里 join worker（它没持引擎锁）；
+                                        # worker 还卡在第一段里，join 要等它退出
+        go_first.set()                  # 第一段结束，worker 进入空档
         time.sleep(0.2)
         gap.set()                       # worker 进入第二段，要拿引擎锁
         assert done.wait(3), "切换被持锁 join 拖住了（worker 在等切换线程释放引擎锁）"
@@ -987,3 +988,156 @@ def test_lazy_build_and_switch_do_not_race_on_a_never_built_engine(tmp_path, mon
     assert built == ["default", "sim-1"]
     assert app.state.engine._cfg.tenant == "sim-1" and app.state.config.tenant == "sim-1"
     assert app.state.engine.quiesce() is True
+
+
+# ── 切换时先存注册表、后发布引擎；保存失败回到旧世界 ──
+
+def _boom_save(_reg):
+    raise OSError("No space left on device")
+
+
+def test_activate_registry_save_failure_rolls_back_to_old_world(tmp_path, monkeypatch):
+    """save 在引擎已发布之后才失败的旧顺序：activate 抛裸 OSError，注册表说 default 而
+    config/engine 已是 sim-1，此后「切到 default」被当成 no-op，写入落进 sim-1，
+    还能把正在写的 sim-1 目录删掉。新顺序：开库 -> 存注册表 -> 发布；存失败回滚。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    mgr.workers_enabled = True
+    eng = state.engine
+    eng.start_background_tick(60.0)
+    eng.start_ingest_worker()
+    _remember(eng, "Bob owns auth")
+    mgr.create("sim-1", "")
+    before = mgr.load()
+    old_cfg = state.config
+    built = []
+    real_cls = DashboardEngine
+    import starling.dashboard.world_manager as wm
+
+    def _track(cfg):
+        engine = real_cls(cfg)
+        built.append((cfg.tenant, engine))
+        return engine
+    monkeypatch.setattr(wm, "DashboardEngine", _track)
+    monkeypatch.setattr(mgr, "save", _boom_save)
+    with pytest.raises(WorldSwitchError) as ei:
+        mgr.activate("sim-1")
+    assert ei.value.code == "world_open_failed"
+    assert "registry write failed" in ei.value.detail and "No space left" in ei.value.detail
+    monkeypatch.undo()
+    assert state.config is old_cfg and state.config.tenant == "default"
+    assert state.engine is not None and state.engine._cfg is old_cfg
+    assert mgr.load() == before                              # 注册表原样
+    assert mgr.switching is False
+    # 被丢弃的 sim-1 引擎没起过线程；回滚回来的旧世界引擎线程在跑
+    sim_engines = [e for tenant, e in built if tenant == "sim-1"]
+    assert len(sim_engines) == 1
+    assert sim_engines[0]._tick_thread is None and sim_engines[0]._ingest_thread is None
+    assert state.engine._tick_thread is not None and state.engine._tick_thread.is_alive()
+    assert state.engine._ingest_thread is not None and state.engine._ingest_thread.is_alive()
+    _remember(state.engine, "Carol owns billing")            # 回滚回来的引擎能写
+    # 之后一次正常的切换照样成功
+    mgr.activate("sim-1")
+    assert state.config.tenant == "sim-1" and mgr.load()["active"] == "sim-1"
+    assert state.engine.quiesce() is True
+
+
+def test_activate_save_failure_and_rollback_failure_both_reported(tmp_path, monkeypatch):
+    import starling.dashboard.world_manager as wm
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    real_cls = wm.DashboardEngine
+    calls = []
+
+    def _second_build_fails(cfg):
+        calls.append(cfg.tenant)
+        if len(calls) == 2:                                   # 回滚重建旧世界
+            raise RuntimeError("old db gone")
+        return real_cls(cfg)
+    monkeypatch.setattr(wm, "DashboardEngine", _second_build_fails)
+    monkeypatch.setattr(mgr, "save", _boom_save)
+    with pytest.raises(WorldSwitchError) as ei:
+        mgr.activate("sim-1")
+    assert ei.value.code == "world_open_failed"
+    assert "registry write failed" in ei.value.detail and "old db gone" in ei.value.detail
+    assert state.engine is None and state.config.tenant == "default"
+    assert mgr.switching is False
+
+
+def test_activate_noop_checks_live_config_not_just_registry(tmp_path, monkeypatch):
+    """注册表说 default 是活动世界，但 live config 实际指着 sim-1（任何让两者分叉的
+    路径）：切到 default 必须真的切，不能因为注册表这么说就当成 no-op。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    mgr.activate("sim-1")
+    mgr.save(_core.world_set_active(mgr.load(), "default"))   # 人为造出分叉
+    assert mgr.load()["active"] == "default" and state.config.tenant == "sim-1"
+    old_engine = state.engine
+    mgr.activate("default")
+    assert state.engine is not old_engine
+    assert state.config.tenant == "default"
+    assert state.config.db_path == str(tmp_path / "dashboard.db")
+    assert mgr.load()["active"] == "default"
+
+
+def test_delete_refuses_the_world_the_live_engine_is_using(tmp_path, monkeypatch):
+    """不信注册表的 active 字段：live config 指着的库，哪怕注册表说它不是活动世界，
+    也不能删（macOS 上删目录后进程继续写 unlinked inode，重启即丢）。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    mgr.activate("sim-1")
+    mgr.save(_core.world_set_active(mgr.load(), "default"))   # 注册表与 live config 分叉
+    world_dir = os.path.dirname(state.config.db_path)
+    with pytest.raises(_core.WorldStoreError) as ei:
+        mgr.delete("sim-1")
+    assert _code(ei.value) == "world_protected"
+    assert os.path.isdir(world_dir) and "sim-1" in mgr.load()["worlds"]
+    mgr.activate("default")
+    mgr.delete("sim-1")                                       # 不再被使用后才能删
+    assert not os.path.exists(world_dir)
+
+
+def test_delete_of_an_unused_world_still_works(tmp_path, monkeypatch):
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    entry = mgr.create("sim-1", "")
+    mgr.delete("sim-1")                                       # 没被使用：照常删
+    assert not os.path.exists(os.path.dirname(entry["db_path"]))
+
+
+def test_routes_non_domain_exception_is_json_500_internal_error(tmp_path, monkeypatch, caplog):
+    client, app = _client(tmp_path)
+
+    def _raise(_name):
+        raise OSError("disk exploded at /secret/path")
+    monkeypatch.setattr(app.state.worlds, "activate", _raise)
+    with caplog.at_level("ERROR"):
+        r = client.post("/api/worlds/default/activate")
+    assert r.status_code == 500 and r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"detail": "internal_error"}            # 不把异常文本（含路径）泄给客户端
+    assert "disk exploded" in caplog.text                       # 服务端日志里有
+
+
+def test_routes_list_survives_one_unreadable_world_db(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    created = client.post("/api/worlds", json={"name": "sim-1"}).json()
+    assert created["name"] == "sim-1" and "stats_error" not in created
+    db = app.state.worlds.load()["worlds"]["sim-1"]["db_path"]
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    with open(db, "wb") as fh:
+        fh.write(b"this is not a sqlite database" * 100)
+    r = client.get("/api/worlds")
+    assert r.status_code == 200
+    rows = {w["name"]: w for w in r.json()["worlds"]}
+    assert rows["sim-1"]["stats_error"] is True
+    assert (rows["sim-1"]["db_bytes"], rows["sim-1"]["live_bytes"],
+            rows["sim-1"]["statements"], rows["sim-1"]["engrams"]) == (0, 0, 0, 0)
+    assert rows["default"].get("stats_error", False) is False
+    assert rows["default"]["db_bytes"] > 0                      # 好的世界照常有统计
+    assert client.delete("/api/worlds/sim-1", params={"confirm": "sim-1"}).status_code == 200
+    assert [w["name"] for w in client.get("/api/worlds").json()["worlds"]] == ["default"]

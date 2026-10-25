@@ -65,6 +65,12 @@ def bootstrap_worlds(config):
     return registry_path
 
 
+def _same_db(left: str, right: str) -> bool:
+    """两个库路径是不是同一个文件。注册表存的是绝对路径，但 live config 可能带着另一种
+    写法（符号链接目录、相对路径），所以按真实路径比，而不是字符串。"""
+    return os.path.realpath(left) == os.path.realpath(right)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -141,7 +147,13 @@ class WorldManager:
         """切换活动世界（spec §8.1）：停线程 → 等在飞请求 → 丢旧引擎 → 建新引擎。
 
         抛 WorldSwitchError：world_not_found（未登记）、ingest_busy（后台线程 5 秒内
-        没停下，状态不前进）、world_open_failed（新世界打不开，已回到旧世界）。
+        没停下，状态不前进）、world_open_failed（新世界打不开，或注册表写不进去，
+        都已回到旧世界）。
+
+        发布顺序：开新库 → 存注册表 → 发布 config/engine 并起线程。注册表是「当前是
+        哪个世界」的唯一持久记录，必须先落盘再对外生效：若先发布再存、存又失败
+        （磁盘满、目录不可写），就会出现注册表说 A、引擎实际在写 B 的分叉——此后
+        「切回 A」被当成 no-op，写入全进 B，B 的目录还能被删掉。
 
         顺序是「先 quiesce，再拿引擎锁」，不能反过来：tick 线程在 tick() 与
         _sample_backpressure() 之间、摄入线程在逐块 remember() 之间都会放开引擎锁再
@@ -169,7 +181,11 @@ class WorldManager:
             reg = self.load()
             if name not in reg["worlds"]:
                 raise WorldSwitchError("world_not_found", name)
-            if reg["active"] == name and self._state.engine is not None:
+            # 已是活动世界才 no-op，且要看 live config 而不只看注册表的 active：两者一旦
+            # 分叉（注册表说 A、引擎实际在写 B），只信注册表就会把「切回 A」当成已完成，
+            # 之后的写入全落进 B。
+            if (reg["active"] == name and self._state.engine is not None
+                    and _same_db(self._state.config.db_path, reg["worlds"][name]["db_path"])):
                 return
             with self._switch_window():
                 self._swap_engine(reg, name)
@@ -201,24 +217,34 @@ class WorldManager:
         try:
             new_engine = DashboardEngine(new_cfg)
         except Exception as exc:
-            # 新世界打不开：回到旧世界。回滚本身也可能失败（旧库同样打不开）——此时
-            # engine 留 None、config 仍是旧世界，路由之后惰性重建；对调用方仍然是
-            # WorldSwitchError（路由只映射它），不能让裸异常漏出去变成 500 且无 detail。
-            try:
-                self._state.engine = DashboardEngine(old_cfg)
-            except Exception as rollback_exc:
-                self._state.engine = None
-                raise WorldSwitchError(
-                    "world_open_failed",
-                    f"{exc}; rollback to the previous world also failed: {rollback_exc}",
-                ) from exc
-            self._start_workers(self._state.engine, old_cfg)
-            raise WorldSwitchError("world_open_failed", str(exc)) from exc
+            self._rollback(old_cfg, str(exc), exc)           # 必抛
+        # 先落盘再发布。新引擎此时还没起线程；存失败就丢掉它（丢引用 + gc 释放它的
+        # C++ 写连接），再走与「新库打不开」同一条回滚路径，码仍是 world_open_failed，
+        # 前端「已留在原世界」的提示依然成立。
+        try:
+            self.save(_core.world_set_active(reg, name))
+        except Exception as exc:
+            new_engine = None
+            gc.collect()
+            self._rollback(old_cfg, f"registry write failed: {exc}", exc)   # 必抛
         self._state.config = new_cfg
         self._state.engine = new_engine
         self._start_workers(new_engine, new_cfg)
-        reg = _core.world_set_active(reg, name)
-        self.save(reg)
+
+    def _rollback(self, old_cfg, detail: str, cause: Exception) -> None:
+        """新世界没能生效：回到旧世界并抛 world_open_failed。回滚本身也可能失败（旧库
+        同样打不开）——此时 engine 留 None、config 仍是旧世界，路由之后惰性重建；
+        对调用方仍然是 WorldSwitchError（路由只映射它），不让裸异常漏出去。"""
+        try:
+            self._state.engine = DashboardEngine(old_cfg)
+        except Exception as rollback_exc:
+            self._state.engine = None
+            raise WorldSwitchError(
+                "world_open_failed",
+                f"{detail}; rollback to the previous world also failed: {rollback_exc}",
+            ) from cause
+        self._start_workers(self._state.engine, old_cfg)
+        raise WorldSwitchError("world_open_failed", detail) from cause
 
     def create(self, name: str, label: str) -> dict:
         with self.lock:
@@ -230,8 +256,15 @@ class WorldManager:
             return entry
 
     def delete(self, name: str) -> None:
+        """删世界（目录整个删掉）。C++ 已拒绝删 default 和注册表里的活动世界；这里再按
+        live config 补一道：引擎此刻正在写的库，不论注册表怎么说都不能删——删了目录，
+        进程仍在往已 unlink 的 inode 里写，重启后数据就没了。"""
         with self.lock:
             reg = self.load()
+            entry = reg["worlds"].get(name)
+            if entry is not None and _same_db(self._state.config.db_path, entry["db_path"]):
+                raise _core.WorldStoreError(
+                    f"world_protected: world '{name}' is the one the live engine is writing to")
             self.save(_core.world_delete(reg, self.registry_dir, name))
 
     def take_snapshot(self, name: str, note: str) -> dict:
