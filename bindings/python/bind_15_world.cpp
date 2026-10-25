@@ -41,6 +41,8 @@ py::object reg_out(const gov::Registry& reg) { return to_py(gov::registry_to_jso
 
 // NOLINTNEXTLINE(readability-identifier-length) — `m` matches all sibling bind_NN units
 void bind_15_world(pybind11::module_& m) {
+    using namespace pybind11::literals;
+
     // 与 bind_07/bind_14 同一写法；what() 形如 "world_exists: sim-1"。
     py::register_exception<gov::WorldStoreError>(m, "WorldStoreError", PyExc_RuntimeError);
 
@@ -74,10 +76,8 @@ void bind_15_world(pybind11::module_& m) {
              const std::string& label, const std::string& now_iso) {
               auto registry = reg_in(reg);
               const auto world = gov::create_world(registry, reg_dir, name, label, now_iso);
-              py::dict out;
-              out["registry"] = reg_out(registry);
-              out["world"] = to_py(gov::world_entry_to_json(world));
-              return out;
+              return py::dict("registry"_a = reg_out(registry),
+                              "world"_a = to_py(gov::world_entry_to_json(world)));
           }, py::arg("registry"), py::arg("registry_dir"), py::arg("name"),
           py::arg("label"), py::arg("now_iso"));
 
@@ -109,13 +109,9 @@ void bind_15_world(pybind11::module_& m) {
                   const py::gil_scoped_release release;
                   stats = gov::world_stats(db_path, tenant);
               }
-              py::dict out;
-              out["db_bytes"] = stats.db_bytes;
-              out["live_bytes"] = stats.live_bytes;
-              out["statements"] = stats.statements;
-              out["engrams"] = stats.engrams;
-              out["world_time"] = stats.world_time;
-              return out;
+              return py::dict("db_bytes"_a = stats.db_bytes, "live_bytes"_a = stats.live_bytes,
+                              "statements"_a = stats.statements, "engrams"_a = stats.engrams,
+                              "world_time"_a = stats.world_time);
           }, py::arg("db_path"), py::arg("tenant"));
 
     // 快照会 VACUUM 整库，可能要几秒，期间释放 GIL。
@@ -135,10 +131,8 @@ void bind_15_world(pybind11::module_& m) {
                   const py::gil_scoped_release release;
                   snap = gov::take_snapshot(registry, world, opts);
               }
-              py::dict out;
-              out["registry"] = reg_out(registry);
-              out["snapshot"] = to_py(gov::snapshot_entry_to_json(snap));
-              return out;
+              return py::dict("registry"_a = reg_out(registry),
+                              "snapshot"_a = to_py(gov::snapshot_entry_to_json(snap)));
           }, py::arg("registry"), py::arg("world"), py::arg("kind") = "manual",
           py::arg("reason") = "manual", py::arg("note") = "");
 
