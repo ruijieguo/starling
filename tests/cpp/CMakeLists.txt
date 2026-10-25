@@ -203,6 +203,7 @@ add_executable(starling_tests
     test_health_coupling.cpp
     test_metrics_gatherer.cpp
     test_tick_load_shedding.cpp
+    test_world_store.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
