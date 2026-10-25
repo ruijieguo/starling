@@ -52,6 +52,28 @@ describe('describeEvent — 概览 feed 事件结构化', () => {
 		expect(describeEvent('memory_cleared', { total: 5, spool_discarded: 0 }).detail).toBe('删除 5 行');
 	});
 
+	it('world_switched: 切换到世界 X(info);缺 active 时优雅回退为空细节', () => {
+		const v = describeEvent('world_switched', { active: 'sim-1' });
+		expect(v.label).toBe('切换世界');
+		expect(v.detail).toBe('切换到世界 sim-1');
+		expect(v.tone).toBe('info');
+		expect(describeEvent('world_switched', {}).detail).toBe('');
+		expect(describeEvent('world_switched', null).detail).toBe('');
+		// 非字符串 / 空串的 active 不当作世界名
+		expect(describeEvent('world_switched', { active: 7 }).detail).toBe('');
+		expect(describeEvent('world_switched', { active: '' }).detail).toBe('');
+	});
+
+	it('snapshot_created: 世界 X 拍了快照(success);缺 world 时优雅回退为空细节', () => {
+		const v = describeEvent('snapshot_created', { world: 'sim-1', id: '20261025T101500Z' });
+		expect(v.label).toBe('世界快照');
+		expect(v.detail).toBe('世界 sim-1 拍了快照');
+		expect(v.tone).toBe('success');
+		expect(describeEvent('snapshot_created', { id: 'x' }).detail).toBe('');
+		expect(describeEvent('snapshot_created', undefined).detail).toBe('');
+		expect(describeEvent('snapshot_created', { world: 3 }).detail).toBe('');
+	});
+
 	it('commitment_transition: 短 id + 目标态,FULFILLED 为 success', () => {
 		const v = describeEvent('commitment_transition', {
 			stmt_id: '0123456789abcdef',

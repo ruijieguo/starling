@@ -14,6 +14,8 @@
 //   commitment_transition  {stmt_id, state}            commands.py:214,226
 //   statement_forgotten    {forgotten: number}         commands.py:174
 //   memory_cleared         {tenant, total, spool_discarded}  commands.py clear_memory
+//   world_switched         {active}                    routes/worlds.py(W1/W2)
+//   snapshot_created       {world, id}                 routes/worlds.py(W1/W2)
 //
 // 未知类型/缺字段/脏 payload 一律优雅回退(只读面板,不因后端加事件或改 payload 而崩)。
 // 原则:宁可少说,不断言——无法确认时给空细节,不编造「空转」之类的结论。
@@ -161,6 +163,19 @@ export function describeEvent(type: string, payload: unknown): FeedEventView {
 				.filter(Boolean)
 				.join(' · ');
 			return { label: '清空记忆', detail, tone: 'danger' };
+		}
+		case 'world_switched': {
+			// 世界页「切换」成功:整个数据源换了,detail 点出切到了哪个世界。
+			const active = typeof p.active === 'string' ? p.active : '';
+			return { label: '切换世界', detail: active ? `切换到世界 ${active}` : '', tone: 'info' };
+		}
+		case 'snapshot_created': {
+			const world = typeof p.world === 'string' ? p.world : '';
+			return {
+				label: '世界快照',
+				detail: world ? `世界 ${world} 拍了快照` : '',
+				tone: 'success'
+			};
 		}
 		default:
 			// 后端新增事件类型时不崩:显示原类型名,细节留空。
