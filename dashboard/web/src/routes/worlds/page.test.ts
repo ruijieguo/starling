@@ -290,6 +290,22 @@ describe('/worlds 新建的错误与 label', () => {
 		await settle();
 		expect(container.textContent).toContain('default · 主世界');
 	});
+
+	it('stats_error 的世界显示「统计不可用」,只出现在那一行', async () => {
+		list.mockReset().mockResolvedValue({
+			...DATA,
+			worlds: [DATA.worlds[0], { ...DATA.worlds[1], stats_error: true }]
+		});
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent?.match(/统计不可用/g)?.length).toBe(1);
+	});
+
+	it('没有 stats_error 时不显示「统计不可用」', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent).not.toContain('统计不可用');
+	});
 });
 
 describe('/worlds 快照抽屉', () => {
@@ -325,6 +341,22 @@ describe('/worlds 快照抽屉', () => {
 		expect(text).toContain('切换前留底');
 		expect(text).toContain('世界时间 —'); // world_time 为空
 		expect(text).toContain('保留最近 5 份，超出时优先清理自动快照，并至少保留 1 份自动快照作为回滚锚点。');
+	});
+
+	it('文件缺失的快照显示「文件缺失」,仍可删除', async () => {
+		snapshots.mockReset().mockResolvedValue({
+			snapshots: [{ ...SNAPS[0], size_bytes: 0, missing: true }, SNAPS[1]]
+		});
+		const { container } = render(Worlds);
+		await settle();
+		await openSnaps(container);
+		const text = document.body.textContent ?? '';
+		expect(text.match(/文件缺失/g)?.length).toBe(1);
+		const del = [...document.body.querySelectorAll('button')].filter((b) =>
+			b.getAttribute('aria-label')?.startsWith('删除快照')
+		);
+		expect(del.length).toBe(2);
+		expect(del.every((b) => !b.disabled)).toBe(true);
 	});
 
 	it('「立即拍快照」带备注调用 snapshot,成功后重取列表', async () => {

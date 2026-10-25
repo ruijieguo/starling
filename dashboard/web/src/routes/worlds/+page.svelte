@@ -246,6 +246,7 @@
 				{#snippet actions()}
 					{#if w.active}<Badge tone="brand">当前</Badge>{/if}
 					{#if w.name === defaultName}<Badge tone="neutral">默认</Badge>{/if}
+					{#if w.stats_error}<Badge tone="warn">统计不可用</Badge>{/if}
 				{/snippet}
 				<p class="text-xs tabular-nums text-muted">{statsLine(w)}</p>
 				<div class="mt-3 flex flex-wrap gap-2">
@@ -383,6 +384,7 @@
 							<div class="flex flex-wrap items-center gap-2">
 								<span class="break-all tabular-nums text-fg">{s.created_at}</span>
 								<Badge tone={s.kind === 'auto' ? 'info' : 'neutral'}>{s.kind}</Badge>
+								{#if s.missing}<Badge tone="warn">文件缺失</Badge>{/if}
 							</div>
 							<div class="text-xs tabular-nums text-subtle">
 								世界时间 {s.world_time || '—'} · {formatBytes(s.size_bytes)}

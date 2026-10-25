@@ -63,6 +63,13 @@ describe('错误文案', () => {
 	it('snapshot_not_found（契约里 DELETE 快照的 404）有中文文案', () => {
 		expect(worldErrorMessage('snapshot_not_found')).toBe('快照不存在');
 	});
+	it('租户不变式、切换窗口与服务器内部错误有中文文案', () => {
+		expect(worldErrorMessage('world_tenant_mismatch')).toBe(
+			'该世界的数据库里有其他租户的数据，拒绝打开'
+		);
+		expect(worldErrorMessage('world_switching')).toBe('正在切换世界，请稍后再试');
+		expect(worldErrorMessage('internal_error')).toBe('服务器内部错误');
+	});
 	it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
 		'继承来的键 %s 不是错误码，走兜底而不是返回函数',
 		(k) => {

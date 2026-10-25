@@ -96,6 +96,8 @@
 
 **不变式**：一个 `world.db` 内只允许存在一个租户 id，且必须等于该世界配置里的租户 id。激活世界时校验；不满足则拒开（`world_tenant_mismatch`）。
 
+> 已实现：C++ `verify_world_tenant`（`src/governance/world_store.cpp`）在切换动旧引擎之前只读扫描所有带 `tenant_id` 列的表，`WHERE tenant_id IS NOT NULL AND tenant_id <> ?` 命中即拒，HTTP 409，状态不前进；库文件不存在（新世界首次激活）时放行。2.6GB 生产库全表扫约 90ms。
+
 ### 2.2 为什么不是"一个库、多租户"
 
 现有代码本来就支持多租户共库（`tenant_id` 列），看起来更省事。否决它的理由是**回滚**：
@@ -179,6 +181,8 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 `world_time` 是回滚的锚：**"丢掉后续"回滚到哪个快照，就是看它的 `world_time`**。
 
+> `sessions_complete` 推迟到 W4：它要数场景，而场景层（`source_unit_meta`，迁移 37）在生产库里还不存在（生产迁移停在 36）。W2 的快照条目暂不带这个字段，W4 落场景清单时再补进 C++ 元数据、绑定、HTTP 与前端。
+
 ### 4.3 触发
 
 | 触发 | 时机 | kind |
@@ -198,7 +202,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 ### 4.5 磁盘守卫
 
-拍快照前检查：`free_space > 3 × live_bytes`，否则拒绝并回 507。`live_bytes = (page_count - freelist_count) × page_size`，**不是库文件大小，也不是"当前快照体积"**——后者在还没有任何快照时无定义，且会让一个 2.4GB / 97.7% freelist 的库通过一个本该拒绝它的检查。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。`fs::space` 返回"未知"（`uintmax_t(-1)`，FUSE / 网络文件系统）时跳过守卫。
+拍快照前检查：`available < 3 × live_bytes` 时拒绝并回 507（恰好 3 倍放行，与实现和测试一致）。`live_bytes = (page_count - freelist_count) × page_size`，**不是库文件大小，也不是"当前快照体积"**——后者在还没有任何快照时无定义，且会让一个 2.4GB / 97.7% freelist 的库通过一个本该拒绝它的检查。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。`fs::space` 返回"未知"（`uintmax_t(-1)`，FUSE / 网络文件系统）时跳过守卫。
 
 ---
 

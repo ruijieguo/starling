@@ -20,6 +20,8 @@ export type WorldRow = {
 	engrams: number;
 	snapshots: number;
 	snapshot_bytes: number;
+	/** 该世界的库读不出(损坏、被占):统计全为 0。只在出错的行上出现。 */
+	stats_error?: boolean;
 };
 
 export type SnapshotRow = {
@@ -30,6 +32,8 @@ export type SnapshotRow = {
 	created_at: string;
 	world_time: string;
 	size_bytes: number;
+	/** 注册项还在、文件已不在:size_bytes 为 0,仍可删除。只在缺失的行上出现。 */
+	missing?: boolean;
 };
 
 export type WorldsData = {
@@ -88,7 +92,10 @@ const ERROR_MESSAGES: Record<string, string> = {
 	world_open_failed: '新世界打不开，已留在原世界',
 	snapshot_unsupported_backend: '当前向量后端（zvec）不支持快照',
 	insufficient_disk: '磁盘空间不足，快照需要至少 3 倍于数据量的可用空间',
-	snapshot_not_found: '快照不存在'
+	snapshot_not_found: '快照不存在',
+	world_tenant_mismatch: '该世界的数据库里有其他租户的数据，拒绝打开',
+	world_switching: '正在切换世界，请稍后再试',
+	internal_error: '服务器内部错误'
 };
 
 /**
