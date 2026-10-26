@@ -9,6 +9,7 @@
 // 唯一来源：任何 API 都不接受客户端传入文件路径。绑定层（Python / HTTP）只做
 // 转发；注册、校验、保留策略与快照语义全部在这里。
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -32,6 +33,7 @@ private:
 //           | insufficient_disk | snapshot_failed | invalid_snapshot_kind
 //           | world_tenant_mismatch（verify_world_tenant：库里有别的租户的行）
 //           | snapshot_unsupported_backend（take_snapshot：vector_backend 不是 sqlite）
+//           | snapshot_corrupt（rollback_world：快照文件缺失、打不开或 integrity_check 不过）
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2
@@ -186,5 +188,65 @@ void delete_snapshot(Registry& reg, const std::string& world, const std::string&
 // world_not_found / snapshot_not_found，越出 snapshot_dir 抛 snapshot_failed。
 void discard_snapshot_file(const Registry& reg, const std::string& world,
                            const std::string& snapshot_id);
+
+// ---- 回滚与归档（W3） ------------------------------------------------------
+//
+// 设计稿 §5.1 语义 A（丢掉后续）。世界 home = snapshot_dir 的父目录，归档目录为
+// <世界 home>/archive。回滚不写注册表。
+
+struct RollbackOptions {
+    // 测试注入用：返回可用字节数。为空时用 std::filesystem::space(dir).available。
+    std::function<std::int64_t(const std::filesystem::path&)> free_space;
+    // 测试注入用：第 7 步（归档改名）之后、第 8 步（partial 改名为库路径）之前调用，
+    // 参数是 partial 的路径。抛异常或删掉 partial 即可模拟「第 7 步之后失败」。为空时不调用。
+    std::function<void(const std::filesystem::path& staged)> before_replace;
+};
+
+struct RollbackResult {
+    std::string archive_path;   // 被替换的库现在的位置；库原本不存在时为空
+    std::int64_t restored_bytes = 0;
+};
+
+// 把世界 world 的库替换成快照 snapshot_id 的内容（spec §5.1 语义 A）。
+// 前提（调用方保证）：该库上没有打开的写连接——C++ 检测不到它。
+// 顺序：
+//   1. 取世界（world_not_found）与快照（snapshot_not_found）。
+//   2. 快照路径解析符号链接后必须严格在该世界 snapshot_dir 之下（snapshot_failed）。
+//   3. 只读打开快照，PRAGMA integrity_check 必须为 "ok"；文件缺失或打不开同样算
+//      （snapshot_corrupt）。
+//   4. verify_world_tenant(快照路径, 世界租户)（world_tenant_mismatch）。
+//   5. free_space(库所在目录) < 2 × 快照文件大小 → insufficient_disk。
+//   6. 把快照复制到库所在目录的 `.<库文件名>.rollback-<hex>.partial`，只读打开做
+//      PRAGMA quick_check，必须为 "ok"。库存在时，partial 沿用库的权限位。库路径存在但
+//      不是普通文件（例如符号链接：改名进 archive 后 list / purge 都不认它）→ snapshot_failed。
+//   7. 库旁边的 `-wal` 存在且非空（或不是普通文件）→ 拒绝（snapshot_failed，说明还有
+//      未合并的写入或写连接），什么都不改；库不存在时同样检查，否则残留的 WAL 会被
+//      SQLite 重放到恢复出来的库上。库存在时 create_directories(<世界 home>/archive)
+//      （解析符号链接后必须仍在世界 home 之下），把库改名为
+//      `<archive>/<库文件名>.pre-rollback-<compact_now>-<4 hex>`；改名跨文件系统失败
+//      （EXDEV）时什么都没变，抛 snapshot_failed。再删掉库旁边的空 `-wal` 和 `-shm`
+//      （只读读者会留下 32 KB 的 `-shm` 与 0 字节的 `-wal`）。
+//   8. 把 partial 改名为库路径。
+// 第 1–6 步任何失败：目标库原样不动，partial 删掉。
+// 第 7 步之后失败：把归档改名回库路径（复原），删掉 partial，抛 snapshot_failed。
+// 不改注册表。所有非 WorldStoreError 的异常都转成 snapshot_failed。
+RollbackResult rollback_world(const Registry& reg, const std::string& world,
+                              const std::string& snapshot_id, const RollbackOptions& opts);
+
+struct ArchiveEntry {
+    std::string name;            // 文件名，例如 "world.db.pre-rollback-20261026T120000Z-ab12"
+    std::int64_t size_bytes = 0;
+};
+
+// 列出 <世界 home>/archive 下文件名形如 "*.pre-rollback-<YYYYMMDDTHHMMSSZ>-<4 hex>" 的
+// 普通文件（跳过符号链接），按名字降序（最新在前）。目录不存在时返回空。
+// 不存在的世界抛 world_not_found；archive 目录解析符号链接后不在世界 home 之下、或读不出时
+// 抛 snapshot_failed。
+[[nodiscard]] std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg,
+                                                               const std::string& world);
+
+// 删除 list_rollback_archives 列出的全部文件，每个都经 remove_within(archive 目录, 文件)。
+// 返回删除的个数。确认越界的文件不删，抛 snapshot_failed。
+std::size_t purge_rollback_archives(const Registry& reg, const std::string& world);
 
 }  // namespace starling::governance
