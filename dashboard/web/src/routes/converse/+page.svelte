@@ -2,6 +2,7 @@
 	import { api, type ConverseResponse } from '$lib/api';
 	import { streamConverse } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
+	import { worldErrorMessage } from '$lib/worlds';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot, Select } from '$lib/components/ui';
 
@@ -65,6 +66,7 @@
 				onError: (code) => {
 					if (code === 'llm_not_configured')
 						toast.error('未配置 LLM:去「模型」页绑定 extraction / chat 角色');
+					else if (code === 'world_switching') toast.error(worldErrorMessage(code));
 					else toast.error('对话出错:' + code);
 					if (!turns[idx].text) turns[idx].text = `（出错:${code}）`;
 					turns[idx].streaming = false;

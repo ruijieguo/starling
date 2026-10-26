@@ -27,7 +27,10 @@
      拿到租约的请求在放开 _gate 之后持有；切换从不拿它（切换等租约归零时没有人在建）。
   4. engine._lock（RLock，DashboardEngine 内部）：由持租约的请求和后台线程持有。切换从不
      拿它：quiesce 在不持引擎锁的情况下 join 后台线程（线程分段拿锁，持锁 join 会卡住）。
+  5. supervisor 互斥锁（C++ Runtime 内部）：只在持 engine._lock 时取（见 engine.py 的
+     _sample_backpressure 一带），从不反向。
 
+  即 manager.lock → _gate → _build_lock → engine._lock → supervisor。
   持租约的代码不得去拿 manager.lock：切换持着 manager.lock 等租约归零，反过来就是死锁
   （超时后 ingest_busy）。
 """
