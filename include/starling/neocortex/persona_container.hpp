@@ -14,6 +14,10 @@ struct PersonaView {
     std::string tenant_id, holder_id;
     int version = 0;
     std::map<std::string, std::string> dimensions;   // dim → arbitrated value (skips null/diverged)
+    // Every statement that contributed to a materialized dimension. Existing
+    // dimensions remain unchanged; downstream construct models may fetch the
+    // authoritative statements instead of relying on the selected value alone.
+    std::map<std::string, std::vector<std::string>> source_statement_ids;
 };
 
 struct AnchorStatement {

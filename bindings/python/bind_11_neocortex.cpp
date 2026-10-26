@@ -86,7 +86,9 @@ void bind_11_neocortex(pybind11::module_& m) {
         .def_readonly("tenant_id",  &starling::neocortex::PersonaView::tenant_id)
         .def_readonly("holder_id",  &starling::neocortex::PersonaView::holder_id)
         .def_readonly("version",    &starling::neocortex::PersonaView::version)
-        .def_readonly("dimensions", &starling::neocortex::PersonaView::dimensions);
+        .def_readonly("dimensions", &starling::neocortex::PersonaView::dimensions)
+        .def_readonly("source_statement_ids",
+                      &starling::neocortex::PersonaView::source_statement_ids);
 
     py::class_<starling::neocortex::AnchorStatement>(m, "AnchorStatement")
         .def(py::init<>())
