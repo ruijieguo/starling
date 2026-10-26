@@ -108,11 +108,11 @@ void PersonaContainer::rebuild(
     std::map<std::string, std::vector<Candidate>> profile_by_dim;
 
     for (const auto& src : sources) {
-        Candidate c{src.stmt_id, src.value, src.confidence};
+        Candidate candidate{src.stmt_id, src.value, src.confidence};
         if (src.anchor_type == "self_model_anchor") {
-            self_by_dim[src.dimension].push_back(c);
+            self_by_dim[src.dimension].push_back(candidate);
         } else {
-            profile_by_dim[src.dimension].push_back(c);
+            profile_by_dim[src.dimension].push_back(candidate);
         }
     }
 
