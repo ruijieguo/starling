@@ -32,7 +32,7 @@ private:
 //           | registry_corrupt | invalid_retention | snapshot_not_found
 //           | insufficient_disk | snapshot_failed | invalid_snapshot_kind
 //           | world_tenant_mismatch（verify_world_tenant：库里有别的租户的行）
-//           | snapshot_unsupported_backend（take_snapshot：vector_backend 不是 sqlite）
+//           | snapshot_unsupported_backend（take_snapshot / rollback_world：vector_backend 不是 sqlite）
 //           | snapshot_corrupt（rollback_world：快照文件缺失、打不开或 integrity_check 不过）
 
 struct SnapshotEntry {
@@ -195,10 +195,12 @@ void discard_snapshot_file(const Registry& reg, const std::string& world,
 // <世界 home>/archive。回滚不写注册表。
 
 struct RollbackOptions {
+    // 向量后端。只有 "sqlite" 的向量在库文件里，其余（zvec）恢复不出完整的世界，拒绝（spec §12）。
+    std::string vector_backend = "sqlite";
     // 测试注入用：返回可用字节数。为空时用 std::filesystem::space(dir).available。
     std::function<std::int64_t(const std::filesystem::path&)> free_space;
-    // 测试注入用：第 7 步（归档改名）之后、第 8 步（partial 改名为库路径）之前调用，
-    // 参数是 partial 的路径。抛异常或删掉 partial 即可模拟「第 7 步之后失败」。为空时不调用。
+    // 测试注入用：归档名建好之后、原子替换之前（第 10 步与第 11 步之间）调用，参数是 partial
+    // 的路径。抛异常或删掉 partial 即可模拟「替换失败」。为空时不调用。
     std::function<void(const std::filesystem::path& staged)> before_replace;
 };
 
@@ -209,26 +211,36 @@ struct RollbackResult {
 
 // 把世界 world 的库替换成快照 snapshot_id 的内容（spec §5.1 语义 A）。
 // 前提（调用方保证）：该库上没有打开的写连接——C++ 检测不到它。
+// 不变式：库路径上任何时刻都是一份完整的库（替换前是旧库，替换后是新库），从不为空。
+// 归档用硬链接建出来，替换是 rename(partial, 库) 一步原子完成。
 // 顺序：
-//   1. 取世界（world_not_found）与快照（snapshot_not_found）。
+//   1. 取世界（world_not_found）与快照（snapshot_not_found）。opts.vector_backend 不是
+//      "sqlite" 抛 snapshot_unsupported_backend。都在任何文件 I/O 之前。
+//   1b. 清扫库所在目录里上次回滚崩溃留下的 partial：名字严格为
+//      `.<库文件名>.rollback-<16 位小写 hex>.partial` 的普通文件（跳过符号链接），每个删除都经
+//      remove_within。清扫失败只记日志，不影响本次回滚。调用方必须按世界串行化回滚。
 //   2. 快照路径解析符号链接后必须严格在该世界 snapshot_dir 之下（snapshot_failed）。
-//   3. 只读打开快照，PRAGMA integrity_check 必须为 "ok"；文件缺失或打不开同样算
-//      （snapshot_corrupt）。
-//   4. verify_world_tenant(快照路径, 世界租户)（world_tenant_mismatch）。
-//   5. free_space(库所在目录) < 2 × 快照文件大小 → insufficient_disk。
-//   6. 把快照复制到库所在目录的 `.<库文件名>.rollback-<hex>.partial`，只读打开做
-//      PRAGMA quick_check，必须为 "ok"。库存在时，partial 沿用库的权限位。库路径存在但
-//      不是普通文件（例如符号链接：改名进 archive 后 list / purge 都不认它）→ snapshot_failed。
-//   7. 库旁边的 `-wal` 存在且非空（或不是普通文件）→ 拒绝（snapshot_failed，说明还有
-//      未合并的写入或写连接），什么都不改；库不存在时同样检查，否则残留的 WAL 会被
-//      SQLite 重放到恢复出来的库上。库存在时 create_directories(<世界 home>/archive)
-//      （解析符号链接后必须仍在世界 home 之下），把库改名为
-//      `<archive>/<库文件名>.pre-rollback-<compact_now>-<4 hex>`；改名跨文件系统失败
-//      （EXDEV）时什么都没变，抛 snapshot_failed。再删掉库旁边的空 `-wal` 和 `-shm`
-//      （只读读者会留下 32 KB 的 `-shm` 与 0 字节的 `-wal`）。
-//   8. 把 partial 改名为库路径。
-// 第 1–6 步任何失败：目标库原样不动，partial 删掉。
-// 第 7 步之后失败：把归档改名回库路径（复原），删掉 partial，抛 snapshot_failed。
+//   3. 快照文件缺失或不是普通文件 → snapshot_corrupt。
+//   4. free_space(库所在目录) < 2 × 快照文件大小 → insufficient_disk。
+//   5. 把快照复制到库所在目录的 `.<库文件名>.rollback-<16 hex>.partial`。
+//   6. 只读打开 partial，PRAGMA integrity_check 必须为 "ok"；打不开、不是 SQLite 同样算
+//      （snapshot_corrupt）。校验的是要装上去的那份字节，不是快照文件。
+//   7. verify_world_tenant(partial, 世界租户)（world_tenant_mismatch）。
+//   8. 库路径存在但不是普通文件（例如符号链接）→ snapshot_failed。库旁边的 `-wal` 或
+//      `-journal` 存在且非空（或不是普通文件）→ snapshot_failed（还有未合并的写入、写连接或
+//      热日志）；库不存在时同样检查，否则残留的 WAL / 热日志会被 SQLite 重放到恢复出来的库上。
+//      库存在时 partial 沿用库的权限位。
+//   9. 库存在时 create_directories(<世界 home>/archive)（世界 home = snapshot_dir 的父目录；
+//      解析符号链接后必须仍在世界 home 之下），用 create_hard_link 给库建归档名
+//      `<archive>/<库文件名>.pre-rollback-<compact_now>-<4 hex>`（名字被占用就重抽）。建不了
+//      （EXDEV、文件系统不支持硬链接、权限）→ snapshot_failed，什么都没变。
+//   10. 删掉库旁边的空 `-wal` / `-journal` 和 `-shm`（只读读者会留下 32 KB 的 `-shm` 与
+//      0 字节的 `-wal`）。
+//   11. rename(partial, 库路径)，原子替换。旧 inode 只剩归档名这一个名字。
+// 第 1–9 步任何失败：目标库原样不动，partial 删掉。
+// 第 10–11 步失败：库路径上仍是旧库，摘掉归档名（经 remove_within），删掉 partial，抛
+// snapshot_failed。归档名摘不掉时它是现役库的第二个名字：记 stderr，错误信息写明不能用写
+// 连接打开它（清理它只删一个名字，无害）。
 // 不改注册表。所有非 WorldStoreError 的异常都转成 snapshot_failed。
 RollbackResult rollback_world(const Registry& reg, const std::string& world,
                               const std::string& snapshot_id, const RollbackOptions& opts);

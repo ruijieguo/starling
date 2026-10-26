@@ -1009,6 +1009,9 @@ fs::file_status lstat_or_throw(const fs::path& path) {
 }
 
 constexpr std::string_view kPreRollback = ".pre-rollback-";
+constexpr std::string_view kRollbackTag = ".rollback-";
+constexpr std::string_view kPartialSuffix = ".partial";
+constexpr std::size_t kPartialHexLength = 16;   // random_hex() 的长度
 
 // "<库文件名>.pre-rollback-<YYYYMMDDTHHMMSSZ>-<4 hex>"：后缀与快照 id 同形。
 bool looks_like_archive_name(std::string_view name) {
@@ -1017,68 +1020,130 @@ bool looks_like_archive_name(std::string_view name) {
            looks_like_snapshot_id(name.substr(pos + kPreRollback.size()));
 }
 
-// 归档目录里还没被占用的名字：同一秒内两次回滚靠随机后缀区分，撞名就重抽（rename 会覆盖已有归档）。
+// 回滚的 staging 文件：库所在目录里的 .<库文件名>.rollback-<16 位小写 hex>.partial。
+std::string rollback_partial_prefix(const fs::path& db_file) {
+    return "." + db_file.filename().string() + std::string(kRollbackTag);
+}
+
+bool looks_like_rollback_partial(std::string_view name, const std::string& prefix) {
+    if (name.size() != prefix.size() + kPartialHexLength + kPartialSuffix.size() ||
+        !name.starts_with(prefix) || !name.ends_with(kPartialSuffix)) {
+        return false;
+    }
+    return std::ranges::all_of(name.substr(prefix.size(), kPartialHexLength), [](char chr) {
+        return (chr >= '0' && chr <= '9') || (chr >= 'a' && chr <= 'f');
+    });
+}
+
+// 清扫上次回滚崩溃留下的 partial（见 world_store.hpp rollback_world 第 1b 步）。只认名字严格
+// 符合模式的普通文件，跳过符号链接，每个删除都经 remove_within。返回删掉的个数；错误只记日志。
+std::size_t sweep_rollback_partials(const fs::path& db_file) {
+    const fs::path dir = db_file.parent_path();
+    const std::string prefix = rollback_partial_prefix(db_file);
+    std::vector<fs::path> victims;
+    std::error_code err;
+    fs::directory_iterator iter(dir, err);
+    const fs::directory_iterator done;
+    for (; !err && iter != done; iter.increment(err)) {
+        const fs::directory_entry& item = *iter;
+        std::error_code status_err;
+        if (item.is_symlink(status_err) || !item.is_regular_file(status_err)) { continue; }
+        if (looks_like_rollback_partial(item.path().filename().string(), prefix)) {
+            victims.push_back(item.path());
+        }
+    }
+    std::size_t swept = 0;
+    for (const auto& victim : victims) {
+        try {
+            if (remove_within(dir, victim)) { ++swept; }
+        } catch (const WorldStoreError& sweep_err) {
+            std::cerr << "[world_store] cannot sweep " << victim.string() << ": "
+                      << sweep_err.what() << "\n";
+        }
+    }
+    if (swept > 0) {
+        std::cerr << "[world_store] swept " << swept << " leftover rollback partial(s) in "
+                  << dir.string() << "\n";
+    }
+    return swept;
+}
+
+// 给现役库在 archive 目录里建一个硬链接（归档名）并返回它。库文件本身不动，库路径上始终有
+// 一份完整的库。名字已被占用（同一秒内两次回滚）就重抽；其余失败（EXDEV、文件系统不支持
+// 硬链接、权限）抛 snapshot_failed，此时什么都没建。
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-fs::path fresh_archive_path(const fs::path& dir, const std::string& db_name) {
-    const auto candidate = [&dir, &db_name] {
-        return dir / (db_name + std::string(kPreRollback) + compact_now() + "-" +
-                      random_hex().substr(0, 4));
-    };
-    fs::path out = candidate();
-    while (fs::exists(lstat_or_throw(out))) { out = candidate(); }
-    return out;
+fs::path link_into_archive(const fs::path& db_file, const fs::path& archive) {
+    constexpr int kMaxAttempts = 16;
+    const std::string db_name = db_file.filename().string();
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        const fs::path target = archive / (db_name + std::string(kPreRollback) + compact_now() +
+                                           "-" + random_hex().substr(0, 4));
+        std::error_code err;
+        fs::create_hard_link(db_file, target, err);
+        if (!err) { return target; }
+        if (err != std::errc::file_exists) {
+            throw WorldStoreError("snapshot_failed", "cannot link " + db_file.string() + " into " +
+                                                         archive.string() + ": " + err.message());
+        }
+    }
+    throw WorldStoreError("snapshot_failed", "no free archive name in " + archive.string());
 }
 
-// 只读打开 path，执行 pragma（integrity_check / quick_check），第一行为 "ok" 时返回 true。
-// 打不开或不是 SQLite 文件时抛异常（open_read_only 的 snapshot_failed，或 SqliteError）。
-bool passes_check(const std::string& path, const char* pragma) {
-    const auto handle = open_read_only(path);
-    persistence::Stmt check(handle.get(), pragma);
-    return check.step_row() && column_text(check.raw(), 0) == "ok";
-}
-
-// 第 3 步：快照文件缺失、打不开、不是 SQLite 或 integrity_check 不过，一律 snapshot_corrupt。
-void require_intact_snapshot(const std::string& path) {
+// 第 3 步：快照文件缺失或不是普通文件 → snapshot_corrupt。
+void require_snapshot_file(const std::string& path) {
     std::error_code err;
     if (!fs::is_regular_file(path, err)) {
         throw WorldStoreError("snapshot_corrupt", "snapshot file " + path + " is missing");
     }
+}
+
+// 第 6 步：只读打开复制品做 integrity_check。打不开、不是 SQLite 或结果不是 "ok"，
+// 一律 snapshot_corrupt。
+void require_intact_copy(const fs::path& copy) {
     bool intact = false;
     try {
-        intact = passes_check(path, "PRAGMA integrity_check");
+        const auto handle = open_read_only(copy.string());
+        persistence::Stmt check(handle.get(), "PRAGMA integrity_check");
+        intact = check.step_row() && column_text(check.raw(), 0) == "ok";
     } catch (const std::exception& ex) {
         throw WorldStoreError("snapshot_corrupt",
-                              "cannot read snapshot " + path + ": " + ex.what());
+                              "cannot read snapshot copy " + copy.string() + ": " + ex.what());
     }
     if (!intact) {
-        throw WorldStoreError("snapshot_corrupt", "integrity_check failed for " + path);
+        throw WorldStoreError("snapshot_corrupt", "integrity_check failed for " + copy.string());
     }
 }
 
-// 库旁边的 -wal 非空（或不是普通文件）：还有未合并进主文件的写入，或者写连接还开着。
-// 此时主文件不是完整的库，改名归档会丢数据；残留的 WAL 还会被 SQLite 重放到恢复出来的库上。
-void require_no_pending_wal(const fs::path& wal) {
-    const auto status = lstat_or_throw(wal);
+// 库旁边的 -wal / -journal 非空（或不是普通文件）：还有未合并进主文件的写入、写连接还开着，
+// 或者有崩溃事务留下的热日志。此时主文件不是完整的库；残留的 WAL / 热日志还会被 SQLite
+// 重放或回滚到恢复出来的库上，把它写坏。
+void require_empty_sidecar(const fs::path& sidecar) {
+    const auto status = lstat_or_throw(sidecar);
     if (!fs::exists(status)) { return; }
     std::error_code err;
-    if (!fs::is_regular_file(status) || fs::file_size(wal, err) != 0 || err) {
+    if (!fs::is_regular_file(status) || fs::file_size(sidecar, err) != 0 || err) {
         throw WorldStoreError("snapshot_failed",
-                              wal.string() + " is not empty: the database still has unmerged "
-                              "writes or an open writer");
+                              sidecar.string() + " is not empty: the database has pending "
+                              "writes, an open writer or a hot journal");
     }
 }
 
-// 第 7 步之后失败：把归档改名回库路径。返回追加到错误信息里的说明。
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-std::string restore_archived(const fs::path& archived, const fs::path& db_file) {
-    if (archived.empty()) { return {}; }   // 回滚前库不存在：没有可复原的东西
-    std::error_code err;
-    fs::rename(archived, db_file, err);
-    if (!err) { return "; restored " + db_file.string(); }
-    std::cerr << "[world_store] rollback could not restore " << db_file.string() << " from "
-              << archived.string() << ": " << err.message() << "\n";
-    return "; could not restore " + db_file.string() + ", the previous database is at " +
-           archived.string() + ": " + err.message();
+// 替换失败时摘掉刚建的归档名。库没被替换，归档名与库是同一个 inode，删掉它只少一个名字。
+// 删不掉时它就是现役库的第二个名字：清理它无害，但不能用写连接打开它。返回追加到错误信息
+// 里的说明。
+std::string drop_archive_name(const fs::path& archived) {
+    if (archived.empty()) { return {}; }   // 回滚前库不存在：没有建归档名
+    std::string why;
+    try {
+        if (remove_within(archived.parent_path(), archived)) { return {}; }
+        why = "it resolves outside " + archived.parent_path().string();
+    } catch (const WorldStoreError& err) {
+        why = err.what();
+    }
+    std::cerr << "[world_store] rollback could not remove archive name " << archived.string()
+              << ", which is a second name of the live database: " << why << "\n";
+    return "; " + archived.string() + " could not be removed (" + why +
+           ") and is a second name of the live database: do not open it with a write connection";
 }
 
 }  // namespace
@@ -1086,23 +1151,31 @@ std::string restore_archived(const fs::path& archived, const fs::path& db_file) 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 RollbackResult rollback_world(const Registry& reg, const std::string& world,
                               const std::string& snapshot_id, const RollbackOptions& opts) {
-    fs::path partial;    // 第 6 步起非空：任何失败都删掉它
+    fs::path partial;    // 第 5 步起非空：任何失败都删掉它
     RollbackResult result;
     try {
-        // 1–2. 路径只从注册表取；快照文件解析符号链接后必须仍在该世界的 snapshot_dir 之下。
+        // 1. 路径只从注册表取。向量在库文件之外的后端（zvec）恢复不出完整的世界（spec §12）。
         const WorldEntry& entry = registered_world(reg, world);
         const SnapshotEntry& snap = registered_snapshot(reg, world, snapshot_id);
-        require_inside_registry(entry.snapshot_dir, snap.path);
+        if (opts.vector_backend != "sqlite") {
+            throw WorldStoreError("snapshot_unsupported_backend",
+                                  "vector_backend '" + opts.vector_backend + "' keeps vectors "
+                                  "outside the database file");
+        }
         const fs::path db_file = entry.db_path;
         const fs::path db_dir = db_file.parent_path();
         const fs::path wal = db_file.string() + "-wal";
         const fs::path shm = db_file.string() + "-shm";
+        const fs::path journal = db_file.string() + "-journal";
 
-        // 3–4. 先验快照本身，任何文件都还没写。
-        require_intact_snapshot(snap.path);
-        verify_world_tenant(snap.path, entry.tenant);
+        // 1b. 上次回滚崩溃留下的 partial。
+        (void)sweep_rollback_partials(db_file);
 
-        // 5. 复制品与（极端情况下复原时的）余量：2 × 快照大小。
+        // 2–3. 快照文件解析符号链接后必须仍在该世界的 snapshot_dir 之下，且是普通文件。
+        require_inside_registry(entry.snapshot_dir, snap.path);
+        require_snapshot_file(snap.path);
+
+        // 4. 复制品与余量：2 × 快照大小。
         const auto snap_bytes = static_cast<std::int64_t>(fs::file_size(snap.path));
         const std::int64_t avail =
             opts.free_space ? opts.free_space(db_dir) : available_bytes(db_dir);
@@ -1112,57 +1185,57 @@ RollbackResult rollback_world(const Registry& reg, const std::string& world,
                                       db_dir.string() + ", have " + std::to_string(avail));
         }
 
-        // 6. 复制到库所在目录的隐藏 partial（同目录，第 8 步的改名才是原子的）。库目录只读时
+        // 5. 复制到库所在目录的隐藏 partial（同目录，第 11 步的改名才是原子的）。库目录只读时
         //    在这里失败，目标库一个字节都没动：绝不直接往库路径上复制。
-        partial = db_dir / ("." + db_file.filename().string() + ".rollback-" + random_hex() +
-                            ".partial");
+        partial = db_dir / (rollback_partial_prefix(db_file) + random_hex() +
+                            std::string(kPartialSuffix));
         fs::copy_file(snap.path, partial, fs::copy_options::overwrite_existing);
+
+        // 6–7. 校验的是要装上去的那份字节：复制之后快照文件怎么变都影响不到它。
+        require_intact_copy(partial);
+        verify_world_tenant(partial.string(), entry.tenant);
+        const auto staged_bytes = static_cast<std::int64_t>(fs::file_size(partial));
+
+        // 8. 库路径与附属文件的前置检查，什么都还没改。
         const auto db_status = lstat_or_throw(db_file);
         const bool db_exists = fs::exists(db_status);
         if (db_exists && !fs::is_regular_file(db_status)) {
-            // 符号链接被改名进 archive 后，list / purge 都不认它（跳过符号链接），归档就丢了。
+            // 符号链接的硬链接是链接本身，list / purge 都不认它（跳过符号链接），归档就丢了。
             throw WorldStoreError("snapshot_failed",
                                   db_file.string() + " is not a regular file; refusing to replace");
         }
+        require_empty_sidecar(wal);
+        require_empty_sidecar(journal);
         if (db_exists) {
             // 恢复出来的库沿用现役库的权限位（例如收紧过的 0600），不随快照文件放宽。
             fs::permissions(partial, fs::status(db_file).permissions(), fs::perm_options::replace);
         }
-        const auto staged_bytes = static_cast<std::int64_t>(fs::file_size(partial));
-        if (!passes_check(partial.string(), "PRAGMA quick_check")) {
-            throw WorldStoreError("snapshot_failed", "quick_check failed for " + partial.string());
-        }
 
-        // 7. -wal 非空就拒绝；否则把现役库改名进 <世界 home>/archive。改名跨文件系统失败
-        //    （EXDEV）时 rename 什么都没做，由下面的 catch 转成 snapshot_failed。
-        require_no_pending_wal(wal);
-        fs::path archived;   // 非空 = 现役库已挪进 archive，之后的失败要把它改名回来
+        // 9. 给现役库在 <世界 home>/archive 建硬链接。库路径不动。
+        fs::path archived;   // 非空 = 归档名已建好，之后的失败要把它摘掉
         if (db_exists) {
             const fs::path archive = archive_dir_of(entry);
             fs::create_directories(archive);
-            // archive/ 被换成指向外部的符号链接时拒绝：不把现役库挪出世界目录。
+            // archive/ 被换成指向外部的符号链接时拒绝：不在世界目录之外给现役库建名字。
             require_inside_registry(world_home(entry), archive);
-            const fs::path target = fresh_archive_path(archive, db_file.filename().string());
-            fs::rename(db_file, target);
-            archived = target;
+            archived = link_into_archive(db_file, archive);
         }
 
-        // 第 7 步之后的任何失败：归档改名回库路径，partial 由外层 catch 删掉。
+        // 10–11. 库路径上仍是旧库。失败时库原样不动，只需摘掉归档名；partial 由外层 catch 删。
         try {
-            // 只读读者留下的空 -wal（已确认为空）与 -shm 属于旧库，不能挂在新库旁边。
-            fs::remove(wal);
-            fs::remove(shm);
+            // 只读读者留下的空 -wal / -journal（已确认为空）与 -shm 属于旧库，不能挂在新库旁边。
+            for (const fs::path& sidecar : {wal, shm, journal}) { fs::remove(sidecar); }
             if (opts.before_replace) { opts.before_replace(partial); }
-            // 8.
+            // 原子替换：此前库路径是旧库，此后是新库；旧 inode 只剩归档这一个名字。
             fs::rename(partial, db_file);
         } catch (const std::exception& ex) {
-            const std::string restored = restore_archived(archived, db_file);
             throw WorldStoreError("snapshot_failed", "cannot replace " + db_file.string() + ": " +
-                                                         ex.what() + restored);
+                                                         ex.what() + "; the database is unchanged" +
+                                                         drop_archive_name(archived));
         } catch (...) {
-            const std::string restored = restore_archived(archived, db_file);
-            throw WorldStoreError("snapshot_failed",
-                                  "cannot replace " + db_file.string() + restored);
+            throw WorldStoreError("snapshot_failed", "cannot replace " + db_file.string() +
+                                                         "; the database is unchanged" +
+                                                         drop_archive_name(archived));
         }
         result.archive_path = archived.string();
         result.restored_bytes = staged_bytes;
