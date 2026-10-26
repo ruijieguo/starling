@@ -670,7 +670,8 @@ ExtractionLlmResult Extractor::extract_llm(
         if (!rec.resp.ok) {
             const bool retryable = retryable_legacy_response_failure(rec.resp);
             out.attempts.push_back(std::move(rec));
-            if (!retryable) break;
+            if (!retryable) { break;
+            }
             continue;
         }
         rec.parse  = parse_extractor_json(rec.resp.raw_xml, existing_ref_map,
