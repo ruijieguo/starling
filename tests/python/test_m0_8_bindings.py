@@ -195,6 +195,9 @@ class TestPersonaContainer:
             confidence=0.9,
         )
         pc.rebuild("default", "holder-001", [a], "2026-05-30T10:00:00Z")
+        view = pc.read("default", "holder-001")
+        assert view.dimensions == {"traits": "curious"}
+        assert view.source_statement_ids == {"traits": ["s1"]}
 
     def test_concurrent_rebuild_error_exists(self):
         assert hasattr(_core, "ConcurrentRebuildError")

@@ -100,6 +100,7 @@ void PersonaContainer::rebuild(
 
     // ── Step 1: Group by dimension ─────────────────────────────────────────
     struct Candidate {
+        std::string stmt_id;
         std::string value;
         double confidence = 0.0;
     };
@@ -107,11 +108,11 @@ void PersonaContainer::rebuild(
     std::map<std::string, std::vector<Candidate>> profile_by_dim;
 
     for (const auto& src : sources) {
-        Candidate c{src.value, src.confidence};
+        Candidate candidate{src.stmt_id, src.value, src.confidence};
         if (src.anchor_type == "self_model_anchor") {
-            self_by_dim[src.dimension].push_back(c);
+            self_by_dim[src.dimension].push_back(candidate);
         } else {
-            profile_by_dim[src.dimension].push_back(c);
+            profile_by_dim[src.dimension].push_back(candidate);
         }
     }
 
@@ -131,6 +132,7 @@ void PersonaContainer::rebuild(
         double confidence = 0.0;
         bool suspected_diverge = false;
         bool has_value = false;
+        std::vector<std::string> source_statement_ids;
     };
 
     std::map<std::string, DimResult> dim_results;
@@ -150,6 +152,20 @@ void PersonaContainer::rebuild(
         bool has_profile = (profile_it != profile_by_dim.end() && !profile_it->second.empty());
 
         DimResult res;
+        if (has_self) {
+            for (const auto& candidate : self_it->second) {
+                res.source_statement_ids.push_back(candidate.stmt_id);
+            }
+        }
+        if (has_profile) {
+            for (const auto& candidate : profile_it->second) {
+                res.source_statement_ids.push_back(candidate.stmt_id);
+            }
+        }
+        std::sort(res.source_statement_ids.begin(), res.source_statement_ids.end());
+        res.source_statement_ids.erase(
+            std::unique(res.source_statement_ids.begin(), res.source_statement_ids.end()),
+            res.source_statement_ids.end());
 
         if (has_self && has_profile) {
             const auto& best_self    = best_candidate(self_it->second);
@@ -197,7 +213,13 @@ void PersonaContainer::rebuild(
                << ",\"confidence\":0"
                << ",\"suspected_diverge\":true";
         }
-        cj << "}";
+        cj << ",\"source_statement_ids\":[";
+        for (std::size_t index = 0; index < res.source_statement_ids.size(); ++index) {
+            if (index != 0) { cj << ",";
+            }
+            cj << json_str(res.source_statement_ids[index]);
+        }
+        cj << "]}";
     }
     cj << "}}";
     const std::string content_json = cj.str();
@@ -334,6 +356,14 @@ PersonaView PersonaContainer::read(persistence::Connection& conn,
     if (j.is_object() && j.contains("dimensions") && j["dimensions"].is_object()) {
         for (auto& [dim, entry] : j["dimensions"].items()) {
             if (!entry.is_object()) continue;
+            if (entry.contains("source_statement_ids")
+                && entry["source_statement_ids"].is_array()) {
+                for (const auto& statement_id : entry["source_statement_ids"]) {
+                    if (statement_id.is_string()) {
+                        v.source_statement_ids[dim].push_back(statement_id.get<std::string>());
+                    }
+                }
+            }
             if (entry.value("suspected_diverge", false)) continue;
             const auto& val = entry["value"];
             if (val.is_string()) v.dimensions[dim] = val.get<std::string>();

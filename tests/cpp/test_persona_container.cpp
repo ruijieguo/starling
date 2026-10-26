@@ -73,6 +73,13 @@ TEST(PersonaContainer, SelfAnchorWinsOverProfile) {
     // (profile anchor value is not stored when self wins).
     EXPECT_EQ(cj.find("\"anxious\""), std::string::npos)
         << "Did not expect 'anxious' (profile anchor) in content_json: " << cj;
+
+    const auto view = pc.read(conn, "default", "holder-1");
+    ASSERT_TRUE(view.found);
+    EXPECT_EQ(view.dimensions.at("traits"), "calm");
+    ASSERT_EQ(view.source_statement_ids.at("traits").size(), 2U);
+    EXPECT_EQ(view.source_statement_ids.at("traits")[0], "s1");
+    EXPECT_EQ(view.source_statement_ids.at("traits")[1], "s2");
 }
 
 // ── TC-PC-002: DivergenceMarksSuspected ─────────────────────────────────────
@@ -108,6 +115,12 @@ TEST(PersonaContainer, DivergenceMarksSuspected) {
         "SELECT payload_json FROM bus_events WHERE event_type='persona.suspected_diverge' LIMIT 1");
     EXPECT_NE(payload.find("mood"), std::string::npos)
         << "Expected dimension 'mood' in event payload: " << payload;
+
+    const auto view = pc.read(conn, "default", "holder-div");
+    EXPECT_EQ(view.dimensions.count("mood"), 0U);
+    ASSERT_EQ(view.source_statement_ids.at("mood").size(), 2U);
+    EXPECT_EQ(view.source_statement_ids.at("mood")[0], "s1");
+    EXPECT_EQ(view.source_statement_ids.at("mood")[1], "s2");
 }
 
 // ── TC-PC-003: ProfileUsedWhenNoSelf ────────────────────────────────────────
