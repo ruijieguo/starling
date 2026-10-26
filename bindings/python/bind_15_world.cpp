@@ -168,6 +168,50 @@ void bind_15_world(pybind11::module_& m) {
               gov::delete_snapshot(registry, world, snapshot_id);
               return reg_out(registry);
           }, py::arg("registry"), py::arg("world"), py::arg("snapshot_id"));
+
+    // ---- 回滚与归档（W3） ----
+    // 回滚不改注册表，所以不返回新注册表。前提（调用方保证，C++ 检测不到）：该库上没有打开的
+    // 写连接，且同一世界的回滚已串行化（WorldManager 全程持管理锁）。复制快照 + integrity_check
+    // 可能要几秒，释放 GIL。C++ 的测试钩子（free_space、before_replace）不暴露。
+    m.def("world_rollback",
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+          [](const py::dict& reg, const std::string& world, const std::string& snapshot_id,
+             const std::string& vector_backend) {
+              const auto registry = reg_in(reg);
+              gov::RollbackOptions opts;
+              opts.vector_backend = vector_backend;
+              gov::RollbackResult result;
+              {
+                  const py::gil_scoped_release release;
+                  result = gov::rollback_world(registry, world, snapshot_id, opts);
+              }
+              return py::dict("archive_path"_a = result.archive_path,
+                              "restored_bytes"_a = result.restored_bytes);
+          }, py::arg("registry"), py::arg("world"), py::arg("snapshot_id"),
+          py::kw_only(), py::arg("vector_backend") = "sqlite");
+
+    m.def("world_list_archives",
+          [](const py::dict& reg, const std::string& world) {
+              const auto registry = reg_in(reg);
+              std::vector<gov::ArchiveEntry> listed;
+              {
+                  const py::gil_scoped_release release;
+                  listed = gov::list_rollback_archives(registry, world);
+              }
+              py::list out;
+              for (const auto& item : listed) {
+                  out.append(py::dict("name"_a = item.name, "size_bytes"_a = item.size_bytes));
+              }
+              return out;
+          }, py::arg("registry"), py::arg("world"));
+
+    // 归档是整份旧库，删除可能较慢，释放 GIL。返回删掉的文件数。
+    m.def("world_purge_archives",
+          [](const py::dict& reg, const std::string& world) {
+              const auto registry = reg_in(reg);
+              const py::gil_scoped_release release;
+              return gov::purge_rollback_archives(registry, world);
+          }, py::arg("registry"), py::arg("world"));
 }
 
 }  // namespace starling::bindings

@@ -1,9 +1,10 @@
-"""/api/worlds：世界注册表与快照（W1/W2）。
+"""/api/worlds：世界注册表、快照（W1/W2）与回滚、归档（W3）。
 
 写操作经 WorldManager（世界管理锁内），统计只读查各世界库、不开引擎。
 世界路径只来自服务端注册表：任何路由都不接受客户端传入的文件路径，请求里只有
 世界名（C++ 侧按 ^[a-z0-9][a-z0-9_-]{0,31}$ 校验）和快照 id（只在注册表里查找）。
-设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §9
+回滚同样只收快照 id，库、快照与归档的路径都从注册表推出。
+设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §5.1、§9
 """
 from __future__ import annotations
 
@@ -24,11 +25,11 @@ logger = logging.getLogger(__name__)
 # 给出，前端据 detail 字符串显示提示（dashboard/web/src/lib/worlds.ts），所以 detail
 # 一律原样回传错误码。未登记的码按 500 处理。
 _STATUS = {
-    "invalid_world_name": 400, "confirm_mismatch": 400,
+    "invalid_world_name": 400, "confirm_mismatch": 400, "rollback_mode_unsupported": 400,
     "world_not_found": 404, "snapshot_not_found": 404,
     "world_exists": 409, "world_protected": 409, "ingest_busy": 409,
     "snapshot_unsupported_backend": 409, "invalid_retention": 409,
-    "world_tenant_mismatch": 409,
+    "world_tenant_mismatch": 409, "snapshot_corrupt": 409,
     "insufficient_disk": 507, "world_switching": 503,
     "world_open_failed": 500, "snapshot_failed": 500, "registry_corrupt": 500,
 }
@@ -41,6 +42,16 @@ class CreateWorldBody(BaseModel):
 
 class SnapshotBody(BaseModel):
     note: str = ""
+
+
+# 回滚语义 A（spec §5.1）。语义 B（"scene"，只回滚该场景）属于 W5，现在一律拒绝。
+_ROLLBACK_MODES = ("discard_after",)
+
+
+class RollbackBody(BaseModel):
+    snapshot_id: str
+    confirm: str = ""
+    mode: str = "discard_after"
 
 
 def _fail(code: str) -> HTTPException:
@@ -78,7 +89,18 @@ async def _run(fn, *args):
         raise HTTPException(status_code=500, detail="internal_error") from exc
 
 
-def _world_row(name: str, entry: dict, snaps: list[dict], active: bool) -> dict:
+def _archive_totals(mgr, name: str) -> tuple[int, int]:
+    # 回滚归档（<世界 home>/archive/）的个数与字节合计。读不出（archive 目录指到世界目录
+    # 之外、无权限）时记 warning、按 0/0 计，不置 stats_error：那个标志的意思是库本身读不出。
+    try:
+        listed = mgr.archives(name)
+    except _core.WorldStoreError as exc:
+        logger.warning("world_list_archives failed for %s: %s", name, exc)
+        return 0, 0
+    return len(listed), sum(item["size_bytes"] for item in listed)
+
+
+def _world_row(mgr, name: str, entry: dict, snaps: list[dict], active: bool) -> dict:
     # 只读查库、不开引擎：列 N 个世界不用建 N 个引擎。库文件不存在（新建未激活）时全 0。
     # 库文件存在但读不出（损坏、被占）时 world_stats 抛 snapshot_failed：不能让一个坏世界
     # 拖垮整张列表（/worlds 页打不开，坏世界也就没法从界面删掉），该行统计置 0，
@@ -90,12 +112,14 @@ def _world_row(name: str, entry: dict, snaps: list[dict], active: bool) -> dict:
         logger.warning("world_stats failed for %s: %s", name, exc)
         stats = {"db_bytes": 0, "live_bytes": 0, "statements": 0, "engrams": 0}
         stats_error = True
+    archives, archive_bytes = _archive_totals(mgr, name)
     row = {"name": name, "label": entry.get("label", ""), "tenant": entry["tenant"],
            "created_at": entry.get("created_at", ""), "active": active,
            "db_bytes": stats["db_bytes"], "live_bytes": stats["live_bytes"],
            "statements": stats["statements"], "engrams": stats["engrams"],
            "snapshots": len(snaps),
-           "snapshot_bytes": sum(s["size_bytes"] for s in snaps if not _snapshot_missing(s))}
+           "snapshot_bytes": sum(s["size_bytes"] for s in snaps if not _snapshot_missing(s)),
+           "archives": archives, "archive_bytes": archive_bytes}
     if stats_error:
         row["stats_error"] = True
     return row
@@ -120,7 +144,7 @@ def _snapshot_row(snap: dict) -> dict:
 def _list_worlds(mgr) -> dict:
     reg = mgr.load()
     snapshots = reg.get("snapshots", {})
-    rows = [_world_row(name, reg["worlds"][name], snapshots.get(name, []),
+    rows = [_world_row(mgr, name, reg["worlds"][name], snapshots.get(name, []),
                        name == reg["active"])
             for name in sorted(reg["worlds"])]
     return {"active": reg["active"], "default": reg["default"],
@@ -131,7 +155,7 @@ def _create_world(mgr, name: str, label: str) -> dict:
     entry = mgr.create(name, label)
     # 新世界不会是活动世界，也还没有快照；用 create 返回的条目而不是重读注册表，
     # 避免与并发的删除/切换错位。
-    return _world_row(name, entry, [], False)
+    return _world_row(mgr, name, entry, [], False)
 
 
 def _list_snapshots(mgr, name: str) -> dict:
@@ -195,5 +219,24 @@ def build_worlds_router(require_token) -> APIRouter:
         mgr = _manager(request)
         await _run(mgr.delete_snapshot, name, snapshot_id)
         return {"deleted": snapshot_id}
+
+    @router.post("/worlds/{name}/rollback")
+    async def rollback_world(request: Request, name: str, body: RollbackBody):
+        mgr = _manager(request)
+        if body.confirm != name:
+            raise _fail("confirm_mismatch")              # 不碰 manager
+        if body.mode not in _ROLLBACK_MODES:
+            raise _fail("rollback_mode_unsupported")     # 不碰 manager
+        out = await _run(mgr.rollback, name, body.snapshot_id)
+        await _broadcast(request, "world_rolled_back",
+                         {"world": name, "snapshot_id": body.snapshot_id})
+        return out
+
+    @router.delete("/worlds/{name}/archives")
+    async def purge_archives(request: Request, name: str, confirm: str = ""):
+        mgr = _manager(request)
+        if confirm != name:
+            raise _fail("confirm_mismatch")              # 不碰 manager
+        return {"deleted": await _run(mgr.purge_archives, name)}
 
     return router

@@ -4,7 +4,8 @@
 - 读引擎内存态的两个路由（runtime_health / ingest_status）走 `_leased_engine`，持租约读完。
 - SQL 路由按 `app.state.config.db_path` 只读打开库，经 `_cfg` 只**检查** switching 标志、
   **不持租约**。已知限制：检查通过之后切换才开始并完成时，已在线程池里的查询会返回一次旧
-  世界的数据。只读，不写错；下一次请求就是新世界。
+  世界的数据。只读，不写错；下一次请求就是新世界。回滚活动世界有同样的窗口：检查通过、回滚
+  才开始的查询读的是旧 inode，回滚完成后它就是归档里的那份旧库。
 """
 from __future__ import annotations
 
