@@ -1076,11 +1076,11 @@ fs::path link_into_archive(const fs::path& db_file, const fs::path& archive) {
     constexpr int kMaxAttempts = 16;
     const std::string db_name = db_file.filename().string();
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        const fs::path target = archive / (db_name + std::string(kPreRollback) + compact_now() +
-                                           "-" + random_hex().substr(0, 4));
+        const fs::path link = archive / (db_name + std::string(kPreRollback) + compact_now() +
+                                         "-" + random_hex().substr(0, 4));
         std::error_code err;
-        fs::create_hard_link(db_file, target, err);
-        if (!err) { return target; }
+        fs::create_hard_link(db_file, link, err);
+        if (!err) { return link; }
         if (err != std::errc::file_exists) {
             throw WorldStoreError("snapshot_failed", "cannot link " + db_file.string() + " into " +
                                                          archive.string() + ": " + err.message());
