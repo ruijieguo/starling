@@ -1,6 +1,6 @@
 # 世界/场景管理：完整设计
 
-日期 2026-10-25。状态：**W1+W2 已在 `feat/world-core` 分支实现（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3–W5（回滚、场景清单与自动快照、分叉）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
+日期 2026-10-25。状态：**W1+W2 已实现并合入 main（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3 回滚语义 A（丢掉后续）与归档已在 `feat/world-rollback` 分支实现（C++ `rollback_world` / 归档列出与清理、绑定、`WorldManager.rollback`、`POST /api/worlds/{name}/rollback`、`DELETE /api/worlds/{name}/archives`），前端在 `feat/world-rollback-web`；W4–W5（场景清单与自动快照、分叉与语义 B）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
 
 **范围**：多世界 Dashboard、快照、回滚（两种语义）、分叉、场景清单。
 
@@ -221,6 +221,12 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 - **完整、确定、零 LLM 成本**。
 - 语义是"回到那一刻"，因此 S 之后的一切（包括其他并发场景）一并消失——这正是 §14.2 说的并发场景下的必然结果。
 - 旧库不删，改名保留；清理交给显式的"清理回收站"操作，避免一次误操作不可逆。
+
+**已实现（W3，2026-10-26）**，与上面的草图有三处不同：
+
+- **归档位置**：`<世界 home>/archive/<库文件名>.pre-rollback-<UTC 时刻>-<4 hex>`，世界 home 是 `snapshot_dir` 的父目录（默认世界即 `worlds/default/archive/`，它的库仍在原地）。归档是旧库的硬链接，先建链接，再把校验过的副本 `rename` 到库路径，库路径上任何时刻都是一份完整的库。列出与清理：`GET /api/worlds` 每行的 `archives` / `archive_bytes`，`DELETE /api/worlds/{name}/archives?confirm=<name>`。
+- **不写注册表**：快照与世界条目都不变，没有「先动磁盘、后存注册表」的分叉。
+- **失败复原**：先把快照复制到库所在目录的隐藏 partial，`integrity_check` 与租户校验针对这份副本；替换之前任何一步失败，目标库原样不动、partial 删掉；替换失败时库仍是旧库，归档名摘掉。活动世界的旧 Runtime（写连接）回收不了就拒绝（`ingest_busy`），绝不在写连接还开着时替换库文件；每个出口都按原配置重建引擎。zvec 向量后端拒绝（`snapshot_unsupported_backend`，见 §12）。
 
 ### 5.2 语义 B — 只回滚该场景，保留后续
 
