@@ -64,6 +64,13 @@ bool truncated(const LLMResponse& response) {
         || response.error.find("truncat") != std::string::npos;
 }
 
+bool retryable_legacy_response_failure(const LLMResponse& response) {
+    // Repeating the same prompt and output budget cannot complete an already
+    // truncated response. Transport/provider failures remain eligible for the
+    // existing bounded retry policy.
+    return !truncated(response);
+}
+
 std::string claim_failure_category(const ExtractionLlmResult& result) {
     if (!result.persistence_error.empty()) { return "persistence_failure";
 }
@@ -661,7 +668,10 @@ ExtractionLlmResult Extractor::extract_llm(
         rec.attempt = attempt;
         rec.resp    = adapter_.extract(out.prompt_body, out.prompt_input_hash);
         if (!rec.resp.ok) {
+            const bool retryable = retryable_legacy_response_failure(rec.resp);
             out.attempts.push_back(std::move(rec));
+            if (!retryable) { break;
+            }
             continue;
         }
         rec.parse  = parse_extractor_json(rec.resp.raw_xml, existing_ref_map,
@@ -825,7 +835,8 @@ ExtractionRunResult Extractor::persist(
             emit_extraction_event(conn_, "extraction.failed",
                                   holder_tenant_id, run_id, chunk_span_key,
                                   run_started_event_id, attempt_suffix);
-            if (!policy_.semantic_claim_contract && attempt < kMaxRetries) {
+            if (!policy_.semantic_claim_contract && attempt < kMaxRetries
+                && retryable_legacy_response_failure(rec.resp)) {
                 emit_extraction_event(conn_, "extraction.retry_scheduled",
                                       holder_tenant_id, run_id, chunk_span_key,
                                       run_started_event_id, attempt_suffix);

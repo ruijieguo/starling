@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace starling::extractor {
 
@@ -93,6 +94,27 @@ TEST(ExtractorOrchestrator, AdapterFailureRetriesAndDeadletters) {
     EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.failed'"), 3);
     EXPECT_EQ(row_count(conn, "bus_events", "event_type='pipeline.run_failed'"), 1);
     EXPECT_EQ(row_count(conn, "statements"), 0);
+}
+
+TEST(ExtractorOrchestrator, TruncatedCompletionIsNotRetried) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    FakeLLMAdapter llm;
+    LLMResponse truncated;
+    truncated.ok = false;
+    truncated.error = "completion_truncated";
+    truncated.finish_reason = "length";
+    llm.set_default_response(std::move(truncated));
+    Extractor ex(conn, llm);
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::FAILED);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='failed'"), 1);
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.failed'"), 1);
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.retry_scheduled'"), 0);
+    EXPECT_EQ(row_count(conn, "pipeline_run", "status='failed'"), 1);
 }
 
 TEST(ExtractorOrchestrator, ParseErrorIsRetriedThenFails) {
