@@ -1486,3 +1486,108 @@ def test_slow_remember_spanning_a_switch_then_switching_back_leaves_one_runtime(
     gc.collect()
     alive = [ref for ref in runtimes if ref() is not None]
     assert len(alive) == 1 and alive[0]() is app.state.engine._rt
+
+
+# ── M2：converse 与 config 热更新整段持有租约（不是「查一下就还」） ──
+
+def _wait_until(pred, timeout=5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not pred() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return pred()
+
+
+def test_switch_waits_for_an_in_flight_converse_turn(tmp_path, monkeypatch):
+    """/ws/converse 的生成段在引擎锁外。租约若只在入口查一下就还，切换会在这一轮还在生成时
+    完成：旧引擎被丢、这一轮随后在旧引擎上沉淀，旧 Runtime 一直活着。要求：生成被卡住时
+    切换在等，放行后这一轮先完成、切换后完成，旧 Runtime 随之释放。"""
+    import starling.dashboard.world_manager as wm
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    old_rt = weakref.ref(app.state.engine._rt)
+    generating, release = threading.Event(), threading.Event()
+    real_stream = DashboardEngine.converse_stream
+
+    def _blocked_stream(self, message, **kwargs):
+        generating.set()
+        assert release.wait(10), "test never released the turn"
+        return {"reply": "ok", "statement_ids": [], "remember_ok": True}
+    monkeypatch.setattr(DashboardEngine, "converse_stream", _blocked_stream)
+
+    frames: list = []
+
+    def _turn():
+        with client.websocket_connect("/ws/converse") as ws:
+            ws.send_json({"message": "who owns auth?"})
+            while True:
+                msg = ws.receive_json()
+                frames.append(msg)
+                if msg["type"] in ("done", "error"):
+                    return
+    turn = threading.Thread(target=_turn, daemon=True)
+    turn.start()
+    assert generating.wait(5), "converse turn never reached generation"
+
+    switched = threading.Event()
+    switcher = threading.Thread(target=lambda: (mgr.activate("sim-1"), switched.set()),
+                                daemon=True)
+    switcher.start()
+    try:
+        assert _wait_until(lambda: mgr.switching), "switch never started"
+        assert not switched.wait(0.3), "converse turn still generating; switch must wait"
+        # 不等租约的实现此刻已经把旧引擎丢成 None（只是在宽限期里等旧 Runtime 回收）。
+        assert app.state.engine is not None and app.state.config.tenant == "default"
+    finally:
+        release.set()
+    turn.join(15)
+    assert switched.wait(15)
+    switcher.join(5)
+    assert frames and frames[-1]["type"] == "done", frames
+    assert app.state.config.tenant == "sim-1" and mgr.load()["active"] == "sim-1"
+    monkeypatch.setattr(DashboardEngine, "converse_stream", real_stream)
+    gc.collect()
+    assert old_rt() is None, "the turn finished, so the old Runtime must be released"
+    assert wm._LEASE_DRAIN_TIMEOUT_S > 0.3                  # 测试窗口远小于超时
+
+
+def test_switch_waits_for_an_in_flight_config_hot_swap(tmp_path, monkeypatch):
+    """config 热更新在线程池里换适配器（_apply）。租约若只在入口查一下就还，切换会在热更新
+    还在跑时完成，适配器装到已被丢弃的旧引擎上。要求：_apply 被卡住时切换在等。"""
+    app, _cfgfile = _config_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    applying, release = threading.Event(), threading.Event()
+    eng = app.state.engine
+    real_set_llm = eng.set_llm
+
+    def _blocked_set_llm(spec):
+        applying.set()
+        assert release.wait(10), "test never released the hot-swap"
+        return real_set_llm(spec)
+    monkeypatch.setattr(eng, "set_llm", _blocked_set_llm)
+    del eng
+
+    responses: list = []
+    req = threading.Thread(target=lambda: responses.append(
+        client.post("/api/config", json=_CFG_BODY)), daemon=True)
+    req.start()
+    assert applying.wait(5), "hot-swap never reached _apply"
+
+    switched = threading.Event()
+    switcher = threading.Thread(target=lambda: (mgr.activate("sim-1"), switched.set()),
+                                daemon=True)
+    switcher.start()
+    try:
+        assert _wait_until(lambda: mgr.switching), "switch never started"
+        assert not switched.wait(0.3), "hot-swap still running; switch must wait"
+        assert app.state.engine is not None and app.state.config.tenant == "default"
+    finally:
+        release.set()
+    req.join(15)
+    assert switched.wait(15)
+    switcher.join(5)
+    assert responses and responses[0].status_code == 200
+    assert app.state.config.tenant == "sim-1"
