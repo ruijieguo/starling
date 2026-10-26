@@ -1,6 +1,14 @@
-"""Read-only inspection routes (SQL-backed)."""
+"""Read-only inspection routes (SQL-backed).
+
+世界切换（见 world_manager 模块文档）：
+- 读引擎内存态的两个路由（runtime_health / ingest_status）走 `_leased_engine`，持租约读完。
+- SQL 路由按 `app.state.config.db_path` 只读打开库，经 `_cfg` 只**检查** switching 标志、
+  **不持租约**。已知限制：检查通过之后切换才开始并完成时，已在线程池里的查询会返回一次旧
+  世界的数据。只读，不写错；下一次请求就是新世界。
+"""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
@@ -8,10 +16,28 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from starling.dashboard import queries
+from starling.dashboard.world_manager import WorldSwitchError, engine_lease
 
 
-def _engine_or_none(request: Request):
-    return request.app.state.engine
+def _refuse_while_switching(request: Request) -> None:
+    # 世界切换窗口里注册表可能已经指向新世界，config 还是旧的：此时的检视结果会把旧世界
+    # 的数据显示在新世界的上下文里。回 503 world_switching。只读标志，不碰任何锁（本函数
+    # 在事件循环上跑，不能阻塞）。
+    worlds = getattr(request.app.state, "worlds", None)
+    if worlds is not None and worlds.switching:
+        raise HTTPException(status_code=503, detail="world_switching")
+
+
+@contextmanager
+def _leased_engine(request: Request):
+    """读引擎内存态的路由用：持一份租约读完（不惰性建引擎，engine 可能是 None）。切换窗口
+    内 → 503 world_switching，而不是让调用方把暂时的 None 当成「引擎还没建」。"""
+    try:
+        lease = engine_lease(request.app.state)
+    except WorldSwitchError as exc:
+        raise HTTPException(status_code=503, detail=exc.code) from exc
+    with lease as engine:
+        yield engine
 
 
 def _metrics_to_dict(ms) -> dict:
@@ -46,6 +72,8 @@ def build_inspect_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
     def _cfg(request: Request):
+        # 所有 SQL 检视路由都经这里取 config：切换窗口内一律 503（见 _refuse_while_switching）。
+        _refuse_while_switching(request)
         return request.app.state.config
 
     @router.get("/overview")
@@ -229,23 +257,23 @@ def build_inspect_router(require_token) -> APIRouter:
 
     @router.get("/runtime_health")
     async def runtime_health(request: Request):
-        eng = _engine_or_none(request)
-        if eng is None:
-            # health/events are in-memory; with no live engine there is nothing to read.
-            raise HTTPException(status_code=503, detail="engine not initialized")
-        return {
-            "status": eng.health().name,
-            "events": [_event_to_dict(e) for e in eng.events()],
-        }
+        with _leased_engine(request) as eng:
+            if eng is None:
+                # health/events are in-memory; with no live engine there is nothing to read.
+                raise HTTPException(status_code=503, detail="engine not initialized")
+            return {
+                "status": eng.health().name,
+                "events": [_event_to_dict(e) for e in eng.events()],
+            }
 
     @router.get("/ingest_status")
     async def ingest_status(request: Request):
         # dogfood 子项 A(Task 3):spool 队列深度 —— 引擎内存态(remember 累计
         # 耗时计数器 ingest_remember_ms_total),无引擎则无可读(同
         # runtime_health 的能力探测模式)。
-        eng = _engine_or_none(request)
-        if eng is None:
-            raise HTTPException(status_code=503, detail="engine not initialized")
-        return eng.ingest_status()
+        with _leased_engine(request) as eng:
+            if eng is None:
+                raise HTTPException(status_code=503, detail="engine not initialized")
+            return eng.ingest_status()
 
     return router

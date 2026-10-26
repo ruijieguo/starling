@@ -13,6 +13,8 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from starling.dashboard.world_manager import WorldSwitchError, engine_lease
+
 
 class ProviderFields(BaseModel):
     provider: str | None = None
@@ -83,17 +85,41 @@ def _merge_provider(dst: dict, body: ProviderFields) -> None:
         dst["enable_thinking"] = body.enable_thinking
 
 
+def _persist(request: Request, cfg) -> None:
+    """写 starling.json。活动世界只记在注册表里：config 里的 db_path/tenant 是
+    活动世界的值，直接 save 会把它写成「默认世界」，重启后丢掉真正的默认世界。"""
+    worlds = getattr(request.app.state, "worlds", None)
+    (worlds.persistable_config(cfg) if worlds is not None else cfg).save()
+
+
+def _lease(request: Request):
+    """热更新要在同一个引擎上做完（改 config、落盘、换适配器）：持一份租约，切换窗口内
+    → 503 world_switching。先取租约再动 config，被拒时什么都没改。不惰性建引擎：没有
+    引擎时只改 config，引擎建出来时自然读到新 config。"""
+    try:
+        return engine_lease(request.app.state)
+    except WorldSwitchError as exc:
+        raise HTTPException(status_code=503, detail=exc.code) from exc
+
+
 def build_config_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
     @router.get("/config")
     async def get_config(request: Request):
+        # 切换窗口内 config 还是旧世界的（tenant 字段会是旧租户）：与检视路由一致回 503。
+        worlds = getattr(request.app.state, "worlds", None)
+        if worlds is not None and worlds.switching:
+            raise HTTPException(status_code=503, detail="world_switching")
         return _public(request.app.state.config)
 
     @router.post("/config")
     async def post_config(body: ConfigBody, request: Request):
+        with _lease(request) as eng:
+            return await _post_config(body, request, eng)
+
+    async def _post_config(body: ConfigBody, request: Request, eng):
         cfg = request.app.state.config
-        eng = request.app.state.engine
         # Upsert providers (preserve stored keys on blank-key edits).
         for name, pf in (body.providers or {}).items():
             _merge_provider(cfg.providers.setdefault(name, {}), pf)
@@ -110,7 +136,7 @@ def build_config_router(require_token) -> APIRouter:
                           "similarity_threshold", "entity_gist_enabled")
                 if body.gist_thresholds.get(k) is not None
             }
-        cfg.save()                                   # persist starling.json (0600)
+        _persist(request, cfg)                       # persist starling.json (0600)
         # Hot-swap only the live roles whose resolved provider changed: a role
         # was (re)bound, or its currently-bound provider was edited.
         touched_providers = set(body.providers or {})
@@ -144,14 +170,17 @@ def build_config_router(require_token) -> APIRouter:
 
     @router.delete("/config/provider/{name}")
     async def delete_provider(name: str, request: Request):
+        with _lease(request) as eng:
+            return await _delete_provider(name, request, eng)
+
+    async def _delete_provider(name: str, request: Request, eng):
         cfg = request.app.state.config
-        eng = request.app.state.engine
         cfg.providers.pop(name, None)
         # Unbind any role pointing at the removed provider, then hot-swap it off.
         unbound = [r for r, n in cfg.roles.items() if n == name]
         for r in unbound:
             cfg.roles[r] = ""
-        cfg.save()
+        _persist(request, cfg)
         if eng is not None and unbound:
             def _apply() -> None:
                 if "extraction" in unbound:

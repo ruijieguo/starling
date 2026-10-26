@@ -225,6 +225,9 @@ class DashboardEngine:
             config.ingest_spool_root(), config.tenant)
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
+        # 最近一次 quiesce() 没停下的线程名（"ingest" / "tick"），供调用方在
+        # ingest_busy 里点名；每次 quiesce 开头重置，所以不会读到上一轮的陈旧值。
+        self.quiesce_stuck: tuple[str, ...] = ()
         self._ingest_remember_ms_total = 0      # observability: see _ingest_drain_once
         self._ingest_throttle_s = 5.0           # gap after each processed job (dashboard breathing room)
         self._ingest_max_attempts = 5           # bounded retry before dead-lettering to failed/
@@ -813,13 +816,13 @@ class DashboardEngine:
             target=_loop, name="starling-bg-tick", daemon=True)
         self._tick_thread.start()
 
-    def stop_background_tick(self) -> None:
+    def stop_background_tick(self, timeout_s: float = 5.0) -> None:
         if self._tick_thread is None:
             return
         self._tick_stop.set()
         # 有界等待:线程可能正阻塞在真模型嵌入网络调用里;daemon 线程随
         # 进程退出,这里只为测试与显式 close 提供确定性收尾。
-        self._tick_thread.join(timeout=5.0)
+        self._tick_thread.join(timeout=timeout_s)
         self._tick_thread = None
         self._tick_stop = None
 
@@ -1054,13 +1057,42 @@ class DashboardEngine:
             target=_loop, name="starling-ingest", daemon=True)
         self._ingest_thread.start()
 
-    def stop_ingest_worker(self) -> None:
+    def stop_ingest_worker(self, timeout_s: float = 5.0) -> None:
         if self._ingest_thread is None:
             return
         self._ingest_stop.set()
-        self._ingest_thread.join(timeout=5.0)
+        self._ingest_thread.join(timeout=timeout_s)
         self._ingest_thread = None
         self._ingest_stop = None
+
+    def quiesce(self, timeout_s: float = 5.0) -> bool:
+        """停后台 tick 与摄入线程（世界切换前用）。两个线程都确认退出返回 True；
+        任一线程 join 超时仍存活返回 False——调用方据此拒绝切换（ingest_busy）。
+        stop_* 不管 join 成败都会清句柄，所以先留住线程引用，事后再判 is_alive。
+
+        失败时除了句柄，还要把停止事件一并放回并撤销（clear）：stop_* 已经 set 了它，
+        卡住的线程一旦脱困就会看到停止信号而退出；而句柄非空会让调用方回滚时的
+        start_* 直接 no-op，于是摄入/维护悄悄停摆。撤销后线程脱困会继续正常循环。
+
+        timeout_s 是两个线程合计的上限：先停的线程用掉多少，后停的就只剩多少（两次 join
+        串行，各给满 timeout_s 的话最坏是 2×timeout_s，与契约的「5 秒停不下就拒绝」不符）。"""
+        self.quiesce_stuck = ()
+        ingest, tick = self._ingest_thread, self._tick_thread
+        ingest_stop, tick_stop = self._ingest_stop, self._tick_stop
+        deadline = time.monotonic() + timeout_s
+        self.stop_ingest_worker(timeout_s=timeout_s)
+        self.stop_background_tick(timeout_s=max(0.0, deadline - time.monotonic()))
+        ingest_alive = ingest is not None and ingest.is_alive()
+        tick_alive = tick is not None and tick.is_alive()
+        if ingest_alive:
+            self._ingest_thread, self._ingest_stop = ingest, ingest_stop
+            ingest_stop.clear()
+        if tick_alive:
+            self._tick_thread, self._tick_stop = tick, tick_stop
+            tick_stop.clear()
+        self.quiesce_stuck = tuple(name for name, alive in (("ingest", ingest_alive),
+                                                            ("tick", tick_alive)) if alive)
+        return not (ingest_alive or tick_alive)
 
     def working_set(self, interlocutor, *, goal=None, token_budget=2000, holder=None) -> dict:
         """Like Memory.render_working_set but returns a JSON-able dict (API shape)."""

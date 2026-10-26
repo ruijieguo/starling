@@ -1,6 +1,6 @@
 # 世界/场景管理：完整设计
 
-日期 2026-10-25。状态：**设计稿，未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
+日期 2026-10-25。状态：**W1+W2 已在 `feat/world-core` 分支实现（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3–W5（回滚、场景清单与自动快照、分叉）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
 
 **范围**：多世界 Dashboard、快照、回滚（两种语义）、分叉、场景清单。
 
@@ -96,6 +96,8 @@
 
 **不变式**：一个 `world.db` 内只允许存在一个租户 id，且必须等于该世界配置里的租户 id。激活世界时校验；不满足则拒开（`world_tenant_mismatch`）。
 
+> 已实现：C++ `verify_world_tenant`（`src/governance/world_store.cpp`）在切换动旧引擎之前只读扫描所有带 `tenant_id` 列的表，`WHERE tenant_id IS NOT NULL AND tenant_id <> ?` 命中即拒，HTTP 409，状态不前进；库文件不存在（新世界首次激活）时放行。2.6GB 生产库全表扫约 90ms。
+
 ### 2.2 为什么不是"一个库、多租户"
 
 现有代码本来就支持多租户共库（`tenant_id` 列），看起来更省事。否决它的理由是**回滚**：
@@ -179,6 +181,8 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 `world_time` 是回滚的锚：**"丢掉后续"回滚到哪个快照，就是看它的 `world_time`**。
 
+> `sessions_complete` 推迟到 W4：它要数场景，而场景层（`source_unit_meta`，迁移 37）在生产库里还不存在（生产迁移停在 36）。W2 的快照条目暂不带这个字段，W4 落场景清单时再补进 C++ 元数据、绑定、HTTP 与前端。
+
 ### 4.3 触发
 
 | 触发 | 时机 | kind |
@@ -188,7 +192,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 场景边界自动快照是"能回滚到任意场景之前"的前提：没有它，手动快照只能回到拍过的点。
 
-成本：实测 0.16 秒 / 57MB（当前库）。**代价随记忆量线性增长**，`statement_vectors` 已占 29MB/57MB，是主要增长项。
+成本：实测 0.16 秒 / 57MB（当前库）。**快照体积 ≈ 活数据量，不是库文件大小**——57MB 来自 2.4GB 库里 97.7% 是 freelist；库若已被 `VACUUM` 压过，快照与库文件基本同大（实测 65.6MB 的紧凑副本拍出 65.6MB / 282 毫秒）。**代价随记忆量线性增长**，`statement_vectors` 已占 29MB/57MB，是主要增长项。
 
 ### 4.4 保留 N 份
 
@@ -198,7 +202,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 ### 4.5 磁盘守卫
 
-拍快照前检查：`free_space > 3 × 当前快照体积`，否则拒绝并回 507。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。
+拍快照前检查：`available < 3 × live_bytes` 时拒绝并回 507（恰好 3 倍放行，与实现和测试一致）。`live_bytes = (page_count - freelist_count) × page_size`，**不是库文件大小，也不是"当前快照体积"**——后者在还没有任何快照时无定义，且会让一个 2.4GB / 97.7% freelist 的库通过一个本该拒绝它的检查。理由：`VACUUM INTO` 失败会留半个文件，且写满磁盘会拖垮主库 WAL。`fs::space` 返回"未知"（`uintmax_t(-1)`，FUSE / 网络文件系统）时跳过守卫。
 
 ---
 
@@ -306,22 +310,25 @@ SELECT session_id,
 `app.state.engine` 是单引擎。切换世界 = 换引擎，不是并存。
 
 ```
-switch(world):
-  with _world_lock:
-     old = app.state.engine
-     if old is not None:
-         with old._lock:              # 等所有在飞请求结束
-             old.close()
-     cfg = config.with_world(world)   # db_path + tenant 换成该世界的
-     app.state.engine = None          # 让 _engine() 按新 cfg 惰性重建
-     app.state.config = cfg
-     eng = _engine_like(app.state)    # 立即建一次，暴露启动失败
+activate(world):                          # 实现：python/starling/dashboard/world_manager.py
+  with manager.lock:
+     switching = True                     # 此后新租约一律拒绝 → 503 world_switching
+     drain_leases(timeout=30s)            # 等在途请求的租约归零；超时 → 清标志、恢复旧线程、ingest_busy
+     quiesce(old)                         # 停 tick / 摄入线程（不持引擎锁 join）
+     verify_world_tenant(world)           # C++：库内只有该世界的租户，否则 world_tenant_mismatch
+     new = DashboardEngine(cfg_of(world)) # 开新库；失败 → 回滚到旧世界，world_open_failed
+     save(registry.active = world)        # 先写注册表；失败 → 丢新引擎、回滚，world_open_failed
+     app.state.config, app.state.engine = cfg_of(world), new
+     start_workers(new)
+     drop(old); gc.collect()              # 旧 Runtime 必须被回收：close() 不释放 C++ 写连接
+     switching = False
 ```
 
-- 路由本来就每次请求 `_engine(request)` 从 `app.state` 取（`routes/commands.py:78`），所以切换后新请求自动拿到新引擎。
-- 在飞请求：`old.close()` 前先拿 `old._lock`，保证没人正在用。
-- **切换前必须确认没有 ingest job 在跑**：`stop_ingest_worker()` 是有界等待（5 秒），超时则拒绝切换并报 `ingest_busy`。
-- 切换失败（新世界库损坏 / 迁移失败 / 租户不符）→ 回滚到旧引擎，状态机不前进。
+- **引擎租约**：每个用到引擎的请求从头到尾持一份租约——线程池排队、`remember` 的锁外抽取、`/ws/converse` 的锁外生成、最后的提交都在租约内。只等 `old._lock` 不够：锁外阶段不持引擎锁，请求会在切换后写进旧世界，旧 Runtime 也一直活着，切回原世界就是同一个库上两条写连接。
+- 租约按请求发放，不按 WebSocket 连接；后台 tick / 摄入线程不是租约，由 `quiesce` 停（两次 join 各有上限）。
+- 任何一步失败，注册表 `active`、`app.state.config`、`app.state.engine` 三者都留在旧世界，不分叉。
+- 锁顺序见 `world_manager.py` 模块文档：`manager.lock → _gate → _build_lock → engine._lock → supervisor`，持租约的代码不得去拿 `manager.lock`。
+- 已知限制：inspect 的 SQL 路由（按 `app.state.config` 只读打开库）只检查 `switching` 标志、不持租约；在切换开始前已发出的查询可能返回一次旧世界的数据。只读，不写错。
 
 ### 8.2 metrics.db 与 spool
 

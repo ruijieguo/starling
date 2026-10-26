@@ -27,4 +27,5 @@ PYBIND11_MODULE(_core, m) {
     starling::bindings::bind_12_prospective(m);
     starling::bindings::bind_13_memory_ops(m);
     starling::bindings::bind_14_governance(m);
+    starling::bindings::bind_15_world(m);
 }
