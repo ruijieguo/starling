@@ -282,8 +282,25 @@ void validate_shape(const Registry& reg) {
 // <registry_dir>/worlds/<name>/ 之下。default 的库保持原地（spec §0.1），不受此限；但它的
 // 快照目录同样固定在 worlds/<default>/ 下——否则把它改成 "/"，删除快照、保留策略和残留
 // 清扫就能删到任意位置。
+// worlds/ 解析符号链接之后必须仍在注册表目录之下。within_layout 两侧都解析符号链接，
+// 若 worlds/ 本身指向外部，「目标在 home 之下」会在外部成立，快照清扫、保留策略、删快照
+// 便以外部目录为根。所以在逐项比较之前先把根钉死：worlds/ 还不存在（全新注册表）时放行。
+void require_worlds_root_inside(const fs::path& registry_dir, const fs::path& worlds_root) {
+    std::error_code err;
+    if (!fs::exists(fs::symlink_status(worlds_root, err))) { return; }
+    const fs::path real_dir = fs::weakly_canonical(registry_dir, err);
+    if (err) { corrupt("cannot resolve " + registry_dir.string() + ": " + err.message()); }
+    const fs::path real_root = fs::weakly_canonical(worlds_root, err);
+    if (err) { corrupt("cannot resolve " + worlds_root.string() + ": " + err.message()); }
+    if (!strictly_under(normalized(real_dir), normalized(real_root))) {
+        corrupt(worlds_root.string() + " resolves to " + real_root.string() + ", outside " +
+                real_dir.string());
+    }
+}
+
 void validate_layout(const Registry& reg, const fs::path& registry_dir) {
     const fs::path worlds_root = fs::absolute(registry_dir) / "worlds";
+    require_worlds_root_inside(fs::absolute(registry_dir), worlds_root);
     for (const auto& [name, world] : reg.worlds) {
         const fs::path home = worlds_root / name;
         if (!lexically_within(worlds_root, home)) {

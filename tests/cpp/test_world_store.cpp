@@ -994,6 +994,23 @@ TEST_F(RegistryValidation, SaveRefusesWhatLoadRejects) {
     EXPECT_EQ(slurp(reg_path), before);
 }
 
+// worlds/ 本身指向外部：加载注册表即拒（registry_corrupt）。只靠 within_layout 两侧都解析
+// 符号链接的话，「snapshot_dir 在 worlds/<name> 之下」会在外部成立，快照清扫、保留策略、
+// 删快照就以外部目录为根（Codex 第二轮 Important 2）。保存同样拒绝。
+TEST(WorldRegistry, LoadRefusesWorldsDirSymlinkedOutside) {
+    const TempDir tmp;
+    const TempDir outside;
+    const auto reg_path = tmp.path() / "worlds.json";
+    auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    save_registry(reg_path, reg);
+    fs::rename(tmp.path() / "worlds", outside.path() / "worlds");
+    fs::create_directory_symlink(outside.path() / "worlds", tmp.path() / "worlds");
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "registry_corrupt");
+    EXPECT_EQ(code_of([&] { save_registry(reg_path, reg); }), "registry_corrupt");
+    EXPECT_TRUE(fs::exists(outside.path() / "worlds" / "sim-1"));   // 外部一个字节不动
+}
+
 // worlds/ 本身是指向外部的符号链接：解析后 worlds/<name> 落在注册表目录之外，
 // 删除必须拒绝，外部一个字节都不能动，注册项保留。
 TEST(WorldRegistry, DeleteRefusesWhenWorldsDirIsSymlinkOutside) {
