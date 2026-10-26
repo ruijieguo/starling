@@ -210,6 +210,46 @@ TEST(PerceptionReconstructor, ToldChannelRecipientLearnsStateNotPhysicalWitness)
     EXPECT_FALSE(eve.has_value()) << "Eve was never in a physical event or tell — no perception";
 }
 
+TEST(PerceptionReconstructor, StrictModeSeparatesReportsFromPhysicalObservations) {
+    auto a = open_migrated();
+    const char* T = "t-strict-channels";
+    seed_event(*a, T, "sf0", "Sally", "put", "ball", "basket",
+               R"(["Sally"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "sf1", "Carol", "tell", "ball", "drawer",
+               R"(["Carol","Dave"])", 2, "2026-01-01T00:00:02Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct_strict(T, {"Sally", "Anne"});
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+    auto anne = ps.last_known(T, "Anne", "ball", "observed_location", AS_OF);
+    ASSERT_TRUE(anne.has_value());
+    EXPECT_EQ(anne->state_value, "basket");
+    auto dave = ps.last_known(T, "Dave", "ball", "reported_location", AS_OF);
+    ASSERT_TRUE(dave.has_value());
+    EXPECT_EQ(dave->state_value, "drawer");
+    EXPECT_FALSE(ps.last_known(T, "Dave", "ball", "observed_location", AS_OF).has_value());
+    EXPECT_FALSE(ps.last_known(T, "Sally", "ball", "location", AS_OF).has_value());
+}
+
+TEST(PerceptionReconstructor, StrictModeDoesNotBackfillFutureParticipants) {
+    auto a = open_migrated();
+    const char* T = "t-strict-presence";
+    seed_event(*a, T, "sp0", "Alice", "put", "ball", "basket",
+               R"(["Alice"])", 1, "2026-01-01T00:00:01Z");
+    seed_event(*a, T, "sp1", "Bob", "enter", "room", "",
+               R"(["Bob"])", 2, "2026-01-01T00:00:02Z");
+
+    PerceptionReconstructor recon(a->connection());
+    recon.reconstruct_strict(T, {"Alice"});
+
+    PerceptionStateStore ps(a->connection());
+    const char* AS_OF = "2026-01-02T00:00:00Z";
+    EXPECT_TRUE(ps.last_known(T, "Alice", "ball", "observed_location", AS_OF).has_value());
+    EXPECT_FALSE(ps.last_known(T, "Bob", "ball", "observed_location", AS_OF).has_value());
+}
+
 // Phase 4: Unexpected contents (apparent vs actual).
 // A closed labelled "Smarties tube" really holds pencils.
 //   c0 Anne see   Smarties tube → "Smarties"  (APPARENT content from the label)
