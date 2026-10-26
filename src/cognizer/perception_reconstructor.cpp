@@ -142,10 +142,11 @@ void PerceptionReconstructor::reconstruct_impl(
     if (initial_present != nullptr) {
         cast.insert(initial_present->begin(), initial_present->end());
     } else {
-        for (const auto& ev : events) {
-            if (is_tell(ev.predicate)) { continue;
+        for (const auto& event : events) {
+            if (is_tell(event.predicate)) { continue;
             }
-            for (const auto& p : participants_of(ev)) { cast.insert(p);
+            for (const auto& participant : participants_of(event)) {
+                cast.insert(participant);
             }
         }
     }
