@@ -96,6 +96,13 @@ def bootstrap_worlds(config):
         logger.warning("worlds registry %s overrides config: db_path %s -> %s, tenant %s -> %s",
                        registry_path, config.db_path, entry["db_path"],
                        config.tenant, entry["tenant"])
+    if reg["active"] != reg["default"]:
+        # 重启时活动世界不是默认世界：它的引擎马上会按这里的 config 建起来（run_dashboard.py
+        # 急切建、lifespan 或首个命令惰性建），绕过了切换时的租户校验。在这里补上，不满足
+        # 就拒绝启动（world_tenant_mismatch），而不是带着别的租户的数据开始写。
+        # 默认世界（原地的 dashboard.db）不在此校验：它早于世界管理，既有部署与测试里可以
+        # 按租户过滤地存多个租户；切换回默认世界时仍按 §2.1 校验。
+        _core.world_verify_tenant(entry["db_path"], entry["tenant"])
     config.db_path = entry["db_path"]
     config.tenant = entry["tenant"]
     return registry_path
