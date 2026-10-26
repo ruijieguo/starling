@@ -206,7 +206,9 @@ TEST(WorldRegistry, DeleteRefusesPathOutsideRegistryDir) {
     EXPECT_EQ(reg.worlds.count("sim-1"), 0U);
 }
 
-// worlds/<name> 若是指向外部的符号链接，remove_within 解析后发现越界，什么都不删。
+// worlds/<name> 若是指向外部的符号链接（worlds/ 本身是真目录），remove_within 解析后发现越界，
+// 什么都不删；delete_world 必须 fail closed——抛 snapshot_failed、注册项保留。旧实现忽略
+// remove_within 的返回值照样摘掉注册项，外部目录成了无主孤儿（与快照越界的 I7 处理不一致）。
 TEST(WorldRegistry, DeleteRefusesSymlinkEscapingRegistryDir) {
     const TempDir tmp;
     const TempDir outside;
@@ -216,9 +218,9 @@ TEST(WorldRegistry, DeleteRefusesSymlinkEscapingRegistryDir) {
     fs::remove_all(tmp.path() / "worlds" / "sim-1");
     fs::create_directory_symlink(outside.path(), tmp.path() / "worlds" / "sim-1");
     { std::ofstream out(outside.path() / "keep.txt"); out << "x"; }
-    delete_world(reg, tmp.path(), "sim-1");
+    EXPECT_EQ(code_of([&] { delete_world(reg, tmp.path(), "sim-1"); }), "snapshot_failed");
     EXPECT_TRUE(fs::exists(outside.path() / "keep.txt"));
-    EXPECT_EQ(reg.worlds.count("sim-1"), 0U);
+    EXPECT_TRUE(reg.worlds.contains("sim-1"));
 }
 
 // 路径解析本身出错（这里用自指符号链接触发 ELOOP）时无法判断是否越界：
@@ -1007,6 +1009,26 @@ TEST(WorldRegistry, DeleteRefusesWhenWorldsDirIsSymlinkOutside) {
     EXPECT_EQ(code_of([&] { delete_world(reg, tmp.path(), "sim-1"); }), "snapshot_failed");
     EXPECT_TRUE(fs::exists(outside.path() / "sim-1" / "keep.txt"));
     EXPECT_EQ(reg.worlds.count("sim-1"), 1U);
+}
+
+// 同一份注册表换一种路径写法打开（经指向注册表目录的符号链接）：布局校验必须认它合法。
+// 旧实现只做字面比较，worlds.json 里写的是真实路径、注册表目录却是链接路径，于是判成越界，
+// load_registry 抛 registry_corrupt，dashboard 启动即失败（/tmp 与 /private/tmp 就是这种情形）。
+TEST(WorldRegistry, LoadsThroughSymlinkedRegistryDir) {
+    const TempDir tmp;
+    const TempDir links;
+    const auto real_reg = tmp.path() / "worlds.json";
+    auto reg = ensure_registry(real_reg, tmp.path() / "dashboard.db", "default");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    save_registry(real_reg, reg);
+    const fs::path alias = links.path() / "alias";
+    fs::create_directory_symlink(tmp.path(), alias);
+    EXPECT_EQ(code_of([&] { (void)load_registry(alias / "worlds.json"); }), "<no throw>");
+    // 解析符号链接之后仍越界的路径照样拒绝：fallback 只放行「同一处、换了写法」。
+    auto escaped = load_registry(real_reg);
+    escaped.worlds.at("sim-1").snapshot_dir = (links.path() / "elsewhere").string();
+    EXPECT_EQ(code_of([&] { save_registry(alias / "worlds.json", escaped); }),
+              "registry_corrupt");
 }
 
 // 保留策略遇到越界的注册项：fail closed，外部文件不动，注册项保留。

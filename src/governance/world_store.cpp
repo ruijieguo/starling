@@ -85,6 +85,22 @@ bool lexically_within(const fs::path& base, const fs::path& target) {
     return strictly_under(normalized(base), normalized(target));
 }
 
+// 布局校验用：字面在 base 之下，或两侧解析符号链接之后在 base 之下，都算。
+// 同一份注册表换一种路径写法打开（/tmp 与 /private/tmp、软链回来的 ~/.starling、换了拼法的
+// STARLING_DASH_DB）时，字面比较会把合法布局判成越界，启动直接 registry_corrupt。解析失败就只
+// 认字面结果。".." 越界两种判法都拒；删除时的真正边界仍由 remove_within / require_inside_registry
+// 在解析符号链接之后把守。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+bool within_layout(const fs::path& base, const fs::path& target) {
+    if (lexically_within(base, target)) { return true; }
+    std::error_code err;
+    const fs::path real_base = fs::weakly_canonical(base, err);
+    if (err) { return false; }
+    const fs::path real_target = fs::weakly_canonical(target, err);
+    if (err) { return false; }
+    return strictly_under(normalized(real_base), normalized(real_target));
+}
+
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
 // 返回 true 表示已执行删除；确认 target 越界（被篡改的注册表、指向外部的
 // 符号链接）时返回 false，什么都不碰。路径解析出错（EACCES、ELOOP 等）时无法
@@ -273,11 +289,11 @@ void validate_layout(const Registry& reg, const fs::path& registry_dir) {
         if (!lexically_within(worlds_root, home)) {
             corrupt("world '" + name + "' has no home under " + worlds_root.string());
         }
-        if (name != reg.default_world && !lexically_within(home, world.db_path)) {
+        if (name != reg.default_world && !within_layout(home, world.db_path)) {
             corrupt("db_path of '" + name + "' lies outside " + home.string() + ": " +
                     world.db_path);
         }
-        if (!lexically_within(home, world.snapshot_dir)) {
+        if (!within_layout(home, world.snapshot_dir)) {
             corrupt("snapshot_dir of '" + name + "' lies outside " + home.string() + ": " +
                     world.snapshot_dir);
         }
@@ -643,7 +659,13 @@ void delete_world(Registry& reg, const fs::path& registry_dir, const std::string
     const fs::path root = fs::absolute(registry_dir);
     const fs::path base = root / "worlds";
     require_inside_registry(root, base);
-    (void)remove_within(base, base / name);
+    // worlds/<name> 本身是指向外部的符号链接时 remove_within 不删（返回 false）。与快照的
+    // 越界处理一致 fail closed：抛 snapshot_failed、注册项保留，不让外部数据变成无主孤儿。
+    if (!remove_within(base, base / name)) {
+        throw WorldStoreError("snapshot_failed",
+                              "world directory of '" + name + "' resolves outside " +
+                                  base.string() + "; refusing to delete");
+    }
     reg.worlds.erase(name);
     reg.snapshots.erase(name);
 }
