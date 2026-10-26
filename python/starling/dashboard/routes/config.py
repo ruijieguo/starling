@@ -107,6 +107,10 @@ def build_config_router(require_token) -> APIRouter:
 
     @router.get("/config")
     async def get_config(request: Request):
+        # 切换窗口内 config 还是旧世界的（tenant 字段会是旧租户）：与检视路由一致回 503。
+        worlds = getattr(request.app.state, "worlds", None)
+        if worlds is not None and worlds.switching:
+            raise HTTPException(status_code=503, detail="world_switching")
         return _public(request.app.state.config)
 
     @router.post("/config")

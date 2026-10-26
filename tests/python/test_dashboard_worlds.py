@@ -1591,3 +1591,92 @@ def test_switch_waits_for_an_in_flight_config_hot_swap(tmp_path, monkeypatch):
     switcher.join(5)
     assert responses and responses[0].status_code == 200
     assert app.state.config.tenant == "sim-1"
+
+
+# ── Codex 第二轮 Important 1：重启时活动世界的租户也要校验 ──
+
+def test_restart_refuses_active_world_with_foreign_tenant_rows(tmp_path, monkeypatch):
+    """切换时校验了租户，但重启时活动世界的引擎由 bootstrap 之后直接构造，绕过了校验。
+    活动的非默认世界库里混进别的租户的行：重启必须拒绝，而不是带着它开始写。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, _state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    mgr.activate("sim-1")
+    db = mgr.load()["worlds"]["sim-1"]["db_path"]
+    del mgr, _state
+    gc.collect()
+    _insert_foreign_engram(db, "intruder")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        bootstrap_worlds(_cfg(tmp_path))                 # 模拟重启
+    assert _code(ei.value) == "world_tenant_mismatch"
+    with pytest.raises(_core.WorldStoreError):
+        create_app(_cfg(tmp_path))                       # 生产入口同样拒绝
+
+
+def test_restart_on_a_clean_active_world_still_works(tmp_path, monkeypatch):
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, _state = _manager(tmp_path)
+    mgr.create("sim-1", "")
+    mgr.activate("sim-1")
+    del mgr, _state
+    gc.collect()
+    cfg = _cfg(tmp_path)
+    bootstrap_worlds(cfg)
+    assert cfg.tenant == "sim-1"
+
+
+def test_restart_does_not_tenant_check_the_legacy_default_world(tmp_path, monkeypatch):
+    """默认世界（原地 dashboard.db）早于世界管理，既有部署可按租户过滤地存多个租户：
+    重启时不因此拒绝（只校验活动的非默认世界）。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    cfg = _cfg(tmp_path)
+    bootstrap_worlds(cfg)
+    eng = DashboardEngine(cfg)                           # 建库
+    del eng
+    gc.collect()
+    _insert_foreign_engram(cfg.db_path, "other")
+    again = _cfg(tmp_path)
+    bootstrap_worlds(again)
+    assert again.tenant == "default"
+
+
+# ── Codex 第二轮 Minor ──
+
+def test_quiesce_timeout_is_a_total_budget_for_both_threads(tmp_path, monkeypatch):
+    """quiesce(timeout_s) 的参数原本没生效：两个 join 各写死 5 秒、串行，最坏 10 秒。
+    两个线程都卡住时，总耗时必须受 timeout_s 约束。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    _mgr, state = _manager(tmp_path)
+    eng = state.engine
+    stuck = threading.Event()
+
+    def _stuck_thread(name):
+        thread = threading.Thread(target=stuck.wait, args=(30,), name=name, daemon=True)
+        thread.start()
+        return thread
+    eng._ingest_thread, eng._ingest_stop = _stuck_thread("ingest"), threading.Event()
+    eng._tick_thread, eng._tick_stop = _stuck_thread("tick"), threading.Event()
+    try:
+        started = time.monotonic()
+        assert eng.quiesce(timeout_s=1.0) is False
+        elapsed = time.monotonic() - started
+        # 合计预算 1.0 秒；两次 join 各给满的旧行为约 2.0 秒。
+        assert elapsed < 1.5, f"quiesce took {elapsed:.2f}s for a 1.0s total budget"
+        assert set(eng.quiesce_stuck) == {"ingest", "tick"}
+    finally:
+        stuck.set()
+        eng._ingest_thread.join(5)
+        eng._tick_thread.join(5)
+
+
+def test_get_config_503_during_switch_window(tmp_path, monkeypatch):
+    app, _cfgfile = _config_app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    assert client.get("/api/config").status_code == 200
+    _force_switching(app.state.worlds, True)
+    try:
+        r = client.get("/api/config")
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+    finally:
+        _force_switching(app.state.worlds, False)
+    assert client.get("/api/config").status_code == 200

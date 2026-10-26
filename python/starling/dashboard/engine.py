@@ -816,13 +816,13 @@ class DashboardEngine:
             target=_loop, name="starling-bg-tick", daemon=True)
         self._tick_thread.start()
 
-    def stop_background_tick(self) -> None:
+    def stop_background_tick(self, timeout_s: float = 5.0) -> None:
         if self._tick_thread is None:
             return
         self._tick_stop.set()
         # 有界等待:线程可能正阻塞在真模型嵌入网络调用里;daemon 线程随
         # 进程退出,这里只为测试与显式 close 提供确定性收尾。
-        self._tick_thread.join(timeout=5.0)
+        self._tick_thread.join(timeout=timeout_s)
         self._tick_thread = None
         self._tick_stop = None
 
@@ -1057,11 +1057,11 @@ class DashboardEngine:
             target=_loop, name="starling-ingest", daemon=True)
         self._ingest_thread.start()
 
-    def stop_ingest_worker(self) -> None:
+    def stop_ingest_worker(self, timeout_s: float = 5.0) -> None:
         if self._ingest_thread is None:
             return
         self._ingest_stop.set()
-        self._ingest_thread.join(timeout=5.0)
+        self._ingest_thread.join(timeout=timeout_s)
         self._ingest_thread = None
         self._ingest_stop = None
 
@@ -1074,13 +1074,14 @@ class DashboardEngine:
         卡住的线程一旦脱困就会看到停止信号而退出；而句柄非空会让调用方回滚时的
         start_* 直接 no-op，于是摄入/维护悄悄停摆。撤销后线程脱困会继续正常循环。
 
-        timeout_s 暂时只为接口预留：stop_* 内部的 join 超时写死 5.0 秒，不在此扩展
-        它们的签名。"""
+        timeout_s 是两个线程合计的上限：先停的线程用掉多少，后停的就只剩多少（两次 join
+        串行，各给满 timeout_s 的话最坏是 2×timeout_s，与契约的「5 秒停不下就拒绝」不符）。"""
         self.quiesce_stuck = ()
         ingest, tick = self._ingest_thread, self._tick_thread
         ingest_stop, tick_stop = self._ingest_stop, self._tick_stop
-        self.stop_ingest_worker()
-        self.stop_background_tick()
+        deadline = time.monotonic() + timeout_s
+        self.stop_ingest_worker(timeout_s=timeout_s)
+        self.stop_background_tick(timeout_s=max(0.0, deadline - time.monotonic()))
         ingest_alive = ingest is not None and ingest.is_alive()
         tick_alive = tick is not None and tick.is_alive()
         if ingest_alive:
