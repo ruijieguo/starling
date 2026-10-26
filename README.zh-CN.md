@@ -194,4 +194,4 @@ docs/       系统设计 (docs/design) + specs 与 plans (docs/superpowers)
 
 ## 许可证
 
-尚未选定许可证。在添加许可证之前,作者保留所有权利。
+采用 [Apache License 2.0](LICENSE) 许可。第三方组件及其许可证见 [NOTICE](NOTICE)。

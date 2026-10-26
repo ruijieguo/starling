@@ -1,0 +1,42 @@
+Starling Memory
+Copyright 2026 jared_guo
+
+This product is licensed under the Apache License, Version 2.0 (see the
+LICENSE file).
+
+It uses the following third-party software, each distributed under its own
+license. None of it is vendored in this repository; it is fetched or found at
+build time.
+
+--------------------------------------------------------------------------------
+nlohmann/json
+--------------------------------------------------------------------------------
+Project:   https://github.com/nlohmann/json
+License:   MIT License
+Copyright: Copyright (c) 2013-2022 Niels Lohmann
+Use:       Header-only JSON library, compiled into the native core. Taken from
+           the system package when present, otherwise fetched at v3.11.3.
+
+--------------------------------------------------------------------------------
+pybind11
+--------------------------------------------------------------------------------
+Project:   https://github.com/pybind/pybind11
+License:   BSD-style license
+Copyright: Copyright (c) 2016 Wenzel Jakob <wenzel.jakob@epfl.ch>
+Use:       Builds the Python extension module (starling._core); its headers
+           are compiled into the module.
+
+--------------------------------------------------------------------------------
+zvec (optional)
+--------------------------------------------------------------------------------
+Project:   https://github.com/alibaba/zvec
+License:   Apache License, Version 2.0
+Copyright: Copyright 2025-present the zvec project
+Use:       Vector backend, built only with STARLING_VECTOR_ZVEC=ON (default
+           OFF, macOS only). Fetched at v0.5.0 and statically linked when
+           enabled. zvec ships its own NOTICE listing its third-party
+           components; it applies to any build that enables this option.
+
+System libraries that the build links dynamically (SQLite, OpenSSL, libcurl,
+ICU) are not distributed with this source and are covered by their own
+licenses.

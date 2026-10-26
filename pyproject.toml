@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.13"]  # 0.11: PEP 639 license fields
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -8,6 +8,8 @@ version = "0.0.1"
 description = "Starling Memory — agent memory with multi-subject social mind"
 requires-python = ">=3.11"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-mock>=3.12", "jsonschema>=4.26"]

@@ -194,4 +194,4 @@ The authoritative design lives in [`docs/design/system_design.md`](docs/design/s
 
 ## License
 
-A license has not yet been chosen. Until one is added, all rights are reserved by the authors.
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party components and their licenses are listed in [NOTICE](NOTICE).
