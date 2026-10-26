@@ -90,6 +90,17 @@ PerceptionReconstructor::PerceptionReconstructor(persistence::Connection& conn,
     : conn_(conn), adapter_(&adapter) {}
 
 void PerceptionReconstructor::reconstruct(std::string_view tenant) {
+    reconstruct_impl(tenant, nullptr, false);
+}
+
+void PerceptionReconstructor::reconstruct_strict(
+        std::string_view tenant, const std::vector<std::string>& initial_present) {
+    reconstruct_impl(tenant, &initial_present, true);
+}
+
+void PerceptionReconstructor::reconstruct_impl(
+        std::string_view tenant, const std::vector<std::string>* initial_present,
+        bool typed_dimensions) {
     sqlite3* db = conn_.raw();
     // 1. Scan ALL OCCURRED events for the tenant on one timeline (observed_at, seq).
     //    evidence_json carries the engram anchor used for does_X_know awareness (5.1).
@@ -124,14 +135,20 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
     }
     if (events.empty()) return;
 
-    // 2. Physical cast = everyone named in a physical / presence-change event.
-    //    tell/inform events are excluded — a cognizer named ONLY in a tell must NOT
-    //    be presumed physically present (N1: e.g. "Anne phones absent Bob" must not
-    //    make Bob a witness of the room's events).
+    // 2. Legacy reconstruction derives a physical cast from the complete
+    // timeline. Strict reconstruction instead starts from the caller-provided
+    // cast, so a participant appearing later is not backfilled into the past.
     std::set<std::string> cast;
-    for (const auto& ev : events) {
-        if (is_tell(ev.predicate)) continue;  // tell does not establish physical presence
-        for (const auto& p : participants_of(ev)) cast.insert(p);
+    if (initial_present != nullptr) {
+        cast.insert(initial_present->begin(), initial_present->end());
+    } else {
+        for (const auto& event : events) {
+            if (is_tell(event.predicate)) { continue;
+            }
+            for (const auto& participant : participants_of(event)) {
+                cast.insert(participant);
+            }
+        }
     }
 
     // 3. Walk events; present set defaults to the whole cast; enter/leave override;
@@ -179,7 +196,9 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                 for (std::size_t i = 1; i < evp.size(); ++i) {
                     store::PerceptionStateRow row;
                     row.tenant_id = std::string(tenant); row.cognizer_id = evp[i];
-                    row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
+                    row.theme_id = ev.theme;
+                    row.state_dim = typed_dimensions ? "reported_location" : "location";
+                    row.state_value = ev.location;
                     row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
                     ps.upsert(row);
                     perceived_set.insert(evp[i]);  // the recipient learns the told engram
@@ -239,7 +258,9 @@ void PerceptionReconstructor::reconstruct(std::string_view tenant) {
                 if (!same_scene(room_of(w), ev_room)) { continue; }  // witness in a different room
                 store::PerceptionStateRow row;
                 row.tenant_id = std::string(tenant); row.cognizer_id = w;
-                row.theme_id = ev.theme; row.state_dim = "location"; row.state_value = ev.location;
+                row.theme_id = ev.theme;
+                row.state_dim = typed_dimensions ? "observed_location" : "location";
+                row.state_value = ev.location;
                 row.observed_at = ev.observed_at; row.position = position; row.source_event_id = ev.stmt_id;
                 ps.upsert(row);
                 perceived_set.insert(w);

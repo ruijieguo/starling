@@ -451,7 +451,14 @@ void bind_06_extractor(pybind11::module_& m) {
             [](starling::cognizer::PerceptionReconstructor& self, const std::string& tenant) {
                 self.reconstruct(tenant);
             },
-            py::arg("tenant"));
+            py::arg("tenant"))
+        .def("reconstruct_strict",
+            [](starling::cognizer::PerceptionReconstructor& self,
+               const std::string& tenant,
+               const std::vector<std::string>& initial_present) {
+                self.reconstruct_strict(tenant, initial_present);
+            },
+            py::arg("tenant"), py::arg("initial_present"));
 }
 
 }  // namespace starling::bindings

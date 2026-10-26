@@ -1,7 +1,9 @@
 #pragma once
 #include "starling/persistence/connection.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
+#include <string>
 #include <string_view>
+#include <vector>
 namespace starling::cognizer {
 // Post-pass: recompute per-cognizer perception for a tenant from ALL its OCCURRED
 // events. Idempotent (upserts). Runs in its own transaction after the episodic pass.
@@ -21,7 +23,15 @@ public:
     PerceptionReconstructor(persistence::Connection& conn,
                             persistence::SqliteAdapter& adapter);
     void reconstruct(std::string_view tenant);
+    // Opt-in strict projection: the caller provides the initial physical cast,
+    // tell/inform writes reported_location, and physical witnessing writes
+    // observed_location. The legacy reconstruct() contract remains unchanged.
+    void reconstruct_strict(std::string_view tenant,
+                            const std::vector<std::string>& initial_present);
 private:
+    void reconstruct_impl(std::string_view tenant,
+                          const std::vector<std::string>* initial_present,
+                          bool typed_dimensions);
     persistence::Connection& conn_;
     persistence::SqliteAdapter* adapter_ = nullptr;  // null → perception_state only
 };
