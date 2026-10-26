@@ -13,6 +13,11 @@ import { wsConn } from './health';
  * 二者都归入 mutatesMemory 的「会改变可见状态」一侧(只有 recall 是纯读),
  * feed.ts 同步补了两条文案。
  *
+ * W3 再追加一种,同样来自 routes/worlds.py:
+ *   world_rolled_back {world, snapshot_id}  回滚到快照成功 —— 该世界快照之后的写入被丢弃;
+ *                                           回滚的是活动世界时 /worlds 页整页刷新(同切换)
+ * 同样归入「会改变可见状态」一侧,feed.ts 补了文案。
+ *
  * 收窄为联合类型而非 string:页面里的事件名字面量此前完全不受 svelte-check 校验,
  * 打错一个字母就是静默失效且三门全绿(T8 review M3)。注意 /ws/converse 是另一条
  * socket、另一套 type(token/done/error),由 streamConverse 自带类型处理,不属此表。
@@ -26,7 +31,8 @@ export const WS_EVENT_TYPES = [
 	'commitment_fired',
 	'memory_cleared',
 	'world_switched',
-	'snapshot_created'
+	'snapshot_created',
+	'world_rolled_back'
 ] as const;
 export type WsEventType = (typeof WS_EVENT_TYPES)[number];
 

@@ -74,6 +74,25 @@ describe('describeEvent — 概览 feed 事件结构化', () => {
 		expect(describeEvent('snapshot_created', { world: 3 }).detail).toBe('');
 	});
 
+	it('world_rolled_back: 世界 X 已回滚到快照 Y(warn);缺字段时优雅回退', () => {
+		const v = describeEvent('world_rolled_back', {
+			world: 'sim-1',
+			snapshot_id: '20261026T120000Z-ab12'
+		});
+		expect(v.label).toBe('世界回滚');
+		expect(v.detail).toBe('世界 sim-1 已回滚到快照 20261026T120000Z-ab12');
+		expect(v.tone).toBe('warn');
+		// 有世界、缺快照 id:只说回滚了,不编造快照
+		expect(describeEvent('world_rolled_back', { world: 'sim-1' }).detail).toBe('世界 sim-1 已回滚');
+		expect(describeEvent('world_rolled_back', { world: 'sim-1', snapshot_id: 9 }).detail).toBe(
+			'世界 sim-1 已回滚'
+		);
+		// 缺世界名:空细节
+		expect(describeEvent('world_rolled_back', { snapshot_id: 's1' }).detail).toBe('');
+		expect(describeEvent('world_rolled_back', null).detail).toBe('');
+		expect(describeEvent('world_rolled_back', { world: '' }).detail).toBe('');
+	});
+
 	it('commitment_transition: 短 id + 目标态,FULFILLED 为 success', () => {
 		const v = describeEvent('commitment_transition', {
 			stmt_id: '0123456789abcdef',
