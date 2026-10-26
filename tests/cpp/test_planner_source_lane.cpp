@@ -318,6 +318,27 @@ TEST(PlannerSourceLane, PerceptionFilterAppliesEvenForSelfQuery) {
     EXPECT_EQ(r2.source_entries.size(), 1U);
 }
 
+TEST(PlannerSourceLane, SourceOutsideByteBudgetDoesNotCountAsEvidence) {
+    Rig rig;
+    auto& conn = rig.adapter->connection();
+    seed_engram(conn, "engram-1", {{"alice", "alpha bravo charlie"}});
+    embed_engram(conn, rig.source_index, "engram-1",
+                 rig.embedder.embed("alpha").vector);
+    grant_presence(*rig.adapter, "engram-1", {"alice", "cog-self"});
+
+    auto q = rig.query();
+    q.text = "alpha";
+    auto deps = rig.deps();
+    deps.chunk_byte_budget = 1;
+    q.source_lane = deps;
+    const auto r = rig.planner.run(q);
+
+    EXPECT_TRUE(r.abstained);
+    EXPECT_TRUE(r.source_entries.empty());
+    EXPECT_EQ(r.receipt.source_candidates, 1);
+    EXPECT_EQ(r.context_pack.find("[SOURCE]"), std::string::npos);
+}
+
 TEST(PlannerSourceLane, LowScoreSourceAbstainsWhenAlone) {
     Rig rig;
     auto& conn = rig.adapter->connection();

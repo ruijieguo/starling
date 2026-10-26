@@ -701,8 +701,28 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     const double best_source_score = source_hits.empty()
         ? std::numeric_limits<double>::lowest()
         : source_hits.front().score;
-    const bool source_is_evidence =
-        !source_hits.empty() && best_source_score >= q.source_lane->tau_source;
+    bool renderable_source_evidence = false;
+    if (q.source_lane.has_value()) {
+        std::size_t used_bytes = 0;
+        for (const auto& cand : cands) {
+            const auto label = classify_with_provenance(
+                cand.row, pctx, provenance_by_id.at(cand.row.id));
+            used_bytes += render_line(cand.row, label).size() + 1;
+        }
+        for (const auto& source : source_hits) {
+            const std::size_t cost = render_source_line(source).size() + 1;
+            if (source.score >= q.source_lane->tau_source
+                && used_bytes + cost <= static_cast<std::size_t>(
+                    q.source_lane->chunk_byte_budget)) {
+                renderable_source_evidence = true;
+                break;
+            }
+        }
+    }
+    const bool source_is_evidence = q.source_lane.has_value()
+        && !source_hits.empty()
+        && best_source_score >= q.source_lane->tau_source
+        && renderable_source_evidence;
 
     AbstentionInput abstain_input;
     abstain_input.any_candidates = !cands.empty() || source_is_evidence;
