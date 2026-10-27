@@ -85,7 +85,9 @@ struct Registry {
 //     <registry_dir>/worlds 解析后也必须在 registry_dir 之下；世界目录尚不存在时照常通过。
 //   - 每份快照的 kind 是 manual / auto，path 在字面上位于所属世界的 snapshot_dir 之下；
 //   - snapshots 的每个键都是已登记的世界。
-// 违反任一条：load 抛 registry_corrupt；save 同样抛，注册表文件不被覆盖。
+// 违反任一条：load 抛 registry_corrupt；save 同样抛，注册表文件不被覆盖。布局规则 1–3 的消息写明
+// 字段、原路径与解析到的位置，末尾附补救提示（世界目录内的路径不能外链；换盘请整个移动注册表目录）。
+// dashboard 启动时 bootstrap_worlds 就会 load，所以违反布局会让 dashboard 拒绝启动。
 [[nodiscard]] Registry load_registry(const std::filesystem::path& registry_path);
 void save_registry(const std::filesystem::path& registry_path, const Registry& reg);
 // 注册表文件不存在时，创建只含 default 世界的注册表并保存。
@@ -103,7 +105,10 @@ WorldEntry create_world(Registry& reg, const std::filesystem::path& registry_dir
 // 删除注册项、对应的快照列表，并删除 <registry_dir>/worlds/<name>/ 整个目录。
 // 只删 registry_dir 之下的路径（防止注册表被篡改后删到外部目录）：<registry_dir>/worlds
 // 本身解析后（例如它是指向外部的符号链接）不在 registry_dir 之下时抛 snapshot_failed，
-// 什么都不删，注册项保留。
+// 什么都不删，注册项保留。<registry_dir>/worlds/<name> 解析后也必须恰好是解析后的
+// <registry_dir>/worlds/<name>（与 load_registry 的布局规则 1 相同；本函数可以不经 load 直接调用，
+// 所以自己再查）：指向兄弟世界目录或其子目录、指到外部、解析不了，都抛 snapshot_failed，什么都
+// 不删，注册项保留。
 void delete_world(Registry& reg, const std::filesystem::path& registry_dir,
                   const std::string& name);
 void set_active(Registry& reg, const std::string& name);
@@ -210,8 +215,10 @@ void discard_snapshot_file(const Registry& reg, const std::string& world,
 // 归档操作（回滚建硬链接、列出、清理）之前都先 fail closed，此时什么都还没建、没删：
 //   a. <registry_dir>/worlds 解析符号链接后仍在 registry_dir 之下，否则 registry_corrupt
 //      （与 load_registry 同一检查）；
-//   b. 世界 home 解析符号链接后严格在 <registry_dir>/worlds 之下，否则 snapshot_failed（与
-//      delete_world 拒删指向外部的世界目录同一边界）；
+//   b. 世界 home 解析符号链接后严格在 <registry_dir>/worlds 之下，并且恰好是解析后的
+//      <registry_dir>/worlds/<name>（与 load_registry 的布局规则 1 相同：不经 load 直接调用时，
+//      worlds/sim-1 -> worlds/sim-2 不能让 sim-1 的回滚、列出、清理落到 sim-2 上），否则
+//      snapshot_failed（与 delete_world 同一边界）；
 //   c. archive/ 解析符号链接后严格在世界 home 之下，否则 snapshot_failed。
 // 回滚只在 a、b 通过之后才 create_directories(archive)，所以世界目录之外什么都不会被建出来。
 

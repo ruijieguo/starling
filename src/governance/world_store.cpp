@@ -269,9 +269,11 @@ void validate_shape(const Registry& reg) {
 // 出来（mkdir 报 EEXIST、open 报 ENOENT），weakly_canonical 的字面结果够用。
 // 也就是说，中间某一级是悬空链接时只解析末尾，其余部分按字面算。这可能多拒绝一些布局（例如
 // worlds/sim-1 悬空地指向 worlds/sim-1-real），但不会让路径越界放行，即 fail closed。
-// 解析出错（EACCES、ELOOP 等）时证明不了路径在哪里，按越界处理：registry_corrupt，带上原因。
-[[noreturn]] void unresolvable(const fs::path& path, const std::error_code& err) {
-    corrupt("cannot resolve " + path.string() + ": " + err.message());
+// 解析出错（EACCES、ELOOP 等）时证明不了路径在哪里，按越界处理：抛 code（布局校验是
+// registry_corrupt，不经 load 的破坏性入口是 snapshot_failed），带上原因。
+[[noreturn]] void unresolvable(const fs::path& path, const std::error_code& err,
+                               const std::string& code) {
+    throw WorldStoreError(code, "cannot resolve " + path.string() + ": " + err.message());
 }
 
 // 去掉末尾的 "/" 与 "."（"a/b/"、"a/b/." → "a/b"）。主要理由：lstat("链接/") 会跟随链接，把末端
@@ -286,7 +288,8 @@ fs::path without_trailing_dot_or_slash(fs::path path) {
     return path;
 }
 
-fs::path resolve_for_layout(const fs::path& path) {
+// code 是解析出错时抛的码（见 unresolvable）。
+fs::path resolve_for_layout(const fs::path& path, const std::string& code = "registry_corrupt") {
     constexpr int kMaxLinkHops = 40;
     fs::path current = path;
     for (int hop = 0; hop < kMaxLinkHops; ++hop) {
@@ -295,20 +298,26 @@ fs::path resolve_for_layout(const fs::path& path) {
         std::error_code err;
         const fs::file_status status = fs::symlink_status(current, err);
         // 不存在时 libc++ 也会把 err 设成 ENOENT，不算错误（同 lstat_or_throw）。
-        if (err && status.type() != fs::file_type::not_found) { unresolvable(path, err); }
+        if (err && status.type() != fs::file_type::not_found) { unresolvable(path, err, code); }
         if (status.type() != fs::file_type::symlink) {
             err.clear();
             const fs::path real = fs::weakly_canonical(current, err);
-            if (err) { unresolvable(path, err); }
+            if (err) { unresolvable(path, err, code); }
             return normalized(real);
         }
         const fs::path link = fs::read_symlink(current, err);
-        if (err) { unresolvable(path, err); }
+        if (err) { unresolvable(path, err, code); }
         // 相对的链接内容相对于链接所在的目录，与内核解析同义；".." 留给 weakly_canonical 处理。
         current = link.is_absolute() ? link : current.parent_path() / link;
     }
-    unresolvable(path, std::make_error_code(std::errc::too_many_symbolic_link_levels));
+    unresolvable(path, std::make_error_code(std::errc::too_many_symbolic_link_levels), code);
 }
+
+// require_resolved_* 拒绝时附在消息末尾的补救提示。违反布局的注册表在启动时（bootstrap_worlds →
+// load_registry）就让 dashboard 拒绝启动，消息要让人看得出怎么改。
+constexpr std::string_view kLayoutRemedy =
+    " (a world directory and the paths inside it must not be symlinks that lead out of it; "
+    "to move worlds to another disk, move the whole registry directory)";
 
 // 布局校验：target 解析符号链接之后严格位于 base 解析之后的位置之下，否则 registry_corrupt。
 // 两侧都解析，所以同一处换一种写法（/tmp 与 /private/tmp、经符号链接打开的注册表目录）仍然放行。
@@ -322,7 +331,7 @@ void require_resolved_within(const fs::path& base, const fs::path& target,
     const fs::path real_target = resolve_for_layout(target);
     if (!strictly_under(real_base, real_target)) {
         corrupt(what + " " + target.string() + " resolves to " + real_target.string() +
-                ", outside " + real_base.string());
+                ", outside " + real_base.string() + std::string(kLayoutRemedy));
     }
 }
 
@@ -331,13 +340,18 @@ void require_resolved_within(const fs::path& base, const fs::path& target,
 // remove_within 解析到 sim-2，删掉兄弟世界的整个目录和库（用户裁定 2026-10-27：每个世界目录解析后
 // 都是 worlds/<它自己的名字>）。世界目录还不存在时 weakly_canonical 把缺的末尾原样接上，照常通过；
 // worlds/ 整体外链到注册表目录内、注册表目录本身是符号链接，两侧同样解析，仍然放行。
-void require_resolved_home(const fs::path& worlds_root, const std::string& name) {
+// code 是违反（含解析出错）时抛的码：load / save 的布局校验是 registry_corrupt；delete_world 与
+// checked_world_home（回滚、列出、清理归档）可以不经 load 直接调用，自己也查，抛 snapshot_failed。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void require_resolved_home(const fs::path& worlds_root, const std::string& name,
+                           const std::string& code) {
     const fs::path home = worlds_root / name;
-    const fs::path expected = resolve_for_layout(worlds_root) / name;
-    const fs::path real_home = resolve_for_layout(home);
+    const fs::path expected = resolve_for_layout(worlds_root, code) / name;
+    const fs::path real_home = resolve_for_layout(home, code);
     if (real_home != expected) {
-        corrupt("home of '" + name + "' " + home.string() + " resolves to " +
-                real_home.string() + ", not " + expected.string());
+        throw WorldStoreError(code, "home of '" + name + "' " + home.string() + " resolves to " +
+                                        real_home.string() + ", not " + expected.string() +
+                                        std::string(kLayoutRemedy));
     }
 }
 
@@ -351,14 +365,15 @@ void require_resolved_home(const fs::path& worlds_root, const std::string& name)
 // worlds/ 解析符号链接之后必须仍在注册表目录之下。逐项比较两侧都解析符号链接，
 // 若 worlds/ 本身指向外部，「目标在 home 之下」会在外部成立，快照清扫、保留策略、删快照
 // 便以外部目录为根。所以在逐项比较之前先把根钉死：worlds/ 还不存在（全新注册表）时放行。
+// 用 resolve_for_layout 而不是 weakly_canonical：worlds/ 是悬空的符号链接（例如指到没挂上的盘）时，
+// weakly_canonical 把它原样留下、字面放行，随后才被世界目录那条规则以「解析到自己」这种让人困惑的
+// 消息拒绝；跟到底之后，这里直接报 worlds/ 解析到了哪里。解析出错同样 registry_corrupt。
 void require_worlds_root_inside(const fs::path& registry_dir, const fs::path& worlds_root) {
     std::error_code err;
     if (!fs::exists(fs::symlink_status(worlds_root, err))) { return; }
-    const fs::path real_dir = fs::weakly_canonical(registry_dir, err);
-    if (err) { corrupt("cannot resolve " + registry_dir.string() + ": " + err.message()); }
-    const fs::path real_root = fs::weakly_canonical(worlds_root, err);
-    if (err) { corrupt("cannot resolve " + worlds_root.string() + ": " + err.message()); }
-    if (!strictly_under(normalized(real_dir), normalized(real_root))) {
+    const fs::path real_dir = resolve_for_layout(registry_dir);
+    const fs::path real_root = resolve_for_layout(worlds_root);
+    if (!strictly_under(real_dir, real_root)) {
         corrupt(worlds_root.string() + " resolves to " + real_root.string() + ", outside " +
                 real_dir.string());
     }
@@ -372,7 +387,7 @@ void validate_layout(const Registry& reg, const fs::path& registry_dir) {
         if (!lexically_within(worlds_root, home)) {
             corrupt("world '" + name + "' has no home under " + worlds_root.string());
         }
-        require_resolved_home(worlds_root, name);
+        require_resolved_home(worlds_root, name, "registry_corrupt");
         if (name != reg.default_world) {
             require_resolved_within(home, world.db_path, "db_path of '" + name + "'");
         }
@@ -739,7 +754,12 @@ void delete_world(Registry& reg, const fs::path& registry_dir, const std::string
     const fs::path root = fs::absolute(registry_dir);
     const fs::path base = root / "worlds";
     require_inside_registry(root, base);
-    // worlds/<name> 本身是指向外部的符号链接时 remove_within 不删（返回 false）。与快照的
+    // worlds/<name> 解析后必须恰好是解析后的 worlds/<name>（与 load 的布局校验同一条规则，见
+    // require_resolved_home）：delete_world 可以不经 load 直接调用，worlds/sim-1 -> worlds/sim-2
+    // 时 remove_within 会解析到 sim-2，把兄弟世界整个删掉。违反抛 snapshot_failed，什么都不删，
+    // 注册项保留。指向外部、解析不了（ELOOP 等）同样在这里拒。
+    require_resolved_home(base, name, "snapshot_failed");
+    // 纵深防御：worlds/<name> 解析到 worlds/ 之外时 remove_within 不删（返回 false）。与快照的
     // 越界处理一致 fail closed：抛 snapshot_failed、注册项保留，不让外部数据变成无主孤儿。
     if (!remove_within(base, base / name)) {
         throw WorldStoreError("snapshot_failed",
@@ -1058,8 +1078,11 @@ const SnapshotEntry& registered_snapshot(const Registry& reg, const std::string&
 // 归档目录为 <世界 home>/archive。
 // 归档操作（回滚建硬链接、列出、清理）之前先 fail closed，此时还什么都没建：
 //   1. worlds/ 解析符号链接后仍在注册表目录之下（require_worlds_root_inside，registry_corrupt）；
-//   2. 世界 home 解析符号链接后严格在 worlds/ 之下，否则 snapshot_failed。与 delete_world 拒删
-//      指向外部的世界目录是同一个边界。
+//   2. 世界 home 解析符号链接后严格在 worlds/ 之下，并且恰好是解析后的 worlds/<name>（与 load
+//      的布局校验同一条规则，见 require_resolved_home），否则 snapshot_failed。只查「在 worlds/
+//      之下」不够：worlds/sim-1 -> worlds/sim-2 时，回滚、列出、清理 sim-1 实际作用在 sim-2 的
+//      库与 archive/ 上，清理会删掉 sim-2 的回滚归档（回滚前旧库唯一剩下的名字）。与 delete_world
+//      是同一个边界。
 // 返回世界 home（未解析符号链接的路径）。
 fs::path checked_world_home(const fs::path& registry_dir, const std::string& world) {
     const fs::path root = normalized(fs::absolute(registry_dir));
@@ -1067,6 +1090,7 @@ fs::path checked_world_home(const fs::path& registry_dir, const std::string& wor
     require_worlds_root_inside(root, worlds_root);
     const fs::path home = worlds_root / world;
     require_inside_registry(worlds_root, home);
+    require_resolved_home(worlds_root, world, "snapshot_failed");
     return home;
 }
 

@@ -2367,5 +2367,136 @@ TEST(WorldLayout, AllowsWorldsRootLinkedWithinTheRegistryDir) {
     EXPECT_TRUE(fs::is_directory(tmp.path() / "store" / "sim-1"));
 }
 
+
+// ---- 整支终审修复轮 M1：不经 load 的破坏性入口自己查世界目录恰好是 worlds/<name> -------------
+// delete_world 与 checked_world_home（回滚、列出、清理归档）可以拿一份不是 load 出来的注册表直接
+// 调用，load 的布局校验（A1）拦不到它们。worlds/sim-1 -> worlds/sim-2 时，只查「严格在 worlds/ 之下」
+// 会放行：delete_world("sim-1") 删掉 sim-2 的整个目录，purge_rollback_archives("sim-1") 删掉 sim-2 的
+// 回滚归档。两处都必须抛 snapshot_failed，sim-2 一个字节都不动。
+
+// 注册表里有 sim-1 与 sim-2，sim-2 的库有 3 行、回滚过一次（archive/ 里有一份归档）、快照目录里多放
+// 一个文件；然后把 worlds/sim-1 换成指向 worlds/sim-2 的符号链接。注册表是内存里的，不经 load。
+struct SiblingAliasCase {
+    TempDir tmp;
+    Registry reg = registry_with_world(tmp, "sim-1");
+    fs::path alias = world_dir_of(tmp, "sim-1");
+    fs::path sibling = world_dir_of(tmp, "sim-2");
+    std::string archive;    // sim-2 那份归档的完整路径
+
+    SiblingAliasCase() {
+        (void)create_world(reg, tmp.path(), "sim-2", "", "2026-10-25T01:00:00Z");
+        const auto snap = snapshot_then_write(reg, "sim-2", 3, 2);
+        archive = rollback_world(reg, tmp.path(), "sim-2", snap.id, RollbackOptions{}).archive_path;
+        { std::ofstream out(fs::path(reg.worlds.at("sim-2").snapshot_dir) / "keep.db"); out << "x"; }
+        fs::remove_all(alias);
+        fs::create_directory_symlink(sibling, alias);
+    }
+};
+
+TEST(WorldLayout, DeleteWorldRefusesWorldDirAliasedToASiblingWorldDir) {
+    SiblingAliasCase tcase;
+    ASSERT_TRUE(fs::is_regular_file(tcase.archive));
+    const auto sibling_before = contents_of(tcase.sibling);
+    const std::string what = what_of([&] { delete_world(tcase.reg, tcase.tmp.path(), "sim-1"); });
+    EXPECT_EQ(code_of([&] { delete_world(tcase.reg, tcase.tmp.path(), "sim-1"); }),
+              "snapshot_failed");
+    EXPECT_NE(what.find("home of 'sim-1'"), std::string::npos) << what;
+    EXPECT_NE(what.find("resolves to"), std::string::npos) << what;
+    EXPECT_EQ(contents_of(tcase.sibling), sibling_before);
+    EXPECT_EQ(engram_count(tcase.reg.worlds.at("sim-2").db_path), 3);
+    EXPECT_TRUE(fs::is_symlink(tcase.alias));
+    EXPECT_TRUE(tcase.reg.worlds.contains("sim-1"));      // 注册项保留
+    EXPECT_TRUE(tcase.reg.worlds.contains("sim-2"));
+}
+
+TEST(WorldLayout, PurgeArchivesRefusesWorldDirAliasedToASiblingWorldDir) {
+    SiblingAliasCase tcase;
+    ASSERT_TRUE(fs::is_regular_file(tcase.archive));
+    const auto sibling_before = contents_of(tcase.sibling);
+    const std::string what =
+        what_of([&] { (void)purge_rollback_archives(tcase.reg, tcase.tmp.path(), "sim-1"); });
+    EXPECT_EQ(code_of([&] { (void)purge_rollback_archives(tcase.reg, tcase.tmp.path(), "sim-1"); }),
+              "snapshot_failed");
+    EXPECT_NE(what.find("home of 'sim-1'"), std::string::npos) << what;
+    EXPECT_NE(what.find("resolves to"), std::string::npos) << what;
+    // 同一个检查（checked_world_home）也挡住列出与回滚：sim-1 的操作不会落到 sim-2 上。
+    EXPECT_EQ(code_of([&] { (void)list_rollback_archives(tcase.reg, tcase.tmp.path(), "sim-1"); }),
+              "snapshot_failed");
+    EXPECT_EQ(contents_of(tcase.sibling), sibling_before);
+    EXPECT_TRUE(fs::is_regular_file(tcase.archive));
+    EXPECT_EQ(engram_count(tcase.reg.worlds.at("sim-2").db_path), 3);
+}
+
+// 别名之外的合法布局不受影响：delete_world 与归档操作照常工作（worlds/ 整体外链到注册表目录内）。
+TEST(WorldLayout, DeleteAndArchivesStillWorkWhenWorldsRootIsLinkedWithinTheRegistryDir) {
+    const TempDir tmp;
+    const fs::path reg_path = tmp.path() / "worlds.json";
+    fs::create_directories(tmp.path() / "store");
+    fs::create_directory_symlink(tmp.path() / "store", tmp.path() / "worlds");
+    auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    (void)create_world(reg, tmp.path(), "sim-2", "", "2026-10-25T01:00:00Z");
+    const auto snap = snapshot_then_write(reg, "sim-1", 2, 1);
+    (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, RollbackOptions{});
+    EXPECT_EQ(list_rollback_archives(reg, tmp.path(), "sim-1").size(), 1U);
+    EXPECT_EQ(purge_rollback_archives(reg, tmp.path(), "sim-1"), 1U);
+    delete_world(reg, tmp.path(), "sim-2");
+    EXPECT_FALSE(fs::exists(tmp.path() / "store" / "sim-2"));
+    EXPECT_TRUE(fs::is_directory(tmp.path() / "store" / "sim-1"));
+}
+
+
+// ---- 整支终审修复轮 M2：worlds/ 是悬空链接时，报错点名 worlds/ 解析到了哪里 -------------------
+// 旧实现用 weakly_canonical，它不跟随末端悬空的链接：worlds/ 字面放行，随后由世界目录那条规则以
+// 「home of 'default' <reg>/worlds/default resolves to <reg>/worlds/default, not …」拒绝，像是说它
+// 解析到了自己。全新安装（ensure_registry 存第一份注册表）同样命中。拒绝本身不变。
+TEST(WorldLayout, DanglingWorldsRootIsRefusedByTheWorldsRootRule) {
+    const TempDir tmp;
+    const TempDir outside;
+    const fs::path reg_path = tmp.path() / "worlds.json";
+    const fs::path worlds = tmp.path() / "worlds";
+    const fs::path unmounted = outside.path() / "unmounted" / "worlds";
+    fs::create_directory_symlink(unmounted, worlds);
+    const auto check = [&](const std::string& label, const std::function<void()>& action) {
+        EXPECT_EQ(code_of(action), "registry_corrupt") << label;
+        const std::string what = what_of(action);
+        EXPECT_NE(what.find(worlds.string() + " resolves to "), std::string::npos)
+            << label << ": " << what;
+        EXPECT_NE(what.find("unmounted"), std::string::npos) << label << ": " << what;
+        EXPECT_NE(what.find(", outside "), std::string::npos) << label << ": " << what;
+        EXPECT_EQ(what.find("home of"), std::string::npos) << label << ": " << what;
+    };
+    check("fresh install", [&] {
+        (void)ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    });
+    EXPECT_FALSE(fs::exists(reg_path));
+    { std::ofstream out(reg_path); out << R"({"version":1,"default":"default","active":"default","snapshot_retention":5,"worlds":{"default":{"tenant":"default","db_path":")" << (tmp.path() / "dashboard.db").string() << R"(","snapshot_dir":")" << (worlds / "default" / "snapshots").string() << R"(","label":"","created_at":""}},"snapshots":{}})"; }
+    check("load", [&] { (void)load_registry(reg_path); });
+    EXPECT_FALSE(fs::exists(outside.path() / "unmounted"));   // 外部什么都没建出来
+}
+
+// ---- 整支终审修复轮 M3：布局拒绝的消息末尾带补救提示 -----------------------------------------
+// 违反布局的注册表让 dashboard 在启动时（bootstrap_worlds → load_registry）就拒绝启动，消息要说清
+// 怎么改：世界目录内的路径不能外链，换盘要整个挪注册表目录。
+TEST(WorldLayout, LayoutRefusalsCarryARemedyHint) {
+    const std::string hint = "move the whole registry directory";
+    {
+        const LayoutCase lcase;
+        move_out_and_link(lcase.home / "snapshots", lcase.outside.path());
+        const std::string what = what_of([&] { (void)load_registry(lcase.reg_path); });
+        EXPECT_NE(what.find("snapshot_dir of 'sim-1'"), std::string::npos) << what;
+        EXPECT_NE(what.find(hint), std::string::npos) << what;
+    }
+    {
+        LayoutCase lcase;
+        const fs::path sibling = add_populated_sibling(lcase);
+        fs::remove_all(lcase.home);
+        fs::create_directory_symlink(sibling, lcase.home);
+        const std::string what = what_of([&] { (void)load_registry(lcase.reg_path); });
+        EXPECT_NE(what.find("home of 'sim-1'"), std::string::npos) << what;
+        EXPECT_NE(what.find(hint), std::string::npos) << what;
+    }
+}
+
 }  // namespace
 }  // namespace starling::governance
