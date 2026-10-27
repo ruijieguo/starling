@@ -75,7 +75,8 @@ struct Registry {
 //   - 每个 db_path / snapshot_dir 都是绝对路径；
 //   - 布局（registry_dir 取注册表文件所在目录，世界目录 = <registry_dir>/worlds/<name>）。以下三条
 //     都在解析符号链接之后判断（含末端悬空的链接），不因字面路径在世界目录里就放行：
-//       1. 世界目录本身严格位于 <registry_dir>/worlds 之下；
+//       1. 世界目录本身解析后恰好是（解析后的）<registry_dir>/worlds/<name>：不能是指到别的世界
+//          目录或其子目录的符号链接（否则删一个世界会删掉它的兄弟），尚不存在时照常通过；
 //       2. 非 default 世界的 db_path 严格位于自己的世界目录之下（default 的库保持原地，不受此限）；
 //       3. 每个世界（含 default）的 snapshot_dir 严格位于自己的世界目录之下。
 //     所以世界目录、snapshots/、world.db 不能是指到世界目录之外的符号链接（指向同一世界目录内

@@ -80,7 +80,8 @@ bool strictly_under(const fs::path& base, const fs::path& target) {
     return !rel.empty() && rel != "." && *rel.begin() != "..";
 }
 
-// 字面判断，不解析符号链接：注册表校验只看写在 worlds.json 里的路径本身。
+// 字面判断，不解析符号链接。这是字面预检：形状校验（快照路径在 snapshot_dir 之下）与世界名推出的
+// home 的字面检查用它；布局校验另外解析符号链接之后再判断（见 require_resolved_within）。
 bool lexically_within(const fs::path& base, const fs::path& target) {
     return strictly_under(normalized(base), normalized(target));
 }
@@ -266,13 +267,18 @@ void validate_shape(const Registry& reg) {
 // fs::weakly_canonical 把它当成一个不存在的普通名字原样留下，而 SQLite 以 O_CREAT 打开它会在
 // 链接目标处建库（实测），世界库就建到了世界目录之外。中间某一级悬空时，在它下面什么都建不
 // 出来（mkdir 报 EEXIST、open 报 ENOENT），weakly_canonical 的字面结果够用。
+// 也就是说，中间某一级是悬空链接时只解析末尾，其余部分按字面算。这可能多拒绝一些布局（例如
+// worlds/sim-1 悬空地指向 worlds/sim-1-real），但不会让路径越界放行，即 fail closed。
 // 解析出错（EACCES、ELOOP 等）时证明不了路径在哪里，按越界处理：registry_corrupt，带上原因。
 [[noreturn]] void unresolvable(const fs::path& path, const std::error_code& err) {
     corrupt("cannot resolve " + path.string() + ": " + err.message());
 }
 
-// 去掉末尾的 "/" 与 "."（"a/b/"、"a/b/." → "a/b"）。lstat("链接/") 会跟随链接，末端的悬空
-// 链接就被当成不存在；而 mkdir("链接/") 在 macOS 上会在链接目标处建目录（实测）。
+// 去掉末尾的 "/" 与 "."（"a/b/"、"a/b/." → "a/b"）。主要理由：lstat("链接/") 会跟随链接，把末端
+// 的链接本身藏起来（悬空时就成了「不存在」），字面结果于是放行；去掉末尾的分隔符，规则才能一致地
+// 执行，不取决于注册表里的写法。另外 mkdir("链接/") 在 macOS 上会在链接目标处建目录（实测），但
+// take_snapshot 的 create_directories 走不走得到这一步取决于实现（libc++ 可能先在父路径那一级报
+// EEXIST），不作为依据。
 fs::path without_trailing_dot_or_slash(fs::path path) {
     while (path.has_relative_path() && (path.filename().empty() || path.filename() == ".")) {
         path = path.parent_path();
@@ -320,8 +326,24 @@ void require_resolved_within(const fs::path& base, const fs::path& target,
     }
 }
 
+// 世界目录本身：解析符号链接之后必须恰好是「解析后的 worlds/」/<name>，只在 worlds/ 之下不够。
+// 否则 worlds/sim-1 -> worlds/sim-2（或 worlds/sim-2/sub）能通过，delete_world("sim-1") 经
+// remove_within 解析到 sim-2，删掉兄弟世界的整个目录和库（用户裁定 2026-10-27：每个世界目录解析后
+// 都是 worlds/<它自己的名字>）。世界目录还不存在时 weakly_canonical 把缺的末尾原样接上，照常通过；
+// worlds/ 整体外链到注册表目录内、注册表目录本身是符号链接，两侧同样解析，仍然放行。
+void require_resolved_home(const fs::path& worlds_root, const std::string& name) {
+    const fs::path home = worlds_root / name;
+    const fs::path expected = resolve_for_layout(worlds_root) / name;
+    const fs::path real_home = resolve_for_layout(home);
+    if (real_home != expected) {
+        corrupt("home of '" + name + "' " + home.string() + " resolves to " +
+                real_home.string() + ", not " + expected.string());
+    }
+}
+
 // 世界目录布局（解析符号链接之后判断，见 require_resolved_within）：
-//   - 世界目录 <registry_dir>/worlds/<name> 严格位于 worlds/ 之下；
+//   - 世界目录 <registry_dir>/worlds/<name> 解析后恰好是解析后的 worlds/ 下的 <name>
+//     （require_resolved_home），不能是别的世界的目录或它的子目录；
 //   - 非 default 世界的 db_path、所有世界的 snapshot_dir 严格位于各自的世界目录之下。
 // default 的库保持原地（spec §0.1），不受此限；但它的快照目录同样固定在 worlds/<default>/ 下
 // ——否则把它改成 "/"，删除快照、保留策略和残留清扫就能删到任意位置。
@@ -350,7 +372,7 @@ void validate_layout(const Registry& reg, const fs::path& registry_dir) {
         if (!lexically_within(worlds_root, home)) {
             corrupt("world '" + name + "' has no home under " + worlds_root.string());
         }
-        require_resolved_within(worlds_root, home, "home of '" + name + "'");
+        require_resolved_home(worlds_root, name);
         if (name != reg.default_world) {
             require_resolved_within(home, world.db_path, "db_path of '" + name + "'");
         }

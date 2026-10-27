@@ -2174,9 +2174,19 @@ struct LayoutCase {
     }
 };
 
-// 越界布局：load 与 save 都报 registry_corrupt；save 要写的是改过的注册表，原文件仍一字不变；
-// 外部目录一个条目都没多、没少。
-void expect_layout_refused(const LayoutCase& lcase, const std::string& label) {
+// 抛出的 WorldStoreError 的完整消息（不抛时为空串）。
+std::string what_of(const std::function<void()>& action) {
+    try { action(); } catch (const WorldStoreError& err) { return err.what(); }
+    return {};
+}
+
+// 越界布局：load 与 save 都报 registry_corrupt，消息里同时有 field 与 reason，确认是预期的那条
+// 规则拒的，而不是更早的某个校验恰好抛了同一个码；save 要写的是改过的注册表，原文件仍一字不变；
+// 外部目录一个条目都没多、没少。field 是消息里点名的字段标签（"db_path of 'sim-1'"）；越界时
+// reason 是 "resolves to"。解析出错时消息不带字段标签，field 传原路径、reason 传 "cannot resolve"。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void expect_layout_refused(const LayoutCase& lcase, const std::string& label,
+                           const std::string& field, const std::string& reason = "resolves to") {
     const std::string before = slurp(lcase.reg_path);
     const auto outside_before = tree_of(lcase.outside.path());
     Registry edited = lcase.reg;
@@ -2184,6 +2194,11 @@ void expect_layout_refused(const LayoutCase& lcase, const std::string& label) {
     EXPECT_EQ(code_of([&] { (void)load_registry(lcase.reg_path); }), "registry_corrupt") << label;
     EXPECT_EQ(code_of([&] { save_registry(lcase.reg_path, edited); }), "registry_corrupt")
         << label;
+    for (const std::string& what : {what_of([&] { (void)load_registry(lcase.reg_path); }),
+                                    what_of([&] { save_registry(lcase.reg_path, edited); })}) {
+        EXPECT_NE(what.find(field), std::string::npos) << label << ": " << what;
+        EXPECT_NE(what.find(reason), std::string::npos) << label << ": " << what;
+    }
     EXPECT_EQ(slurp(lcase.reg_path), before) << label;
     EXPECT_EQ(tree_of(lcase.outside.path()), outside_before) << label;
 }
@@ -2191,13 +2206,13 @@ void expect_layout_refused(const LayoutCase& lcase, const std::string& label) {
 TEST(WorldLayout, RefusesSnapshotsDirResolvingOutsideTheWorldDir) {
     const LayoutCase lcase;
     move_out_and_link(lcase.home / "snapshots", lcase.outside.path());
-    expect_layout_refused(lcase, "snapshots/ -> outside");
+    expect_layout_refused(lcase, "snapshots/ -> outside", "snapshot_dir of 'sim-1'");
 }
 
 TEST(WorldLayout, RefusesWorldDirResolvingOutside) {
     const LayoutCase lcase;
     move_out_and_link(lcase.home, lcase.outside.path());
-    expect_layout_refused(lcase, "worlds/sim-1 -> outside");
+    expect_layout_refused(lcase, "worlds/sim-1 -> outside", "home of 'sim-1'");
 }
 
 TEST(WorldLayout, RefusesWorldDbResolvingOutside) {
@@ -2205,7 +2220,7 @@ TEST(WorldLayout, RefusesWorldDbResolvingOutside) {
     const fs::path foreign = lcase.outside.path() / "world.db";
     { std::ofstream out(foreign); out << "x"; }
     fs::create_symlink(foreign, lcase.reg.worlds.at("sim-1").db_path);
-    expect_layout_refused(lcase, "world.db -> outside");
+    expect_layout_refused(lcase, "world.db -> outside", "db_path of 'sim-1'");
 }
 
 // weakly_canonical 不解析悬空的符号链接（目标不存在时当成普通的不存在路径），而 SQLite 以
@@ -2213,11 +2228,13 @@ TEST(WorldLayout, RefusesWorldDbResolvingOutside) {
 TEST(WorldLayout, RefusesDanglingWorldDbLink) {
     const LayoutCase lcase;
     fs::create_symlink(lcase.outside.path() / "later.db", lcase.reg.worlds.at("sim-1").db_path);
-    expect_layout_refused(lcase, "world.db -> missing file outside");
+    expect_layout_refused(lcase, "world.db -> missing file outside", "db_path of 'sim-1'");
 }
 
-// 同上，悬空的 snapshots/ 链接，但注册表里的 snapshot_dir 以 "/" 或 "/." 结尾：lstat 会跟随
-// 末尾带 "/" 的链接，看不出它是链接；mkdir("链接/") 在 macOS 上会在链接目标处建目录。
+// 同上，悬空的 snapshots/ 链接，但注册表里的 snapshot_dir 以 "/" 或 "/." 结尾：lstat("链接/") 会跟随
+// 链接，把链接本身藏起来，字面结果就放行了；所以规则先去掉末尾的分隔符再判断，不取决于注册表里的
+// 写法。（mkdir("链接/") 在 macOS 上会在链接目标处建目录，但创建快照目录时走不走得到这一步取决于
+// 实现，这里不以它为依据。）
 TEST(WorldLayout, RefusesDanglingSnapshotsLinkBehindTrailingSlash) {
     for (const std::string suffix : {"/", "/."}) {
         LayoutCase lcase;
@@ -2227,7 +2244,8 @@ TEST(WorldLayout, RefusesDanglingSnapshotsLinkBehindTrailingSlash) {
         const fs::path snaps = lcase.home / "snapshots";
         fs::remove(snaps);
         fs::create_directory_symlink(lcase.outside.path() / "later", snaps);
-        expect_layout_refused(lcase, "snapshot_dir '" + world.snapshot_dir + "'");
+        expect_layout_refused(lcase, "snapshot_dir '" + world.snapshot_dir + "'",
+                              "snapshot_dir of 'sim-1'");
     }
 }
 
@@ -2237,7 +2255,7 @@ TEST(WorldLayout, RefusesPathThatCannotBeResolved) {
     const fs::path snaps = lcase.home / "snapshots";
     fs::remove(snaps);
     fs::create_symlink("snapshots", snaps);   // 指向自己
-    expect_layout_refused(lcase, "snapshots/ -> itself");
+    expect_layout_refused(lcase, "snapshots/ -> itself", snaps.string(), "cannot resolve");
     try {
         (void)load_registry(lcase.reg_path);
         ADD_FAILURE() << "load_registry did not throw";
@@ -2263,6 +2281,90 @@ TEST(WorldLayout, AllowsWorldDirThatDoesNotExistYet) {
     fs::remove_all(lcase.home);
     EXPECT_EQ(code_of([&] { (void)load_registry(lcase.reg_path); }), "<no throw>");
     EXPECT_EQ(code_of([&] { save_registry(lcase.reg_path, lcase.reg); }), "<no throw>");
+}
+
+// 同上，但 snapshots/ 是相对链接（ln -s store snapshots）：相对于链接所在的世界目录解析，放行。
+TEST(WorldLayout, AllowsSnapshotsDirRelativeLinkWithinTheWorldDir) {
+    const LayoutCase lcase;
+    const fs::path snaps = lcase.home / "snapshots";
+    fs::rename(snaps, lcase.home / "store");
+    fs::create_directory_symlink("store", snaps);
+    EXPECT_EQ(code_of([&] { (void)load_registry(lcase.reg_path); }), "<no throw>");
+    EXPECT_EQ(code_of([&] { save_registry(lcase.reg_path, lcase.reg); }), "<no throw>");
+}
+
+// ---- 最终修复轮 A1：世界目录解析后必须恰好是 worlds/<它自己的名字> --------------------------
+// worlds/sim-1 -> worlds/sim-2 时 sim-1 的目录解析后仍严格在 worlds/ 之下，旧规则放行；随后
+// delete_world("sim-1") 经 remove_within 解析到 sim-2，把兄弟世界的整个目录和库删掉。
+
+// 目录树里每个条目的相对路径和内容（普通文件取字节，其余记类型），用来断言「一个字节都没变」。
+std::vector<std::pair<std::string, std::string>> contents_of(const fs::path& root) {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto& rel : tree_of(root)) {
+        const fs::path entry = root / rel;
+        const auto type = fs::symlink_status(entry).type();
+        std::string body = "<type " + std::to_string(static_cast<int>(type)) + ">";
+        if (type == fs::file_type::regular) { body = slurp(entry); }
+        out.emplace_back(rel, std::move(body));
+    }
+    return out;
+}
+
+// LayoutCase 再登记一个 sim-2，库里放上数据、快照目录里放一个文件。
+fs::path add_populated_sibling(LayoutCase& lcase) {
+    (void)create_world(lcase.reg, lcase.tmp.path(), "sim-2", "", "2026-10-25T01:00:00Z");
+    save_registry(lcase.reg_path, lcase.reg);
+    const auto& sibling = lcase.reg.worlds.at("sim-2");
+    seed_world_db(sibling.db_path, "sim-2", 3);
+    { std::ofstream out(fs::path(sibling.snapshot_dir) / "keep.db"); out << "snap"; }
+    return world_dir_of(lcase.tmp, "sim-2");
+}
+
+TEST(WorldLayout, RefusesWorldDirAliasedToASiblingWorldDir) {
+    LayoutCase lcase;
+    const fs::path sibling = add_populated_sibling(lcase);
+    fs::remove_all(lcase.home);
+    fs::create_directory_symlink(sibling, lcase.home);
+    const auto sibling_before = contents_of(sibling);
+    expect_layout_refused(lcase, "worlds/sim-1 -> worlds/sim-2", "home of 'sim-1'");
+    EXPECT_EQ(contents_of(sibling), sibling_before);
+    EXPECT_EQ(engram_count(lcase.reg.worlds.at("sim-2").db_path), 3);
+}
+
+TEST(WorldLayout, RefusesWorldDirAliasedIntoASiblingWorldDir) {
+    LayoutCase lcase;
+    const fs::path sibling = add_populated_sibling(lcase);
+    fs::create_directories(sibling / "sub");
+    fs::remove_all(lcase.home);
+    fs::create_directory_symlink(sibling / "sub", lcase.home);
+    const auto sibling_before = contents_of(sibling);
+    expect_layout_refused(lcase, "worlds/sim-1 -> worlds/sim-2/sub", "home of 'sim-1'");
+    EXPECT_EQ(contents_of(sibling), sibling_before);
+}
+
+// 全新注册表：ensure_registry 时 worlds/ 还不存在，create_world 再建出世界目录，存、读都放行。
+TEST(WorldLayout, AllowsFreshRegistryThenCreateWorld) {
+    const TempDir tmp;
+    const fs::path reg_path = tmp.path() / "worlds.json";
+    auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "<no throw>");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    EXPECT_EQ(code_of([&] { save_registry(reg_path, reg); }), "<no throw>");
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "<no throw>");
+}
+
+// worlds/ 整体是指向注册表目录内另一处的符号链接：两侧都解析，世界目录解析后仍是
+// 「解析后的 worlds/」/<名>，放行。
+TEST(WorldLayout, AllowsWorldsRootLinkedWithinTheRegistryDir) {
+    const TempDir tmp;
+    const fs::path reg_path = tmp.path() / "worlds.json";
+    fs::create_directories(tmp.path() / "store");
+    fs::create_directory_symlink(tmp.path() / "store", tmp.path() / "worlds");
+    auto reg = ensure_registry(reg_path, tmp.path() / "dashboard.db", "default");
+    (void)create_world(reg, tmp.path(), "sim-1", "", "2026-10-25T01:00:00Z");
+    EXPECT_EQ(code_of([&] { save_registry(reg_path, reg); }), "<no throw>");
+    EXPECT_EQ(code_of([&] { (void)load_registry(reg_path); }), "<no throw>");
+    EXPECT_TRUE(fs::is_directory(tmp.path() / "store" / "sim-1"));
 }
 
 }  // namespace

@@ -1127,6 +1127,52 @@ def test_delete_of_an_unused_world_still_works(tmp_path, monkeypatch):
     assert not os.path.exists(os.path.dirname(entry["db_path"]))
 
 
+def _tree_bytes(root: str) -> dict:
+    """目录树里每个条目（不跟随符号链接）→ 普通文件的字节，其余记 None。"""
+    out = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root)
+            if os.path.isfile(path) and not os.path.islink(path):
+                with open(path, "rb") as fh:
+                    out[rel] = fh.read()
+            else:
+                out[rel] = None
+    return out
+
+
+def test_delete_refuses_a_world_dir_aliased_to_a_sibling_world_dir(tmp_path, monkeypatch):
+    """worlds/sim-1 -> worlds/sim-2：旧规则只要求世界目录解析后在 worlds/ 之下，load 通过，
+    delete("sim-1") 解析到 sim-2，把它的整个目录和库删掉（sim-2 不是活动世界，_same_db 拦不住）。
+    现在世界目录解析后必须恰好是 worlds/<它自己的名字>：load 就报 registry_corrupt，路由回 500，
+    sim-2 一个字节都不动，库照常可读。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    client, app = _client(tmp_path)
+    mgr = app.state.worlds
+    sim1_home = os.path.dirname(mgr.create("sim-1", "")["db_path"])
+    sim2_db = mgr.create("sim-2", "")["db_path"]
+    sim2_home = os.path.dirname(sim2_db)
+    _migrated_world_db(mgr, "sim-2")
+    _insert_foreign_engram(sim2_db, "sim-2")
+    rows_before = _count(sim2_db, "engrams")
+    assert rows_before == 1
+    os.rmdir(os.path.join(sim1_home, "snapshots"))
+    os.rmdir(sim1_home)
+    os.symlink(sim2_home, sim1_home)
+    tree_before = _tree_bytes(sim2_home)
+    with pytest.raises(_core.WorldStoreError) as ei:
+        mgr.delete("sim-1")
+    assert _code(ei.value) == "registry_corrupt"
+    assert "home of 'sim-1'" in str(ei.value) and "resolves to" in str(ei.value)
+    del ei
+    r = client.delete("/api/worlds/sim-1", params={"confirm": "sim-1"})
+    assert r.status_code == 500 and r.json()["detail"] == "registry_corrupt"
+    assert _tree_bytes(sim2_home) == tree_before
+    assert _count(sim2_db, "engrams") == rows_before
+    assert os.path.islink(sim1_home)
+
+
 def test_routes_non_domain_exception_is_json_500_internal_error(tmp_path, monkeypatch, caplog):
     client, app = _client(tmp_path)
 
