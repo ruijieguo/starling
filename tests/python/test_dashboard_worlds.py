@@ -2553,3 +2553,308 @@ def test_routes_rollback_preflight_refusal_keeps_the_live_engine(tmp_path, monke
     monkeypatch.undo()
     _remember(app.state.engine, "Dave owns search")               # 引擎照常可用
     assert _count(db) == 3
+
+
+# ───────────────────────── 加固 T2：失败路径丢掉引擎后，惰性重建补起后台线程 ─────────────────────────
+
+def _lazy_build(cfg):
+    """命令路由惰性建引擎用的那个真实构建（routes/commands.py 的 _build_engine）。"""
+    from starling.dashboard.routes.commands import _build_engine
+    return _build_engine(cfg)
+
+
+def _drop_engine_by_failure(mgr, state, monkeypatch, failure: str) -> str:
+    """走一条失败路径把引擎丢成 None，返回错误码。只在失败期间换掉 world_manager 的
+    DashboardEngine，返回前换回来。
+    - rollback_reopen：回滚替换成功、重开失败（rollback_reopen_failed）；
+    - rollback_cpp_error：快照损坏、C++ 拒绝、重开也失败（world_open_failed）；
+    - switch_double：切换时新世界打不开、回到旧世界也打不开（world_open_failed）。"""
+    import starling.dashboard.world_manager as wm
+    real = wm.DashboardEngine
+    if failure == "switch_double":
+        mgr.create("sim-1", "")
+
+        def _call():
+            mgr.activate("sim-1")
+    else:
+        snap = _write_snapshot_write(mgr, state, "default")
+        if failure == "rollback_cpp_error":
+            with open(snap["path"], "wb") as fh:
+                fh.write(b"not sqlite" * 512)
+
+        def _call():
+            mgr.rollback("default", snap["id"])
+
+    def _fail(_cfg):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wm, "DashboardEngine", _fail)
+    try:
+        with pytest.raises(WorldSwitchError) as ei:
+            _call()
+    finally:
+        monkeypatch.setattr(wm, "DashboardEngine", real)
+    assert state.engine is None and mgr.switching is False
+    return ei.value.code
+
+
+def _start_workers_like_lifespan(mgr, state, tick: float) -> None:
+    state.config.tick_interval_s = tick
+    mgr.workers_enabled = True
+    mgr._start_workers(state.engine, state.config)
+
+
+@pytest.mark.parametrize("tick", [0, 60.0])
+@pytest.mark.parametrize("failure, code", [
+    ("rollback_reopen", "rollback_reopen_failed"),
+    ("rollback_cpp_error", "world_open_failed"),
+    ("switch_double", "world_open_failed"),
+])
+def test_lazy_rebuild_after_a_failure_restarts_background_workers(tmp_path, monkeypatch,
+                                                                  failure, code, tick):
+    """运行中的引擎因失败路径被丢成 None 之后，下一次惰性重建出来的引擎要把摄入线程（tick>0 时
+    还有维护 tick）起起来，否则 spool 不再被消费、tick 停摆，直到重启服务。只起一次：之后拿到
+    已有引擎的租约不再起。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _start_workers_like_lifespan(mgr, state, tick)
+    assert _drop_engine_by_failure(mgr, state, monkeypatch, failure) == code
+    starts = []
+    real_start = mgr._start_workers
+
+    def _spy_start(engine, cfg):
+        starts.append(engine)
+        real_start(engine, cfg)
+    monkeypatch.setattr(mgr, "_start_workers", _spy_start)
+    lease = mgr.lease(build=_lazy_build)
+    eng = lease.engine
+    try:
+        assert eng is not None and state.engine is eng and eng._cfg is state.config
+        assert state.config.tenant == "default"
+        assert eng._ingest_thread is not None and eng._ingest_thread.is_alive(), \
+            "失败之后惰性重建的引擎没有起摄入线程"
+        if tick:
+            assert eng._tick_thread is not None and eng._tick_thread.is_alive()
+        else:
+            assert eng._tick_thread is None              # tick_interval_s=0：照旧不起 tick
+        assert starts == [eng] and mgr._workers_lost is False
+        threads = (eng._tick_thread, eng._ingest_thread)
+        with mgr.lease(build=_lazy_build) as again:      # 已有引擎：不碰标志，不再起线程
+            assert again is eng
+        assert starts == [eng] and (eng._tick_thread, eng._ingest_thread) == threads
+    finally:
+        lease.release()
+        assert eng is None or eng.quiesce() is True
+
+
+@pytest.mark.parametrize("failure", ["rollback_reopen", "switch_double"])
+def test_lazy_rebuild_after_a_failure_starts_no_workers_without_lifespan(tmp_path, monkeypatch,
+                                                                        failure):
+    """没有 lifespan（workers_enabled 为 False，例如直接构造的 TestClient(app)）：失败之后的惰性
+    重建同样不起线程，与切换、回滚的既有行为一致。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    assert mgr.workers_enabled is False
+    _drop_engine_by_failure(mgr, state, monkeypatch, failure)
+    with mgr.lease(build=_lazy_build) as eng:
+        assert eng is not None and state.engine is eng
+        assert eng._tick_thread is None and eng._ingest_thread is None
+    assert mgr._workers_lost is False
+
+
+def test_lazy_rebuild_after_disable_workers_starts_no_workers(tmp_path, monkeypatch):
+    """关停屏障关掉开关之后，惰性重建不起线程（服务正在关停）。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _start_workers_like_lifespan(mgr, state, 60.0)
+    _drop_engine_by_failure(mgr, state, monkeypatch, "rollback_reopen")
+    mgr.disable_workers()
+    assert mgr.workers_enabled is False
+    with mgr.lease(build=_lazy_build) as eng:
+        assert eng is not None and state.engine is eng
+        assert eng._tick_thread is None and eng._ingest_thread is None
+
+
+class _ObservedLock:
+    """包住一把 Lock：有人进 with 时先 set 事件再去拿锁，用来确定性地看出「有人在等这把锁」。"""
+
+    def __init__(self, inner, entering: threading.Event) -> None:
+        self._inner, self._entering = inner, entering
+
+    def __enter__(self):
+        self._entering.set()
+        self._inner.acquire()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._inner.release()
+
+
+def test_shutdown_waits_for_an_in_flight_lazy_rebuild_before_disabling_workers(tmp_path,
+                                                                              monkeypatch):
+    """关停屏障（真实 lifespan）：惰性重建已写回引擎、已过 workers_enabled 检查、正要起线程时，
+    lifespan 开始关停。关停若不等 _build_lock，就会先关开关、按 app.state.engine 停线程（此刻
+    还一条都没有），随后重建才把线程起来，服务关停之后线程还在跑。等了 _build_lock，关停就排
+    在重建之后，停掉的正是重建刚起的线程。卡点用 Event，不靠睡眠。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    cfg = _cfg(tmp_path)
+    cfg.tick_interval_s = 60.0
+    app = create_app(cfg)
+    mgr = app.state.worlds
+    client = TestClient(app)
+    client.__enter__()                                 # lifespan：建引擎、起线程、打开开关
+    stalled, proceed, shut = threading.Event(), threading.Event(), threading.Event()
+    progress = threading.Event()                       # 关停走完，或关停开始拿 _build_lock
+    real_build_lock = mgr._build_lock
+    built: list = []
+    lazy = stopper = None
+    try:
+        assert mgr.workers_enabled is True
+        _drop_engine_by_failure(mgr, app.state, monkeypatch, "rollback_reopen")
+
+        def _build_then_stall(build_cfg):
+            eng = _lazy_build(build_cfg)
+            real_tick = eng.start_background_tick
+
+            def _stalled_tick(*args, **kwargs):
+                stalled.set()                          # 已过 workers_enabled 检查，线程还没起
+                assert proceed.wait(15)
+                real_tick(*args, **kwargs)
+            eng.start_background_tick = _stalled_tick
+            built.append(eng)
+            return eng
+
+        def _lazy_request():
+            mgr.lease(build=_build_then_stall).release()
+
+        lazy = threading.Thread(target=_lazy_request, daemon=True)
+        lazy.start()
+        assert stalled.wait(10)
+
+        def _shutdown():
+            client.__exit__(None, None, None)          # 走 lifespan 的关停段
+            shut.set()
+            progress.set()
+
+        # 重建此刻持着真正的 _build_lock（with 语句留着它自己的引用）；换上一个会报信的包装，
+        # 关停一来拿它就知道。于是「关停已走完」与「关停卡在 _build_lock 上」两种结局都有确定的
+        # 信号，等其一即可，不靠睡眠猜时序。
+        mgr._build_lock = _ObservedLock(real_build_lock, progress)
+        stopper = threading.Thread(target=_shutdown, daemon=True)
+        stopper.start()
+        assert progress.wait(10), "关停既没走完，也没去拿 _build_lock"
+        shut_before_rebuild = shut.is_set()
+        proceed.set()
+        lazy.join(15)
+        stopper.join(15)
+        assert not lazy.is_alive() and not stopper.is_alive()
+        eng = built[0]
+        assert app.state.engine is eng
+        assert eng._tick_thread is None and eng._ingest_thread is None, \
+            "服务关停之后，惰性重建才起的后台线程还在跑"
+        assert not shut_before_rebuild
+        assert mgr.workers_enabled is False
+    finally:
+        proceed.set()
+        if stopper is None:
+            client.__exit__(None, None, None)
+        for thread in (lazy, stopper):
+            if thread is not None:
+                thread.join(15)
+        mgr._build_lock = real_build_lock
+        for eng in built:
+            vars(eng).pop("start_background_tick", None)
+            eng.quiesce()
+
+
+def test_worker_start_failure_keeps_the_lease_and_retries_on_the_next_real_rebuild(
+        tmp_path, monkeypatch):
+    """补起线程失败（例如 start_ingest_worker 抛错）不能让这次租约失败：logger.exception 记下，
+    标志保持置位。拿到已有引擎的租约不重试；下一次真正新建引擎时再起。
+
+    日志用替身接住而不用 caplog：caplog 与 pytest 的报告 handler 会留着 LogRecord，它的回溯
+    经 _restart_lost_workers 的帧（f_back）钉住 lease 的帧和其中的引擎，测试就验证不了「丢掉
+    这个引擎后旧 Runtime 能回收」。生产的 handler 不留记录。"""
+    import starling.dashboard.world_manager as wm
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _start_workers_like_lifespan(mgr, state, 60.0)
+    _drop_engine_by_failure(mgr, state, monkeypatch, "rollback_reopen")
+    logged = []
+
+    def _spy_exception(msg, *args, **_kwargs):
+        logged.append((msg % args, repr(sys.exc_info()[1])))   # 只留字符串，不留回溯
+    monkeypatch.setattr(wm.logger, "exception", _spy_exception)
+
+    def _build_with_broken_ingest(cfg):
+        eng = _lazy_build(cfg)
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("spool unreadable")
+        eng.start_ingest_worker = _boom
+        return eng
+
+    lease = mgr.lease(build=_build_with_broken_ingest)
+    first = lease.engine
+    try:
+        assert first is not None and state.engine is first
+        assert first._ingest_thread is None
+        assert mgr._workers_lost is True
+        assert len(logged) == 1 and "spool unreadable" in logged[0][1]
+        with mgr.lease(build=_lazy_build) as again:      # 已有引擎：不重试，标志不动
+            assert again is first
+        assert first._ingest_thread is None and mgr._workers_lost is True
+        assert len(logged) == 1
+    finally:
+        lease.release()
+    # 再丢一次引擎（停线程、丢引用、确认旧 Runtime 已回收：租约与管理器都没钉住它），下一次
+    # 真正新建引擎时补起线程。
+    assert first.quiesce() is True                    # 起线程中途失败：tick 线程已起，停掉
+    rt_ref = weakref.ref(first._rt)
+    state.engine = first = again = None
+    gc.collect()
+    assert rt_ref() is None, "租约或管理器钉住了补起线程失败的那个引擎"
+    with mgr.lease(build=_lazy_build) as eng:
+        assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+        assert eng._tick_thread is not None and eng._tick_thread.is_alive()
+    assert mgr._workers_lost is False and len(logged) == 1
+    assert eng.quiesce() is True
+
+
+@pytest.mark.parametrize("failure", ["rollback_reopen", "rollback_cpp_error", "switch_double"])
+@pytest.mark.parametrize("recovery", ["activate", "rollback"])
+def test_failure_sets_the_lost_workers_flag_and_a_successful_publish_clears_it(
+        tmp_path, monkeypatch, failure, recovery):
+    """两条失败路径把引擎丢成 None 时置位；之后成功的切换或回滚发布新引擎时已经起过线程，
+    清位，免得之后某次惰性重建再起一遍。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    assert mgr._workers_lost is False
+    _start_workers_like_lifespan(mgr, state, 60.0)
+    _drop_engine_by_failure(mgr, state, monkeypatch, failure)
+    assert mgr._workers_lost is True
+    if recovery == "activate":
+        if "sim-1" not in mgr.load()["worlds"]:
+            mgr.create("sim-1", "")
+        mgr.activate("sim-1")
+    else:
+        snap = mgr.take_snapshot("default", "")
+        mgr.rollback("default", snap["id"])
+    eng = state.engine
+    assert eng is not None and mgr._workers_lost is False
+    assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+    assert eng.quiesce() is True
+
+
+def test_startup_without_an_engine_still_starts_no_ingest_worker_on_first_lazy_build(
+        tmp_path, monkeypatch):
+    """启动语义不变：tick_interval_s=0、启动时没有引擎，lifespan 不建引擎也不起摄入线程；第一条
+    命令请求惰性建出的引擎同样不起（没有失败路径丢过引擎，标志从未置位）。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    app = create_app(_cfg(tmp_path))
+    with TestClient(app) as client:
+        assert app.state.engine is None and app.state.worlds.workers_enabled is True
+        assert client.post("/api/tick", json={}).status_code == 200
+        eng = app.state.engine
+        assert eng is not None and app.state.worlds._workers_lost is False
+        assert eng._tick_thread is None and eng._ingest_thread is None

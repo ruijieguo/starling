@@ -121,9 +121,9 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             app.state.worlds.workers_enabled = True
         yield
         if app.state.worlds is not None:
-            # 等进行中的切换收尾，并禁止收尾之后再起线程。
-            with app.state.worlds.lock:
-                app.state.worlds.workers_enabled = False
+            # 等进行中的切换、回滚与惰性构建（含失败后补起线程）收尾，并禁止此后再起线程；
+            # 收尾之前写回的引擎就是下面按 app.state.engine 停掉的那个。
+            app.state.worlds.disable_workers()
         eng = app.state.engine
         if eng is not None:
             # D-P2-6: enter DRAINING on host shutdown — post-yield, NOT a signal

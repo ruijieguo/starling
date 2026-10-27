@@ -32,8 +32,10 @@
   2. manager._gate（Lock，短）：只保护 switching 标志和租约计数，持有期间不做任何 I/O、
      不建引擎、不拿别的锁。_drained 是建在它上面的 Condition：切换等租约归零时 wait 会
      放开 _gate，所以「等租约」从不持着 _gate。
-  3. manager._build_lock（Lock）：惰性建引擎（engine 还是 None 时第一条请求来建）。只由已
-     拿到租约的请求在放开 _gate 之后持有；切换从不拿它（切换等租约归零时没有人在建）。
+  3. manager._build_lock（Lock）：惰性建引擎（engine 还是 None 时第一条请求来建），以及失败
+     路径丢过引擎之后为新建的引擎补起后台线程。由已拿到租约的请求在放开 _gate 之后持有；
+     切换从不拿它（切换等租约归零时没有人在建）。lifespan 关停（disable_workers）在
+     manager.lock 内取它，等进行中的构建连同补起线程一起收尾，再关掉 workers_enabled。
   4. engine._lock（RLock，DashboardEngine 内部）：由持租约的请求和后台线程持有。切换从不
      拿它：quiesce 在不持引擎锁的情况下 join 后台线程（线程分段拿锁，持锁 join 会卡住）。
   5. supervisor 互斥锁（C++ Runtime 内部）：只在持 engine._lock 时取（见 engine.py 的
@@ -184,6 +186,13 @@ class WorldManager:
         self._drained = threading.Condition(self._gate)   # 租约归零时 notify
         self._leases = 0
         self._build_lock = threading.Lock()
+        # 「后台线程丢了」：失败路径（切换双失败、回滚活动世界后重开失败）把运行中的引擎丢成
+        # None 时置位，下一次真正新建引擎的惰性构建据此补起 tick / 摄入线程，然后清位；补起
+        # 失败则保持置位，下一次真正新建时再试。成功的切换与回滚发布新引擎时已起过线程，清位。
+        # 写它只在两处，互斥：切换窗口内持 manager.lock（窗口内租约一律拒绝，在途租约已归零，
+        # 没有惰性构建），或持租约且持 _build_lock。启动时没有引擎不算「丢了」：
+        # tick_interval_s=0 时首个请求惰性建出的引擎照旧不起摄入线程。
+        self._workers_lost = False
         # 切换后没能回收的旧 Runtime：[(它打开的库路径, 弱引用)]。它还开着那个库的写连接。
         # 那个库若被回滚替换，这条连接会继续写旧 inode 和它已被 unlink 的 WAL：这些写入在
         # 恢复出来的库里没有，静默丢失，归档（旧 inode 唯一剩下的名字）也可能被改动。关掉它时
@@ -213,7 +222,11 @@ class WorldManager:
 
         build 见 engine_lease。计数先于惰性构建增加：切换置位后等租约归零，也就等到了
         正在进行的构建，构建完写回的引擎会被切换当作旧引擎接手，不会在切换之后才冒出来。
-        _gate 只在计数时短暂持有（调用方可能在事件循环上），构建在 _build_lock 下进行。"""
+        _gate 只在计数时短暂持有（调用方可能在事件循环上），构建在 _build_lock 下进行。
+
+        失败路径丢过引擎（_workers_lost）时，真正新建了引擎的那次构建在写回之后、仍持
+        _build_lock 时补起后台线程（_start_workers 自己看 workers_enabled），见
+        _restart_lost_workers。拿到已有引擎的租约不碰标志。"""
         with self._gate:
             if self.switching:
                 raise WorldSwitchError("world_switching")
@@ -227,11 +240,31 @@ class WorldManager:
                     if engine is None:
                         engine = build(self._state.config)
                         self._state.engine = engine
+                        if self._workers_lost:
+                            self._restart_lost_workers(engine)
             lease.engine = engine
         except BaseException:
             lease.release()
             raise
         return lease
+
+    def _restart_lost_workers(self, engine) -> None:
+        """lease 刚新建并写回的引擎补起后台线程（持 _build_lock）。起线程失败不让租约失败：
+        记日志，标志保持置位，下一次真正新建引擎时再试；这个引擎照常服务请求。"""
+        try:
+            self._start_workers(engine, self._state.config)
+        except Exception:  # noqa: BLE001 — 线程起不来不能连带命令请求失败
+            logger.exception("cannot restart background workers on the lazily rebuilt engine")
+            return
+        self._workers_lost = False
+
+    def disable_workers(self) -> None:
+        """lifespan 关停段调用：此后任何路径都不再起后台线程。按锁序先取 manager.lock（等进行中
+        的切换、回滚收尾），再取 _build_lock（等进行中的惰性构建连同补起线程收尾），然后关
+        workers_enabled。返回之前写回的引擎都在 app.state.engine 上，由关停段停掉它的线程；
+        返回之后的惰性构建看到的是 False，不再起线程。"""
+        with self.lock, self._build_lock:
+            self.workers_enabled = False
 
     def _return_lease(self) -> None:
         with self._gate:
@@ -412,20 +445,24 @@ class WorldManager:
         self._state.config = new_cfg
         self._state.engine = new_engine
         self._start_workers(new_engine, new_cfg)
+        self._workers_lost = False
 
     def _rollback(self, old_cfg, detail: str, cause: Exception) -> None:
         """新世界没能生效：回到旧世界并抛 world_open_failed。回滚本身也可能失败（旧库
-        同样打不开）——此时 engine 留 None、config 仍是旧世界，路由之后惰性重建；
-        对调用方仍然是 WorldSwitchError（路由只映射它），不让裸异常漏出去。"""
+        同样打不开）——此时 engine 留 None、config 仍是旧世界，置 _workers_lost，路由之后
+        惰性重建并补起后台线程；对调用方仍然是 WorldSwitchError（路由只映射它），不让裸异常
+        漏出去。"""
         try:
             self._state.engine = DashboardEngine(old_cfg)
         except Exception as rollback_exc:
             self._state.engine = None
+            self._workers_lost = True
             raise WorldSwitchError(
                 "world_open_failed",
                 f"{detail}; rollback to the previous world also failed: {rollback_exc}",
             ) from cause
         self._start_workers(self._state.engine, old_cfg)
+        self._workers_lost = False
         raise WorldSwitchError("world_open_failed", detail) from cause
 
     def create(self, name: str, label: str) -> dict:
@@ -494,7 +531,8 @@ class WorldManager:
         原样抛出，失败时目标库原样不动；ingest_busy（之前的切换留下的旧 Runtime 还开着这个库、
         后台线程停不下、在途请求不结束，或旧 Runtime 回收不了，库未动）；world_open_failed
         （库未动，但活动世界的引擎重建失败）；rollback_reopen_failed（库已替换成快照的内容，
-        但活动世界的引擎重建失败）。后两种 engine 都留 None，路由之后惰性重建。
+        但活动世界的引擎重建失败）。后两种 engine 都留 None，路由之后惰性重建，并补起 tick /
+        摄入线程（_workers_lost）。
 
         动引擎之前先调 C++ 的预检（world_check_rollback，只读、什么都不动）：不存在的快照、缺失
         或不是普通文件的快照文件、不支持的向量后端、磁盘不足，这几种不改输入重试也过不了，在
@@ -562,8 +600,8 @@ class WorldManager:
         return result
 
     def _reopen_live_world(self, cfg, cause: Exception | None) -> None:
-        """回滚活动世界的每个出口：按原 config 重建引擎、起线程。重建失败时 engine 留 None，
-        路由之后惰性重建。码按库有没有被替换来分：
+        """回滚活动世界的每个出口：按原 config 重建引擎、起线程。重建失败时 engine 留 None、
+        置 _workers_lost，路由之后惰性重建并补起后台线程。码按库有没有被替换来分：
         - cause 为 None（替换成功之后）：库已是快照的内容，抛 rollback_reopen_failed，链到
           重建的异常。路由仍广播 world_rolled_back，前端整页刷新。
         - 其余出口（C++ 失败、弱引用拒绝、遗留 Runtime 拒绝）：库未动，抛 world_open_failed，
@@ -573,6 +611,7 @@ class WorldManager:
             engine = DashboardEngine(cfg)
         except Exception as exc:
             self._state.engine = None
+            self._workers_lost = True
             # 路由只回码，detail 不进响应，所以在这里留日志。
             if cause is None:
                 detail = f"rollback applied, but the world cannot be reopened: {exc}"
@@ -583,6 +622,7 @@ class WorldManager:
             raise WorldSwitchError("world_open_failed", detail) from cause
         self._state.engine = engine
         self._start_workers(engine, cfg)
+        self._workers_lost = False
 
     def archives(self, name: str, reg: dict | None = None) -> list[dict]:
         """该世界 archive/ 下的回滚归档 [{"name", "size_bytes"}]，最新在前。只读，不持管理锁，

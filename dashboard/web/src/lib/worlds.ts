@@ -125,7 +125,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 		'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间',
 	snapshot_failed: '文件操作失败，数据库未改动；详情见服务日志',
 	world_in_use: '该世界的数据库正被其他程序打开，未做任何改动；请关闭后重试',
-	rollback_reopen_failed: '已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务',
+	rollback_reopen_failed: '已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请查看服务日志',
 	snapshot_not_found: '快照不存在',
 	world_tenant_mismatch: '该世界的数据库里有其他租户的数据，拒绝打开',
 	world_switching: '正在切换世界，请稍后再试',

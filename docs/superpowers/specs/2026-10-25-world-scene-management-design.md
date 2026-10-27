@@ -239,7 +239,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
   恢复出来的库是 `VACUUM INTO` 的产物，引擎打开它之前一直是 delete 模式（例如回滚过、还没激活过的非活动世界）。所以这个探测只是纵深防御：别的进程（sqlite3 CLI、运维脚本）对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的安全靠 Python 的租约（见 §8.1）、旧 Runtime 弱引用已失效的证明，以及切换遗留 Runtime 的登记。
 - **旁车**：`-wal` / `-journal` 必须为空或不存在，`-shm` 必须是普通文件或不存在（大小不论，wal-index 不承载持久数据），否则 `snapshot_failed`。三者在替换之前删掉：它们不带状态，替换随后失败时旧库少了它们照常可用；替换之后再删，会有一段时间旧库的 `-shm` / `-wal` 挂在新库旁边。
-- **失败复原**：先把快照复制到库所在目录的隐藏 partial，`integrity_check` 与租户校验针对这份副本；替换之前任何一步失败，目标库原样不动、partial 删掉；替换失败时库仍是旧库，归档名摘掉。要被替换的文件头不是 `SQLite format 3\0` 时拒绝（`snapshot_failed`）。活动世界的旧 Runtime（写连接）回收不了就拒绝（`ingest_busy`），绝不在写连接还开着时替换库文件；每个出口都按原配置重建引擎。替换成功、重建失败时回 `rollback_reopen_failed`（500），仍广播 `world_rolled_back`，前端整页刷新；其余重建失败（库未动）回 `world_open_failed`。zvec 向量后端拒绝（`snapshot_unsupported_backend`，见 §12）。
+- **失败复原**：先把快照复制到库所在目录的隐藏 partial，`integrity_check` 与租户校验针对这份副本；替换之前任何一步失败，目标库原样不动、partial 删掉；替换失败时库仍是旧库，归档名摘掉。要被替换的文件头不是 `SQLite format 3\0` 时拒绝（`snapshot_failed`）。活动世界的旧 Runtime（写连接）回收不了就拒绝（`ingest_busy`），绝不在写连接还开着时替换库文件；每个出口都按原配置重建引擎。替换成功、重建失败时回 `rollback_reopen_failed`（500），仍广播 `world_rolled_back`，前端整页刷新；其余重建失败（库未动）回 `world_open_failed`。两种重建失败都把引擎留 None，下一条命令请求按原配置惰性重建，并为它补起 tick（`tick_interval_s>0` 时）与摄入线程（加固 T2，2026-10-27，见 §8.1），不用重启服务。zvec 向量后端拒绝（`snapshot_unsupported_backend`，见 §12）。
 - **已知限制**：归档是硬链接，归档目录（`<注册表目录>/worlds/<name>/archive`）和库必须在同一个卷上。`STARLING_WORLDS_REGISTRY` 指到另一个卷、default 世界的库还在原卷时，每次回滚 default 世界都会 fail closed，回 `snapshot_failed`，库不动，错误信息写明要把注册表挪到库旁边；别的世界的库在 `worlds/<name>/` 下，不受影响。不退回复制：复制要双倍磁盘和另一套磁盘守卫，而这种配置今天没人部署。
 
 ### 5.2 语义 B — 只回滚该场景，保留后续
@@ -347,6 +347,7 @@ activate(world):                          # 实现：python/starling/dashboard/w
 - **引擎租约**：每个用到引擎的请求从头到尾持一份租约——线程池排队、`remember` 的锁外抽取、`/ws/converse` 的锁外生成、最后的提交都在租约内。只等 `old._lock` 不够：锁外阶段不持引擎锁，请求会在切换后写进旧世界，旧 Runtime 也一直活着，切回原世界就是同一个库上两条写连接。
 - 租约按请求发放，不按 WebSocket 连接；后台 tick / 摄入线程不是租约，由 `quiesce` 停（两次 join 各有上限）。
 - 任何一步失败，注册表 `active`、`app.state.config`、`app.state.engine` 三者都留在旧世界，不分叉。
+- **失败后惰性重建补起后台线程（加固 T2，2026-10-27）**：两条失败路径会把运行中的引擎丢成 None：切换时新世界打不开、回到旧世界也打不开（`world_open_failed`），以及回滚活动世界之后重开失败（`rollback_reopen_failed`，或库未动的 `world_open_failed`）。这两处置 `_workers_lost`；下一条命令请求在 `_build_lock` 内真正新建引擎并写回之后，按 `workers_enabled` 起 tick（`tick_interval_s>0` 时）与摄入线程，然后清位。拿到已有引擎的租约不碰它；成功的切换和回滚发布新引擎时已起过线程，同样清位。起线程抛错不让该请求失败：记日志、保持置位，下一次真正新建引擎时再试。启动语义不变：`tick_interval_s=0` 且启动时没有引擎，首个请求惰性建出的引擎不起摄入线程（标志从未置位）。lifespan 关停调 `WorldManager.disable_workers()`：在 `manager.lock` 内再取 `_build_lock` 才关 `workers_enabled`（锁序不变），进行中的惰性构建连同补起线程先收尾，它写回的引擎由关停段按 `app.state.engine` 停掉；此后的惰性构建不再起线程。
 - 锁顺序见 `world_manager.py` 模块文档：`manager.lock → _gate → _build_lock → engine._lock → supervisor`，持租约的代码不得去拿 `manager.lock`。
 - **打开活动世界库的路径都持租约**：inspect 的 SQL 路由（按 `app.state.config` 只读打开库）和 `GET /api/worlds`（`world_stats` 只读打开每个世界的库）从打开库之前到关闭之后都持一份租约（不惰性建引擎），窗口内回 503 `world_switching`。只读也要持：回滚替换的是同一路径上的 inode，一条在替换之前打开了旧 inode、替换之后才第一次读的只读连接，会按路径打开新库的 `-shm`；SQLite 的进程内锁记录按 inode 区分，同进程的 fcntl 锁互不冲突，它会认为自己是第一个连接，把引擎正在用的 wal-index 截断重建（实测 iChange 从 5 变 0）。C++ 的 `world_in_use` 探测看不见这种「打开了还没读」的连接，所以靠租约：回滚等租约归零才动文件。
 - 已接受的限制：回滚**非活动**世界不进切换窗口、不等租约，可能与 `GET /api/worlds` 对那个世界的 `world_stats` 交错，`world_stats` 可能读到一次旧 inode，或重置新库的 `-shm`。那个库上没有写连接，所以无害。

@@ -153,7 +153,7 @@ describe('错误文案', () => {
 			'该世界的数据库正被其他程序打开，未做任何改动；请关闭后重试'
 		);
 		expect(worldErrorMessage('rollback_reopen_failed')).toBe(
-			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务'
+			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请查看服务日志'
 		);
 	});
 	it('snapshot_not_found（契约里 DELETE 快照的 404）有中文文案', () => {
