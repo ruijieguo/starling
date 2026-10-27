@@ -989,12 +989,29 @@ const SnapshotEntry& registered_snapshot(const Registry& reg, const std::string&
     throw WorldStoreError("snapshot_not_found", "snapshot '" + snapshot_id + "' not found");
 }
 
-// 世界 home = snapshot_dir 的父目录（字面，与注册表布局 <registry_dir>/worlds/<name>/ 一致）。
-fs::path world_home(const WorldEntry& entry) {
-    return normalized(entry.snapshot_dir).parent_path();
+// 世界 home = <registry_dir>/worlds/<name>，与 create_world / delete_world 同一推导，只由服务端的
+// 目录布局决定。snapshot_dir 不参与：它可能是指回世界目录的符号链接，也可能指到另一个卷，
+// 两种情况下都不能让它决定归档落在哪里。归档目录为 <世界 home>/archive。
+// 归档操作（回滚建硬链接、列出、清理）之前先 fail closed，此时还什么都没建：
+//   1. worlds/ 解析符号链接后仍在注册表目录之下（require_worlds_root_inside，registry_corrupt）；
+//   2. 世界 home 解析符号链接后严格在 worlds/ 之下，否则 snapshot_failed。与 delete_world 拒删
+//      指向外部的世界目录是同一个边界。
+// 返回世界 home（未解析符号链接的路径）。
+fs::path checked_world_home(const fs::path& registry_dir, const std::string& world) {
+    const fs::path root = normalized(fs::absolute(registry_dir));
+    const fs::path worlds_root = root / "worlds";
+    require_worlds_root_inside(root, worlds_root);
+    const fs::path home = worlds_root / world;
+    require_inside_registry(worlds_root, home);
+    return home;
 }
 
-fs::path archive_dir_of(const WorldEntry& entry) { return world_home(entry) / "archive"; }
+// candidate 与 db_file 是不是同一个文件（同一 inode）。任一方不存在或 stat 失败都算「不是」。
+bool is_live_alias(const fs::path& candidate, const fs::path& db_file) {
+    std::error_code err;
+    const bool same = fs::equivalent(candidate, db_file, err);
+    return !err && same;
+}
 
 // 不跟随符号链接的 stat。文件不存在返回 not_found（libc++ 此时也会把 err 设成 ENOENT，
 // 不能据此当成错误）；其余错误（EACCES、ELOOP 等）抛 snapshot_failed。
@@ -1068,6 +1085,50 @@ std::size_t sweep_rollback_partials(const fs::path& db_file) {
     return swept;
 }
 
+// 摘掉 archive 里是现役库第二个名字的条目（见 world_store.hpp rollback_world 第 1b 步）。上次回滚
+// 若死在建硬链接之后、原子替换之前，归档名和库是同一个 inode：它不是归档，内容随现役库一起变。
+// 删掉它只少一个名字，库不受影响。只认名字符合归档模式的普通文件，跳过符号链接，每个删除都经
+// remove_within。archive/ 解析后不在世界 home 之下时不扫（第 9 步会拒绝这次回滚）。错误只记日志。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::size_t sweep_archive_aliases(const fs::path& home, const fs::path& archive,
+                                  const fs::path& db_file) {
+    std::error_code err;
+    if (!fs::exists(fs::symlink_status(archive, err))) { return 0; }
+    try {
+        require_inside_registry(home, archive);
+    } catch (const WorldStoreError& escape) {
+        std::cerr << "[world_store] not sweeping " << archive.string() << ": " << escape.what()
+                  << "\n";
+        return 0;
+    }
+    std::vector<fs::path> victims;
+    fs::directory_iterator iter(archive, err);
+    const fs::directory_iterator done;
+    for (; !err && iter != done; iter.increment(err)) {
+        const fs::directory_entry& item = *iter;
+        std::error_code status_err;
+        if (item.is_symlink(status_err) || !item.is_regular_file(status_err)) { continue; }
+        if (looks_like_archive_name(item.path().filename().string()) &&
+            is_live_alias(item.path(), db_file)) {
+            victims.push_back(item.path());
+        }
+    }
+    std::size_t swept = 0;
+    for (const auto& victim : victims) {
+        try {
+            if (remove_within(archive, victim)) { ++swept; }
+        } catch (const WorldStoreError& sweep_err) {
+            std::cerr << "[world_store] cannot remove " << victim.string()
+                      << ", a second name of the live database: " << sweep_err.what() << "\n";
+        }
+    }
+    if (swept > 0) {
+        std::cerr << "[world_store] removed " << swept << " archive name(s) in " << archive.string()
+                  << " that were second names of the live database\n";
+    }
+    return swept;
+}
+
 // 给现役库在 archive 目录里建一个硬链接（归档名）并返回它。库文件本身不动，库路径上始终有
 // 一份完整的库。名字已被占用（同一秒内两次回滚）就重抽；其余失败（EXDEV、文件系统不支持
 // 硬链接、权限）抛 snapshot_failed，此时什么都没建。
@@ -1128,6 +1189,59 @@ void require_empty_sidecar(const fs::path& sidecar) {
     }
 }
 
+// 第 8 步：要被替换的必须是一个 SQLite 库（16 字节文件头）。default 世界的 db_path 不受
+// validate_layout 约束，被篡改的注册表可以让它指向任意文件；不查就会把那个文件整个换掉、
+// 挪进归档，purge 之后就没了。
+void require_sqlite_header(const fs::path& db_file) {
+    constexpr std::size_t kHeaderLength = 16;
+    constexpr std::string_view kMagic{"SQLite format 3\0", kHeaderLength};
+    std::array<char, kHeaderLength> head{};
+    std::ifstream input(db_file, std::ios::binary);
+    if (!input) {
+        throw WorldStoreError("snapshot_failed", "cannot read " + db_file.string());
+    }
+    input.read(head.data(), static_cast<std::streamsize>(head.size()));
+    if (!input || std::string_view(head.data(), head.size()) != kMagic) {
+        throw WorldStoreError("snapshot_failed", db_file.string() +
+                                                     " is not a SQLite database; refusing to "
+                                                     "replace it");
+    }
+}
+
+// 第 8 步末：确认没有别的连接开着这个库（同进程或别的进程）。新开一条读写连接（不 CREATE），
+// busy_timeout 为 0，PRAGMA locking_mode=EXCLUSIVE 后 BEGIN EXCLUSIVE：只要还有别的连接读过
+// 这个 WAL 库并且开着（读者、闲置的写者都算），拿不到排他锁，回 SQLITE_BUSY。拿到了就 ROLLBACK
+// 关掉，什么都没写。只打开过、从没读过的连接不持锁，这里看不见（调用方的租约负责它们）。
+// 必须在 -wal / -journal 检查之后调用：那时两者都为空，这条连接不会把残留的 WAL 或热日志
+// 重放进旧库。
+void require_no_other_connection(const fs::path& db_file) {
+    constexpr int kPrimaryCodeMask = 0xff;
+    sqlite3* raw = nullptr;
+    const std::string uri = "file:" + uri_escape_path(db_file.string());
+    const int opened =
+        sqlite3_open_v2(uri.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_URI, nullptr);
+    const persistence::SqliteHandle handle(raw);
+    if (opened != SQLITE_OK) {
+        throw WorldStoreError("snapshot_failed",
+                              "cannot open " + db_file.string() + " to check for other "
+                              "connections: " + (raw != nullptr ? sqlite3_errmsg(raw) : "alloc"));
+    }
+    sqlite3_busy_timeout(raw, 0);
+    for (const char* sql : {"PRAGMA locking_mode=EXCLUSIVE", "BEGIN EXCLUSIVE", "ROLLBACK"}) {
+        const int code = sqlite3_exec(raw, sql, nullptr, nullptr, nullptr);
+        if (code == SQLITE_OK) { continue; }
+        const int primary = code & kPrimaryCodeMask;
+        const std::string why = sqlite3_errmsg(raw);
+        if (primary == SQLITE_BUSY || primary == SQLITE_LOCKED) {
+            throw WorldStoreError("world_in_use",
+                                  db_file.string() + " is open in another connection (" + why +
+                                      "); refusing to replace it");
+        }
+        throw WorldStoreError("snapshot_failed", "cannot check " + db_file.string() +
+                                                     " for other connections: " + why);
+    }
+}
+
 // 替换失败时摘掉刚建的归档名。库没被替换，归档名与库是同一个 inode，删掉它只少一个名字。
 // 删不掉时它就是现役库的第二个名字：清理它无害，但不能用写连接打开它。返回追加到错误信息
 // 里的说明。
@@ -1149,8 +1263,9 @@ std::string drop_archive_name(const fs::path& archived) {
 }  // namespace
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RollbackResult rollback_world(const Registry& reg, const std::string& world,
-                              const std::string& snapshot_id, const RollbackOptions& opts) {
+RollbackResult rollback_world(const Registry& reg, const fs::path& registry_dir,
+                              const std::string& world, const std::string& snapshot_id,
+                              const RollbackOptions& opts) {
     fs::path partial;    // 第 5 步起非空：任何失败都删掉它
     RollbackResult result;
     try {
@@ -1168,8 +1283,12 @@ RollbackResult rollback_world(const Registry& reg, const std::string& world,
         const fs::path shm = db_file.string() + "-shm";
         const fs::path journal = db_file.string() + "-journal";
 
-        // 1b. 上次回滚崩溃留下的 partial。
+        // 1a. 世界 home 由注册表目录推出，解析后必须在 worlds/ 之下（见 checked_world_home）。
+        const fs::path home = checked_world_home(registry_dir, world);
+
+        // 1b. 上次回滚崩溃留下的 partial，以及 archive 里是现役库第二个名字的条目。
         (void)sweep_rollback_partials(db_file);
+        (void)sweep_archive_aliases(home, home / "archive", db_file);
 
         // 2–3. 快照文件解析符号链接后必须仍在该世界的 snapshot_dir 之下，且是普通文件。
         require_inside_registry(entry.snapshot_dir, snap.path);
@@ -1200,24 +1319,31 @@ RollbackResult rollback_world(const Registry& reg, const std::string& world,
         const auto db_status = lstat_or_throw(db_file);
         const bool db_exists = fs::exists(db_status);
         if (db_exists && !fs::is_regular_file(db_status)) {
-            // 符号链接的硬链接是链接本身，list / purge 都不认它（跳过符号链接），归档就丢了。
+            // 库路径不是普通文件（例如符号链接）：对符号链接建硬链接，得到什么因平台而异
+            // （macOS 的 link() 跟随链接、链到目标文件；Linux 链的是符号链接本身），两种结果都
+            // 不是我们要的归档：前者让链接目标多出一个名字，后者 list / purge 认不出（跳过符号
+            // 链接）。所以直接拒绝。
             throw WorldStoreError("snapshot_failed",
                                   db_file.string() + " is not a regular file; refusing to replace");
         }
         require_empty_sidecar(wal);
         require_empty_sidecar(journal);
         if (db_exists) {
+            require_sqlite_header(db_file);
             // 恢复出来的库沿用现役库的权限位（例如收紧过的 0600），不随快照文件放宽。
             fs::permissions(partial, fs::status(db_file).permissions(), fs::perm_options::replace);
+            // 最后一道检查，紧挨着建硬链接：还有别的连接开着就不动它（world_in_use）。
+            require_no_other_connection(db_file);
         }
 
         // 9. 给现役库在 <世界 home>/archive 建硬链接。库路径不动。
         fs::path archived;   // 非空 = 归档名已建好，之后的失败要把它摘掉
         if (db_exists) {
-            const fs::path archive = archive_dir_of(entry);
+            // 复制与校验可能花了几秒：建目录之前再查一遍世界 home，世界目录之外什么都不建。
+            const fs::path archive = checked_world_home(registry_dir, world) / "archive";
             fs::create_directories(archive);
             // archive/ 被换成指向外部的符号链接时拒绝：不在世界目录之外给现役库建名字。
-            require_inside_registry(world_home(entry), archive);
+            require_inside_registry(home, archive);
             archived = link_into_archive(db_file, archive);
         }
 
@@ -1255,12 +1381,15 @@ RollbackResult rollback_world(const Registry& reg, const std::string& world,
     return result;
 }
 
-std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg, const std::string& world) {
+std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg, const fs::path& registry_dir,
+                                                 const std::string& world) {
     const WorldEntry& entry = registered_world(reg, world);
-    const fs::path dir = archive_dir_of(entry);
+    const fs::path home = checked_world_home(registry_dir, world);
+    const fs::path dir = home / "archive";
     if (!fs::exists(lstat_or_throw(dir))) { return {}; }
     // archive/ 本身指向外部时，逐个列出与 remove_within(archive, …) 都会以外部目录为根。
-    require_inside_registry(world_home(entry), dir);
+    require_inside_registry(home, dir);
+    const fs::path db_file = entry.db_path;
 
     std::vector<ArchiveEntry> out;
     std::error_code err;
@@ -1273,6 +1402,9 @@ std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg, const std:
         if (item.is_symlink(item_err) || !item.is_regular_file(item_err)) { continue; }
         std::string name = item.path().filename().string();
         if (!looks_like_archive_name(name)) { continue; }
+        // 现役库的第二个名字（回滚死在建硬链接之后、替换之前）不是归档：不列、不计、不清理，
+        // 下一次回滚开头摘掉它（第 1b 步）。
+        if (is_live_alias(item.path(), db_file)) { continue; }
         const auto size = item.file_size(item_err);
         if (item_err) { continue; }   // 列的同时被删了
         ArchiveEntry archive;
@@ -1288,9 +1420,10 @@ std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg, const std:
     return out;
 }
 
-std::size_t purge_rollback_archives(const Registry& reg, const std::string& world) {
-    const auto listed = list_rollback_archives(reg, world);
-    const fs::path dir = archive_dir_of(registered_world(reg, world));
+std::size_t purge_rollback_archives(const Registry& reg, const fs::path& registry_dir,
+                                    const std::string& world) {
+    const auto listed = list_rollback_archives(reg, registry_dir, world);
+    const fs::path dir = checked_world_home(registry_dir, world) / "archive";
     std::size_t removed = 0;
     for (const auto& item : listed) {
         if (!remove_within(dir, dir / item.name)) {

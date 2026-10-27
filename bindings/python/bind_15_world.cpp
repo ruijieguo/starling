@@ -170,48 +170,52 @@ void bind_15_world(pybind11::module_& m) {
           }, py::arg("registry"), py::arg("world"), py::arg("snapshot_id"));
 
     // ---- 回滚与归档（W3） ----
-    // 回滚不改注册表，所以不返回新注册表。前提（调用方保证，C++ 检测不到）：该库上没有打开的
-    // 写连接，且同一世界的回滚已串行化（WorldManager 全程持管理锁）。复制快照 + integrity_check
-    // 可能要几秒，释放 GIL。C++ 的测试钩子（free_space、before_replace）不暴露。
+    // 回滚不改注册表，所以不返回新注册表。registry_dir 是注册表文件所在目录（与 world_create /
+    // world_delete 同一参数），世界 home 与归档目录只从它推出。别的连接读过这个库还开着时 C++
+    // 拒绝（world_in_use）；只打开、没读过的连接 C++ 看不见，由调用方保证（WorldManager 的租约）。
+    // 同一世界的回滚已串行化（WorldManager 全程持管理锁）。复制快照 + integrity_check 可能要
+    // 几秒，释放 GIL。C++ 的测试钩子（free_space、before_replace）不暴露。
     m.def("world_rollback",
           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-          [](const py::dict& reg, const std::string& world, const std::string& snapshot_id,
-             const std::string& vector_backend) {
+          [](const py::dict& reg, const std::string& reg_dir, const std::string& world,
+             const std::string& snapshot_id, const std::string& vector_backend) {
               const auto registry = reg_in(reg);
               gov::RollbackOptions opts;
               opts.vector_backend = vector_backend;
               gov::RollbackResult result;
               {
                   const py::gil_scoped_release release;
-                  result = gov::rollback_world(registry, world, snapshot_id, opts);
+                  result = gov::rollback_world(registry, reg_dir, world, snapshot_id, opts);
               }
               return py::dict("archive_path"_a = result.archive_path,
                               "restored_bytes"_a = result.restored_bytes);
-          }, py::arg("registry"), py::arg("world"), py::arg("snapshot_id"),
-          py::kw_only(), py::arg("vector_backend") = "sqlite");
+          }, py::arg("registry"), py::arg("registry_dir"), py::arg("world"),
+          py::arg("snapshot_id"), py::kw_only(), py::arg("vector_backend") = "sqlite");
 
     m.def("world_list_archives",
-          [](const py::dict& reg, const std::string& world) {
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+          [](const py::dict& reg, const std::string& reg_dir, const std::string& world) {
               const auto registry = reg_in(reg);
               std::vector<gov::ArchiveEntry> listed;
               {
                   const py::gil_scoped_release release;
-                  listed = gov::list_rollback_archives(registry, world);
+                  listed = gov::list_rollback_archives(registry, reg_dir, world);
               }
               py::list out;
               for (const auto& item : listed) {
                   out.append(py::dict("name"_a = item.name, "size_bytes"_a = item.size_bytes));
               }
               return out;
-          }, py::arg("registry"), py::arg("world"));
+          }, py::arg("registry"), py::arg("registry_dir"), py::arg("world"));
 
     // 归档是整份旧库，删除可能较慢，释放 GIL。返回删掉的文件数。
     m.def("world_purge_archives",
-          [](const py::dict& reg, const std::string& world) {
+          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+          [](const py::dict& reg, const std::string& reg_dir, const std::string& world) {
               const auto registry = reg_in(reg);
               const py::gil_scoped_release release;
-              return gov::purge_rollback_archives(registry, world);
-          }, py::arg("registry"), py::arg("world"));
+              return gov::purge_rollback_archives(registry, reg_dir, world);
+          }, py::arg("registry"), py::arg("registry_dir"), py::arg("world"));
 }
 
 }  // namespace starling::bindings
