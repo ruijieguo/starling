@@ -224,7 +224,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 **已实现（W3，2026-10-26；最终修复轮 2026-10-27）**，与上面的草图有几处不同：
 
-- **归档位置**：`<世界 home>/archive/<库文件名>.pre-rollback-<UTC 时刻>-<4 hex>`，世界 home 是 `<注册表目录>/worlds/<name>`，与新建、删除世界同一推导，`snapshot_dir` 不参与（默认世界即 `worlds/default/archive/`，它的库仍在原地）。建归档、列出、清理之前都先确认 `worlds/` 与世界 home 解析符号链接后仍在注册表目录之下，否则 `snapshot_failed`，世界目录之外什么都不建、不删。列出与清理：`GET /api/worlds` 每行的 `archives` / `archive_bytes`，`DELETE /api/worlds/{name}/archives?confirm=<name>`。
+- **归档位置**：`<世界 home>/archive/<库文件名>.pre-rollback-<UTC 时刻>-<4 hex>`，世界 home 是 `<注册表目录>/worlds/<name>`，与新建、删除世界同一推导，`snapshot_dir` 不参与（默认世界即 `worlds/default/archive/`，它的库仍在原地）。建归档、列出、清理之前都先确认 `worlds/` 与世界 home 解析符号链接后仍在注册表目录之下，否则 `snapshot_failed`，世界目录之外什么都不建、不删。布局规则（加固 T1，2026-10-27 用户裁定）：世界目录本身、非默认世界的库文件、`snapshots/` 三者解析符号链接后（含末端悬空的链接）都必须严格位于 `<注册表目录>/worlds/<名>` 之下，否则 `load_registry` / `save_registry` 报 `registry_corrupt` 并写明解析到了哪里；解析出错（EACCES、ELOOP）同样按越界处理。也就是说，整个注册表目录可以外链（例如 `~/.starling` 是符号链接），世界目录内的子路径不可以指到世界目录之外（指向同一世界目录内别处可以）。「`snapshots/` 是指到另一块盘的符号链接」这种布局不再支持。归档位置仍只由注册表目录推出，不依赖 `snapshot_dir`：`rollback_world` 也可以不经 `load` 直接调用。列出与清理：`GET /api/worlds` 每行的 `archives` / `archive_bytes`，`DELETE /api/worlds/{name}/archives?confirm=<name>`。
 - **硬链接归档 + 原子替换**：不改名挪走旧库，而是给它在 `archive/` 里建一个硬链接，再把校验过的副本 `rename` 到库路径。库路径上任何时刻都是一份完整的库，旧 inode 最后只剩归档这一个名字。若进程死在建链接之后、替换之前，`archive/` 里会多一个现役库的第二个名字：列出与清理都跳过它（`fs::equivalent`），下一次回滚开头摘掉它。
 - **不写注册表**：快照与世界条目都不变，没有「先动磁盘、后存注册表」的分叉。
 - **停引擎之前的预检（Codex 修复轮 2026-10-27）**：`WorldManager.rollback` 在进切换窗口之前先调 C++ `check_rollback`（绑定 `world_check_rollback`）。它只做 `rollback_world` 第 1–4 步的只读检查，顺序与错误码相同：世界、快照、向量后端、快照路径不越出 `snapshot_dir`、快照文件存在且是普通文件、世界 home、2 倍磁盘守卫。它不清扫、不复制、不建目录。不存在的快照 id、缺失的快照文件、zvec 后端、磁盘不足，这几种不改输入重试也过不了，在这里直接拒，活动世界的引擎、后台线程、库文件都不动。`rollback_world` 自己仍会再查一遍，以它为准。
@@ -438,6 +438,7 @@ GET    /api/worlds/{w}/scenes            场景清单
 | 生产库 97.7% 是 freelist | W2 上线时顺带建议一次 `VACUUM`（离线）；不做成自动，因为 2.4GB 的 VACUUM 需要独占 |
 | `VACUUM INTO` 失败留半个文件 | 先写 `<id>.db.partial` 再 `os.replace`；失败则删 partial |
 | 多世界 = 多份迁移历史 | 每个世界库自带 `schema_migrations`；版本不一致时拒绝激活（报 `world_schema_behind`），提示先升级 |
+| 世界目录里指到外部的符号链接，让快照写入、残留清扫、保留策略、删快照、建库落到世界目录之外 | 布局约束在解析符号链接之后判断（§5.1 归档段）：世界目录、非默认世界的库、`snapshots/` 解析后都必须严格在 `worlds/<名>` 之下，`load` / `save` 都报 `registry_corrupt`。注册表目录本身可以外链，世界目录内的子路径不可以。只在加载和保存时判定（每个操作都在锁内重新 `load`）；`load` 与操作之间被人改文件系统的 TOCTOU 不在防护范围内，对方已有世界目录的写权限，能直接改库 |
 
 **未解**（不假装解决了）：
 

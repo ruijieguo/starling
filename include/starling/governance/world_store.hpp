@@ -73,11 +73,18 @@ struct Registry {
 //   - default / active 已登记，snapshot_retention >= 2；
 //   - 除 default 外每个世界名都满足 is_valid_world_name；
 //   - 每个 db_path / snapshot_dir 都是绝对路径；
-//   - 非 default 世界的 db_path 与 snapshot_dir 在字面上位于 <registry_dir>/worlds/<name>/ 之下，
-//     default 世界的 snapshot_dir 同样位于 <registry_dir>/worlds/<default>/ 之下（它的库保持原地，
-//     db_path 不受此限）；registry_dir 取注册表文件所在目录；
+//   - 布局（registry_dir 取注册表文件所在目录，世界目录 = <registry_dir>/worlds/<name>）。以下三条
+//     都在解析符号链接之后判断（含末端悬空的链接），不因字面路径在世界目录里就放行：
+//       1. 世界目录本身严格位于 <registry_dir>/worlds 之下；
+//       2. 非 default 世界的 db_path 严格位于自己的世界目录之下（default 的库保持原地，不受此限）；
+//       3. 每个世界（含 default）的 snapshot_dir 严格位于自己的世界目录之下。
+//     所以世界目录、snapshots/、world.db 不能是指到世界目录之外的符号链接（指向同一世界目录内
+//     别处可以）；路径解析出错（EACCES、ELOOP）同样按越界处理，消息带上原因。
+//     注册表目录本身可以是符号链接（例如整个 ~/.starling 指到别处）：两侧都解析，比的是同一处。
+//     <registry_dir>/worlds 解析后也必须在 registry_dir 之下；世界目录尚不存在时照常通过。
 //   - 每份快照的 kind 是 manual / auto，path 在字面上位于所属世界的 snapshot_dir 之下；
 //   - snapshots 的每个键都是已登记的世界。
+// 违反任一条：load 抛 registry_corrupt；save 同样抛，注册表文件不被覆盖。
 [[nodiscard]] Registry load_registry(const std::filesystem::path& registry_path);
 void save_registry(const std::filesystem::path& registry_path, const Registry& reg);
 // 注册表文件不存在时，创建只含 default 世界的注册表并保存。

@@ -85,22 +85,6 @@ bool lexically_within(const fs::path& base, const fs::path& target) {
     return strictly_under(normalized(base), normalized(target));
 }
 
-// 布局校验用：字面在 base 之下，或两侧解析符号链接之后在 base 之下，都算。
-// 同一份注册表换一种路径写法打开（/tmp 与 /private/tmp、软链回来的 ~/.starling、换了拼法的
-// STARLING_DASH_DB）时，字面比较会把合法布局判成越界，启动直接 registry_corrupt。解析失败就只
-// 认字面结果。".." 越界两种判法都拒；删除时的真正边界仍由 remove_within / require_inside_registry
-// 在解析符号链接之后把守。
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-bool within_layout(const fs::path& base, const fs::path& target) {
-    if (lexically_within(base, target)) { return true; }
-    std::error_code err;
-    const fs::path real_base = fs::weakly_canonical(base, err);
-    if (err) { return false; }
-    const fs::path real_target = fs::weakly_canonical(target, err);
-    if (err) { return false; }
-    return strictly_under(normalized(real_base), normalized(real_target));
-}
-
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
 // 返回 true 表示已执行删除；确认 target 越界（被篡改的注册表、指向外部的
 // 符号链接）时返回 false，什么都不碰。路径解析出错（EACCES、ELOOP 等）时无法
@@ -278,11 +262,71 @@ void validate_shape(const Registry& reg) {
     }
 }
 
-// 世界目录布局：每个世界的 snapshot_dir、以及非 default 世界的 db_path，在字面上都位于
-// <registry_dir>/worlds/<name>/ 之下。default 的库保持原地（spec §0.1），不受此限；但它的
-// 快照目录同样固定在 worlds/<default>/ 下——否则把它改成 "/"，删除快照、保留策略和残留
-// 清扫就能删到任意位置。
-// worlds/ 解析符号链接之后必须仍在注册表目录之下。within_layout 两侧都解析符号链接，
+// 布局校验用的解析：跟随符号链接之后的绝对位置（已规范化）。末端是悬空的符号链接时也跟到底：
+// fs::weakly_canonical 把它当成一个不存在的普通名字原样留下，而 SQLite 以 O_CREAT 打开它会在
+// 链接目标处建库（实测），世界库就建到了世界目录之外。中间某一级悬空时，在它下面什么都建不
+// 出来（mkdir 报 EEXIST、open 报 ENOENT），weakly_canonical 的字面结果够用。
+// 解析出错（EACCES、ELOOP 等）时证明不了路径在哪里，按越界处理：registry_corrupt，带上原因。
+[[noreturn]] void unresolvable(const fs::path& path, const std::error_code& err) {
+    corrupt("cannot resolve " + path.string() + ": " + err.message());
+}
+
+// 去掉末尾的 "/" 与 "."（"a/b/"、"a/b/." → "a/b"）。lstat("链接/") 会跟随链接，末端的悬空
+// 链接就被当成不存在；而 mkdir("链接/") 在 macOS 上会在链接目标处建目录（实测）。
+fs::path without_trailing_dot_or_slash(fs::path path) {
+    while (path.has_relative_path() && (path.filename().empty() || path.filename() == ".")) {
+        path = path.parent_path();
+    }
+    return path;
+}
+
+fs::path resolve_for_layout(const fs::path& path) {
+    constexpr int kMaxLinkHops = 40;
+    fs::path current = path;
+    for (int hop = 0; hop < kMaxLinkHops; ++hop) {
+        // 每一跳都去：链接内容本身也可以以 "/" 结尾。
+        current = without_trailing_dot_or_slash(current);
+        std::error_code err;
+        const fs::file_status status = fs::symlink_status(current, err);
+        // 不存在时 libc++ 也会把 err 设成 ENOENT，不算错误（同 lstat_or_throw）。
+        if (err && status.type() != fs::file_type::not_found) { unresolvable(path, err); }
+        if (status.type() != fs::file_type::symlink) {
+            err.clear();
+            const fs::path real = fs::weakly_canonical(current, err);
+            if (err) { unresolvable(path, err); }
+            return normalized(real);
+        }
+        const fs::path link = fs::read_symlink(current, err);
+        if (err) { unresolvable(path, err); }
+        // 相对的链接内容相对于链接所在的目录，与内核解析同义；".." 留给 weakly_canonical 处理。
+        current = link.is_absolute() ? link : current.parent_path() / link;
+    }
+    unresolvable(path, std::make_error_code(std::errc::too_many_symbolic_link_levels));
+}
+
+// 布局校验：target 解析符号链接之后严格位于 base 解析之后的位置之下，否则 registry_corrupt。
+// 两侧都解析，所以同一处换一种写法（/tmp 与 /private/tmp、经符号链接打开的注册表目录）仍然放行。
+// 不保留「字面在 base 之下就放行」的捷径：字面上在世界目录里、磁盘上却是指向外部的符号链接时，
+// W2 的快照写入、残留清扫、保留策略、删快照以 snapshot_dir 为根，引擎在 db_path 建库，全都会落到
+// 世界目录之外（用户裁定 2026-10-27：这种布局不再支持）。".." 越界照样拒绝。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void require_resolved_within(const fs::path& base, const fs::path& target,
+                             const std::string& what) {
+    const fs::path real_base = resolve_for_layout(base);
+    const fs::path real_target = resolve_for_layout(target);
+    if (!strictly_under(real_base, real_target)) {
+        corrupt(what + " " + target.string() + " resolves to " + real_target.string() +
+                ", outside " + real_base.string());
+    }
+}
+
+// 世界目录布局（解析符号链接之后判断，见 require_resolved_within）：
+//   - 世界目录 <registry_dir>/worlds/<name> 严格位于 worlds/ 之下；
+//   - 非 default 世界的 db_path、所有世界的 snapshot_dir 严格位于各自的世界目录之下。
+// default 的库保持原地（spec §0.1），不受此限；但它的快照目录同样固定在 worlds/<default>/ 下
+// ——否则把它改成 "/"，删除快照、保留策略和残留清扫就能删到任意位置。
+// 注册表目录本身可以是符号链接：两侧都解析，比的是同一处。
+// worlds/ 解析符号链接之后必须仍在注册表目录之下。逐项比较两侧都解析符号链接，
 // 若 worlds/ 本身指向外部，「目标在 home 之下」会在外部成立，快照清扫、保留策略、删快照
 // 便以外部目录为根。所以在逐项比较之前先把根钉死：worlds/ 还不存在（全新注册表）时放行。
 void require_worlds_root_inside(const fs::path& registry_dir, const fs::path& worlds_root) {
@@ -306,14 +350,11 @@ void validate_layout(const Registry& reg, const fs::path& registry_dir) {
         if (!lexically_within(worlds_root, home)) {
             corrupt("world '" + name + "' has no home under " + worlds_root.string());
         }
-        if (name != reg.default_world && !within_layout(home, world.db_path)) {
-            corrupt("db_path of '" + name + "' lies outside " + home.string() + ": " +
-                    world.db_path);
+        require_resolved_within(worlds_root, home, "home of '" + name + "'");
+        if (name != reg.default_world) {
+            require_resolved_within(home, world.db_path, "db_path of '" + name + "'");
         }
-        if (!within_layout(home, world.snapshot_dir)) {
-            corrupt("snapshot_dir of '" + name + "' lies outside " + home.string() + ": " +
-                    world.snapshot_dir);
-        }
+        require_resolved_within(home, world.snapshot_dir, "snapshot_dir of '" + name + "'");
     }
 }
 
@@ -990,8 +1031,9 @@ const SnapshotEntry& registered_snapshot(const Registry& reg, const std::string&
 }
 
 // 世界 home = <registry_dir>/worlds/<name>，与 create_world / delete_world 同一推导，只由服务端的
-// 目录布局决定。snapshot_dir 不参与：它可能是指回世界目录的符号链接，也可能指到另一个卷，
-// 两种情况下都不能让它决定归档落在哪里。归档目录为 <世界 home>/archive。
+// 目录布局决定。snapshot_dir 不参与：load_registry 已拒绝解析后越出世界目录的 snapshot_dir
+// （validate_layout），但 rollback_world 也可以不经 load 直接调用，归档位置不能依赖它。
+// 归档目录为 <世界 home>/archive。
 // 归档操作（回滚建硬链接、列出、清理）之前先 fail closed，此时还什么都没建：
 //   1. worlds/ 解析符号链接后仍在注册表目录之下（require_worlds_root_inside，registry_corrupt）；
 //   2. 世界 home 解析符号链接后严格在 worlds/ 之下，否则 snapshot_failed。与 delete_world 拒删
