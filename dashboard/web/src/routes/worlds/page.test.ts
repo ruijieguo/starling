@@ -183,7 +183,9 @@ describe('/worlds 切换', () => {
 		await settle();
 		await fireEvent.click(inBody('切换')!);
 		await settle();
-		expect(toastError).toHaveBeenCalledWith('摄入任务正在进行，暂时不能切换，请稍后再试');
+		expect(toastError).toHaveBeenCalledWith(
+			'后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试'
+		);
 		expect(reload).not.toHaveBeenCalled();
 		expect(button(container, '切换到此世界')!.disabled).toBe(false);
 	});
@@ -387,7 +389,9 @@ describe('/worlds 快照抽屉', () => {
 		await openSnaps(container);
 		await fireEvent.click(inBody('立即拍快照')!);
 		await settle();
-		expect(toastError).toHaveBeenCalledWith('磁盘空间不足，快照需要至少 3 倍于数据量的可用空间');
+		expect(toastError).toHaveBeenCalledWith(
+			'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间'
+		);
 	});
 
 	it('删除快照要经 ConfirmDialog 确认', async () => {
@@ -620,6 +624,23 @@ describe('/worlds 回滚到快照', () => {
 		expect(toastError).toHaveBeenCalledWith('快照文件损坏或缺失，未做任何改动');
 		expect(reload).not.toHaveBeenCalled();
 		expect(inBody('确认回滚')!.disabled).toBe(false);
+	});
+
+	it('已回滚但引擎重开失败(rollback_reopen_failed):toast 后整页刷新,确认键保持禁用', async () => {
+		rollback.mockRejectedValue(apiErr(500, 'rollback_reopen_failed'));
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'default');
+		await fireEvent.input(confirmInput(), { target: { value: 'default' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(toastError).toHaveBeenCalledWith(
+			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务'
+		);
+		expect(reload).toHaveBeenCalledTimes(1);
+		// 重载前的空档里按钮不复位,免得再回滚一次(会把恢复后的库也归档一份)
+		expect(inBody('确认回滚')!.disabled).toBe(true);
 	});
 
 	it('活动世界回滚被拒(ingest_busy)同样不刷新页面', async () => {

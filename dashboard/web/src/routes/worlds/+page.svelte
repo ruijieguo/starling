@@ -263,6 +263,12 @@
 			r = await worldsApi.rollback(world, snap.id, rollbackConfirm);
 		} catch (e) {
 			toast.error(errText(e));
+			// 库已经换成快照的内容、只是引擎没能重开:页面缓存的全是回滚前的数据,与活动世界
+			// 回滚成功一样整页刷新,rollingBack 保持置位直到重载。
+			if (apiDetail(e) === 'rollback_reopen_failed') {
+				location.reload();
+				return;
+			}
 			rollingBack = null;
 			return;
 		}

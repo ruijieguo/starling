@@ -103,8 +103,13 @@ export const worldsApi = {
 			{ snapshot_id: snapshotId, confirm, mode: 'discard_after' satisfies RollbackMode },
 			{ timeoutMs: 120_000 }
 		),
+	// 清理要排队等世界管理锁:前面若有快照或回滚在跑(回滚最长约 40s),默认 15s 会先超时,
+	// 后端随后照样删完,UI 却报了失败。与 rollback 一样放宽到 120s。
 	purgeArchives: (name: string, confirm: string) =>
-		api.del<{ deleted: number }>(`${base(name)}/archives?confirm=${encodeURIComponent(confirm)}`)
+		api.del<{ deleted: number }>(
+			`${base(name)}/archives?confirm=${encodeURIComponent(confirm)}`,
+			{ timeoutMs: 120_000 }
+		)
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -113,10 +118,14 @@ const ERROR_MESSAGES: Record<string, string> = {
 	world_not_found: '世界不存在',
 	world_protected: '默认世界和当前活动世界不能删除',
 	confirm_mismatch: '输入的名称与世界名不一致',
-	ingest_busy: '摄入任务正在进行，暂时不能切换，请稍后再试',
-	world_open_failed: '新世界打不开，已留在原世界',
+	ingest_busy: '后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试',
+	world_open_failed: '引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新或重启服务',
 	snapshot_unsupported_backend: '当前向量后端（zvec）不支持快照',
-	insufficient_disk: '磁盘空间不足，快照需要至少 3 倍于数据量的可用空间',
+	insufficient_disk:
+		'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间',
+	snapshot_failed: '文件操作失败，数据库未改动；详情见服务日志',
+	world_in_use: '该世界的数据库正被其他程序打开，未做任何改动；请关闭后重试',
+	rollback_reopen_failed: '已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务',
 	snapshot_not_found: '快照不存在',
 	world_tenant_mismatch: '该世界的数据库里有其他租户的数据，拒绝打开',
 	world_switching: '正在切换世界，请稍后再试',
