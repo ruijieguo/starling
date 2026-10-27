@@ -34,7 +34,10 @@ private:
 //           | world_tenant_mismatch（verify_world_tenant：库里有别的租户的行）
 //           | snapshot_unsupported_backend（take_snapshot / rollback_world：vector_backend 不是 sqlite）
 //           | snapshot_corrupt（rollback_world：快照文件缺失、打不开或 integrity_check 不过）
-//           | world_in_use（rollback_world：别的连接开着要被替换的库，见第 8 步）
+//           | world_in_use（rollback_world：第 8 步的探测发现别的连接开着要被替换的库。WAL 库上
+//             读过库的闲置连接与开着的读事务都看得见；delete 模式的库（恢复出来、引擎还没打开
+//             过）上只看得见开着的读事务；只打开、没读过的连接两种模式都看不见。探测只是纵深
+//             防御，见 rollback_world）
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2
@@ -219,24 +222,39 @@ struct RollbackResult {
     std::int64_t restored_bytes = 0;
 };
 
+// 回滚的预检：只做 rollback_world 第 1–4 步的只读检查，顺序、错误码与 rollback_world 相同：
+//   world_not_found → snapshot_not_found → snapshot_unsupported_backend → 快照路径越出
+//   snapshot_dir（snapshot_failed）→ 快照文件缺失或不是普通文件（snapshot_corrupt）→ 世界 home
+//   的 a、b 检查（registry_corrupt / snapshot_failed）→ insufficient_disk（2 ×）。
+// 什么都不动：不清扫、不复制、不建目录。给调用方在停引擎之前先拒掉「不改输入、重试也过不了」
+// 的请求（WorldManager.rollback 在切换窗口之前调它）。通过不代表回滚一定成功：rollback_world
+// 自己再查一遍，以它为准（预检之后状态可能变了）。非 WorldStoreError 的异常转成 snapshot_failed。
+void check_rollback(const Registry& reg, const std::filesystem::path& registry_dir,
+                    const std::string& world, const std::string& snapshot_id,
+                    const RollbackOptions& opts);
+
 // 把世界 world 的库替换成快照 snapshot_id 的内容（spec §5.1 语义 A）。
-// 别的连接：读过这个库并且还开着的连接（同进程或别的进程，读者、闲置的写者都算）C++ 检测得到，
-// 第 8 步拒绝（world_in_use）。只打开了、从没读过的连接不持锁，C++ 看不见它；调用方必须保证
-// 这类连接不存在（Python 侧：打开该库的每条路径都在引擎租约之内，回滚等租约归零）。
+// 别的连接：第 8 步的探测（BEGIN EXCLUSIVE，busy_timeout 0）看得见哪些连接取决于库的日志模式
+// （在生产库副本上实测）：WAL 库上读过库的闲置连接（只读、读写都算）与开着的读事务都会让它
+// world_in_use；rollback-journal（delete）模式的库上只有开着的读事务会；只打开、从没读过的
+// 连接两种模式都看不见。恢复出来的库是 VACUUM INTO 的产物，引擎打开它之前一直是 delete 模式。
+// 所以探测只是纵深防御：别的进程对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的
+// 安全靠调用方（Python 侧：打开该库的每条路径都在引擎租约之内，回滚等租约归零；旧 Runtime 的
+// 弱引用失效了才调这里；切换遗留的 Runtime 登记在案，开着这个库就拒绝）。
 // 不变式：库路径上任何时刻都是一份完整的库（替换前是旧库，替换后是新库），从不为空。
 // 归档用硬链接建出来，替换是 rename(partial, 库) 一步原子完成。
-// 顺序：
+// 顺序（第 1–4 步与 check_rollback 是同一份代码）：
 //   1. 取世界（world_not_found）与快照（snapshot_not_found）。opts.vector_backend 不是
 //      "sqlite" 抛 snapshot_unsupported_backend。都在任何文件 I/O 之前。
-//   1a. 世界 home 的 a、b 两项检查（见上）。
-//   1b. 清扫库所在目录里上次回滚崩溃留下的 partial：名字严格为
+//   2. 快照路径解析符号链接后必须严格在该世界 snapshot_dir 之下（snapshot_failed）。
+//   3. 快照文件缺失或不是普通文件 → snapshot_corrupt。
+//   4. 世界 home 的 a、b 两项检查（见上）；free_space(库所在目录) < 2 × 快照文件大小 →
+//      insufficient_disk。
+//   4a. 清扫库所在目录里上次回滚崩溃留下的 partial：名字严格为
 //      `.<库文件名>.rollback-<16 位小写 hex>.partial` 的普通文件（跳过符号链接），每个删除都经
 //      remove_within。再摘掉 archive 里与库是同一个文件（fs::equivalent）的归档名：上次回滚死在
 //      第 9 步之后、第 11 步之前时留下的现役库第二个名字（删掉它只少一个名字）。清扫失败只记
 //      日志，不影响本次回滚。调用方必须按世界串行化回滚。
-//   2. 快照路径解析符号链接后必须严格在该世界 snapshot_dir 之下（snapshot_failed）。
-//   3. 快照文件缺失或不是普通文件 → snapshot_corrupt。
-//   4. free_space(库所在目录) < 2 × 快照文件大小 → insufficient_disk。
 //   5. 把快照复制到库所在目录的 `.<库文件名>.rollback-<16 hex>.partial`。
 //   6. 只读打开 partial，PRAGMA integrity_check 必须为 "ok"；打不开、不是 SQLite 同样算
 //      （snapshot_corrupt）。校验的是要装上去的那份字节，不是快照文件。
@@ -244,6 +262,8 @@ struct RollbackResult {
 //   8. 库路径存在但不是普通文件（例如符号链接）→ snapshot_failed。库旁边的 `-wal` 或
 //      `-journal` 存在且非空（或不是普通文件）→ snapshot_failed（还有未合并的写入、写连接或
 //      热日志）；库不存在时同样检查，否则残留的 WAL / 热日志会被 SQLite 重放到恢复出来的库上。
+//      `-shm` 存在但不是普通文件（目录、符号链接）→ snapshot_failed；大小不论（wal-index 不承载
+//      持久数据）。
 //      库存在时：前 16 字节必须是 "SQLite format 3\0"，否则 snapshot_failed（default 世界的
 //      db_path 不受布局约束）；partial 沿用库的权限位；最后紧挨着第 9 步探测别的连接：新开一条
 //      读写连接（不 CREATE），busy_timeout 0，`PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE`
@@ -252,9 +272,13 @@ struct RollbackResult {
 //   9. 库存在时再做一遍 a、b，然后 create_directories(<世界 home>/archive)（c：解析符号链接后
 //      必须仍在世界 home 之下），用 create_hard_link 给库建归档名
 //      `<archive>/<库文件名>.pre-rollback-<compact_now>-<4 hex>`（名字被占用就重抽）。建不了
-//      （EXDEV、文件系统不支持硬链接、权限）→ snapshot_failed，什么都没变。
+//      （EXDEV、文件系统不支持硬链接、权限）→ snapshot_failed，什么都没变。EXDEV 的错误信息写明
+//      归档目录与库不在同一个文件系统、要把注册表挪到库旁边（只在 STARLING_WORLDS_REGISTRY 指到
+//      另一个卷、default 世界的库仍在原卷时出现；不退回复制）。
 //   10. 删掉库旁边的空 `-wal` / `-journal` 和 `-shm`（只读读者会留下 32 KB 的 `-shm` 与
-//      0 字节的 `-wal`）。
+//      0 字节的 `-wal`）。在替换之前删：它们不带状态（-wal / -journal 已确认为空，-shm 由 SQLite
+//      按主文件加 WAL 重建），替换随后失败时旧库少了它们照常可用；替换之后再删，会有一段时间
+//      旧库的 -shm / -wal 挂在新库旁边。
 //   11. rename(partial, 库路径)，原子替换。旧 inode 只剩归档名这一个名字。
 // 第 1–9 步任何失败：目标库原样不动，partial 删掉。
 // 第 10–11 步失败：库路径上仍是旧库，摘掉归档名（经 remove_within），删掉 partial，抛

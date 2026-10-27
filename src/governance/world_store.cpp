@@ -1052,7 +1052,7 @@ bool looks_like_rollback_partial(std::string_view name, const std::string& prefi
     });
 }
 
-// 清扫上次回滚崩溃留下的 partial（见 world_store.hpp rollback_world 第 1b 步）。只认名字严格
+// 清扫上次回滚崩溃留下的 partial（见 world_store.hpp rollback_world 第 4a 步）。只认名字严格
 // 符合模式的普通文件，跳过符号链接，每个删除都经 remove_within。返回删掉的个数；错误只记日志。
 std::size_t sweep_rollback_partials(const fs::path& db_file) {
     const fs::path dir = db_file.parent_path();
@@ -1085,7 +1085,7 @@ std::size_t sweep_rollback_partials(const fs::path& db_file) {
     return swept;
 }
 
-// 摘掉 archive 里是现役库第二个名字的条目（见 world_store.hpp rollback_world 第 1b 步）。上次回滚
+// 摘掉 archive 里是现役库第二个名字的条目（见 world_store.hpp rollback_world 第 4a 步）。上次回滚
 // 若死在建硬链接之后、原子替换之前，归档名和库是同一个 inode：它不是归档，内容随现役库一起变。
 // 删掉它只少一个名字，库不受影响。只认名字符合归档模式的普通文件，跳过符号链接，每个删除都经
 // remove_within。archive/ 解析后不在世界 home 之下时不扫（第 9 步会拒绝这次回滚）。错误只记日志。
@@ -1132,6 +1132,9 @@ std::size_t sweep_archive_aliases(const fs::path& home, const fs::path& archive,
 // 给现役库在 archive 目录里建一个硬链接（归档名）并返回它。库文件本身不动，库路径上始终有
 // 一份完整的库。名字已被占用（同一秒内两次回滚）就重抽；其余失败（EXDEV、文件系统不支持
 // 硬链接、权限）抛 snapshot_failed，此时什么都没建。
+// EXDEV 只出现在一种配置里：STARLING_WORLDS_REGISTRY 指到另一个卷，default 世界的库还在原卷
+// （别的世界的库在 worlds/<name>/ 下，总与归档同卷）。不退回复制：复制要双倍磁盘和另一套磁盘
+// 守卫，而这种配置今天没人部署。错误信息直接说明原因和办法。
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 fs::path link_into_archive(const fs::path& db_file, const fs::path& archive) {
     constexpr int kMaxAttempts = 16;
@@ -1142,6 +1145,15 @@ fs::path link_into_archive(const fs::path& db_file, const fs::path& archive) {
         std::error_code err;
         fs::create_hard_link(db_file, link, err);
         if (!err) { return link; }
+        if (err == std::errc::cross_device_link) {
+            throw WorldStoreError(
+                "snapshot_failed",
+                "cannot link " + db_file.string() + " into " + archive.string() +
+                    ": the archive directory and the database are on different file systems; "
+                    "rollback keeps the replaced database as a hard link, so both must be on the "
+                    "same volume: move the worlds registry (STARLING_WORLDS_REGISTRY) next to "
+                    "the database");
+        }
         if (err != std::errc::file_exists) {
             throw WorldStoreError("snapshot_failed", "cannot link " + db_file.string() + " into " +
                                                          archive.string() + ": " + err.message());
@@ -1189,6 +1201,18 @@ void require_empty_sidecar(const fs::path& sidecar) {
     }
 }
 
+// 库旁边的 -shm 只能不存在或是普通文件，大小不论：它是 wal-index，SQLite 按主文件加 WAL
+// 重建，持久性从不依赖它。目录、符号链接之类不是 SQLite 留下的，第 10 步不该删它们（非空
+// 目录也删不掉），所以在这里就拒绝，此时什么都还没改。
+void require_regular_or_absent(const fs::path& sidecar) {
+    const auto status = lstat_or_throw(sidecar);
+    if (fs::exists(status) && !fs::is_regular_file(status)) {
+        throw WorldStoreError("snapshot_failed", sidecar.string() +
+                                                     " is not a regular file; refusing to "
+                                                     "remove it");
+    }
+}
+
 // 第 8 步：要被替换的必须是一个 SQLite 库（16 字节文件头）。default 世界的 db_path 不受
 // validate_layout 约束，被篡改的注册表可以让它指向任意文件；不查就会把那个文件整个换掉、
 // 挪进归档，purge 之后就没了。
@@ -1208,10 +1232,19 @@ void require_sqlite_header(const fs::path& db_file) {
     }
 }
 
-// 第 8 步末：确认没有别的连接开着这个库（同进程或别的进程）。新开一条读写连接（不 CREATE），
-// busy_timeout 为 0，PRAGMA locking_mode=EXCLUSIVE 后 BEGIN EXCLUSIVE：只要还有别的连接读过
-// 这个 WAL 库并且开着（读者、闲置的写者都算），拿不到排他锁，回 SQLITE_BUSY。拿到了就 ROLLBACK
-// 关掉，什么都没写。只打开过、从没读过的连接不持锁，这里看不见（调用方的租约负责它们）。
+// 第 8 步末：探测别的连接（同进程或别的进程）。新开一条读写连接（不 CREATE），busy_timeout 为
+// 0，PRAGMA locking_mode=EXCLUSIVE 后 BEGIN EXCLUSIVE：拿不到排他锁回 SQLITE_BUSY → world_in_use；
+// 拿到了就 ROLLBACK 关掉，什么都没写。
+// 它看得见哪些连接取决于库的日志模式（在生产库副本上实测）：
+//                                  WAL        rollback-journal（delete）
+//   闲置的只读连接（读过）           BUSY       看不见
+//   闲置的读写连接（读过）           BUSY       看不见
+//   开着的读事务                     BUSY       BUSY
+//   打开了、从没读过                 看不见     看不见
+// 恢复出来的库是 VACUUM INTO 的产物，引擎打开它之前一直是 delete 模式（例如回滚过、还没
+// 激活过的非活动世界），这时闲置的连接全都看不见。
+// 所以探测只是纵深防御。别的进程对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的
+// 安全靠 WorldManager 的租约、旧 Runtime 弱引用已失效的证明和遗留 Runtime 登记。
 // 必须在 -wal / -journal 检查之后调用：那时两者都为空，这条连接不会把残留的 WAL 或热日志
 // 重放进旧库。
 void require_no_other_connection(const fs::path& db_file) {
@@ -1259,7 +1292,61 @@ std::string drop_archive_name(const fs::path& archived) {
            ") and is a second name of the live database: do not open it with a write connection";
 }
 
+// 回滚第 1–4 步通过之后已经确定的东西。指针指向 reg 里的条目，reg 必须比它活得久。
+struct RollbackTarget {
+    const WorldEntry* entry = nullptr;
+    const SnapshotEntry* snap = nullptr;
+    fs::path home;                // 世界 home（未解析符号链接的路径）
+    std::int64_t snap_bytes = 0;
+};
+
+// 回滚第 1–4 步：只读检查，不清扫、不复制、不建目录。check_rollback（预检）与 rollback_world
+// 共用这一份，顺序与错误码都一样（见 world_store.hpp rollback_world）。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RollbackTarget check_rollback_target(const Registry& reg, const fs::path& registry_dir,
+                                     const std::string& world, const std::string& snapshot_id,
+                                     const RollbackOptions& opts) {
+    // 1. 路径只从注册表取。向量在库文件之外的后端（zvec）恢复不出完整的世界（spec §12）。
+    RollbackTarget target;
+    target.entry = &registered_world(reg, world);
+    target.snap = &registered_snapshot(reg, world, snapshot_id);
+    if (opts.vector_backend != "sqlite") {
+        throw WorldStoreError("snapshot_unsupported_backend",
+                              "vector_backend '" + opts.vector_backend + "' keeps vectors "
+                              "outside the database file");
+    }
+    // 2–3. 快照文件解析符号链接后必须仍在该世界的 snapshot_dir 之下，且是普通文件。
+    require_inside_registry(target.entry->snapshot_dir, target.snap->path);
+    require_snapshot_file(target.snap->path);
+    // 4. 世界 home 由注册表目录推出，解析后必须在 worlds/ 之下（见 checked_world_home）；
+    //    复制品与余量：库所在目录要有 2 × 快照大小。
+    target.home = checked_world_home(registry_dir, world);
+    const fs::path db_dir = fs::path(target.entry->db_path).parent_path();
+    target.snap_bytes = static_cast<std::int64_t>(fs::file_size(target.snap->path));
+    const std::int64_t avail = opts.free_space ? opts.free_space(db_dir) : available_bytes(db_dir);
+    if (avail < 2 * target.snap_bytes) {
+        throw WorldStoreError("insufficient_disk",
+                              "need " + std::to_string(2 * target.snap_bytes) + " bytes free in " +
+                                  db_dir.string() + ", have " + std::to_string(avail));
+    }
+    return target;
+}
+
 }  // namespace
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void check_rollback(const Registry& reg, const fs::path& registry_dir, const std::string& world,
+                    const std::string& snapshot_id, const RollbackOptions& opts) {
+    try {
+        (void)check_rollback_target(reg, registry_dir, world, snapshot_id, opts);
+    } catch (const WorldStoreError&) {
+        throw;
+    } catch (const std::exception& ex) {
+        throw WorldStoreError("snapshot_failed", ex.what());
+    } catch (...) {
+        throw WorldStoreError("snapshot_failed", "rollback check of '" + world + "' failed");
+    }
+}
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 RollbackResult rollback_world(const Registry& reg, const fs::path& registry_dir,
@@ -1268,40 +1355,21 @@ RollbackResult rollback_world(const Registry& reg, const fs::path& registry_dir,
     fs::path partial;    // 第 5 步起非空：任何失败都删掉它
     RollbackResult result;
     try {
-        // 1. 路径只从注册表取。向量在库文件之外的后端（zvec）恢复不出完整的世界（spec §12）。
-        const WorldEntry& entry = registered_world(reg, world);
-        const SnapshotEntry& snap = registered_snapshot(reg, world, snapshot_id);
-        if (opts.vector_backend != "sqlite") {
-            throw WorldStoreError("snapshot_unsupported_backend",
-                                  "vector_backend '" + opts.vector_backend + "' keeps vectors "
-                                  "outside the database file");
-        }
+        // 1–4. 与 check_rollback 同一份检查。调用方即使预检过也要再查：预检之后状态可能变了。
+        const RollbackTarget target =
+            check_rollback_target(reg, registry_dir, world, snapshot_id, opts);
+        const WorldEntry& entry = *target.entry;
+        const SnapshotEntry& snap = *target.snap;
+        const fs::path& home = target.home;
         const fs::path db_file = entry.db_path;
         const fs::path db_dir = db_file.parent_path();
         const fs::path wal = db_file.string() + "-wal";
         const fs::path shm = db_file.string() + "-shm";
         const fs::path journal = db_file.string() + "-journal";
 
-        // 1a. 世界 home 由注册表目录推出，解析后必须在 worlds/ 之下（见 checked_world_home）。
-        const fs::path home = checked_world_home(registry_dir, world);
-
-        // 1b. 上次回滚崩溃留下的 partial，以及 archive 里是现役库第二个名字的条目。
+        // 4a. 上次回滚崩溃留下的 partial，以及 archive 里是现役库第二个名字的条目。
         (void)sweep_rollback_partials(db_file);
         (void)sweep_archive_aliases(home, home / "archive", db_file);
-
-        // 2–3. 快照文件解析符号链接后必须仍在该世界的 snapshot_dir 之下，且是普通文件。
-        require_inside_registry(entry.snapshot_dir, snap.path);
-        require_snapshot_file(snap.path);
-
-        // 4. 复制品与余量：2 × 快照大小。
-        const auto snap_bytes = static_cast<std::int64_t>(fs::file_size(snap.path));
-        const std::int64_t avail =
-            opts.free_space ? opts.free_space(db_dir) : available_bytes(db_dir);
-        if (avail < 2 * snap_bytes) {
-            throw WorldStoreError("insufficient_disk",
-                                  "need " + std::to_string(2 * snap_bytes) + " bytes free in " +
-                                      db_dir.string() + ", have " + std::to_string(avail));
-        }
 
         // 5. 复制到库所在目录的隐藏 partial（同目录，第 11 步的改名才是原子的）。库目录只读时
         //    在这里失败，目标库一个字节都没动：绝不直接往库路径上复制。
@@ -1327,6 +1395,7 @@ RollbackResult rollback_world(const Registry& reg, const fs::path& registry_dir,
         }
         require_empty_sidecar(wal);
         require_empty_sidecar(journal);
+        require_regular_or_absent(shm);
         if (db_exists) {
             require_sqlite_header(db_file);
             // 恢复出来的库沿用现役库的权限位（例如收紧过的 0600），不随快照文件放宽。
@@ -1348,7 +1417,13 @@ RollbackResult rollback_world(const Registry& reg, const fs::path& registry_dir,
 
         // 10–11. 库路径上仍是旧库。失败时库原样不动，只需摘掉归档名；partial 由外层 catch 删。
         try {
-            // 只读读者留下的空 -wal / -journal（已确认为空）与 -shm 属于旧库，不能挂在新库旁边。
+            // 旁车属于旧库，不能挂在新库旁边，所以在替换之前删。替换随后失败时，旧库少了它们
+            // 也照常可用，因为它们不带任何状态：-wal / -journal 在第 8 步已确认为空或不存在；
+            // -shm 是 wal-index，SQLite 按主文件加 WAL 重建，不承载持久数据。删的时候也没有
+            // 连接在用它们：第 8 步的探测，加上 Python 侧在回滚之前停线程、等租约、确认旧
+            // Runtime 已回收。
+            // 改成替换之后再删更糟：从 rename 到删完这段时间里，旧库的 -shm / -wal 挂在新库旁边，
+            // 这时打开新库的连接会拿旧库的 wal-index 去读新库。
             for (const fs::path& sidecar : {wal, shm, journal}) { fs::remove(sidecar); }
             if (opts.before_replace) { opts.before_replace(partial); }
             // 原子替换：此前库路径是旧库，此后是新库；旧 inode 只剩归档这一个名字。
@@ -1402,7 +1477,7 @@ std::vector<ArchiveEntry> list_rollback_archives(const Registry& reg, const fs::
         std::string name = item.path().filename().string();
         if (!looks_like_archive_name(name)) { continue; }
         // 现役库的第二个名字（回滚死在建硬链接之后、替换之前）不是归档：不列、不计、不清理，
-        // 下一次回滚开头摘掉它（第 1b 步）。
+        // 下一次回滚开头摘掉它（第 4a 步）。
         if (is_live_alias(item.path(), db_file)) { continue; }
         const auto size = item.file_size(item_err);
         if (item_err) { continue; }   // 列的同时被删了

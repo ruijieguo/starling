@@ -2000,18 +2000,18 @@ def test_rollback_inactive_world_refuses_zvec_backend_in_cpp(tmp_path, monkeypat
     assert os.stat(db).st_ino == inode and _count(db) == 2 and mgr.archives("sim-1") == []
 
 
-def test_rollback_active_world_refuses_zvec_backend_and_rebuilds_engine(tmp_path, monkeypatch):
-    """拒绝由 C++ 给出（spec §12），之后按原 config 重建引擎。本机的 _core 不是 zvec 构建，
-    真按 zvec 建不起引擎，所以替身照收原 config、实际按 sqlite 建。"""
+def test_rollback_active_world_refuses_zvec_backend_before_touching_the_engine(
+        tmp_path, monkeypatch):
+    """拒绝由 C++ 给出（spec §12），在停引擎之前的预检里（C1）：引擎不丢、不重建。本机的 _core
+    不是 zvec 构建，真按 zvec 建不起引擎，所以替身记下调用、实际按 sqlite 建。"""
     import dataclasses
 
     import starling.dashboard.world_manager as wm
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
     snap = _write_snapshot_write(mgr, state, "default")
-    db = state.config.db_path
+    db, eng = state.config.db_path, state.engine
     inode = os.stat(db).st_ino
-    old_rt = weakref.ref(state.engine._rt)
     state.config.vector_backend = "zvec"
     asked = []
     real = wm.DashboardEngine
@@ -2020,13 +2020,12 @@ def test_rollback_active_world_refuses_zvec_backend_and_rebuilds_engine(tmp_path
         asked.append(cfg)
         return real(dataclasses.replace(cfg, vector_backend="sqlite"))
     monkeypatch.setattr(wm, "DashboardEngine", _build)
-    with pytest.raises(_core.WorldStoreError) as ei:
-        mgr.rollback("default", snap["id"])
-    assert _code(ei.value) == "snapshot_unsupported_backend"
+    out, err = _rollback_outcome(mgr, "default", snap["id"])
+    assert state.engine is eng and asked == [], "预检失败却拆掉、重建了引擎"
     assert os.stat(db).st_ino == inode and _count(db) == 2 and mgr.archives("default") == []
-    assert len(asked) == 1 and asked[0] is state.config        # 按原 config 重建
-    assert state.engine is not None and old_rt() is None
     assert mgr.switching is False
+    assert out is None and isinstance(err, _core.WorldStoreError)
+    assert _code(err) == "snapshot_unsupported_backend"
 
 
 def test_rollback_of_the_live_world_takes_the_switch_window_even_without_an_engine(
@@ -2471,3 +2470,86 @@ def test_routes_rollback_reopen_failure_after_cpp_error_is_world_open_failed(tmp
     assert (r.status_code, r.json()["detail"]) == (500, "world_open_failed")
     assert sent == []
     assert os.stat(db).st_ino == inode and _count(db) == 2
+
+
+# ───────────────────────── W3 Codex 修复轮 ─────────────────────────
+
+# ── C1：停引擎之前的回滚预检 ──
+
+def test_binding_check_rollback_codes_and_touches_nothing(tmp_path):
+    rd = str(tmp_path)
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    reg = _core.world_create(reg, rd, "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    db = _migrated_world_db_at(reg, "sim-1")
+    out = _core.world_take_snapshot(reg, "sim-1")
+    reg, snap = out["registry"], out["snapshot"]
+    _insert_foreign_engram(db, "sim-1")
+    with open(db, "rb") as fh:
+        before = fh.read()
+    listing = sorted(os.listdir(os.path.dirname(db)))
+    assert _core.world_check_rollback(reg, rd, "sim-1", snap["id"]) is None   # 有效快照：通过
+    for call, code in (
+            (lambda: _core.world_check_rollback(reg, rd, "nope", snap["id"]), "world_not_found"),
+            (lambda: _core.world_check_rollback(reg, rd, "sim-1", "nope"), "snapshot_not_found"),
+            (lambda: _core.world_check_rollback(reg, rd, "sim-1", snap["id"],
+                                                vector_backend="zvec"),
+             "snapshot_unsupported_backend")):
+        with pytest.raises(_core.WorldStoreError) as ei:
+            call()
+        assert _code(ei.value) == code
+    os.remove(snap["path"])
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_check_rollback(reg, rd, "sim-1", snap["id"])
+    assert _code(ei.value) == "snapshot_corrupt"
+    with open(db, "rb") as fh:
+        assert fh.read() == before
+    assert sorted(os.listdir(os.path.dirname(db))) == listing      # 没建 archive/、没留 partial
+    assert _core.world_list_archives(reg, rd, "sim-1") == []
+
+
+@pytest.mark.parametrize("case,status,code", [
+    ("unknown_snapshot_id", 404, "snapshot_not_found"),
+    ("missing_snapshot_file", 409, "snapshot_corrupt"),
+])
+def test_routes_rollback_preflight_refusal_keeps_the_live_engine(tmp_path, monkeypatch,
+                                                                 case, status, code):
+    """活动世界上，不改输入重试也过不了的请求（不存在的快照 id、快照文件不在）在停引擎之前就被
+    C++ 预检拒掉：同一个引擎对象、后台线程从没被停、切换窗口从没打开、库文件 inode 不变。
+    没有预检时这类请求会触发一整轮停线程、丢引擎、重建（Codex W3 review Important 1）。"""
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr, eng = app.state.worlds, app.state.engine
+    _remember(eng, "Bob owns auth")
+    snap = mgr.take_snapshot("default", "")
+    _remember(eng, "Carol owns billing")
+    snapshot_id = snap["id"]
+    if case == "unknown_snapshot_id":
+        snapshot_id = "20990101T000000Z-dead"
+    else:
+        os.remove(snap["path"])
+    db = app.state.config.db_path
+    inode = os.stat(db).st_ino
+    quiesced, windows = [], []
+    real_quiesce, real_window = eng.quiesce, mgr._switch_window
+
+    def _spy_quiesce(*args, **kwargs):
+        quiesced.append(True)
+        return real_quiesce(*args, **kwargs)
+    monkeypatch.setattr(eng, "quiesce", _spy_quiesce)
+
+    def _spy_window():
+        windows.append(mgr.switching)
+        return real_window()
+    monkeypatch.setattr(mgr, "_switch_window", _spy_window)
+
+    r = client.post("/api/worlds/default/rollback", json=_rollback_body("default", snapshot_id))
+    # 先断言引擎没被拆：回退验证时失败信息指向「引擎被拆了」，而不是状态码。
+    assert app.state.engine is eng, "预检失败却拆掉了引擎"
+    assert quiesced == [], "预检失败却停了后台线程"
+    assert windows == [] and mgr.switching is False
+    assert os.stat(db).st_ino == inode and _count(db) == 2
+    assert (r.status_code, r.json()["detail"]) == (status, code)
+    assert mgr.archives("default") == []
+    monkeypatch.undo()
+    _remember(app.state.engine, "Dave owns search")               # 引擎照常可用
+    assert _count(db) == 3

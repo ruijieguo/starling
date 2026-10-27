@@ -20,8 +20,8 @@
 检视 SQL 路由（routes/inspect.py）与 GET /api/worlds 的统计（routes/worlds.py）都是。回滚把同一
 路径上的 inode 换掉，一条在替换之前打开了旧 inode、替换之后才第一次读的只读连接会按路径打开
 新库的 -shm，在同进程里认为自己是第一个连接，把引擎正在用的 wal-index 截断重建。C++ 的连接
-探测（world_in_use）只看得见读过库的连接，看不见这种「打开了还没读」的连接，所以要靠租约：
-回滚等租约归零才动文件。
+探测（world_in_use）看不见这种「打开了还没读」的连接，在 delete 模式的库上连读过库的闲置连接
+也看不见（实测表见 rollback 的文档），它只是纵深防御，所以要靠租约：回滚等租约归零才动文件。
 
 锁顺序（全局唯一，任何代码都不得反向持有）
 ------------------------------------------
@@ -496,12 +496,21 @@ class WorldManager:
         （库未动，但活动世界的引擎重建失败）；rollback_reopen_failed（库已替换成快照的内容，
         但活动世界的引擎重建失败）。后两种 engine 都留 None，路由之后惰性重建。
 
-        C++ 会探测读过这个库、还开着的连接（同进程或别的进程，world_in_use），但看不见只打开、
-        还没读过的连接，也不知道一条写连接会不会在探测之后才开始读写。所以活动世界仍由这里保证：
-        在切换窗口内停线程、等租约（打开这个库的每条路径都持租约，见模块文档）、丢引擎，旧
-        Runtime 的弱引用失效了才调 C++，失效不了就不动文件（切换时这里只记 warning；回滚替换的
-        是同一个库文件，必须严格）。活动世界的每个出口都按原 config 重建引擎、起线程（打开时会
-        跑迁移，旧 schema 的快照会补齐）；app.state.config 不变。"""
+        动引擎之前先调 C++ 的预检（world_check_rollback，只读、什么都不动）：不存在的快照、缺失
+        或不是普通文件的快照文件、不支持的向量后端、磁盘不足，这几种不改输入重试也过不了，在
+        这里直接原样抛出，活动世界的引擎、线程、库文件都不动，也不进切换窗口。预检通过之后
+        world_rollback 仍会再查一遍，以它为准。
+
+        C++ 的连接探测（world_in_use）只是纵深防御。它看得见哪些连接取决于库的日志模式（在生产库
+        副本上实测）：WAL 库上读过库的闲置连接（只读、读写都算）与开着的读事务都看得见；
+        rollback-journal（delete）模式的库上只看得见开着的读事务；只打开、从没读过的连接两种模式
+        都看不见。恢复出来的库是 VACUUM INTO 的产物，引擎打开它之前一直是 delete 模式。别的进程
+        对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的安全靠这里：在切换窗口内停
+        线程、等租约（打开这个库的每条路径都持租约，见模块文档）、丢引擎，旧 Runtime 的弱引用
+        失效了才调 C++，失效不了就不动文件（切换时这里只记 warning；回滚替换的是同一个库文件，
+        必须严格）；切换遗留的 Runtime 还开着这个库就拒绝（_refuse_leaked_runtime）。活动世界的
+        每个出口都按原 config 重建引擎、起线程（打开时会跑迁移，旧 schema 的快照会补齐）；
+        app.state.config 不变。"""
         with self._gate:
             if self.switching:
                 raise WorldSwitchError("world_switching")
@@ -510,6 +519,10 @@ class WorldManager:
             entry = reg["worlds"].get(name)
             if entry is None:
                 raise _core.WorldStoreError(f"world_not_found: {name}")
+            backend = getattr(self._state.config, "vector_backend", "sqlite")
+            # 停引擎之前的只读预检（C++），失败原样抛出。
+            _core.world_check_rollback(reg, self.registry_dir, name, snapshot_id,
+                                       vector_backend=backend)
             self._refuse_leaked_runtime(entry["db_path"])
             active = _same_db(self._state.config.db_path, entry["db_path"])
             if active:
@@ -517,7 +530,6 @@ class WorldManager:
                     result = self._rollback_live_world(reg, name, snapshot_id)
             else:
                 # 没有引擎在写它（上面已排除切换遗留的旧 Runtime）。
-                backend = getattr(self._state.config, "vector_backend", "sqlite")
                 result = _core.world_rollback(reg, self.registry_dir, name, snapshot_id,
                                               vector_backend=backend)
             return {"world": name, "snapshot_id": snapshot_id,

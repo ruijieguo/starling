@@ -227,8 +227,20 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 - **归档位置**：`<世界 home>/archive/<库文件名>.pre-rollback-<UTC 时刻>-<4 hex>`，世界 home 是 `<注册表目录>/worlds/<name>`，与新建、删除世界同一推导，`snapshot_dir` 不参与（默认世界即 `worlds/default/archive/`，它的库仍在原地）。建归档、列出、清理之前都先确认 `worlds/` 与世界 home 解析符号链接后仍在注册表目录之下，否则 `snapshot_failed`，世界目录之外什么都不建、不删。列出与清理：`GET /api/worlds` 每行的 `archives` / `archive_bytes`，`DELETE /api/worlds/{name}/archives?confirm=<name>`。
 - **硬链接归档 + 原子替换**：不改名挪走旧库，而是给它在 `archive/` 里建一个硬链接，再把校验过的副本 `rename` 到库路径。库路径上任何时刻都是一份完整的库，旧 inode 最后只剩归档这一个名字。若进程死在建链接之后、替换之前，`archive/` 里会多一个现役库的第二个名字：列出与清理都跳过它（`fs::equivalent`），下一次回滚开头摘掉它。
 - **不写注册表**：快照与世界条目都不变，没有「先动磁盘、后存注册表」的分叉。
-- **别的连接（`world_in_use`）**：建硬链接之前，C++ 新开一条读写连接，`busy_timeout` 0，`PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE`。只要还有别的连接读过这个库并且开着（同进程或别的进程，例如 sqlite3 CLI、运维脚本），就拿不到锁，拒绝并回 `world_in_use`（409），什么都不改。只打开、还没读过的连接 C++ 看不见，由 Python 的租约负责（见 §8.1）。
+- **停引擎之前的预检（Codex 修复轮 2026-10-27）**：`WorldManager.rollback` 在进切换窗口之前先调 C++ `check_rollback`（绑定 `world_check_rollback`）。它只做 `rollback_world` 第 1–4 步的只读检查，顺序与错误码相同：世界、快照、向量后端、快照路径不越出 `snapshot_dir`、快照文件存在且是普通文件、世界 home、2 倍磁盘守卫。它不清扫、不复制、不建目录。不存在的快照 id、缺失的快照文件、zvec 后端、磁盘不足，这几种不改输入重试也过不了，在这里直接拒，活动世界的引擎、后台线程、库文件都不动。`rollback_world` 自己仍会再查一遍，以它为准。
+- **别的连接（`world_in_use`）**：建硬链接之前，C++ 新开一条读写连接，`busy_timeout` 0，`PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE`，拿不到锁就拒绝并回 `world_in_use`（409），什么都不改。它看得见哪些连接取决于库的日志模式（在生产库副本上实测）：
+
+  | | WAL | rollback-journal（delete） |
+  |---|---|---|
+  | 闲置的只读连接（读过） | BUSY | 看不见 |
+  | 闲置的读写连接（读过） | BUSY | 看不见 |
+  | 开着的读事务 | BUSY | BUSY |
+  | 打开了、从没读过 | 看不见 | 看不见 |
+
+  恢复出来的库是 `VACUUM INTO` 的产物，引擎打开它之前一直是 delete 模式（例如回滚过、还没激活过的非活动世界）。所以这个探测只是纵深防御：别的进程（sqlite3 CLI、运维脚本）对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的安全靠 Python 的租约（见 §8.1）、旧 Runtime 弱引用已失效的证明，以及切换遗留 Runtime 的登记。
+- **旁车**：`-wal` / `-journal` 必须为空或不存在，`-shm` 必须是普通文件或不存在（大小不论，wal-index 不承载持久数据），否则 `snapshot_failed`。三者在替换之前删掉：它们不带状态，替换随后失败时旧库少了它们照常可用；替换之后再删，会有一段时间旧库的 `-shm` / `-wal` 挂在新库旁边。
 - **失败复原**：先把快照复制到库所在目录的隐藏 partial，`integrity_check` 与租户校验针对这份副本；替换之前任何一步失败，目标库原样不动、partial 删掉；替换失败时库仍是旧库，归档名摘掉。要被替换的文件头不是 `SQLite format 3\0` 时拒绝（`snapshot_failed`）。活动世界的旧 Runtime（写连接）回收不了就拒绝（`ingest_busy`），绝不在写连接还开着时替换库文件；每个出口都按原配置重建引擎。替换成功、重建失败时回 `rollback_reopen_failed`（500），仍广播 `world_rolled_back`，前端整页刷新；其余重建失败（库未动）回 `world_open_failed`。zvec 向量后端拒绝（`snapshot_unsupported_backend`，见 §12）。
+- **已知限制**：归档是硬链接，归档目录（`<注册表目录>/worlds/<name>/archive`）和库必须在同一个卷上。`STARLING_WORLDS_REGISTRY` 指到另一个卷、default 世界的库还在原卷时，每次回滚 default 世界都会 fail closed，回 `snapshot_failed`，库不动，错误信息写明要把注册表挪到库旁边；别的世界的库在 `worlds/<name>/` 下，不受影响。不退回复制：复制要双倍磁盘和另一套磁盘守卫，而这种配置今天没人部署。
 
 ### 5.2 语义 B — 只回滚该场景，保留后续
 

@@ -1191,6 +1191,20 @@ std::int64_t engram_count(const std::string& db_path) {
     return count_rows(db_path, "SELECT COUNT(*) FROM engrams");
 }
 
+// 新开一条读写连接（与引擎同样按路径打开、不带 URI 参数），返回 engrams 行数和
+// PRAGMA integrity_check 是否为 "ok"。
+std::pair<std::int64_t, bool> open_fresh_and_check(const std::string& db_path) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    const persistence::SqliteHandle handle(raw);
+    persistence::Stmt rows(raw, "SELECT COUNT(*) FROM engrams");
+    const std::int64_t count = rows.step_row() ? sqlite3_column_int64(rows.raw(), 0) : -1;
+    persistence::Stmt check(raw, "SELECT COUNT(*) FROM pragma_integrity_check "
+                                 "WHERE integrity_check='ok'");
+    const bool intact = check.step_row() && sqlite3_column_int64(check.raw(), 0) == 1;
+    return {count, intact};
+}
+
 // 让快照「打得开、quick_check 通过、integrity_check 不通过」：改写一个索引的定义，使索引内容
 // 与表对不上（quick_check 不比对索引内容）。只有 integrity_check 拦得住它：把校验换成
 // quick_check，或者干脆不校验，用例都会失败。
@@ -1501,24 +1515,37 @@ TEST(WorldRollback, DbStaysInPlaceWhenReplaceFails) {
         [](const fs::path&) { throw std::runtime_error("injected failure before replace"); },
         [](const fs::path& staged) { fs::remove(staged); },
     };
+    const std::string wal = world.db_path + "-wal";
+    const std::string shm = world.db_path + "-shm";
     for (std::size_t idx = 0; idx < faults.size(); ++idx) {
+        // 只读读者读一次，留下 -shm：旧库带着它进回滚（上一轮的读写连接关闭时删掉了旁车）。
+        ASSERT_EQ(engram_count(world.db_path), 5) << "fault " << idx;
+        ASSERT_TRUE(fs::exists(shm)) << "fault " << idx;
         RollbackOptions opts;
         bool linked = false;
+        bool sidecars_gone = false;
         std::int64_t rows_at_hook = -1;
         opts.before_replace = [&](const fs::path& staged) {
             // 钩子触发时归档名已经建好（否则测不到「摘掉归档名」），库仍在原处且是旧内容。
             linked = !archive_is_empty(world) && fs::hard_link_count(world.db_path) == 2U;
+            // 旁车在替换之前已删掉（C2：顺序不变）。先看这个，再读库：读库会重建它们。
+            sidecars_gone = !fs::exists(wal) && !fs::exists(shm);
             rows_at_hook = fs::exists(world.db_path) ? engram_count(world.db_path) : -1;
             faults.at(idx)(staged);
         };
         EXPECT_EQ(code_of([&] { (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, opts); }),
                   "snapshot_failed") << "fault " << idx;
         EXPECT_TRUE(linked) << "fault " << idx;
+        EXPECT_TRUE(sidecars_gone) << "fault " << idx;
         EXPECT_EQ(rows_at_hook, 5) << "fault " << idx;
         EXPECT_EQ(slurp(world.db_path), before) << "fault " << idx;
         EXPECT_EQ(fs::hard_link_count(world.db_path), 1U) << "fault " << idx;
         EXPECT_TRUE(archive_is_empty(world)) << "fault " << idx;
         EXPECT_TRUE(rollback_partials(world).empty()) << "fault " << idx;
+        // 旧库没有了原来的旁车也照常可用：新开一条读写连接，行数与 integrity_check 都对。
+        const auto [rows, intact] = open_fresh_and_check(world.db_path);
+        EXPECT_EQ(rows, 5) << "fault " << idx;
+        EXPECT_TRUE(intact) << "fault " << idx;
     }
     EXPECT_EQ(engram_count(world.db_path), 5);
 }
@@ -1952,6 +1979,162 @@ TEST(WorldRollback, RefusesToReplaceAFileThatIsNotASqliteDatabase) {
         EXPECT_TRUE(archive_is_empty(world));
         EXPECT_TRUE(rollback_partials(world).empty());
     }
+}
+
+// ---- W3 Codex 修复轮：回滚预检（C1）与 -shm 类型（C2）-------------------------
+
+// 预检的一个用例：一份新的注册表与世界库，break_it 把它弄坏成某一种情况，然后断言
+// check_rollback 抛 expected，且整个注册表目录一个条目都没多、没少，库字节不变。
+// 预检之前先放一个上次崩溃留下的 partial：预检不清扫，它必须还在。
+struct PreflightCase {
+    std::string label{};
+    std::string world = "sim-1";
+    std::string snapshot_id{};                       // 空 = 用拍好的那份快照的 id
+    RollbackOptions opts{};
+    // (注册表目录, 外部目录, 快照)
+    std::function<void(const TempDir&, const TempDir&, const SnapshotEntry&)> break_it{};
+    std::string expected{};
+};
+
+void expect_preflight(const PreflightCase& tcase) {
+    const TempDir tmp;
+    const TempDir outside;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto snap = snapshot_then_write(reg, "sim-1", 2, 3);
+    const auto& world = reg.worlds.at("sim-1");
+    const fs::path stale = fs::path(world.db_path).parent_path() /
+                           ".world.db.rollback-0123456789abcdef.partial";
+    { std::ofstream out(stale); out << "x"; }
+    if (tcase.break_it) { tcase.break_it(tmp, outside, snap); }
+    // 库可能已被挪到外部（世界目录换成符号链接）：按库路径读，slurp 跟随符号链接。
+    const std::string db_before = slurp(world.db_path);
+    const auto tree_before = tree_of(tmp.path());
+    const auto outside_before = tree_of(outside.path());
+    const std::string snapshot_id = tcase.snapshot_id.empty() ? snap.id : tcase.snapshot_id;
+
+    EXPECT_EQ(code_of([&] { check_rollback(reg, tmp.path(), tcase.world, snapshot_id, tcase.opts); }),
+              tcase.expected) << tcase.label;
+    EXPECT_EQ(tree_of(tmp.path()), tree_before) << tcase.label;
+    EXPECT_EQ(tree_of(outside.path()), outside_before) << tcase.label;
+    EXPECT_EQ(slurp(world.db_path), db_before) << tcase.label;
+    EXPECT_FALSE(fs::exists(fs::symlink_status(archive_dir_of(world)))) << tcase.label;
+}
+
+TEST(WorldRollbackCheck, RefusesEachReadOnlyCaseWithRollbackCodesAndTouchesNothing) {
+    RollbackOptions zvec;
+    zvec.vector_backend = "zvec";
+    RollbackOptions starved;
+    starved.free_space = [](const fs::path&) -> std::int64_t { return 1; };
+    const std::vector<PreflightCase> cases{
+        {.label = "1 unknown world", .world = "nope", .expected = "world_not_found"},
+        {.label = "2 unknown snapshot", .snapshot_id = "x", .expected = "snapshot_not_found"},
+        {.label = "3 backend", .opts = zvec, .expected = "snapshot_unsupported_backend"},
+        {.label = "4 snapshot path escapes snapshot_dir",
+         .break_it = [](const TempDir&, const TempDir& outside, const SnapshotEntry& snap) {
+             const fs::path foreign = outside.path() / "foreign.db";
+             fs::rename(snap.path, foreign);
+             fs::create_symlink(foreign, snap.path);
+         },
+         .expected = "snapshot_failed"},
+        {.label = "5a snapshot file missing",
+         .break_it = [](const TempDir&, const TempDir&, const SnapshotEntry& snap) {
+             fs::remove(snap.path);
+         },
+         .expected = "snapshot_corrupt"},
+        {.label = "5b snapshot file is a directory",
+         .break_it = [](const TempDir&, const TempDir&, const SnapshotEntry& snap) {
+             fs::remove(snap.path);
+             fs::create_directory(snap.path);
+         },
+         .expected = "snapshot_corrupt"},
+        {.label = "6 world home resolves outside worlds/",
+         .break_it = [](const TempDir& tmp, const TempDir& outside, const SnapshotEntry&) {
+             const fs::path home = world_dir_of(tmp, "sim-1");
+             fs::rename(home, outside.path() / "sim-1");
+             fs::create_directory_symlink(outside.path() / "sim-1", home);
+         },
+         .expected = "snapshot_failed"},
+        {.label = "7 insufficient disk", .opts = starved, .expected = "insufficient_disk"},
+    };
+    for (const auto& tcase : cases) { expect_preflight(tcase); }
+}
+
+// 预检与回滚的检查是同一份代码：顺序相同，同时有两种毛病时报的是同一个码。
+TEST(WorldRollbackCheck, ReportsTheSameFirstFailureAsRollback) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto snap = snapshot_then_write(reg, "sim-1", 2, 1);
+    fs::remove(snap.path);                           // 第 3 步：snapshot_corrupt
+    RollbackOptions both;
+    both.free_space = [](const fs::path&) -> std::int64_t { return 1; };   // 第 4 步
+    EXPECT_EQ(code_of([&] { check_rollback(reg, tmp.path(), "sim-1", snap.id, both); }),
+              "snapshot_corrupt");
+    EXPECT_EQ(code_of([&] { (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, both); }),
+              "snapshot_corrupt");
+    both.vector_backend = "zvec";                    // 第 1 步排在最前
+    EXPECT_EQ(code_of([&] { check_rollback(reg, tmp.path(), "sim-1", snap.id, both); }),
+              "snapshot_unsupported_backend");
+    EXPECT_EQ(code_of([&] { (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, both); }),
+              "snapshot_unsupported_backend");
+}
+
+// 有效快照：预检通过，什么都不动（不清扫上次的 partial、不建 archive/、库字节不变）；之后的
+// 回滚照常成功，并且由它来清扫。
+TEST(WorldRollbackCheck, PassesForAValidSnapshotAndLeavesTheSweepToRollback) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    const auto snap = snapshot_then_write(reg, "sim-1", 2, 3);
+    const fs::path stale = fs::path(world.db_path).parent_path() /
+                           ".world.db.rollback-0123456789abcdef.partial";
+    { std::ofstream out(stale); out << "x"; }
+    const std::string db_before = slurp(world.db_path);
+    const auto tree_before = tree_of(tmp.path());
+
+    EXPECT_EQ(code_of([&] { check_rollback(reg, tmp.path(), "sim-1", snap.id, RollbackOptions{}); }),
+              "<no throw>");
+    EXPECT_EQ(tree_of(tmp.path()), tree_before);
+    EXPECT_TRUE(fs::exists(stale));
+    EXPECT_FALSE(fs::exists(archive_dir_of(world)));
+    EXPECT_EQ(slurp(world.db_path), db_before);
+
+    (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, RollbackOptions{});
+    EXPECT_FALSE(fs::exists(stale));
+    EXPECT_EQ(engram_count(world.db_path), 2);
+}
+
+// -shm 存在但不是普通文件（目录、符号链接）：在动任何东西之前拒绝（snapshot_failed），目标库、
+// 它旁边的 -shm 原样不动，不建归档名，不留 partial。
+TEST(WorldRollback, RefusesWhenShmIsNotARegularFile) {
+    const TempDir tmp;
+    const TempDir outside;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const auto& world = reg.worlds.at("sim-1");
+    const auto snap = snapshot_then_write(reg, "sim-1", 2, 3);
+    const fs::path shm = world.db_path + "-shm";
+    const fs::path target = outside.path() / "elsewhere-shm";
+    { std::ofstream out(target); out << "not ours"; }
+    const std::vector<std::pair<std::string, std::function<void()>>> shapes{
+        {"directory", [&] { fs::create_directory(shm); }},
+        {"symlink", [&] { fs::create_symlink(target, shm); }},
+    };
+    for (const auto& [label, plant] : shapes) {
+        fs::remove_all(shm);
+        plant();
+        const std::string before = slurp(world.db_path);
+        const auto status_before = fs::symlink_status(shm).type();
+        EXPECT_EQ(code_of([&] {
+                      (void)rollback_world(reg, tmp.path(), "sim-1", snap.id, RollbackOptions{});
+                  }), "snapshot_failed") << label;
+        EXPECT_EQ(slurp(world.db_path), before) << label;
+        EXPECT_EQ(fs::symlink_status(shm).type(), status_before) << label;
+        EXPECT_EQ(fs::hard_link_count(world.db_path), 1U) << label;
+        EXPECT_TRUE(archive_is_empty(world)) << label;
+        EXPECT_TRUE(rollback_partials(world).empty()) << label;
+    }
+    EXPECT_EQ(slurp(target), "not ours");
+    fs::remove_all(shm);
+    EXPECT_EQ(engram_count(world.db_path), 5);
 }
 
 }  // namespace
