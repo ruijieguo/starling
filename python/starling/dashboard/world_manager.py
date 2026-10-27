@@ -222,6 +222,8 @@ class WorldManager:
 
         build 见 engine_lease。计数先于惰性构建增加：切换置位后等租约归零，也就等到了
         正在进行的构建，构建完写回的引擎会被切换当作旧引擎接手，不会在切换之后才冒出来。
+        这个引擎可能已经补起了后台线程（见下段），_quiesce_and_drain 在等完租约之后再停一次，
+        接手的是停好线程的引擎。
         _gate 只在计数时短暂持有（调用方可能在事件循环上），构建在 _build_lock 下进行。
 
         失败路径丢过引擎（_workers_lost）时，真正新建了引擎的那次构建在写回之后、仍持
@@ -250,7 +252,9 @@ class WorldManager:
 
     def _restart_lost_workers(self, engine) -> None:
         """lease 刚新建并写回的引擎补起后台线程（持 _build_lock）。起线程失败不让租约失败：
-        记日志，标志保持置位，下一次真正新建引擎时再试；这个引擎照常服务请求。"""
+        记日志，标志保持置位，下一次真正新建引擎时再试；这个引擎照常服务请求。部分失败（tick
+        已起、摄入抛错）不对这个引擎重试，它要等下一次成功的切换、回滚或重启才有摄入线程
+        （spec §8.1）。"""
         try:
             self._start_workers(engine, self._state.config)
         except Exception:  # noqa: BLE001 — 线程起不来不能连带命令请求失败
@@ -396,8 +400,16 @@ class WorldManager:
                                "a write connection open on this database")
 
     def _quiesce_and_drain(self) -> None:
-        """停当前引擎的后台线程，再等在途租约归零（切换窗口内调用）。任一步失败：恢复后台
-        线程、引擎原样留在 app.state 上，抛 ingest_busy。activate 与 rollback 共用。"""
+        """停当前引擎的后台线程，等在途租约归零，再对此刻的引擎停一次后台线程（切换窗口内
+        调用）。任一步失败：恢复后台线程、引擎原样留在 app.state 上，抛 ingest_busy。activate
+        与 rollback 共用。
+
+        第二次 quiesce 针对在途的惰性构建：第一次读到的引擎可能还是 None（构建还在进行），或
+        是刚写回、还没补起线程的同一个引擎；等租约期间它写回引擎并按 _workers_lost 补起 tick /
+        摄入线程，切换随后把它当旧引擎接手。租约已归零、新租约一律拒绝，此刻的引擎就是要接手的
+        那个，所以无条件再停一次（没有线程时 quiesce 直接返回 True）。不能只在「与第一次读到的
+        不是同一个」时才停：同一个引擎也可能是在第一次之后才起的线程。不在 lease 里看 switching
+        来跳过补起：那要在持 _build_lock 时取 _gate，与锁序相反；不加锁读照样有竞态。"""
         quiesced = self._state.engine
         if quiesced is not None and not quiesced.quiesce():
             # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
@@ -411,6 +423,11 @@ class WorldManager:
             if quiesced is not None:
                 self._restart_workers(quiesced)
             raise
+        late = self._state.engine
+        if late is not None and not late.quiesce():
+            stuck = "/".join(getattr(late, "quiesce_stuck", ())) or "background"
+            self._restart_workers(late)
+            raise WorldSwitchError("ingest_busy", f"{stuck} thread did not stop in 5s")
 
     def _swap_engine(self, reg: dict, name: str) -> None:
         """activate 的主体，调用时已持管理锁并处于切换窗口内（标志已置位）。

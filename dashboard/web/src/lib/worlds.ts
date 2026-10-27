@@ -119,7 +119,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 	world_protected: '默认世界和当前活动世界不能删除',
 	confirm_mismatch: '输入的名称与世界名不一致',
 	ingest_busy: '后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试',
-	world_open_failed: '引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新或重启服务',
+	world_open_failed: '引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新，仍异常请查看服务日志',
 	snapshot_unsupported_backend: '当前向量后端（zvec）不支持快照',
 	insufficient_disk:
 		'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间',

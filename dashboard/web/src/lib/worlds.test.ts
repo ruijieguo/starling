@@ -141,7 +141,7 @@ describe('错误文案', () => {
 			'后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试'
 		);
 		expect(worldErrorMessage('world_open_failed')).toBe(
-			'引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新或重启服务'
+			'引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新，仍异常请查看服务日志'
 		);
 		expect(worldErrorMessage('insufficient_disk')).toBe(
 			'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间'

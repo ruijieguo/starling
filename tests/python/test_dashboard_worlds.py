@@ -392,7 +392,9 @@ def test_switching_flag_spans_the_whole_swap_and_clears_on_every_exit(tmp_path, 
         return real_quiesce(timeout_s)
     monkeypatch.setattr(state.engine, "quiesce", _spy)
     mgr.activate("sim-1")
-    assert seen == [True]                    # 停线程阶段就已经拒绝新请求
+    # 停线程阶段就已经拒绝新请求。两次：等租约之前一次，等完租约之后对同一个引擎再停一次
+    # （在途惰性构建可能在等租约期间补起线程，见 _quiesce_and_drain）。
+    assert seen == [True, True]
     assert mgr.switching is False
     with pytest.raises(WorldSwitchError):    # world_not_found 路径：根本没置位过
         mgr.activate("nope")
@@ -2822,11 +2824,15 @@ def test_worker_start_failure_keeps_the_lease_and_retries_on_the_next_real_rebui
 
 
 @pytest.mark.parametrize("failure", ["rollback_reopen", "rollback_cpp_error", "switch_double"])
-@pytest.mark.parametrize("recovery", ["activate", "rollback"])
+@pytest.mark.parametrize("recovery", ["activate", "rollback", "activate_fails_back"])
 def test_failure_sets_the_lost_workers_flag_and_a_successful_publish_clears_it(
         tmp_path, monkeypatch, failure, recovery):
     """两条失败路径把引擎丢成 None 时置位；之后成功的切换或回滚发布新引擎时已经起过线程，
-    清位，免得之后某次惰性重建再起一遍。"""
+    清位，免得之后某次惰性重建再起一遍。activate_fails_back：切到一个打不开的世界、回到旧世界
+    成功（_rollback 的单失败恢复），旧世界的引擎同样起过线程，同样清位。
+
+    清位之后正常丢掉引擎（不是失败路径）再惰性重建，不会再起一套线程：标志残留的话就会起。"""
+    import starling.dashboard.world_manager as wm
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
     assert mgr._workers_lost is False
@@ -2837,13 +2843,198 @@ def test_failure_sets_the_lost_workers_flag_and_a_successful_publish_clears_it(
         if "sim-1" not in mgr.load()["worlds"]:
             mgr.create("sim-1", "")
         mgr.activate("sim-1")
-    else:
+    elif recovery == "rollback":
         snap = mgr.take_snapshot("default", "")
         mgr.rollback("default", snap["id"])
+    else:
+        bad_db = mgr.create("bad", "")["db_path"]
+        real = wm.DashboardEngine
+
+        def _bad_world_will_not_open(cfg):
+            if cfg.db_path == bad_db:
+                raise RuntimeError("bad world will not open")
+            return real(cfg)
+        monkeypatch.setattr(wm, "DashboardEngine", _bad_world_will_not_open)
+        try:
+            with pytest.raises(WorldSwitchError) as ei:
+                mgr.activate("bad")
+        finally:
+            monkeypatch.setattr(wm, "DashboardEngine", real)
+        assert ei.value.code == "world_open_failed"
+        assert "also failed" not in ei.value.detail          # 单失败：旧世界重开成功
+        assert state.config.tenant == "default" and mgr.load()["active"] == "default"
+        del ei
     eng = state.engine
-    assert eng is not None and mgr._workers_lost is False
-    assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
-    assert eng.quiesce() is True
+    try:
+        assert eng is not None and mgr._workers_lost is False
+        assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+    finally:
+        assert eng is None or eng.quiesce() is True
+    rt_ref = weakref.ref(eng._rt)
+    state.engine = eng = None
+    gc.collect()
+    assert rt_ref() is None
+    try:
+        with mgr.lease(build=_lazy_build) as rebuilt:
+            assert rebuilt is not None and state.engine is rebuilt
+            assert rebuilt._tick_thread is None and rebuilt._ingest_thread is None, \
+                "标志没清：之后的惰性重建又起了一套后台线程"
+    finally:
+        assert state.engine is None or state.engine.quiesce() is True
+
+
+@pytest.mark.parametrize("op", ["activate", "rollback"])
+def test_switch_stops_the_workers_an_in_flight_lazy_rebuild_started_before_taking_it_over(
+        tmp_path, monkeypatch, op):
+    """失败路径丢过引擎（_workers_lost）之后，惰性重建正在进行时，切换或活动世界回滚开始：
+    _quiesce_and_drain 第一次读到的引擎还是 None，什么线程都停不到；等租约期间重建写回引擎、
+    补起 tick 与摄入线程，然后归还租约，切换随后把这个引擎当旧引擎接手。等完租约之后不再停一次
+    的话，它的线程一直在跑、_loop 闭包钉住引擎，旧 Runtime 回收不了：activate 把它记进
+    _leaked_runtimes，线程活过关停；rollback 回 ingest_busy，并在同一个库上再开一个引擎，
+    两个写者、两个摄入 worker。
+
+    卡点全用 Event：build 卡住时租约已计数（切换必须等它）；_drain_leases 一被调用，就说明
+    切换已置位、第一次 quiesce 已经读过 None，这时才放行构建。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _start_workers_like_lifespan(mgr, state, 60.0)
+    _drop_engine_by_failure(mgr, state, monkeypatch, "rollback_reopen")
+    assert state.engine is None and mgr._workers_lost is True and mgr.workers_enabled is True
+    if op == "activate":
+        mgr.create("sim-1", "")
+
+        def _operate():
+            return mgr.activate("sim-1")
+    else:
+        snap = mgr.take_snapshot("default", "")
+
+        def _operate():
+            return mgr.rollback("default", snap["id"])
+    ingest_before = {t for t in threading.enumerate() if t.name == "starling-ingest"}
+    in_build, proceed, draining = threading.Event(), threading.Event(), threading.Event()
+    # 每次 _start_workers 之后记一笔：(Runtime 弱引用, 两个线程, 两个停止事件)。不留引擎本身，
+    # 否则测试自己就钉住了被接手的引擎。线程跑完后 Thread 会丢掉 _target，不再引用引擎。
+    started: list = []
+    real_start = mgr._start_workers
+
+    def _spy_start(engine, cfg):
+        real_start(engine, cfg)
+        started.append((weakref.ref(engine._rt),
+                        (engine._tick_thread, engine._ingest_thread),
+                        (engine._tick_stop, engine._ingest_stop)))
+    monkeypatch.setattr(mgr, "_start_workers", _spy_start)
+    real_drain = mgr._drain_leases
+
+    def _signal_drain():
+        draining.set()
+        real_drain()
+    monkeypatch.setattr(mgr, "_drain_leases", _signal_drain)
+
+    def _blocked_build(cfg):
+        in_build.set()
+        assert proceed.wait(15)
+        return _lazy_build(cfg)
+
+    errors: list = []                       # 只留 repr，不留回溯（回溯会钉住帧里的引擎）
+    outcome: list = []
+
+    def _lazy_request():
+        try:
+            mgr.lease(build=_blocked_build).release()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(f"lease: {exc!r}")
+
+    def _switch():
+        try:
+            outcome.append(_operate())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(f"{op}: {exc!r}")
+
+    lazy = threading.Thread(target=_lazy_request, daemon=True)
+    switcher = threading.Thread(target=_switch, daemon=True)
+    try:
+        lazy.start()
+        assert in_build.wait(10)
+        switcher.start()
+        assert draining.wait(10), "切换没有走到等租约这一步"
+        proceed.set()
+        lazy.join(15)
+        switcher.join(30)
+        assert not lazy.is_alive() and not switcher.is_alive()
+        assert errors == []
+        assert len(outcome) == 1 and len(started) == 2      # 惰性重建一次 + 切换/回滚发布一次
+        lazy_rt, lazy_threads, _stops = started[0]
+        assert all(t is not None for t in lazy_threads), "惰性重建没补起线程：没走到要测的交错"
+        assert not any(t.is_alive() for t in lazy_threads), "被接手的惰性引擎的后台线程还在跑"
+        gc.collect()
+        assert lazy_rt() is None, "被接手的惰性引擎的 Runtime 没被回收"
+        assert mgr._leaked_runtimes == []
+        final = state.engine
+        assert final is not None and final._ingest_thread is not None
+        live = [t for t in threading.enumerate()
+                if t.name == "starling-ingest" and t.is_alive() and t not in ingest_before]
+        assert live == [final._ingest_thread], "同一进程里不止一个摄入 worker"
+        if op == "rollback":
+            assert outcome[0]["active"] is True
+        else:
+            assert state.config.tenant == "sim-1"
+        del final
+    finally:
+        proceed.set()
+        for thread in (lazy, switcher):
+            if thread.ident is not None:
+                thread.join(15)
+        for _rt, threads, stops in started:             # 回退验证时这些线程还活着：停掉
+            for stop in stops:
+                if stop is not None:
+                    stop.set()
+            for thread in threads:
+                if thread is not None:
+                    thread.join(15)
+        if state.engine is not None:
+            state.engine.quiesce()
+
+
+@pytest.mark.parametrize("op", ["activate", "rollback"])
+def test_switch_refuses_when_the_taken_over_lazy_engine_will_not_stop(tmp_path, monkeypatch, op):
+    """等完租约之后的第二次 quiesce 停不下（线程卡住）：与第一次同样处理，恢复这个引擎的后台线程、
+    引擎留在 app.state 上，回 ingest_busy，detail 点名卡住的线程，状态不前进。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    state.config.tick_interval_s = 60.0
+    mgr.workers_enabled = True
+    cfg = state.config
+    late = state.engine
+    state.engine = None                       # 第一次 quiesce 读到 None
+    if op == "activate":
+        mgr.create("sim-1", "")
+
+        def _operate():
+            mgr.activate("sim-1")
+    else:
+        snap = mgr.take_snapshot("default", "")
+
+        def _operate():
+            mgr.rollback("default", snap["id"])
+    late._tick_thread, late._tick_stop = _StuckThread(), threading.Event()
+    real_drain = mgr._drain_leases
+
+    def _drain_then_write_back():
+        real_drain()
+        state.engine = late                   # 在途惰性构建在等租约期间写回、起了线程
+    monkeypatch.setattr(mgr, "_drain_leases", _drain_then_write_back)
+    try:
+        with pytest.raises(WorldSwitchError) as ei:
+            _operate()
+        assert ei.value.code == "ingest_busy"
+        assert "tick" in ei.value.detail and "ingest" not in ei.value.detail
+        del ei
+        assert state.engine is late and state.config is cfg
+        assert mgr.load()["active"] == "default" and mgr.switching is False
+        assert late._ingest_thread is not None and late._ingest_thread.is_alive()   # 已恢复
+    finally:
+        late._tick_thread = late._tick_stop = None
+        assert late.quiesce() is True
 
 
 def test_startup_without_an_engine_still_starts_no_ingest_worker_on_first_lazy_build(
