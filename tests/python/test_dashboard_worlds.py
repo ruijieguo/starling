@@ -6,6 +6,8 @@ import gc
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import weakref
@@ -15,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from starling import _core
 from starling.dashboard import DashboardConfig, create_app
+from starling.dashboard import queries
 from starling.dashboard.engine import DashboardEngine
 from starling.dashboard.world_manager import (WorldManager, WorldSwitchError,
                                               bootstrap_worlds, registry_path_for)
@@ -1729,8 +1732,9 @@ def _rollback_outcome(mgr, name: str, snapshot_id: str):
 
 
 def test_binding_rollback_roundtrip_archives_and_error_codes(tmp_path):
+    rd = str(tmp_path)                            # 注册表目录：世界 home 与归档目录只从它推出
     reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
-    reg = _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    reg = _core.world_create(reg, rd, "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
     db = reg["worlds"]["sim-1"]["db_path"]
     adapter = _core.SqliteAdapter.open(db)        # 跑迁移建库
     del adapter
@@ -1741,7 +1745,7 @@ def test_binding_rollback_roundtrip_archives_and_error_codes(tmp_path):
     assert _count(db, "engrams") == 1
     frozen = json.dumps(reg, sort_keys=True)
 
-    result = _core.world_rollback(reg, "sim-1", snap["id"])
+    result = _core.world_rollback(reg, rd, "sim-1", snap["id"])
     assert set(result) == {"archive_path", "restored_bytes"}
     assert result["restored_bytes"] == snap["size_bytes"]
     home = os.path.dirname(reg["worlds"]["sim-1"]["snapshot_dir"])
@@ -1752,19 +1756,19 @@ def test_binding_rollback_roundtrip_archives_and_error_codes(tmp_path):
     con.close()
     assert json.dumps(reg, sort_keys=True) == frozen                   # 入参不被修改
 
-    listed = _core.world_list_archives(reg, "sim-1")
+    listed = _core.world_list_archives(reg, rd, "sim-1")
     assert listed == [{"name": os.path.basename(result["archive_path"]),
                        "size_bytes": os.path.getsize(result["archive_path"])}]
-    assert _core.world_purge_archives(reg, "sim-1") == 1
-    assert _core.world_list_archives(reg, "sim-1") == []
+    assert _core.world_purge_archives(reg, rd, "sim-1") == 1
+    assert _core.world_list_archives(reg, rd, "sim-1") == []
 
     for call, code in (
-            (lambda: _core.world_rollback(reg, "sim-1", "nope"), "snapshot_not_found"),
-            (lambda: _core.world_rollback(reg, "nope", snap["id"]), "world_not_found"),
-            (lambda: _core.world_rollback(reg, "sim-1", snap["id"], vector_backend="zvec"),
+            (lambda: _core.world_rollback(reg, rd, "sim-1", "nope"), "snapshot_not_found"),
+            (lambda: _core.world_rollback(reg, rd, "nope", snap["id"]), "world_not_found"),
+            (lambda: _core.world_rollback(reg, rd, "sim-1", snap["id"], vector_backend="zvec"),
              "snapshot_unsupported_backend"),
-            (lambda: _core.world_list_archives(reg, "nope"), "world_not_found"),
-            (lambda: _core.world_purge_archives(reg, "nope"), "world_not_found")):
+            (lambda: _core.world_list_archives(reg, rd, "nope"), "world_not_found"),
+            (lambda: _core.world_purge_archives(reg, rd, "nope"), "world_not_found")):
         with pytest.raises(_core.WorldStoreError) as ei:
             call()
         assert _code(ei.value) == code
@@ -1850,10 +1854,11 @@ def test_rollback_active_world_with_corrupt_snapshot_reopens_the_untouched_db(
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
-def test_rollback_active_world_reopen_failure_is_world_open_failed(tmp_path, monkeypatch,
-                                                                   corrupt):
-    """回滚之后（成功或 C++ 失败）按原 config 重建引擎失败：engine 留 None、窗口已关、
-    抛 world_open_failed 并链到原因；之后惰性重建得到的是同一个库。"""
+def test_rollback_active_world_reopen_failure_code_says_whether_the_db_changed(
+        tmp_path, monkeypatch, corrupt):
+    """回滚之后按原 config 重建引擎失败：engine 留 None、窗口已关；之后惰性重建得到的是同一个
+    库。码按库有没有被替换来分（B4）：替换成功之后是 rollback_reopen_failed（链到重建的异常，
+    库已是快照内容）；C++ 失败之后是 world_open_failed（链到 C++ 的错误，库未动）。"""
     import starling.dashboard.world_manager as wm
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     mgr, state = _manager(tmp_path)
@@ -1868,13 +1873,15 @@ def test_rollback_active_world_reopen_failure_is_world_open_failed(tmp_path, mon
     monkeypatch.setattr(wm, "DashboardEngine", _fail)
     with pytest.raises(WorldSwitchError) as ei:
         mgr.rollback("default", snap["id"])
-    assert ei.value.code == "world_open_failed" and "disk on fire" in ei.value.detail
+    assert "disk on fire" in ei.value.detail
     assert state.engine is None and state.config is cfg and mgr.switching is False
     if corrupt:
+        assert ei.value.code == "world_open_failed"
         assert isinstance(ei.value.__cause__, _core.WorldStoreError)
         assert _code(ei.value.__cause__) == "snapshot_corrupt"
         assert _count(db) == 2                                    # 目标库未动
     else:
+        assert ei.value.code == "rollback_reopen_failed"
         assert isinstance(ei.value.__cause__, RuntimeError)
         assert "rollback applied" in ei.value.detail and _count(db) == 1
     monkeypatch.undo()
@@ -1911,8 +1918,9 @@ def test_rollback_active_world_refuses_while_old_runtime_is_still_referenced(
 
 def test_rollback_refuses_world_whose_runtime_leaked_from_an_earlier_switch(
         tmp_path, monkeypatch, caplog):
-    """切换时旧 Runtime 没回收只记 warning。它还开着那个库的写连接，关掉时 SQLite 会按路径
-    合并并删除 <db>-wal——回滚之后那就是恢复出来的库的 WAL。所以回滚非活动世界也要先查。"""
+    """切换时旧 Runtime 没回收只记 warning。它还开着那个库的写连接：库若被回滚替换，这条连接
+    之后的写入会落进旧 inode 和它已被 unlink 的 WAL，恢复出来的库里没有，静默丢失，归档也可能
+    被改动（关掉它时 SQLite 发现主文件已被换掉，什么都不做）。所以回滚非活动世界也要先查。"""
     import starling.dashboard.world_manager as wm
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     monkeypatch.setattr(wm, "_RUNTIME_RELEASE_GRACE_S", 0.1)
@@ -2160,7 +2168,7 @@ def test_routes_rollback_during_switch_window_is_503(tmp_path):
 @pytest.mark.parametrize("source,code,status", [
     ("cpp", "snapshot_corrupt", 409), ("cpp", "world_tenant_mismatch", 409),
     ("cpp", "insufficient_disk", 507), ("cpp", "snapshot_failed", 500),
-    ("cpp", "snapshot_unsupported_backend", 409),
+    ("cpp", "snapshot_unsupported_backend", 409), ("cpp", "world_in_use", 409),
     ("manager", "ingest_busy", 409), ("manager", "world_open_failed", 500),
 ])
 def test_routes_rollback_maps_error_codes_and_does_not_broadcast(tmp_path, monkeypatch,
@@ -2214,3 +2222,252 @@ def test_routes_unreadable_archive_dir_is_zero_archives_not_stats_error(tmp_path
     assert (row["archives"], row["archive_bytes"]) == (0, 0)
     assert "stats_error" not in row and row["db_bytes"] > 0      # 库本身读得出
     assert "world_list_archives failed" in caplog.text
+
+
+# ───────────────────────── W3 最终修复轮 ─────────────────────────
+
+# ── A3：活动世界回滚的两条失败出口 ──
+
+def test_rollback_weakref_refusal_then_reopen_failure_is_world_open_failed(tmp_path, monkeypatch):
+    """弱引用拒绝（旧 Runtime 还开着写连接，库未动）之后重建引擎也失败：仍是 world_open_failed
+    （库没被替换），链到 ingest_busy；engine 留 None，窗口已关。"""
+    import starling.dashboard.world_manager as wm
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    monkeypatch.setattr(wm, "_RUNTIME_RELEASE_GRACE_S", 0.1)
+    mgr, state = _manager(tmp_path)
+    snap = _write_snapshot_write(mgr, state, "default")
+    db, cfg = state.config.db_path, state.config
+    keep = state.engine._rt                  # 钉住旧 Runtime：弱引用拒绝
+    inode = os.stat(db).st_ino
+
+    def _fail(_cfg):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wm, "DashboardEngine", _fail)
+    out, err = _rollback_outcome(mgr, "default", snap["id"])
+    assert os.stat(db).st_ino == inode, "旧 Runtime 还开着写连接，库文件却被替换了"
+    assert out is None and isinstance(err, WorldSwitchError)
+    assert err.code == "world_open_failed" and "disk on fire" in err.detail
+    assert isinstance(err.__cause__, WorldSwitchError) and err.__cause__.code == "ingest_busy"
+    assert state.engine is None and state.config is cfg and mgr.switching is False
+    assert _count(db) == 2 and mgr.archives("default") == []
+    del keep
+    gc.collect()
+
+
+def test_rollback_active_world_refuses_when_workers_will_not_stop(tmp_path, monkeypatch):
+    """quiesce 失败（后台线程 5 秒内没停下）：ingest_busy，库未动，引擎原样保留且线程已恢复。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _enable_workers(mgr, state)
+    snap = _write_snapshot_write(mgr, state, "default")
+    db = state.config.db_path
+    eng, cfg = state.engine, state.config
+    inode = os.stat(db).st_ino
+
+    def _stopped_but_reports_busy(timeout_s=5.0):
+        eng.stop_ingest_worker()
+        eng.stop_background_tick()
+        return False
+    monkeypatch.setattr(eng, "quiesce", _stopped_but_reports_busy)
+    out, err = _rollback_outcome(mgr, "default", snap["id"])
+    assert os.stat(db).st_ino == inode
+    assert out is None and isinstance(err, WorldSwitchError) and err.code == "ingest_busy"
+    assert state.engine is eng and state.config is cfg          # 同一个引擎，没丢
+    assert mgr.switching is False
+    assert eng._tick_thread is not None and eng._tick_thread.is_alive()
+    assert eng._ingest_thread is not None and eng._ingest_thread.is_alive()
+    assert _count(db) == 2 and mgr.archives("default") == []
+    monkeypatch.undo()
+    assert eng.quiesce() is True
+
+
+# ── B2：打开活动世界库的路由持租约 ──
+
+def test_rollback_waits_for_an_in_flight_inspect_query(tmp_path, monkeypatch):
+    """检视 SQL 路由持租约直到连接关闭：一条打开了旧 inode、还没读的只读连接（C++ 的
+    world_in_use 探测看不见它）在飞时，回滚等不到租约归零 → ingest_busy，库未动。它结束之后
+    回滚照常成功。不持租约的话回滚会在它还开着时替换库文件。"""
+    import starling.dashboard.world_manager as wm
+    monkeypatch.setattr(wm, "_LEASE_DRAIN_TIMEOUT_S", 0.3)
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    _remember(app.state.engine, "Bob owns auth")
+    snap = mgr.take_snapshot("default", "")
+    _remember(app.state.engine, "Carol owns billing")
+    db = app.state.config.db_path
+    real = queries.overview
+    opened, release = threading.Event(), threading.Event()
+
+    def _blocked(db_path, tenant):
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)   # 打开了，还没读
+        try:
+            opened.set()
+            assert release.wait(10)
+        finally:
+            con.close()
+        return real(db_path, tenant)
+    monkeypatch.setattr(queries, "overview", _blocked)
+    results = []
+    req = threading.Thread(target=lambda: results.append(client.get("/api/overview")),
+                           daemon=True)
+    req.start()
+    assert opened.wait(5)
+    inode = os.stat(db).st_ino
+    try:
+        out, err = _rollback_outcome(mgr, "default", snap["id"])
+        assert os.stat(db).st_ino == inode, "检视查询还开着库，库文件却被替换了"
+        assert out is None and isinstance(err, WorldSwitchError) and err.code == "ingest_busy"
+        assert mgr.switching is False and app.state.engine is not None
+    finally:
+        release.set()
+        req.join(10)
+    assert results and results[0].status_code == 200
+    # err 的回溯钉着 _quiesce_and_drain 的栈帧，帧里的局部变量引用着引擎（旧 Runtime）。
+    err = None
+    out = mgr.rollback("default", snap["id"])
+    assert out["active"] is True and os.stat(db).st_ino != inode and _count(db) == 1
+
+
+def test_routes_list_worlds_503_during_switch_window(tmp_path):
+    """GET /api/worlds 的 world_stats 会打开活动世界的库，同样持租约：窗口内 503。"""
+    client, app = _client(tmp_path)
+    assert client.get("/api/worlds").status_code == 200
+    _force_switching(app.state.worlds, True)
+    try:
+        r = client.get("/api/worlds")
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+    finally:
+        _force_switching(app.state.worlds, False)
+    assert client.get("/api/worlds").status_code == 200
+
+
+# ── B3：C++ 探测别的连接（world_in_use） ──
+
+_READER = (
+    "import sqlite3, sys\n"
+    "con = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True)\n"
+    "print(con.execute('SELECT COUNT(*) FROM engrams').fetchone()[0], flush=True)\n"
+    "sys.stdin.read()\n"
+    "con.close()\n")
+
+
+def test_binding_rollback_refuses_db_open_in_another_process(tmp_path):
+    rd = str(tmp_path)
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    reg = _core.world_create(reg, rd, "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    db = _migrated_world_db_at(reg, "sim-1")
+    out = _core.world_take_snapshot(reg, "sim-1")
+    reg, snap = out["registry"], out["snapshot"]
+    _insert_foreign_engram(db, "sim-1")
+    proc = subprocess.Popen([sys.executable, "-I", "-c", _READER, db], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "1"          # 另一个进程读过了，连接开着
+        with open(db, "rb") as fh:
+            before = fh.read()
+        inode = os.stat(db).st_ino
+        with pytest.raises(_core.WorldStoreError) as ei:
+            _core.world_rollback(reg, rd, "sim-1", snap["id"])
+        assert _code(ei.value) == "world_in_use"
+        assert os.stat(db).st_ino == inode
+        with open(db, "rb") as fh:
+            assert fh.read() == before
+        assert _core.world_list_archives(reg, rd, "sim-1") == []
+    finally:
+        proc.stdin.close()
+        proc.wait(10)
+    result = _core.world_rollback(reg, rd, "sim-1", snap["id"])    # 进程退出之后照常回滚
+    assert result["archive_path"] and _count(db, "engrams") == 0
+
+
+def _migrated_world_db_at(reg: dict, name: str) -> str:
+    db = reg["worlds"][name]["db_path"]
+    adapter = _core.SqliteAdapter.open(db)   # 跑迁移建库
+    del adapter
+    gc.collect()
+    return db
+
+
+def test_rollback_active_world_in_use_reopens_the_untouched_db(tmp_path, monkeypatch):
+    """活动世界：C++ 的 world_in_use 与其他 C++ 错误一样，按原 config 重建引擎、原样抛出。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    snap = _write_snapshot_write(mgr, state, "default")
+    db, cfg = state.config.db_path, state.config
+    _checkpoint(db)
+    reader = sqlite3.connect(f"file:{db}?mode=ro", uri=True)    # 不在租约里的连接，读过库
+    try:
+        assert reader.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 2
+        old_rt = weakref.ref(state.engine._rt)
+        inode = os.stat(db).st_ino
+        out, err = _rollback_outcome(mgr, "default", snap["id"])
+        assert os.stat(db).st_ino == inode
+        assert out is None and isinstance(err, _core.WorldStoreError)
+        assert _code(err) == "world_in_use"
+        assert old_rt() is None and state.engine is not None and state.engine._cfg is cfg
+        assert mgr.switching is False and mgr.archives("default") == []
+        _remember(state.engine, "Dave owns search")              # 重建出来的引擎能写
+        assert _count(db) == 3
+    finally:
+        reader.close()
+    out = mgr.rollback("default", snap["id"])
+    assert out["active"] is True and _count(db) == 1
+
+
+# ── B4：替换成功、重开失败单独成码，路由仍广播 ──
+
+def _recording_app(tmp_path):
+    app = create_app(_cfg(tmp_path))
+    app.state.engine = DashboardEngine(app.state.config)
+    sent = []
+
+    async def _record(message):
+        sent.append(message)
+    app.state.ws_manager.broadcast = _record
+    return TestClient(app), app, sent
+
+
+def test_routes_rollback_reopen_failure_after_replace_is_500_and_broadcasts(tmp_path,
+                                                                           monkeypatch):
+    import starling.dashboard.world_manager as wm
+    client, app, sent = _recording_app(tmp_path)
+    _remember(app.state.engine, "Bob owns auth")
+    snap = client.post("/api/worlds/default/snapshots", json={}).json()
+    _remember(app.state.engine, "Carol owns billing")
+    snap_path = app.state.worlds.load()["snapshots"]["default"][0]["path"]
+    sent.clear()                                                  # snapshot_created
+
+    def _fail(_cfg):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wm, "DashboardEngine", _fail)
+    r = client.post("/api/worlds/default/rollback", json=_rollback_body("default", snap["id"]))
+    assert (r.status_code, r.json()["detail"]) == (500, "rollback_reopen_failed")
+    assert sent == [{"type": "world_rolled_back",
+                     "payload": {"world": "default", "snapshot_id": snap["id"]}}]
+    db = app.state.config.db_path
+    with open(db, "rb") as live, open(snap_path, "rb") as frozen:
+        assert live.read() == frozen.read()                       # 库就是快照的内容
+    assert app.state.engine is None and _count(db) == 1
+
+
+def test_routes_rollback_reopen_failure_after_cpp_error_is_world_open_failed(tmp_path,
+                                                                            monkeypatch):
+    import starling.dashboard.world_manager as wm
+    client, app, sent = _recording_app(tmp_path)
+    _remember(app.state.engine, "Bob owns auth")
+    snap = client.post("/api/worlds/default/snapshots", json={}).json()
+    _remember(app.state.engine, "Carol owns billing")
+    with open(app.state.worlds.load()["snapshots"]["default"][0]["path"], "wb") as fh:
+        fh.write(b"not sqlite" * 512)
+    db = app.state.config.db_path
+    inode = os.stat(db).st_ino
+    sent.clear()
+
+    def _fail(_cfg):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wm, "DashboardEngine", _fail)
+    r = client.post("/api/worlds/default/rollback", json=_rollback_body("default", snap["id"]))
+    assert (r.status_code, r.json()["detail"]) == (500, "world_open_failed")
+    assert sent == []
+    assert os.stat(db).st_ino == inode and _count(db) == 2

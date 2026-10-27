@@ -1,6 +1,7 @@
 """/api/worlds：世界注册表、快照（W1/W2）与回滚、归档（W3）。
 
-写操作经 WorldManager（世界管理锁内），统计只读查各世界库、不开引擎。
+写操作经 WorldManager（世界管理锁内），统计只读查各世界库、不开引擎。列表持一份引擎租约
+（见 _list_worlds），切换或回滚活动世界的窗口内回 503 world_switching。
 世界路径只来自服务端注册表：任何路由都不接受客户端传入的文件路径，请求里只有
 世界名（C++ 侧按 ^[a-z0-9][a-z0-9_-]{0,31}$ 校验）和快照 id（只在注册表里查找）。
 回滚同样只收快照 id，库、快照与归档的路径都从注册表推出。
@@ -29,9 +30,10 @@ _STATUS = {
     "world_not_found": 404, "snapshot_not_found": 404,
     "world_exists": 409, "world_protected": 409, "ingest_busy": 409,
     "snapshot_unsupported_backend": 409, "invalid_retention": 409,
-    "world_tenant_mismatch": 409, "snapshot_corrupt": 409,
+    "world_tenant_mismatch": 409, "snapshot_corrupt": 409, "world_in_use": 409,
     "insufficient_disk": 507, "world_switching": 503,
     "world_open_failed": 500, "snapshot_failed": 500, "registry_corrupt": 500,
+    "rollback_reopen_failed": 500,
 }
 
 
@@ -89,18 +91,19 @@ async def _run(fn, *args):
         raise HTTPException(status_code=500, detail="internal_error") from exc
 
 
-def _archive_totals(mgr, name: str) -> tuple[int, int]:
+def _archive_totals(mgr, name: str, reg: dict | None = None) -> tuple[int, int]:
     # 回滚归档（<世界 home>/archive/）的个数与字节合计。读不出（archive 目录指到世界目录
     # 之外、无权限）时记 warning、按 0/0 计，不置 stats_error：那个标志的意思是库本身读不出。
     try:
-        listed = mgr.archives(name)
+        listed = mgr.archives(name, reg)
     except _core.WorldStoreError as exc:
         logger.warning("world_list_archives failed for %s: %s", name, exc)
         return 0, 0
     return len(listed), sum(item["size_bytes"] for item in listed)
 
 
-def _world_row(mgr, name: str, entry: dict, snaps: list[dict], active: bool) -> dict:
+def _world_row(mgr, name: str, entry: dict, snaps: list[dict], active: bool,
+               reg: dict | None = None) -> dict:
     # 只读查库、不开引擎：列 N 个世界不用建 N 个引擎。库文件不存在（新建未激活）时全 0。
     # 库文件存在但读不出（损坏、被占）时 world_stats 抛 snapshot_failed：不能让一个坏世界
     # 拖垮整张列表（/worlds 页打不开，坏世界也就没法从界面删掉），该行统计置 0，
@@ -112,7 +115,7 @@ def _world_row(mgr, name: str, entry: dict, snaps: list[dict], active: bool) -> 
         logger.warning("world_stats failed for %s: %s", name, exc)
         stats = {"db_bytes": 0, "live_bytes": 0, "statements": 0, "engrams": 0}
         stats_error = True
-    archives, archive_bytes = _archive_totals(mgr, name)
+    archives, archive_bytes = _archive_totals(mgr, name, reg)
     row = {"name": name, "label": entry.get("label", ""), "tenant": entry["tenant"],
            "created_at": entry.get("created_at", ""), "active": active,
            "db_bytes": stats["db_bytes"], "live_bytes": stats["live_bytes"],
@@ -142,11 +145,18 @@ def _snapshot_row(snap: dict) -> dict:
 
 
 def _list_worlds(mgr) -> dict:
-    reg = mgr.load()
-    snapshots = reg.get("snapshots", {})
-    rows = [_world_row(mgr, name, reg["worlds"][name], snapshots.get(name, []),
-                       name == reg["active"])
-            for name in sorted(reg["worlds"])]
+    # world_stats 只读打开每个世界的库，其中包括活动世界的库。全程持一份租约（不惰性建引擎）：
+    # 回滚活动世界要等它归还才替换库文件，否则一条在替换之前打开、替换之后才读的只读连接会
+    # 重置新库的 -shm（见 world_manager 模块文档）。切换窗口内 lease 抛 world_switching → 503，
+    # 前端照旧显示上一次的列表。租约只碰 _gate；这里不拿 manager.lock（mgr.archives 不拿锁）。
+    # 回滚非活动世界不等租约，与这里的 world_stats 可能交错：那个库上没有写连接，新库的 -shm
+    # 被重置也无害（已接受，见 spec §8.1）。
+    with mgr.lease():
+        reg = mgr.load()
+        snapshots = reg.get("snapshots", {})
+        rows = [_world_row(mgr, name, reg["worlds"][name], snapshots.get(name, []),
+                           name == reg["active"], reg)
+                for name in sorted(reg["worlds"])]
     return {"active": reg["active"], "default": reg["default"],
             "snapshot_retention": reg["snapshot_retention"], "worlds": rows}
 
@@ -154,7 +164,7 @@ def _list_worlds(mgr) -> dict:
 def _create_world(mgr, name: str, label: str) -> dict:
     entry = mgr.create(name, label)
     # 新世界不会是活动世界，也还没有快照；用 create 返回的条目而不是重读注册表，
-    # 避免与并发的删除/切换错位。
+    # 避免与并发的删除/切换错位。它的库文件还不存在，world_stats 不打开任何库，不需要租约。
     return _world_row(mgr, name, entry, [], False)
 
 
@@ -227,9 +237,15 @@ def build_worlds_router(require_token) -> APIRouter:
             raise _fail("confirm_mismatch")              # 不碰 manager
         if body.mode not in _ROLLBACK_MODES:
             raise _fail("rollback_mode_unsupported")     # 不碰 manager
-        out = await _run(mgr.rollback, name, body.snapshot_id)
-        await _broadcast(request, "world_rolled_back",
-                         {"world": name, "snapshot_id": body.snapshot_id})
+        rolled_back = {"world": name, "snapshot_id": body.snapshot_id}
+        try:
+            out = await _run(mgr.rollback, name, body.snapshot_id)
+        except HTTPException as exc:
+            if exc.detail == "rollback_reopen_failed":
+                # 库已经换成了快照的内容，只是引擎没能重开：别的标签页同样要知道库变了。
+                await _broadcast(request, "world_rolled_back", rolled_back)
+            raise
+        await _broadcast(request, "world_rolled_back", rolled_back)
         return out
 
     @router.delete("/worlds/{name}/archives")
