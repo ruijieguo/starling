@@ -226,9 +226,17 @@ class WorldManager:
         接手的是停好线程的引擎。
         _gate 只在计数时短暂持有（调用方可能在事件循环上），构建在 _build_lock 下进行。
 
-        失败路径丢过引擎（_workers_lost）时，真正新建了引擎的那次构建在写回之后、仍持
-        _build_lock 时补起后台线程（_start_workers 自己看 workers_enabled），见
-        _restart_lost_workers。拿到已有引擎的租约不碰标志。"""
+        失败路径丢过引擎（_workers_lost）时，真正新建了引擎的那次构建先补起后台线程、再写回
+        引擎，两步都持 _build_lock（_start_workers 自己看 workers_enabled），见
+        _restart_lost_workers。顺序不能反：先写回的话，切换的第一次 quiesce 可能读到这个引擎，
+        正赶上 Thread.start() 还没返回，join 一个没启动的线程抛 RuntimeError（路由回 500
+        internal_error）；那条线程随后启动、看到停止事件就退出，标志却已清掉，摄入或 tick 静默
+        停摆。现在第一次 quiesce 读到的要么是 None，要么是线程已经起好的引擎。补起线程用的是这次
+        构建用的同一份 config。拿到已有引擎的租约不碰标志。
+
+        只有带 build 的租约（命令路由 routes/commands.py：写入、召回、tick 等）会惰性重建，所以
+        失败之后由下一条命令请求恢复引擎和后台线程；检视路由、GET /api/worlds、/api/config、
+        /ws/converse 的租约不带 build，页面加载与整页刷新都不会重建。"""
         with self._gate:
             if self.switching:
                 raise WorldSwitchError("world_switching")
@@ -240,23 +248,24 @@ class WorldManager:
                 with self._build_lock:
                     engine = self._state.engine
                     if engine is None:
-                        engine = build(self._state.config)
-                        self._state.engine = engine
+                        cfg = self._state.config
+                        engine = build(cfg)
                         if self._workers_lost:
-                            self._restart_lost_workers(engine)
+                            self._restart_lost_workers(engine, cfg)
+                        self._state.engine = engine
             lease.engine = engine
         except BaseException:
             lease.release()
             raise
         return lease
 
-    def _restart_lost_workers(self, engine) -> None:
-        """lease 刚新建并写回的引擎补起后台线程（持 _build_lock）。起线程失败不让租约失败：
-        记日志，标志保持置位，下一次真正新建引擎时再试；这个引擎照常服务请求。部分失败（tick
-        已起、摄入抛错）不对这个引擎重试，它要等下一次成功的切换、回滚或重启才有摄入线程
-        （spec §8.1）。"""
+    def _restart_lost_workers(self, engine, cfg) -> None:
+        """lease 刚新建、还没写回的引擎补起后台线程（持 _build_lock）。cfg 是这次构建用的
+        config。起线程失败不让租约失败：记日志，标志保持置位，下一次真正新建引擎时再试；这个
+        引擎照常写回、服务请求。部分失败（tick 已起、摄入抛错）不对这个引擎重试，它要等下一次
+        成功的切换、回滚或重启才有摄入线程（spec §8.1）。"""
         try:
-            self._start_workers(engine, self._state.config)
+            self._start_workers(engine, cfg)
         except Exception:  # noqa: BLE001 — 线程起不来不能连带命令请求失败
             logger.exception("cannot restart background workers on the lazily rebuilt engine")
             return
@@ -404,12 +413,14 @@ class WorldManager:
         调用）。任一步失败：恢复后台线程、引擎原样留在 app.state 上，抛 ingest_busy。activate
         与 rollback 共用。
 
-        第二次 quiesce 针对在途的惰性构建：第一次读到的引擎可能还是 None（构建还在进行），或
-        是刚写回、还没补起线程的同一个引擎；等租约期间它写回引擎并按 _workers_lost 补起 tick /
-        摄入线程，切换随后把它当旧引擎接手。租约已归零、新租约一律拒绝，此刻的引擎就是要接手的
-        那个，所以无条件再停一次（没有线程时 quiesce 直接返回 True）。不能只在「与第一次读到的
-        不是同一个」时才停：同一个引擎也可能是在第一次之后才起的线程。不在 lease 里看 switching
-        来跳过补起：那要在持 _build_lock 时取 _gate，与锁序相反；不加锁读照样有竞态。"""
+        第二次 quiesce 针对在途的惰性构建：lease 先补起线程、再写回引擎，所以第一次读到的要么是
+        None（构建还在进行），要么是线程已经起好的引擎，不会是正在起线程的引擎（那样 join 一个
+        没启动的线程会抛 RuntimeError）。读到 None 时，等租约期间构建按 _workers_lost 补起 tick /
+        摄入线程并写回引擎，切换随后把它当旧引擎接手。租约已归零、新租约一律拒绝，此刻的引擎就是
+        要接手的那个，所以无条件再停一次（没有线程时 quiesce 直接返回 True）。不按「与第一次读到
+        的是不是同一个」来决定停不停：那样正确性就要靠 lease 内部的顺序，省下的只是一次空转的
+        quiesce。不在 lease 里看 switching 来跳过补起：那要在持 _build_lock 时取 _gate，与锁序
+        相反；不加锁读照样有竞态。"""
         quiesced = self._state.engine
         if quiesced is not None and not quiesced.quiesce():
             # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
@@ -466,9 +477,9 @@ class WorldManager:
 
     def _rollback(self, old_cfg, detail: str, cause: Exception) -> None:
         """新世界没能生效：回到旧世界并抛 world_open_failed。回滚本身也可能失败（旧库
-        同样打不开）——此时 engine 留 None、config 仍是旧世界，置 _workers_lost，路由之后
-        惰性重建并补起后台线程；对调用方仍然是 WorldSwitchError（路由只映射它），不让裸异常
-        漏出去。"""
+        同样打不开）——此时 engine 留 None、config 仍是旧世界，置 _workers_lost，下一条命令
+        请求惰性重建并补起后台线程（见 lease）；对调用方仍然是 WorldSwitchError（路由只映射
+        它），不让裸异常漏出去。"""
         try:
             self._state.engine = DashboardEngine(old_cfg)
         except Exception as rollback_exc:
@@ -548,8 +559,8 @@ class WorldManager:
         原样抛出，失败时目标库原样不动；ingest_busy（之前的切换留下的旧 Runtime 还开着这个库、
         后台线程停不下、在途请求不结束，或旧 Runtime 回收不了，库未动）；world_open_failed
         （库未动，但活动世界的引擎重建失败）；rollback_reopen_failed（库已替换成快照的内容，
-        但活动世界的引擎重建失败）。后两种 engine 都留 None，路由之后惰性重建，并补起 tick /
-        摄入线程（_workers_lost）。
+        但活动世界的引擎重建失败）。后两种 engine 都留 None，下一条命令请求惰性重建，并补起
+        tick / 摄入线程（_workers_lost，见 lease）。
 
         动引擎之前先调 C++ 的预检（world_check_rollback，只读、什么都不动）：不存在的快照、缺失
         或不是普通文件的快照文件、不支持的向量后端、磁盘不足，这几种不改输入重试也过不了，在
@@ -618,7 +629,8 @@ class WorldManager:
 
     def _reopen_live_world(self, cfg, cause: Exception | None) -> None:
         """回滚活动世界的每个出口：按原 config 重建引擎、起线程。重建失败时 engine 留 None、
-        置 _workers_lost，路由之后惰性重建并补起后台线程。码按库有没有被替换来分：
+        置 _workers_lost，下一条命令请求惰性重建并补起后台线程（见 lease）。码按库有没有被替换
+        来分：
         - cause 为 None（替换成功之后）：库已是快照的内容，抛 rollback_reopen_failed，链到
           重建的异常。路由仍广播 world_rolled_back，前端整页刷新。
         - 其余出口（C++ 失败、弱引用拒绝、遗留 Runtime 拒绝）：库未动，抛 world_open_failed，

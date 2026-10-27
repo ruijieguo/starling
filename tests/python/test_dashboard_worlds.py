@@ -2740,10 +2740,11 @@ class _ObservedLock:
 
 def test_shutdown_waits_for_an_in_flight_lazy_rebuild_before_disabling_workers(tmp_path,
                                                                               monkeypatch):
-    """关停屏障（真实 lifespan）：惰性重建已写回引擎、已过 workers_enabled 检查、正要起线程时，
-    lifespan 开始关停。关停若不等 _build_lock，就会先关开关、按 app.state.engine 停线程（此刻
-    还一条都没有），随后重建才把线程起来，服务关停之后线程还在跑。等了 _build_lock，关停就排
-    在重建之后，停掉的正是重建刚起的线程。卡点用 Event，不靠睡眠。"""
+    """关停屏障（真实 lifespan）：惰性重建已建好引擎、已过 workers_enabled 检查、正要起线程（引擎
+    在线程起好之后才写回）时，lifespan 开始关停。关停若不等 _build_lock，就会先关开关、按
+    app.state.engine 停线程（此刻还是 None，或者还一条线程都没有），随后重建才把线程起来并写回，
+    服务关停之后线程还在跑。等了 _build_lock，关停就排在重建之后，停掉的正是重建刚起的线程。卡点
+    用 Event，不靠睡眠。"""
     monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
     cfg = _cfg(tmp_path)
     cfg.tick_interval_s = 60.0
@@ -3095,3 +3096,170 @@ def test_startup_without_an_engine_still_starts_no_ingest_worker_on_first_lazy_b
         eng = app.state.engine
         assert eng is not None and app.state.worlds._workers_lost is False
         assert eng._tick_thread is None and eng._ingest_thread is None
+
+
+# ───────────────────────── 整支终审修复轮 I1：惰性重建正在起线程时开始切换 ─────────────────────────
+
+def _block_first_start_of(monkeypatch, name: str):
+    """把名为 name 的线程的第一次 Thread.start() 卡住，直到返回的 release 被 set；卡住时 set
+    in_start。只拦这一个名字的第一次启动，其余线程（包括测试自己的线程）照常启动。"""
+    in_start, release = threading.Event(), threading.Event()
+    real_start = threading.Thread.start
+
+    def _blocking_start(thread):
+        if thread.name == name and not in_start.is_set():
+            in_start.set()
+            release.wait(15)
+        real_start(thread)
+    monkeypatch.setattr(threading.Thread, "start", _blocking_start)
+    return in_start, release
+
+
+@pytest.mark.parametrize("blocked", ["starling-bg-tick", "starling-ingest"])
+@pytest.mark.parametrize("op", ["activate", "rollback"])
+def test_switch_during_a_lazy_rebuild_that_is_still_starting_its_workers(tmp_path, monkeypatch,
+                                                                         op, blocked):
+    """失败路径丢过引擎之后，惰性重建正卡在补起线程的 Thread.start() 里（还没返回），切换或活动
+    世界回滚开始。lease 若先写回引擎、后起线程，切换的第一次 quiesce 就会读到这个引擎；engine
+    若先挂句柄、后 start，join 一个没启动的线程抛 RuntimeError，路由回 500 internal_error，那条
+    线程随后启动、看到停止事件就退出，句柄却留着，标志也已清掉，摄入或 tick 静默停摆。
+
+    现在 lease 先起线程、后写回：切换的第一次 quiesce 读到的只能是 None，它去等租约，惰性重建
+    起完线程、写回、归还租约之后，第二次 quiesce 停掉它的线程，切换照常完成。卡点全用 Event。"""
+    monkeypatch.delenv("STARLING_WORLDS_REGISTRY", raising=False)
+    mgr, state = _manager(tmp_path)
+    _start_workers_like_lifespan(mgr, state, 60.0)
+    _drop_engine_by_failure(mgr, state, monkeypatch, "rollback_reopen")
+    assert state.engine is None and mgr._workers_lost is True and mgr.workers_enabled is True
+    if op == "activate":
+        mgr.create("sim-1", "")
+
+        def _operate():
+            return mgr.activate("sim-1")
+    else:
+        snap = mgr.take_snapshot("default", "")
+
+        def _operate():
+            return mgr.rollback("default", snap["id"])
+    ingest_before = {t for t in threading.enumerate() if t.name == "starling-ingest"}
+    in_start, release = _block_first_start_of(monkeypatch, blocked)
+    progress = threading.Event()            # 切换走到了等租约这一步，或者已经结束
+    # 每次 _start_workers 之后记 (Runtime 弱引用, 两个线程, 两个停止事件)，不留引擎本身。
+    started: list = []
+    real_start_workers = mgr._start_workers
+
+    def _spy_start(engine, cfg):
+        real_start_workers(engine, cfg)
+        started.append((weakref.ref(engine._rt),
+                        (engine._tick_thread, engine._ingest_thread),
+                        (engine._tick_stop, engine._ingest_stop)))
+    monkeypatch.setattr(mgr, "_start_workers", _spy_start)
+    published_at_drain: list = []           # 等租约时 app.state.engine 是否已经写回（只留布尔）
+    real_drain = mgr._drain_leases
+
+    def _signal_drain():
+        published_at_drain.append(state.engine is not None)
+        progress.set()
+        real_drain()
+    monkeypatch.setattr(mgr, "_drain_leases", _signal_drain)
+
+    errors: list = []                       # 只留 repr，不留回溯（回溯会钉住帧里的引擎）
+    outcome: list = []
+
+    def _lazy_request():
+        try:
+            mgr.lease(build=_lazy_build).release()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(f"lease: {exc!r}")
+
+    def _switch():
+        try:
+            outcome.append(_operate())
+        except WorldSwitchError as exc:
+            errors.append(f"{op}: WorldSwitchError({exc.code!r})")
+        except BaseException as exc:  # noqa: BLE001 — 路由会把它兜成 500 internal_error
+            errors.append(f"{op}: raw {exc!r}")
+        finally:
+            progress.set()
+
+    lazy = threading.Thread(target=_lazy_request, daemon=True)
+    switcher = threading.Thread(target=_switch, daemon=True)
+    try:
+        lazy.start()
+        assert in_start.wait(10), "惰性重建没有走到起线程这一步"
+        switcher.start()
+        assert progress.wait(10), "切换既没走到等租约，也没结束"
+        release.set()
+        lazy.join(15)
+        switcher.join(30)
+        assert not lazy.is_alive() and not switcher.is_alive()
+        assert [e for e in errors if " raw " in e] == [], "切换抛了裸异常（路由回 500 internal_error）"
+        assert errors == []
+        assert published_at_drain == [False], "切换的第一次 quiesce 读到了还在起线程的惰性引擎"
+        assert len(outcome) == 1 and len(started) == 2      # 惰性重建一次 + 切换/回滚发布一次
+        lazy_rt, lazy_threads, _stops = started[0]
+        assert all(t is not None for t in lazy_threads), "惰性重建没补起线程：没走到要测的交错"
+        assert not any(t.is_alive() for t in lazy_threads), "被接手的惰性引擎的后台线程还在跑"
+        gc.collect()
+        assert lazy_rt() is None, "被接手的惰性引擎的 Runtime 没被回收"
+        assert mgr._leaked_runtimes == [] and mgr._workers_lost is False
+        final = state.engine
+        assert final is not None
+        assert final._tick_thread is not None and final._tick_thread.is_alive()
+        assert final._ingest_thread is not None and final._ingest_thread.is_alive()
+        live = [t for t in threading.enumerate()
+                if t.name == "starling-ingest" and t.is_alive() and t not in ingest_before]
+        assert live == [final._ingest_thread], "同一进程里不止一个摄入 worker"
+        if op == "rollback":
+            assert outcome[0]["active"] is True
+        else:
+            assert state.config.tenant == "sim-1"
+        del final
+    finally:
+        release.set()
+        for thread in (lazy, switcher):
+            if thread.ident is not None:
+                thread.join(15)
+        for _rt, threads, stops in started:             # 回退验证时这些线程可能还活着：停掉
+            for stop in stops:
+                if stop is not None:
+                    stop.set()
+            for thread in threads:
+                if thread is not None:
+                    thread.join(15)
+        if state.engine is not None:
+            state.engine.quiesce()
+
+
+@pytest.mark.parametrize("blocked", ["starling-bg-tick", "starling-ingest"])
+def test_worker_handle_is_set_only_after_the_thread_has_started(tmp_path, monkeypatch, blocked):
+    """纵深防御（引擎层）：start_background_tick / start_ingest_worker 在 Thread.start() 返回之后才
+    挂句柄。卡在 start() 里的这段时间，quiesce 看不到句柄，不会去 join 一个没启动的线程（那会抛
+    RuntimeError，并留下一个线程退出、句柄还在的引擎，此后 start_* 一律 no-op）；start() 返回后
+    句柄挂上，线程在跑。"""
+    eng = DashboardEngine(_cfg(tmp_path))
+    in_start, release = _block_first_start_of(monkeypatch, blocked)
+
+    def _start():
+        if blocked == "starling-bg-tick":
+            eng.start_background_tick(60.0)
+        else:
+            eng.start_ingest_worker(poll_interval_s=60.0)
+
+    starter = threading.Thread(target=_start, daemon=True)
+    try:
+        starter.start()
+        assert in_start.wait(10)
+        assert eng.quiesce() is True              # 没有可见的句柄：什么都不 join，也不抛
+        assert (eng._tick_thread, eng._ingest_thread) == (None, None)
+        release.set()
+        starter.join(15)
+        assert not starter.is_alive()
+        thread = eng._tick_thread if blocked == "starling-bg-tick" else eng._ingest_thread
+        assert thread is not None and thread.is_alive()
+        assert thread.name == blocked
+        del thread
+    finally:
+        release.set()
+        starter.join(15)
+        eng.quiesce()
