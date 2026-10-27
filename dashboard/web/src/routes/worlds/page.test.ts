@@ -636,7 +636,7 @@ describe('/worlds 回滚到快照', () => {
 		await fireEvent.click(inBody('确认回滚')!);
 		await settle();
 		expect(toastError).toHaveBeenCalledWith(
-			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请查看服务日志'
+			'已回滚到快照，但引擎重开失败；页面即将刷新，下一次写入、召回或手动 tick 时会自动重建，仍异常请查看服务日志'
 		);
 		expect(reload).toHaveBeenCalledTimes(1);
 		// 重载前的空档里按钮不复位,免得再回滚一次(会把恢复后的库也归档一份)
