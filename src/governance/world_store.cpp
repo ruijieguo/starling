@@ -1215,7 +1215,6 @@ void require_sqlite_header(const fs::path& db_file) {
 // 必须在 -wal / -journal 检查之后调用：那时两者都为空，这条连接不会把残留的 WAL 或热日志
 // 重放进旧库。
 void require_no_other_connection(const fs::path& db_file) {
-    constexpr int kPrimaryCodeMask = 0xff;
     sqlite3* raw = nullptr;
     const std::string uri = "file:" + uri_escape_path(db_file.string());
     const int opened =
@@ -1228,11 +1227,11 @@ void require_no_other_connection(const fs::path& db_file) {
     }
     sqlite3_busy_timeout(raw, 0);
     for (const char* sql : {"PRAGMA locking_mode=EXCLUSIVE", "BEGIN EXCLUSIVE", "ROLLBACK"}) {
+        // 这条连接没开扩展结果码，sqlite3_exec 回的就是主结果码（SQLITE_BUSY / SQLITE_LOCKED）。
         const int code = sqlite3_exec(raw, sql, nullptr, nullptr, nullptr);
         if (code == SQLITE_OK) { continue; }
-        const int primary = code & kPrimaryCodeMask;
         const std::string why = sqlite3_errmsg(raw);
-        if (primary == SQLITE_BUSY || primary == SQLITE_LOCKED) {
+        if (code == SQLITE_BUSY || code == SQLITE_LOCKED) {
             throw WorldStoreError("world_in_use",
                                   db_file.string() + " is open in another connection (" + why +
                                       "); refusing to replace it");
