@@ -392,6 +392,14 @@ class MemoryCore:
         return _core.memory_tick_all(
             self.rt.adapter, self.worker, self.policy, now, self.rt.health())
 
+    def embed_pending(self, now: str) -> dict:
+        """Run ONLY the embedding stage until the backlog is drained (no
+        commitments / replay / projection / outbox, no health gating). Returns
+        {"embedded": int, "failed": int}; embedding failures are counted, not
+        raised. The loop lives in C++ `memoryops::embed_pending` (GIL released
+        during the embedder calls); this is a binding forward."""
+        return _core.memory_embed_pending(self.rt.adapter, self.worker, now)
+
     def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000,
                           holder: str | None = None):
         """Assemble the prompt-ready ContextBlock (P2.e): persona /

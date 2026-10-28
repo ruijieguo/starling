@@ -381,6 +381,128 @@ TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
     EXPECT_EQ(t.embedded, 0);
 }
 
+// ── embed_pending:只跑嵌入阶段,循环排空待嵌入语句 ───────────────────────────
+// 钉:积压超过一批(WorkerConfig::batch_size=32)时一次调用排空;某批嵌入 0 条即停,
+// 只剩失败行时不在同一次调用里反复重试;一批里有成功有失败仍继续下一批。
+
+namespace {
+
+std::string many_claims_json(int count) {
+    std::string json = "[";
+    for (int idx = 0; idx < count; ++idx) {
+        if (idx > 0) json += ",";
+        json += R"({"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Sub)" +
+                std::to_string(idx) +
+                R"(","predicate":"responsible_for","object":"area)" + std::to_string(idx) +
+                R"(","modality":"BELIEVES","polarity":"POS","nesting_depth":0})";
+    }
+    return json + "]";
+}
+
+// 一次 remember、抽取响应带 count 条互不相同的主张 → count 条待嵌入语句。
+void seed_pending_statements(persistence::SqliteAdapter& adapter, int count) {
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(
+        extractor::LLMResponse{.raw_xml = many_claims_json(count), .ok = true});
+    const auto result = remember(adapter, llm, "", params("many claims"));
+    ASSERT_EQ(result.outcome, "accepted");
+    ASSERT_EQ(result.statement_ids.size(), static_cast<std::size_t>(count));
+}
+
+// 失败脚本嵌入器。AlwaysDown:批量与逐行都抛可重试错误(端点整体不可用)。
+// OneRowFails:第一次批量调用抛永久错误,逼 worker 退到逐行,逐行的第一条抛错,
+// 其余成功;之后的批量调用都成功。与 SQLite 扫描顺序无关。
+class ScriptedEmbedder final : public embedding::EmbeddingAdapter {
+public:
+    enum class Mode { AlwaysDown, OneRowFails };
+    explicit ScriptedEmbedder(Mode mode) : mode_(mode) {}
+
+    embedding::EmbeddingResult embed(std::string_view text) override {
+        if (mode_ == Mode::AlwaysDown) throw embedding::EmbeddingError("down");
+        if (!row_failed_) {
+            row_failed_ = true;
+            throw embedding::EmbeddingError("one bad row");
+        }
+        return inner_.embed(text);
+    }
+    std::vector<embedding::EmbeddingResult> embed_batch(
+            const std::vector<std::string>& texts) override {
+        ++batch_calls;
+        if (mode_ == Mode::AlwaysDown) throw embedding::EmbeddingError("down");
+        if (batch_calls == 1) throw std::runtime_error("permanent_batch");
+        std::vector<embedding::EmbeddingResult> out;
+        for (const auto& text : texts) out.push_back(inner_.embed(text));
+        return out;
+    }
+    int dim() const override { return inner_.dim(); }
+    std::string model() const override { return inner_.model(); }
+
+    int batch_calls = 0;
+
+private:
+    Mode mode_;
+    bool row_failed_ = false;
+    embedding::StubEmbeddingAdapter inner_{8};
+};
+
+}  // namespace
+
+TEST(MemoryOps, EmbedPendingDrainsAllBatches) {
+    auto a = make_adapter();
+    constexpr int kStatements = 40;   // 超过 WorkerConfig::batch_size 默认 32
+    ASSERT_GT(kStatements, embedding::WorkerConfig().batch_size);
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, kStatements));
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, kStatements);
+    EXPECT_EQ(out.failed, 0);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statement_vectors WHERE status='embedded'"), kStatements);
+
+    // 排空后再调是空操作。
+    const auto again = embed_pending(*a, worker, "2026-06-11T10:05:01Z");
+    EXPECT_EQ(again.embedded, 0);
+    EXPECT_EQ(again.failed, 0);
+}
+
+TEST(MemoryOps, EmbedPendingStopsAfterOneBatchWhenNothingEmbeds) {
+    auto a = make_adapter();
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, 40));
+
+    ScriptedEmbedder emb(ScriptedEmbedder::Mode::AlwaysDown);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, 0);
+    EXPECT_EQ(out.failed, embedding::WorkerConfig().batch_size);   // 只有第一批
+    EXPECT_EQ(emb.batch_calls, 1);                                 // 没有再扫第二批
+    // 失败行只被尝试一次:本次调用没有在同一次里重试它们。
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT MAX(retry_count) FROM statement_vectors WHERE status='failed'"), 1);
+}
+
+TEST(MemoryOps, EmbedPendingContinuesPastBatchWithPartialFailure) {
+    auto a = make_adapter();
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, 40));
+
+    ScriptedEmbedder emb(ScriptedEmbedder::Mode::OneRowFails);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    // 第一批 31 成功 1 失败(embedded>0,继续);第二批把剩余 8 条与那条失败行一起嵌完;
+    // 第三批无事可做(embedded==0,停)。
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, 40);
+    EXPECT_EQ(out.failed, 1);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statement_vectors WHERE status='embedded'"), 40);
+}
+
 // ── 设置页「危险区」:clear_tenant ───────────────────────────────────────────
 // 钉:单租户物理清空(保留 self 认知体)、其他租户零影响、无悬空外键、写门、
 // 新增租户作用域表必须纳入删除清单、清空后同文本重新 remember 是全新 accepted。

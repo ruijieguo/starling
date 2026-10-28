@@ -787,6 +787,21 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
     return t;
 }
 
+EmbedPendingOutcome embed_pending(persistence::SqliteAdapter& adapter,
+                                  embedding::EmbeddingWorker& worker,
+                                  std::string_view now_iso) {
+    auto& conn = adapter.connection();
+    EmbedPendingOutcome out;
+    // 每个继续循环的批次至少把一行永久置为 embedded(不再被扫描),积压有限,所以必然终止。
+    while (true) {
+        const auto stats = worker.tick_one_batch(conn, now_iso);
+        out.embedded += stats.embedded;
+        out.failed += stats.failed;
+        if (stats.embedded == 0) break;
+    }
+    return out;
+}
+
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso) {
     governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写

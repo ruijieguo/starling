@@ -157,6 +157,14 @@ class TickStats:
     stages_skipped: list = field(default_factory=list)
 
 
+@dataclass
+class EmbedStats:
+    """Counts from `Memory.embed_pending`: statements embedded / statements whose
+    embedding failed (a later call retries failed rows, up to the retry cap)."""
+    embedded: int = 0
+    failed: int = 0
+
+
 class Memory:
     """Public facade over the Starling write path."""
 
@@ -260,6 +268,15 @@ class Memory:
     def tick(self, now: str = "2026-06-01T10:00:00Z") -> TickStats:
         """Advance background workers: embed pending statements + fire due commitments."""
         return TickStats(**self._core.tick(now))
+
+    def embed_pending(self, now: str) -> EmbedStats:
+        """Run only the embedding stage so new statements become recallable.
+
+        Unlike `tick`, this skips commitments, replay/consolidation, projection
+        and outbox dispatch, and ignores health gating. Embedding failures are
+        counted in `EmbedStats.failed`, not raised.
+        """
+        return EmbedStats(**self._core.embed_pending(now))
 
     def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble a prompt-ready ContextBlock from memory (P2.e).

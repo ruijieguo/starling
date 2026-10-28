@@ -8,6 +8,7 @@
 #include "bind_common.hpp"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -602,6 +603,20 @@ void bind_13_memory_ops(pybind11::module_& m) {
           },
           py::arg("adapter"), py::arg("worker"), py::arg("policy"), py::arg("now_iso"),
           py::arg("health") = starling::RuntimeHealth::READY);
+
+    // 只跑嵌入阶段(不做承诺/回放/投影/出箱维护):循环在 C++ memoryops::embed_pending。
+    // 嵌入逐批走网络,call_guard 释放 GIL;lambda 返回纯 C++ map,call_guard 析构
+    // (GIL 回来)之后才由 pybind11 转成 dict,释放期间不碰任何 Python 对象。
+    m.def("memory_embed_pending",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::embedding::EmbeddingWorker& worker,
+             const std::string& now_iso) {
+              const auto out = starling::memoryops::embed_pending(adapter, worker, now_iso);
+              return std::map<std::string, int>{{"embedded", out.embedded},
+                                                {"failed", out.failed}};
+          },
+          py::arg("adapter"), py::arg("worker"), py::arg("now_iso"),
+          py::call_guard<py::gil_scoped_release>());
 
     m.def("memory_forget",
           [](starling::persistence::SqliteAdapter& adapter,

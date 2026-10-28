@@ -361,6 +361,23 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
                      std::string_view now_iso,
                      RuntimeHealth health = RuntimeHealth::READY);
 
+// 只跑嵌入阶段:反复调 worker.tick_one_batch 直到积压排空,累加各批的成功与失败数。
+// 与 tick_all 的区别:不碰承诺触发、共同基础、回放、投影、出箱,也不看健康门控
+// (调用方要的是"让新语句可被召回",不是周期维护)。
+// 停止条件:某一批嵌入 0 条即停。只剩失败行时,第一批全部失败后就返回,同一次调用
+// 不会反复重试它们(重试留给下次调用,受 WorkerConfig::max_retry 限制);一批里有成功
+// 有失败则继续下一批。嵌入失败只计数不抛(tick_one_batch 自己记失败行与重试次数);
+// SQLite 层错误照常向上抛。只统计语句分支的 embedded/failed,来源 lane 的计数不计入,
+// 也不影响停止判断。
+struct EmbedPendingOutcome {
+    int embedded = 0;
+    int failed = 0;
+};
+
+EmbedPendingOutcome embed_pending(persistence::SqliteAdapter& adapter,
+                                  embedding::EmbeddingWorker& worker,
+                                  std::string_view now_iso);
+
 // P3.b2:逻辑删除一批 statements(→forgotten),返回实际转换计数。
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso);
