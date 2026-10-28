@@ -239,15 +239,29 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
     }
 
     // ── 第 3 段:短事务,收尾写收据行。 ──
+    // 只有「证据真入库了」且「抽取没失败」才算提交。只看 extraction_failed 不够:
+    // no_store / rejected 在 remember_commit 之前就早退,source_missing 返回默认构造的
+    // RememberOutcome,三者的 extraction_failed 都是 false(这个标记的含义只是「证据已
+    // 入库但抽取 LLM 失败」,见 memory_ops.hpp 的注释)。若据此标 committed,这个 key
+    // 以后每次调用都回 idempotent + 空语句,记忆静默丢失(设计源 §9 禁止)。stored 的
+    // 判据与 memory_ops.cpp 里 converse_commit 算 remember_ok 的那一处一致。
+    const bool stored = (result.outcome == "accepted" || result.outcome == "idempotent");
     {
         persistence::TransactionGuard txn(conn);
-        if (result.extraction_failed) {
-            // 行留 pending:下次调用照原 seq 重试,不另分配序号。
+        if (!stored || result.extraction_failed) {
+            // 行留 pending:下次调用照原 seq 重试,不另分配序号。不抛——留着 pending 行
+            // 才让 rise 看得见(pending_events 带 failure_category,门②据此记 T2 失败)。
+            const std::string category = result.extraction_failed
+                ? result.failure_category : ("not_stored:" + result.outcome);
+            // 返回值也带上这个原因:未入库时 remember_all 的 failure_category 是空的
+            // (那条路径不填),只记进行里会让调用方拿到一个空原因——又是一种静默。
+            // 行里记什么就返回什么,与抽取失败那一支的既有不变式一致。
+            if (result.failure_category.empty()) result.failure_category = category;
             persistence::Stmt upd(conn.raw(),
                                   "UPDATE events SET failure_category=?1, "
                                   "engram_ref=COALESCE(NULLIF(?2,''), engram_ref) "
                                   "WHERE tenant_id=?3 AND key=?4");
-            upd.bind(result.failure_category, result.engram_ref, base.tenant_id, key);
+            upd.bind(category, result.engram_ref, base.tenant_id, key);
             upd.step_done();
         } else {
             persistence::Stmt upd(conn.raw(),

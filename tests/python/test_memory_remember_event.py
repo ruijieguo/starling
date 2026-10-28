@@ -118,6 +118,38 @@ def test_event_time_derives_from_seq(tmp_path):
     assert times == ["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"]
 
 
+def test_not_stored_outcome_leaves_pending_with_category(tmp_path):
+    # 未入库(这里用非 ISO 的 epoch 触发 rejected)不能标 committed:标了的话这个 key
+    # 以后每次都回 idempotent + 空语句,这条记忆就静默丢了(设计源 §9 禁止静默丢失)。
+    mem = _mem(tmp_path)
+    res = mem.remember_event(KEY, "bob:hi", interlocutor="bob", epoch="not-a-timestamp")
+    assert res.outcome == "rejected" and not res.extraction_failed
+    assert not res.statement_ids
+    [p] = mem.pending_events()
+    assert (p.key, p.seq) == (KEY, 0)
+    assert p.failure_category == res.failure_category == "not_stored:rejected"
+    with sqlite3.connect(str(tmp_path / "m.db")) as c:
+        assert c.execute("SELECT state FROM events").fetchone() == ("pending",)
+    # 重试(这次 epoch 正常)照原 seq 提交,记忆没丢。
+    ok = mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    assert ok.statement_ids and not ok.extraction_failed
+    assert mem.pending_events() == [] and mem.next_seq() == 1
+
+
+def test_new_key_extracts_instead_of_adopting_another_keys_statements(tmp_path):
+    # 补齐分支只许重试已有的 pending 行走。新 key 若也去按 content_hash 认领语句,
+    # 就会把别人(别的 key、或裸 remember)写的语句当成自己的结果,而自己的收据行
+    # 指向的 engram 压根没建过。钉住 remember_event 里的 retrying_pending 这道门。
+    mem = _mem(tmp_path)
+    landed = mem.remember(f"[{KEY}] bob:hi", interlocutor="bob",
+                          now="2026-01-01T00:00:00Z")
+    assert landed.statement_ids
+    mem._core.llm = _failing_llm()      # 新 key 必须自己抽取一次,所以这里会失败
+    res = mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    assert res.extraction_failed        # 认领的话就不会抽取、也就不会失败
+    assert res.statement_ids != landed.statement_ids
+
+
 def test_remember_event_requires_llm(tmp_path):
     mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice")
     with pytest.raises(starling._memory_core.LLMNotConfigured):

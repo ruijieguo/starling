@@ -59,9 +59,14 @@ struct PendingEventRow {
 //    补齐分支先按该 payload 的 engram content_hash 找 engrams 行,找到且有语句的
 //    evidence_json 指向它、holder_id 相同时,直接把这批 id(按 rowid 升序)当结果,
 //    不调 LLM;否则照 remember_all 走一遍(用行里存的原文,不是调用方这次传的)。
-// ③ 短事务:抽取失败 → 写 failure_category(有 engram_ref 时一并写),行留 pending,
-//    返回原结果;成功(含补齐)→ 行改 committed,填 engram_ref 与 statement_ids_json,
-//    清空 failure_category。remember_all 抛异常时行留 pending,异常原样上抛。
+// ③ 短事务:仅当证据真入库(outcome 为 accepted/idempotent)且抽取未失败,行才改
+//    committed,填 engram_ref 与 statement_ids_json、清空 failure_category。其余情形
+//    (抽取失败,或 no_store / rejected / source_missing 这三种未入库的 outcome——它们的
+//    extraction_failed 都是 false)行一律留 pending 并写 failure_category(抽取失败写原
+//    类别,未入库写 "not_stored:<outcome>";有 engram_ref 时一并写)。返回值的
+//    failure_category 与行里记的一致(未入库时 remember_all 不填这个字段,这里补上),
+//    不抛:留着 pending 行才让调用方看得见,下次调用照原 seq 重试,记忆不会静默丢失。
+//    remember_all 抛异常时行同样留 pending,异常原样上抛。
 //
 // base 提供 tenant_id / holder_id / interlocutor / adapter_name / source_prefix;
 // base 的 payload 与 created_at_iso8601 被忽略(由 key+text 与 epoch+seq 推出)。
