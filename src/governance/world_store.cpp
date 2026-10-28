@@ -1928,7 +1928,7 @@ void require_retention_room(Registry& reg, const std::string& world) {
     if (prune_error.empty()) { return; }
     const auto listed = reg.snapshots.find(world);
     const std::size_t held = listed == reg.snapshots.end() ? 0 : listed->second.size();
-    if (held >= static_cast<std::size_t>(reg.snapshot_retention)) {
+    if (std::cmp_greater_equal(held, reg.snapshot_retention)) {
         throw WorldStoreError("snapshot_failed",
                               "retention cannot prune the snapshots of '" + world + "' (" +
                                   std::to_string(held) + " held, retention " +
