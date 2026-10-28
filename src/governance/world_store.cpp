@@ -765,7 +765,7 @@ std::string content_mark_on(sqlite3* dbh, const std::string& tenant) {
         {.table = "engrams", .id_expr = "id", .tag = 'e'},
         {.table = "statements", .id_expr = "id", .tag = 's'},
         {.table = "source_unit_meta", .id_expr = "engram_ref || ':' || clause_id", .tag = 'u'},
-    }};
+    },};
     std::string mark;
     bool has_rows = false;
     for (const auto& segment : kSegments) {
@@ -779,11 +779,15 @@ std::string content_mark_on(sqlite3* dbh, const std::string& tenant) {
         // 「该租户 rowid 最大的那一行」按聚合出的 MAX(rowid) 走 INTEGER PRIMARY KEY 查找（与
         // ORDER BY rowid DESC LIMIT 1 是同一行；后者在这几张表上要临时 B 树排序整个租户，
         // 实测见 EXPLAIN QUERY PLAN）。计数为 0 时 top=0，查不到行 → NULL → 空串。
-        persistence::Stmt query(dbh, ("SELECT agg.cnt, agg.top, (SELECT " +
-                                      std::string(segment.id_expr) + " FROM " + name +
-                                      " WHERE rowid=agg.top AND tenant_id=?1) FROM (SELECT "
-                                      "COUNT(*) AS cnt, COALESCE(MAX(rowid), 0) AS top FROM " +
-                                      name + " WHERE tenant_id=?1) AS agg").c_str());
+        std::string sql = "SELECT agg.cnt, agg.top, (SELECT ";
+        sql += segment.id_expr;
+        sql += " FROM ";
+        sql += name;
+        sql += " WHERE rowid=agg.top AND tenant_id=?1) FROM (SELECT COUNT(*) AS cnt, "
+               "COALESCE(MAX(rowid), 0) AS top FROM ";
+        sql += name;
+        sql += " WHERE tenant_id=?1) AS agg";
+        persistence::Stmt query(dbh, sql.c_str());
         query.bind(tenant);
         std::int64_t rows = 0;
         std::int64_t top = 0;
