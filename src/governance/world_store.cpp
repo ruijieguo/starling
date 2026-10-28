@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -16,6 +17,8 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <optional>
 #include <random>
 #include <set>
 #include <sstream>
@@ -123,14 +126,26 @@ bool remove_within(const fs::path& base, const fs::path& target) {
 }
 
 Json snapshot_to_json(const SnapshotEntry& snap) {
-    return Json{{"id", snap.id},
-                {"path", snap.path},
-                {"kind", snap.kind},
-                {"reason", snap.reason},
-                {"note", snap.note},
-                {"created_at", snap.created_at},
-                {"world_time", snap.world_time},
-                {"size_bytes", snap.size_bytes},};
+    Json node{{"id", snap.id},
+              {"path", snap.path},
+              {"kind", snap.kind},
+              {"reason", snap.reason},
+              {"note", snap.note},
+              {"created_at", snap.created_at},
+              {"world_time", snap.world_time},
+              {"size_bytes", snap.size_bytes},};
+    // W4 的三个字段缺省时不写：W2/W3 的条目保存后逐字不变。
+    if (snap.sessions_complete) { node.emplace("sessions_complete", *snap.sessions_complete); }
+    if (!snap.session_id.empty()) { node.emplace("session_id", snap.session_id); }
+    if (!snap.content_mark.empty()) { node.emplace("content_mark", snap.content_mark); }
+    return node;
+}
+
+// W4 的可选字符串字段：缺失或 null 读成空串，其余非字符串是损坏（由 get 抛 type_error）。
+std::string optional_text(const Json& node, const char* key) {
+    const auto found = node.find(key);
+    if (found == node.end() || found->is_null()) { return {}; }
+    return found->get<std::string>();
 }
 
 SnapshotEntry snapshot_from_json(const Json& node) {
@@ -144,15 +159,61 @@ SnapshotEntry snapshot_from_json(const Json& node) {
     snap.created_at = node.value("created_at", std::string{});
     snap.world_time = node.value("world_time", std::string{});
     snap.size_bytes = node.value("size_bytes", std::int64_t{0});
+    // W4 字段，读取都是可选的，null 按缺省。sessions_complete 必须是整数（不接受 3.5 被截成 3）。
+    if (const auto done = node.find("sessions_complete");
+        done != node.end() && !done->is_null()) {
+        if (!done->is_number_integer()) {
+            corrupt("sessions_complete of snapshot '" + snap.id + "' is not an integer");
+        }
+        snap.sessions_complete = done->get<std::int64_t>();
+    }
+    snap.session_id = optional_text(node, "session_id");
+    snap.content_mark = optional_text(node, "content_mark");
     return snap;
 }
 
+constexpr std::int64_t kMaxIntervalHours = 8760;   // 一年
+
+// 注册表里缺 auto_snapshot 时的默认值（用户裁定 2026-10-28）：默认世界是日常在用的连续部署，
+// 按时间每 24 小时；其余世界按会话。
+AutoSnapshotConfig default_auto_snapshot(bool is_default_world) {
+    return is_default_world ? AutoSnapshotConfig{.on_session = false, .interval_hours = 24}
+                            : AutoSnapshotConfig{.on_session = true, .interval_hours = 0};
+}
+
+bool interval_in_range(std::int64_t hours) { return hours >= 0 && hours <= kMaxIntervalHours; }
+
+// 只认 {"on_session": bool, "interval_hours": 整数}：两个键都必须在（保存时总是写全），
+// 类型不对就是损坏。范围在 validate_shape 里查（load 与 save 共用）。
+AutoSnapshotConfig auto_snapshot_from_json(const std::string& name, const Json& node) {
+    const std::string where = "auto_snapshot of '" + name + "'";
+    if (!node.is_object()) { corrupt(where + " is not an object"); }
+    const auto flag = node.find("on_session");
+    if (flag == node.end() || !flag->is_boolean()) {
+        corrupt(where + ": on_session is missing or not a boolean");
+    }
+    const auto hours = node.find("interval_hours");
+    if (hours == node.end() || !hours->is_number_integer()) {
+        corrupt(where + ": interval_hours is missing or not an integer");
+    }
+    // 大于 int64 的无符号数直接拒绝，不让 get<int64_t> 回绕成负数。
+    if (hours->is_number_unsigned() &&
+        hours->get<std::uint64_t>() > static_cast<std::uint64_t>(kMaxIntervalHours)) {
+        corrupt(where + ": interval_hours is out of range 0-8760");
+    }
+    return AutoSnapshotConfig{.on_session = flag->get<bool>(),
+                              .interval_hours = hours->get<std::int64_t>(),};
+}
+
 Json world_to_json(const WorldEntry& world) {
+    Json config{{"on_session", world.auto_snapshot.on_session},
+                {"interval_hours", world.auto_snapshot.interval_hours},};
     return Json{{"tenant", world.tenant},
                 {"db_path", world.db_path},
                 {"snapshot_dir", world.snapshot_dir},
                 {"label", world.label},
-                {"created_at", world.created_at},};
+                {"created_at", world.created_at},
+                {"auto_snapshot", std::move(config)},};
 }
 
 WorldEntry world_from_json(const std::string& name, const Json& node) {
@@ -164,6 +225,10 @@ WorldEntry world_from_json(const std::string& name, const Json& node) {
     world.snapshot_dir = node.at("snapshot_dir").get<std::string>();
     world.label = node.value("label", std::string{});
     world.created_at = node.value("created_at", std::string{});
+    // 缺字段时的默认值取决于它是不是默认世界，这里不知道，由 registry_from_node 补。
+    if (const auto cfg = node.find("auto_snapshot"); cfg != node.end()) {
+        world.auto_snapshot = auto_snapshot_from_json(name, *cfg);
+    }
     return world;
 }
 
@@ -197,7 +262,11 @@ Registry registry_from_node(const Json& root) {
         corrupt("'worlds' is missing or not an object");
     }
     for (const auto& [name, node] : worlds->items()) {
-        reg.worlds.emplace(name, world_from_json(name, node));
+        WorldEntry world = world_from_json(name, node);
+        if (!node.contains("auto_snapshot")) {
+            world.auto_snapshot = default_auto_snapshot(name == reg.default_world);
+        }
+        reg.worlds.emplace(name, std::move(world));
     }
 
     const auto snapshots = root.find("snapshots");
@@ -244,6 +313,11 @@ void validate_shape(const Registry& reg) {
         if (!fs::path(world.snapshot_dir).is_absolute()) {
             corrupt("snapshot_dir of '" + name + "' is not absolute: " + world.snapshot_dir);
         }
+        if (!interval_in_range(world.auto_snapshot.interval_hours)) {
+            corrupt("auto_snapshot of '" + name + "': interval_hours " +
+                    std::to_string(world.auto_snapshot.interval_hours) +
+                    " is out of range 0-8760");
+        }
     }
     for (const auto& [owner, list] : reg.snapshots) {
         const auto found = reg.worlds.find(owner);
@@ -254,6 +328,14 @@ void validate_shape(const Registry& reg) {
             if (snap.kind != "manual" && snap.kind != "auto") {
                 corrupt("snapshot '" + snap.id + "' of '" + owner + "' has kind '" + snap.kind +
                         "'");
+            }
+            // kind 与 reason 配对：manual/manual，auto/session 或 auto/interval。
+            const bool paired = snap.kind == "manual"
+                                    ? snap.reason == "manual"
+                                    : (snap.reason == "session" || snap.reason == "interval");
+            if (!paired) {
+                corrupt("snapshot '" + snap.id + "' of '" + owner + "' has kind '" + snap.kind +
+                        "' with reason '" + snap.reason + "'");
             }
             if (!lexically_within(found->second.snapshot_dir, snap.path)) {
                 corrupt("snapshot '" + snap.id + "' of '" + owner + "' lies outside " +
@@ -613,6 +695,70 @@ std::string world_time_on(sqlite3* dbh, const std::string& tenant) {
     return {};
 }
 
+// 快照时该世界已有的会话数。表不存在（迁移停在 36）记 0。
+std::int64_t sessions_on(sqlite3* dbh, const std::string& tenant) {
+    if (!table_exists(dbh, "source_unit_meta")) { return 0; }
+    persistence::Stmt query(dbh,
+        "SELECT COUNT(DISTINCT session_id) FROM source_unit_meta WHERE tenant_id=?1");
+    query.bind(tenant);
+    return query.step_row() ? sqlite3_column_int64(query.raw(), 0) : 0;
+}
+
+// 内容标记 "e<count>:<max_rowid>|s<count>:<max_rowid>|u<count>:<max_rowid>"（engrams、statements、
+// source_unit_meta，都按租户过滤；表不存在那段写 "-"）。原地更新不改变它，插入与删除会改变。
+// 三张表的计数都为 0 时返回空串：库里没有这个世界的内容。
+std::string content_mark_on(sqlite3* dbh, const std::string& tenant) {
+    static constexpr std::array<std::pair<std::string_view, char>, 3> kSegments{
+        {{"engrams", 'e'}, {"statements", 's'}, {"source_unit_meta", 'u'}},};
+    std::string mark;
+    bool has_rows = false;
+    for (const auto& [table, tag] : kSegments) {
+        if (!mark.empty()) { mark += '|'; }
+        const std::string name(table);
+        if (!table_exists(dbh, name)) {
+            mark += '-';
+            continue;
+        }
+        persistence::Stmt query(dbh, ("SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM " + name +
+                                      " WHERE tenant_id=?1").c_str());
+        query.bind(tenant);
+        std::int64_t rows = 0;
+        std::int64_t top = 0;
+        if (query.step_row()) {
+            rows = sqlite3_column_int64(query.raw(), 0);
+            top = sqlite3_column_int64(query.raw(), 1);
+        }
+        has_rows = has_rows || rows > 0;
+        mark += tag;
+        mark += std::to_string(rows);
+        mark += ':';
+        mark += std::to_string(top);
+    }
+    return has_rows ? mark : std::string{};
+}
+
+// 只读打开 db_path 跑 body(连接)。SQLite 错误（库读不出、不是 SQLite）一律转成 snapshot_failed。
+// 调用方先确认库文件存在。
+template <typename Body>
+auto with_read_only(const std::string& db_path, const Body& body) {
+    try {
+        const auto handle = open_read_only(db_path);
+        return body(handle.get());
+    } catch (const WorldStoreError&) {
+        throw;
+    } catch (const std::exception& ex) {
+        throw WorldStoreError("snapshot_failed", db_path + ": " + ex.what());
+    }
+}
+
+void require_valid_auto_snapshot(const AutoSnapshotConfig& config) {
+    if (!interval_in_range(config.interval_hours)) {
+        throw WorldStoreError("invalid_auto_snapshot",
+                              "interval_hours must be 0-8760, got " +
+                                  std::to_string(config.interval_hours));
+    }
+}
+
 // 可用字节数。标准允许 fs::space 在 FUSE / 网络文件系统上返回 uintmax_t(-1)
 // 表示「未知」，直接转成 int64 会得到 -1，让每次快照都被误拒为 insufficient_disk。
 // 未知或超出 int64 的值一律按「足够」处理，等于跳过守卫。
@@ -714,6 +860,7 @@ Registry ensure_registry(const fs::path& registry_path,
     world.snapshot_dir = (registry_dir / "worlds" / reg.default_world / "snapshots").string();
     world.label = "主世界";
     world.created_at = iso_now();
+    world.auto_snapshot = default_auto_snapshot(true);
     reg.worlds.emplace(world.name, world);
     save_registry(registry_path, reg);
     return reg;
@@ -721,7 +868,8 @@ Registry ensure_registry(const fs::path& registry_path,
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 WorldEntry create_world(Registry& reg, const fs::path& registry_dir, const std::string& name,
-                        const std::string& label, std::string_view now_iso) {
+                        const std::string& label, std::string_view now_iso,
+                        const AutoSnapshotConfig& auto_snapshot) {
     if (!is_valid_world_name(name)) {
         throw WorldStoreError("invalid_world_name",
                               "'" + name + "' does not match [a-z0-9][a-z0-9_-]{0,31}");
@@ -729,9 +877,11 @@ WorldEntry create_world(Registry& reg, const fs::path& registry_dir, const std::
     if (reg.worlds.contains(name)) {
         throw WorldStoreError("world_exists", "world '" + name + "' already exists");
     }
+    require_valid_auto_snapshot(auto_snapshot);   // 建目录之前
     WorldEntry world = make_entry(fs::absolute(registry_dir), name);
     world.label = label;
     world.created_at = std::string(now_iso);
+    world.auto_snapshot = auto_snapshot;
     fs::create_directories(world.snapshot_dir);
     reg.worlds.emplace(name, world);
     return world;
@@ -775,6 +925,15 @@ void set_active(Registry& reg, const std::string& name) {
         throw WorldStoreError("world_not_found", "world '" + name + "' is not registered");
     }
     reg.active = name;
+}
+
+void set_auto_snapshot(Registry& reg, const std::string& world, const AutoSnapshotConfig& config) {
+    const auto found = reg.worlds.find(world);
+    if (found == reg.worlds.end()) {
+        throw WorldStoreError("world_not_found", "world '" + world + "' is not registered");
+    }
+    require_valid_auto_snapshot(config);
+    found->second.auto_snapshot = config;
 }
 
 // ---- 世界统计与快照（W2） --------------------------------------------------
@@ -885,6 +1044,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
     snap.kind = opts.kind;
     snap.reason = opts.reason;
     snap.note = opts.note;
+    snap.session_id = opts.session_id;
     fs::path partial;
     try {
         // default 世界的快照目录由 ensure_registry 登记但不创建，首次快照时补建。
@@ -900,6 +1060,12 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
                                       dir.string() + ", have " + std::to_string(avail));
         }
 
+        // 会话数与内容标记必须先于 VACUUM INTO、在同一条只读连接上算：两步之间落下的写入
+        // 进了快照却不在标记里，快照只会多于标记、不会少于标记。最坏是下一轮按时间检查
+        // 看到标记不同而多拍一份，不会因为标记跑在内容前面而把没进快照的写入当成拍过了。
+        snap.sessions_complete = sessions_on(source.get(), entry.tenant);
+        snap.content_mark = content_mark_on(source.get(), entry.tenant);
+
         snap.id = fresh_snapshot_id(reg, world, dir);
         partial = dir / (snap.id + ".db.partial");
         const fs::path final_path = dir / (snap.id + ".db");
@@ -907,6 +1073,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
             std::error_code ignore;
             fs::remove(partial, ignore);
         }
+        if (opts.before_vacuum) { opts.before_vacuum(); }
         {
             persistence::Stmt vacuum(source.get(), "VACUUM INTO ?1");
             vacuum.bind(partial.string());
@@ -929,7 +1096,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
         }
         snap.size_bytes = static_cast<std::int64_t>(fs::file_size(partial));
         snap.path = final_path.string();
-        snap.created_at = iso_now();
+        snap.created_at = opts.created_at.empty() ? iso_now() : opts.created_at;
         fs::rename(partial, final_path);
     } catch (const WorldStoreError&) {
         std::error_code ignore;
@@ -1595,6 +1762,205 @@ std::size_t purge_rollback_archives(const Registry& reg, const fs::path& registr
         ++removed;
     }
     return removed;
+}
+
+
+// ---- 自动快照与会话清单（W4） -------------------------------------------------
+
+namespace {
+
+[[noreturn]] void invalid_auto(const std::string& detail) {
+    throw WorldStoreError("invalid_auto_snapshot", detail);
+}
+
+// 严格解析 YYYY-MM-DDTHH:MM:SSZ（iso_now 与 Python _now_iso 的格式）。日期必须真实存在
+// （2030-02-30 不行），时分秒在 0–23 / 0–59 / 0–59 之内。别的写法一律解析不了。
+std::optional<std::chrono::sys_seconds> parse_utc_seconds(std::string_view text) {
+    constexpr std::string_view kShape = "dddd-dd-ddTdd:dd:ddZ";
+    if (text.size() != kShape.size()) { return std::nullopt; }
+    for (std::size_t pos = 0; pos < kShape.size(); ++pos) {
+        const char want = kShape.at(pos);
+        const char chr = text.at(pos);
+        const bool good = want == 'd' ? (chr >= '0' && chr <= '9') : chr == want;
+        if (!good) { return std::nullopt; }
+    }
+    const auto number = [text](std::size_t from, std::size_t len) {
+        int value = 0;
+        for (std::size_t pos = from; pos < from + len; ++pos) {
+            value = (value * 10) + (text.at(pos) - '0');
+        }
+        return value;
+    };
+    const int hour = number(11, 2);
+    const int minute = number(14, 2);
+    const int second = number(17, 2);
+    if (hour > 23 || minute > 59 || second > 59) { return std::nullopt; }
+    const std::chrono::year_month_day date{std::chrono::year{number(0, 4)},
+                                           std::chrono::month{static_cast<unsigned>(number(5, 2))},
+                                           std::chrono::day{static_cast<unsigned>(number(8, 2))}};
+    if (!date.ok()) { return std::nullopt; }
+    return std::chrono::sys_days{date} + std::chrono::hours{hour} + std::chrono::minutes{minute} +
+           std::chrono::seconds{second};
+}
+
+// 列表里满足 pred 的条目中 created_at 最新的一份（按解析后的时间比较；解析不了的算最旧，
+// 只有全都解析不了时才轮到它；同一时刻取列表里靠前的，即注册表里更新的那份）。没有返回 nullptr。
+template <typename Pred>
+const SnapshotEntry* newest_snapshot(const Registry& reg, const std::string& world,
+                                     const Pred& pred) {
+    const auto listed = reg.snapshots.find(world);
+    if (listed == reg.snapshots.end()) { return nullptr; }
+    const SnapshotEntry* best = nullptr;
+    std::optional<std::chrono::sys_seconds> best_at;
+    for (const auto& snap : listed->second) {
+        if (!pred(snap)) { continue; }
+        const auto stamp = parse_utc_seconds(snap.created_at);
+        const bool newer = best == nullptr || (stamp && (!best_at || *stamp > *best_at));
+        if (newer) {
+            best = &snap;
+            best_at = stamp;
+        }
+    }
+    return best;
+}
+
+// 库里有没有这个会话的 unit（按租户）。库文件或表不存在算没有。
+bool session_known(const WorldEntry& entry, const std::string& session_id) {
+    std::error_code err;
+    if (!fs::exists(entry.db_path, err)) { return false; }
+    return with_read_only(entry.db_path, [&](sqlite3* dbh) {
+        if (!table_exists(dbh, "source_unit_meta")) { return false; }
+        persistence::Stmt query(dbh, "SELECT 1 FROM source_unit_meta "
+                                     "WHERE tenant_id=?1 AND session_id=?2 LIMIT 1");
+        query.bind(entry.tenant, session_id);
+        return query.step_row();
+    });
+}
+
+// 当前的内容标记；库文件不存在时为空串（与「没有内容」相同）。
+std::string current_content_mark(const WorldEntry& entry) {
+    std::error_code err;
+    if (!fs::exists(entry.db_path, err)) { return {}; }
+    return with_read_only(entry.db_path,
+                          [&](sqlite3* dbh) { return content_mark_on(dbh, entry.tenant); });
+}
+
+AutoSnapshotResult skipped_because(std::string reason) {
+    AutoSnapshotResult result;
+    result.skipped = std::move(reason);
+    return result;
+}
+
+}  // namespace
+
+AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
+                                      const AutoTrigger& trigger, const SnapshotOptions& base) {
+    const auto found = reg.worlds.find(world);
+    if (found == reg.worlds.end()) {
+        throw WorldStoreError("world_not_found", "world '" + world + "' is not registered");
+    }
+    if (trigger.kind != "session" && trigger.kind != "interval") {
+        invalid_auto("trigger kind must be 'session' or 'interval', got '" + trigger.kind + "'");
+    }
+    const auto now = parse_utc_seconds(trigger.now_iso);
+    if (!now) { invalid_auto("now_iso is not YYYY-MM-DDTHH:MM:SSZ: '" + trigger.now_iso + "'"); }
+    // 向量在库文件之外的后端拍不出完整的世界：直接不拍，不算失败（用户裁定 2026-10-28）。
+    if (base.vector_backend != "sqlite") { return skipped_because("unsupported_backend"); }
+
+    const WorldEntry& entry = found->second;
+    const AutoSnapshotConfig config = entry.auto_snapshot;
+    SnapshotOptions opts = base;
+    opts.kind = "auto";
+    opts.created_at = trigger.now_iso;   // 与「间隔到没到」用同一个时钟
+    if (trigger.kind == "session") {
+        if (!config.on_session) { return skipped_because("disabled"); }
+        if (trigger.session_id.empty()) { invalid_auto("session trigger needs a session_id"); }
+        if (session_known(entry, trigger.session_id)) { return skipped_because("known_session"); }
+        opts.reason = "session";
+        opts.session_id = trigger.session_id;
+    } else {
+        if (config.interval_hours == 0) { return skipped_because("disabled"); }
+        const std::string mark = current_content_mark(entry);
+        if (mark.empty()) { return skipped_because("empty"); }
+        // manual 快照不参与：按时间的自动快照只看上一份自动快照（任意 reason）。
+        const SnapshotEntry* last = newest_snapshot(
+            reg, world, [](const SnapshotEntry& snap) { return snap.kind == "auto"; });
+        if (last != nullptr) {
+            // 解析不了的 created_at、没有标记的旧条目：对应那一项按「需要拍」处理。
+            const auto last_at = parse_utc_seconds(last->created_at);
+            if (last_at && *now - *last_at < std::chrono::hours{config.interval_hours}) {
+                return skipped_because("not_due");
+            }
+            if (!last->content_mark.empty() && last->content_mark == mark) {
+                return skipped_because("unchanged");
+            }
+        }
+        opts.reason = "interval";
+        opts.session_id.clear();
+    }
+    AutoSnapshotResult result;
+    result.taken = take_snapshot(reg, world, opts);
+    return result;
+}
+
+SessionList list_sessions(const Registry& reg, const std::string& world, std::int64_t limit) {
+    const WorldEntry& entry = registered_world(reg, world);
+    constexpr std::int64_t kMaxSessionRows = 1000;
+    if (limit < 1 || limit > kMaxSessionRows) {
+        invalid_auto("limit must be 1-1000, got " + std::to_string(limit));
+    }
+    SessionList out;
+    std::error_code err;
+    if (!fs::exists(entry.db_path, err)) { return out; }
+    with_read_only(entry.db_path, [&](sqlite3* dbh) {
+        if (!table_exists(dbh, "source_unit_meta")) { return; }
+        // 一个读事务（这是独立的只读连接，不是引擎连接）：总数、无时间计数与各行出自
+        // 同一个版本的库。
+        persistence::Stmt(dbh, "BEGIN").step_done();
+        {
+            persistence::Stmt totals(dbh,
+                "SELECT COUNT(DISTINCT session_id), COALESCE(SUM(observed_at IS NULL), 0) "
+                "FROM source_unit_meta WHERE tenant_id=?1");
+            totals.bind(entry.tenant);
+            if (totals.step_row()) {
+                out.total = sqlite3_column_int64(totals.raw(), 0);
+                out.null_observed = sqlite3_column_int64(totals.raw(), 1);
+            }
+        }
+        {
+            // 设计稿 §7 的汇总。空串的 observed_at 与 NULL 同样不算时间（同 world_time_on）。
+            persistence::Stmt rows(dbh,
+                "SELECT session_id, COUNT(*) AS units, MIN(NULLIF(observed_at, '')) AS first_at, "
+                "MAX(NULLIF(observed_at, '')) AS last_at, COUNT(DISTINCT speaker) AS speakers "
+                "FROM source_unit_meta WHERE tenant_id=?1 GROUP BY session_id "
+                "ORDER BY first_at IS NULL, first_at DESC, session_id LIMIT ?2");
+            rows.bind(entry.tenant, limit);
+            while (rows.step_row()) {
+                SessionRow row;
+                row.session_id = column_text(rows.raw(), 0);
+                row.units = sqlite3_column_int64(rows.raw(), 1);
+                row.first_at = column_text(rows.raw(), 2);
+                row.last_at = column_text(rows.raw(), 3);
+                row.speakers = sqlite3_column_int64(rows.raw(), 4);
+                out.rows.push_back(std::move(row));
+            }
+        }
+        persistence::Stmt(dbh, "COMMIT").step_done();
+    });
+    out.truncated = out.total > limit;
+
+    // 锚点：每个会话最新的一份按会话自动快照（kind=auto、reason=session、session_id 相同）。
+    for (auto& row : out.rows) {
+        const SnapshotEntry* anchor = newest_snapshot(reg, world, [&row](const SnapshotEntry& snap) {
+            return snap.kind == "auto" && snap.reason == "session" &&
+                   snap.session_id == row.session_id;
+        });
+        if (anchor != nullptr) {
+            row.anchor_snapshot_id = anchor->id;
+            row.anchor_created_at = anchor->created_at;
+        }
+    }
+    return out;
 }
 
 }  // namespace starling::governance
