@@ -62,6 +62,8 @@ export const api = {
 	get: <T>(p: string, init?: ReqInit) => req<T>(p, init),
 	post: <T>(p: string, body: unknown, init?: ReqInit) =>
 		req<T>(p, { ...init, method: 'POST', body: JSON.stringify(body) }),
+	put: <T>(p: string, body: unknown, init?: ReqInit) =>
+		req<T>(p, { ...init, method: 'PUT', body: JSON.stringify(body) }),
 	del: <T>(p: string, init?: ReqInit) => req<T>(p, { ...init, method: 'DELETE' })
 };
 
