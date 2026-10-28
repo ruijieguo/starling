@@ -57,16 +57,33 @@ def test_max_retries_zero_is_honoured_by_both_factories(monkeypatch):
                              timeout_ms=50, max_retries=0)
     starling.make_openai_embedder(model="m", base_url="http://127.0.0.1:9/v1",
                                   dim=8, timeout_ms=50, max_retries=0)
-    # Omitting max_retries means 0 as well (both factories default it to 0).
-    starling.make_openai_llm(model="m")
-    starling.make_openai_embedder(model="m", base_url="http://127.0.0.1:9/v1",
-                                  dim=8, timeout_ms=50)
-    assert [c.max_retries for c in llm_cfgs] == [0, 0]
-    assert [c.max_retries for c in emb_cfgs] == [0, 0]
+    assert [c.max_retries for c in llm_cfgs] == [0]
+    assert [c.max_retries for c in emb_cfgs] == [0]
 
     # A non-zero value still passes through.
     starling.make_openai_llm(model="m", max_retries=2)
     starling.make_openai_embedder(model="m", base_url="http://127.0.0.1:9/v1",
                                   dim=8, timeout_ms=50, max_retries=2)
     assert llm_cfgs[-1].max_retries == 2 and emb_cfgs[-1].max_retries == 2
+
+
+def test_omitting_max_retries_keeps_the_cpp_default_in_both_factories(monkeypatch):
+    # Existing callers that never pass max_retries (smoke script, e2e tests)
+    # must keep the C++ default of 3; only an explicit value may change it.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    cpp_llm = _core.OpenAIAdapterConfig.from_env().max_retries
+    cpp_emb = _core.OpenAIEmbeddingConfig.from_env().max_retries
+    assert (cpp_llm, cpp_emb) == (3, 3)
+
+    llm_cfgs = _spy_on_adapter_config(monkeypatch, "OpenAIAdapter")
+    emb_cfgs = _spy_on_adapter_config(monkeypatch, "OpenAIEmbeddingAdapter")
+
+    starling.make_openai_llm(model="m")
+    starling.make_openai_llm(model="m", max_retries=None)
+    starling.make_openai_embedder(model="m", base_url="http://127.0.0.1:9/v1",
+                                  dim=8, timeout_ms=50)
+    starling.make_openai_embedder(model="m", base_url="http://127.0.0.1:9/v1",
+                                  dim=8, timeout_ms=50, max_retries=None)
+    assert [c.max_retries for c in llm_cfgs] == [cpp_llm, cpp_llm]
+    assert [c.max_retries for c in emb_cfgs] == [cpp_emb, cpp_emb]
 

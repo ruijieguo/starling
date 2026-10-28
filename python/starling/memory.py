@@ -46,7 +46,7 @@ def make_stub_llm(*, default_response: str, responses: Optional[dict] = None):
 
 
 def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
-                    timeout_ms: int = 0, max_retries: int = 0,
+                    timeout_ms: int = 0, max_retries: Optional[int] = None,
                     max_tokens: int = 0):
     """Production LLM adapter (`_core.OpenAIAdapter`).
 
@@ -54,9 +54,9 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
     adapter — it is never accepted as a parameter, logged, or hardcoded here.
     Starts from `OpenAIAdapterConfig.from_env()` so env-provided defaults
     (base_url / model / timeouts) are honoured, then overrides only the
-    fields the caller explicitly set. `max_retries` is the exception: it is
-    always applied, because the C++ default is 3 and a caller-supplied 0
-    ("never retry") must not silently become 3 retries.
+    fields the caller explicitly set. `max_retries` is judged by `is None`,
+    not truthiness: `None` (omitted) keeps the C++ default (3), while any int,
+    including 0 ("never retry"), is applied as given.
     """
     cfg = _core.OpenAIAdapterConfig.from_env()
     if model:
@@ -65,28 +65,31 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
         cfg.base_url = base_url
     if timeout_ms:
         cfg.timeout_ms = timeout_ms
-    cfg.max_retries = max_retries
+    if max_retries is not None:
+        cfg.max_retries = max_retries
     if max_tokens:
         cfg.max_tokens = max_tokens
     return _core.OpenAIAdapter(cfg)
 
 
 def make_openai_embedder(*, model: str, base_url: str, dim: int,
-                         timeout_ms: int, max_retries: int = 0):
+                         timeout_ms: int, max_retries: Optional[int] = None):
     """Production embedder (`_core.OpenAIEmbeddingAdapter`) for `Memory.open`.
 
     Built like `make_openai_llm`: the API key is read from the environment
     (`OPENAI_API_KEY`) by the C++ config and is never a parameter. Starts from
-    `OpenAIEmbeddingConfig.from_env()`, then sets all five fields
-    unconditionally. In particular `max_retries=0` must reach the adapter as 0
-    (the C++ default is 3), so no override is skipped on a falsy value.
+    `OpenAIEmbeddingConfig.from_env()`, then sets `model`, `base_url`, `dim`
+    and `timeout_ms` unconditionally. `max_retries` is judged by `is None`, not
+    truthiness: `None` (omitted) keeps the C++ default (3), while any int,
+    including 0 ("never retry"), is applied as given.
     """
     cfg = _core.OpenAIEmbeddingConfig.from_env()
     cfg.model = model
     cfg.base_url = base_url
     cfg.dim = dim
     cfg.timeout_ms = timeout_ms
-    cfg.max_retries = max_retries
+    if max_retries is not None:
+        cfg.max_retries = max_retries
     return _core.OpenAIEmbeddingAdapter(cfg)
 
 
