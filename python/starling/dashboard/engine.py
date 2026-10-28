@@ -811,10 +811,12 @@ class DashboardEngine:
                 except Exception:  # noqa: BLE001
                     logger.exception("backpressure sample failed")
 
+        # 先 start 再挂句柄：句柄一旦可见，stop_* / quiesce 就会 join 它；join 一个还没启动
+        # 的线程抛 RuntimeError。start() 返回之后线程已经启动，join 总是合法的。
+        thread = threading.Thread(target=_loop, name="starling-bg-tick", daemon=True)
+        thread.start()
         self._tick_stop = stop
-        self._tick_thread = threading.Thread(
-            target=_loop, name="starling-bg-tick", daemon=True)
-        self._tick_thread.start()
+        self._tick_thread = thread
 
     def stop_background_tick(self, timeout_s: float = 5.0) -> None:
         if self._tick_thread is None:
@@ -1052,10 +1054,11 @@ class DashboardEngine:
                 except Exception:  # noqa: BLE001 — 保活:单个 job 失败不终结调度
                     logger.exception("ingest worker failed")
 
+        # 先 start 再挂句柄，理由同 start_background_tick。
+        thread = threading.Thread(target=_loop, name="starling-ingest", daemon=True)
+        thread.start()
         self._ingest_stop = stop
-        self._ingest_thread = threading.Thread(
-            target=_loop, name="starling-ingest", daemon=True)
-        self._ingest_thread.start()
+        self._ingest_thread = thread
 
     def stop_ingest_worker(self, timeout_s: float = 5.0) -> None:
         if self._ingest_thread is None:

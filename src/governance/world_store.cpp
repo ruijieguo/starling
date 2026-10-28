@@ -80,25 +80,10 @@ bool strictly_under(const fs::path& base, const fs::path& target) {
     return !rel.empty() && rel != "." && *rel.begin() != "..";
 }
 
-// 字面判断，不解析符号链接：注册表校验只看写在 worlds.json 里的路径本身。
+// 字面判断，不解析符号链接。这是字面预检：形状校验（快照路径在 snapshot_dir 之下）与世界名推出的
+// home 的字面检查用它；布局校验另外解析符号链接之后再判断（见 require_resolved_within）。
 bool lexically_within(const fs::path& base, const fs::path& target) {
     return strictly_under(normalized(base), normalized(target));
-}
-
-// 布局校验用：字面在 base 之下，或两侧解析符号链接之后在 base 之下，都算。
-// 同一份注册表换一种路径写法打开（/tmp 与 /private/tmp、软链回来的 ~/.starling、换了拼法的
-// STARLING_DASH_DB）时，字面比较会把合法布局判成越界，启动直接 registry_corrupt。解析失败就只
-// 认字面结果。".." 越界两种判法都拒；删除时的真正边界仍由 remove_within / require_inside_registry
-// 在解析符号链接之后把守。
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-bool within_layout(const fs::path& base, const fs::path& target) {
-    if (lexically_within(base, target)) { return true; }
-    std::error_code err;
-    const fs::path real_base = fs::weakly_canonical(base, err);
-    if (err) { return false; }
-    const fs::path real_target = fs::weakly_canonical(target, err);
-    if (err) { return false; }
-    return strictly_under(normalized(real_base), normalized(real_target));
 }
 
 // 仅当 target 严格位于 base 之下（解析符号链接与 ".." 之后）才递归删除。
@@ -278,21 +263,117 @@ void validate_shape(const Registry& reg) {
     }
 }
 
-// 世界目录布局：每个世界的 snapshot_dir、以及非 default 世界的 db_path，在字面上都位于
-// <registry_dir>/worlds/<name>/ 之下。default 的库保持原地（spec §0.1），不受此限；但它的
-// 快照目录同样固定在 worlds/<default>/ 下——否则把它改成 "/"，删除快照、保留策略和残留
-// 清扫就能删到任意位置。
-// worlds/ 解析符号链接之后必须仍在注册表目录之下。within_layout 两侧都解析符号链接，
+// 布局校验用的解析：跟随符号链接之后的绝对位置（已规范化）。末端是悬空的符号链接时也跟到底：
+// fs::weakly_canonical 把它当成一个不存在的普通名字原样留下，而 SQLite 以 O_CREAT 打开它会在
+// 链接目标处建库（实测），世界库就建到了世界目录之外。中间某一级悬空时，在它下面什么都建不
+// 出来（mkdir 报 EEXIST、open 报 ENOENT），weakly_canonical 的字面结果够用。
+// 也就是说，中间某一级是悬空链接时只解析末尾，其余部分按字面算。这可能多拒绝一些布局（例如
+// worlds/sim-1 悬空地指向 worlds/sim-1-real），但不会让路径越界放行，即 fail closed。
+// 解析出错（EACCES、ELOOP 等）时证明不了路径在哪里，按越界处理：抛 code（布局校验是
+// registry_corrupt，不经 load 的破坏性入口是 snapshot_failed），带上原因。
+[[noreturn]] void unresolvable(const fs::path& path, const std::error_code& err,
+                               const std::string& code) {
+    throw WorldStoreError(code, "cannot resolve " + path.string() + ": " + err.message());
+}
+
+// 去掉末尾的 "/" 与 "."（"a/b/"、"a/b/." → "a/b"）。主要理由：lstat("链接/") 会跟随链接，把末端
+// 的链接本身藏起来（悬空时就成了「不存在」），字面结果于是放行；去掉末尾的分隔符，规则才能一致地
+// 执行，不取决于注册表里的写法。另外 mkdir("链接/") 在 macOS 上会在链接目标处建目录（实测），但
+// take_snapshot 的 create_directories 走不走得到这一步取决于实现（libc++ 可能先在父路径那一级报
+// EEXIST），不作为依据。
+fs::path without_trailing_dot_or_slash(fs::path path) {
+    while (path.has_relative_path() && (path.filename().empty() || path.filename() == ".")) {
+        path = path.parent_path();
+    }
+    return path;
+}
+
+// code 是解析出错时抛的码（见 unresolvable）。
+fs::path resolve_for_layout(const fs::path& path, const std::string& code = "registry_corrupt") {
+    constexpr int kMaxLinkHops = 40;
+    fs::path current = path;
+    for (int hop = 0; hop < kMaxLinkHops; ++hop) {
+        // 每一跳都去：链接内容本身也可以以 "/" 结尾。
+        current = without_trailing_dot_or_slash(current);
+        std::error_code err;
+        const fs::file_status status = fs::symlink_status(current, err);
+        // 不存在时 libc++ 也会把 err 设成 ENOENT，不算错误（同 lstat_or_throw）。
+        if (err && status.type() != fs::file_type::not_found) { unresolvable(path, err, code); }
+        if (status.type() != fs::file_type::symlink) {
+            err.clear();
+            const fs::path real = fs::weakly_canonical(current, err);
+            if (err) { unresolvable(path, err, code); }
+            return normalized(real);
+        }
+        const fs::path link = fs::read_symlink(current, err);
+        if (err) { unresolvable(path, err, code); }
+        // 相对的链接内容相对于链接所在的目录，与内核解析同义；".." 留给 weakly_canonical 处理。
+        current = link.is_absolute() ? link : current.parent_path() / link;
+    }
+    unresolvable(path, std::make_error_code(std::errc::too_many_symbolic_link_levels), code);
+}
+
+// require_resolved_* 拒绝时附在消息末尾的补救提示。违反布局的注册表在启动时（bootstrap_worlds →
+// load_registry）就让 dashboard 拒绝启动，消息要让人看得出怎么改。
+constexpr std::string_view kLayoutRemedy =
+    " (a world directory and the paths inside it must not be symlinks that lead out of it; "
+    "to move worlds to another disk, move the whole registry directory)";
+
+// 布局校验：target 解析符号链接之后严格位于 base 解析之后的位置之下，否则 registry_corrupt。
+// 两侧都解析，所以同一处换一种写法（/tmp 与 /private/tmp、经符号链接打开的注册表目录）仍然放行。
+// 不保留「字面在 base 之下就放行」的捷径：字面上在世界目录里、磁盘上却是指向外部的符号链接时，
+// W2 的快照写入、残留清扫、保留策略、删快照以 snapshot_dir 为根，引擎在 db_path 建库，全都会落到
+// 世界目录之外（用户裁定 2026-10-27：这种布局不再支持）。".." 越界照样拒绝。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void require_resolved_within(const fs::path& base, const fs::path& target,
+                             const std::string& what) {
+    const fs::path real_base = resolve_for_layout(base);
+    const fs::path real_target = resolve_for_layout(target);
+    if (!strictly_under(real_base, real_target)) {
+        corrupt(what + " " + target.string() + " resolves to " + real_target.string() +
+                ", outside " + real_base.string() + std::string(kLayoutRemedy));
+    }
+}
+
+// 世界目录本身：解析符号链接之后必须恰好是「解析后的 worlds/」/<name>，只在 worlds/ 之下不够。
+// 否则 worlds/sim-1 -> worlds/sim-2（或 worlds/sim-2/sub）能通过，delete_world("sim-1") 经
+// remove_within 解析到 sim-2，删掉兄弟世界的整个目录和库（用户裁定 2026-10-27：每个世界目录解析后
+// 都是 worlds/<它自己的名字>）。世界目录还不存在时 weakly_canonical 把缺的末尾原样接上，照常通过；
+// worlds/ 整体外链到注册表目录内、注册表目录本身是符号链接，两侧同样解析，仍然放行。
+// code 是违反（含解析出错）时抛的码：load / save 的布局校验是 registry_corrupt；delete_world 与
+// checked_world_home（回滚、列出、清理归档）可以不经 load 直接调用，自己也查，抛 snapshot_failed。
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void require_resolved_home(const fs::path& worlds_root, const std::string& name,
+                           const std::string& code) {
+    const fs::path home = worlds_root / name;
+    const fs::path expected = resolve_for_layout(worlds_root, code) / name;
+    const fs::path real_home = resolve_for_layout(home, code);
+    if (real_home != expected) {
+        throw WorldStoreError(code, "home of '" + name + "' " + home.string() + " resolves to " +
+                                        real_home.string() + ", not " + expected.string() +
+                                        std::string(kLayoutRemedy));
+    }
+}
+
+// 世界目录布局（解析符号链接之后判断，见 require_resolved_within）：
+//   - 世界目录 <registry_dir>/worlds/<name> 解析后恰好是解析后的 worlds/ 下的 <name>
+//     （require_resolved_home），不能是别的世界的目录或它的子目录；
+//   - 非 default 世界的 db_path、所有世界的 snapshot_dir 严格位于各自的世界目录之下。
+// default 的库保持原地（spec §0.1），不受此限；但它的快照目录同样固定在 worlds/<default>/ 下
+// ——否则把它改成 "/"，删除快照、保留策略和残留清扫就能删到任意位置。
+// 注册表目录本身可以是符号链接：两侧都解析，比的是同一处。
+// worlds/ 解析符号链接之后必须仍在注册表目录之下。逐项比较两侧都解析符号链接，
 // 若 worlds/ 本身指向外部，「目标在 home 之下」会在外部成立，快照清扫、保留策略、删快照
 // 便以外部目录为根。所以在逐项比较之前先把根钉死：worlds/ 还不存在（全新注册表）时放行。
+// 用 resolve_for_layout 而不是 weakly_canonical：worlds/ 是悬空的符号链接（例如指到没挂上的盘）时，
+// weakly_canonical 把它原样留下、字面放行，随后才被世界目录那条规则以「解析到自己」这种让人困惑的
+// 消息拒绝；跟到底之后，这里直接报 worlds/ 解析到了哪里。解析出错同样 registry_corrupt。
 void require_worlds_root_inside(const fs::path& registry_dir, const fs::path& worlds_root) {
     std::error_code err;
     if (!fs::exists(fs::symlink_status(worlds_root, err))) { return; }
-    const fs::path real_dir = fs::weakly_canonical(registry_dir, err);
-    if (err) { corrupt("cannot resolve " + registry_dir.string() + ": " + err.message()); }
-    const fs::path real_root = fs::weakly_canonical(worlds_root, err);
-    if (err) { corrupt("cannot resolve " + worlds_root.string() + ": " + err.message()); }
-    if (!strictly_under(normalized(real_dir), normalized(real_root))) {
+    const fs::path real_dir = resolve_for_layout(registry_dir);
+    const fs::path real_root = resolve_for_layout(worlds_root);
+    if (!strictly_under(real_dir, real_root)) {
         corrupt(worlds_root.string() + " resolves to " + real_root.string() + ", outside " +
                 real_dir.string());
     }
@@ -306,14 +387,11 @@ void validate_layout(const Registry& reg, const fs::path& registry_dir) {
         if (!lexically_within(worlds_root, home)) {
             corrupt("world '" + name + "' has no home under " + worlds_root.string());
         }
-        if (name != reg.default_world && !within_layout(home, world.db_path)) {
-            corrupt("db_path of '" + name + "' lies outside " + home.string() + ": " +
-                    world.db_path);
+        require_resolved_home(worlds_root, name, "registry_corrupt");
+        if (name != reg.default_world) {
+            require_resolved_within(home, world.db_path, "db_path of '" + name + "'");
         }
-        if (!within_layout(home, world.snapshot_dir)) {
-            corrupt("snapshot_dir of '" + name + "' lies outside " + home.string() + ": " +
-                    world.snapshot_dir);
-        }
+        require_resolved_within(home, world.snapshot_dir, "snapshot_dir of '" + name + "'");
     }
 }
 
@@ -676,7 +754,12 @@ void delete_world(Registry& reg, const fs::path& registry_dir, const std::string
     const fs::path root = fs::absolute(registry_dir);
     const fs::path base = root / "worlds";
     require_inside_registry(root, base);
-    // worlds/<name> 本身是指向外部的符号链接时 remove_within 不删（返回 false）。与快照的
+    // worlds/<name> 解析后必须恰好是解析后的 worlds/<name>（与 load 的布局校验同一条规则，见
+    // require_resolved_home）：delete_world 可以不经 load 直接调用，worlds/sim-1 -> worlds/sim-2
+    // 时 remove_within 会解析到 sim-2，把兄弟世界整个删掉。违反抛 snapshot_failed，什么都不删，
+    // 注册项保留。指向外部、解析不了（ELOOP 等）同样在这里拒。
+    require_resolved_home(base, name, "snapshot_failed");
+    // 纵深防御：worlds/<name> 解析到 worlds/ 之外时 remove_within 不删（返回 false）。与快照的
     // 越界处理一致 fail closed：抛 snapshot_failed、注册项保留，不让外部数据变成无主孤儿。
     if (!remove_within(base, base / name)) {
         throw WorldStoreError("snapshot_failed",
@@ -990,12 +1073,16 @@ const SnapshotEntry& registered_snapshot(const Registry& reg, const std::string&
 }
 
 // 世界 home = <registry_dir>/worlds/<name>，与 create_world / delete_world 同一推导，只由服务端的
-// 目录布局决定。snapshot_dir 不参与：它可能是指回世界目录的符号链接，也可能指到另一个卷，
-// 两种情况下都不能让它决定归档落在哪里。归档目录为 <世界 home>/archive。
+// 目录布局决定。snapshot_dir 不参与：load_registry 已拒绝解析后越出世界目录的 snapshot_dir
+// （validate_layout），但 rollback_world 也可以不经 load 直接调用，归档位置不能依赖它。
+// 归档目录为 <世界 home>/archive。
 // 归档操作（回滚建硬链接、列出、清理）之前先 fail closed，此时还什么都没建：
 //   1. worlds/ 解析符号链接后仍在注册表目录之下（require_worlds_root_inside，registry_corrupt）；
-//   2. 世界 home 解析符号链接后严格在 worlds/ 之下，否则 snapshot_failed。与 delete_world 拒删
-//      指向外部的世界目录是同一个边界。
+//   2. 世界 home 解析符号链接后严格在 worlds/ 之下，并且恰好是解析后的 worlds/<name>（与 load
+//      的布局校验同一条规则，见 require_resolved_home），否则 snapshot_failed。只查「在 worlds/
+//      之下」不够：worlds/sim-1 -> worlds/sim-2 时，回滚、列出、清理 sim-1 实际作用在 sim-2 的
+//      库与 archive/ 上，清理会删掉 sim-2 的回滚归档（回滚前旧库唯一剩下的名字）。与 delete_world
+//      是同一个边界。
 // 返回世界 home（未解析符号链接的路径）。
 fs::path checked_world_home(const fs::path& registry_dir, const std::string& world) {
     const fs::path root = normalized(fs::absolute(registry_dir));
@@ -1003,6 +1090,7 @@ fs::path checked_world_home(const fs::path& registry_dir, const std::string& wor
     require_worlds_root_inside(root, worlds_root);
     const fs::path home = worlds_root / world;
     require_inside_registry(worlds_root, home);
+    require_resolved_home(worlds_root, world, "snapshot_failed");
     return home;
 }
 
