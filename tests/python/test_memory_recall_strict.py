@@ -50,3 +50,13 @@ def test_non_strict_recall_keeps_old_empty_result(tmp_path, monkeypatch):
 def test_strict_rejects_completion_mode(tmp_path):
     with pytest.raises(ValueError):
         _mem(tmp_path).recall("x", mode="completion", strict=True)
+
+
+def test_strict_recall_returns_hits_when_embedding_is_healthy(tmp_path):
+    # 默认 stub 嵌入器是健康的:strict=True 不能因为"开了 strict"就抛,
+    # 只有 SemanticResult.degraded 为真时才抛。钉住 `strict and res.degraded` 这道门。
+    mem = _mem(tmp_path)
+    mem.remember("Bob owns the auth module", now="2026-01-01T00:00:00Z")
+    mem.tick("2026-01-01T00:00:01Z")
+    hits = mem.recall("Bob owns the auth module", strict=True)
+    assert len(hits) == 1 and hits[0]["row"].holder_id == "alice"
