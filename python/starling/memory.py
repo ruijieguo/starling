@@ -308,6 +308,25 @@ class Memory:
         """Events recorded in state 'pending', ordered by `seq` ascending."""
         return [PendingEvent(**row) for row in self._core.pending_events()]
 
+    def remember_event(self, key: str, text: str, *, interlocutor: str,
+                       epoch: str = "2026-01-01T00:00:00Z") -> RememberResult:
+        """Remember `text` once under the caller's stable `key`, idempotently.
+
+        A retry with the same key and the same text never extracts twice and
+        never writes duplicate statements: a committed receipt returns the
+        stored statement ids without calling the llm, and a crash between the
+        statement write and the receipt update converges on the next call. The
+        key is written into the remembered text as a `[key] ` prefix.
+
+        `epoch` is the clock origin — the engram's `created_at` is `epoch` plus
+        the event's `seq` seconds, so a retry keeps the timestamp it first got.
+
+        Raises `EventConflict` when the key already records a different text, or
+        when it was abandoned.
+        """
+        return RememberResult(**self._core.remember_event(
+            key, text, interlocutor=interlocutor, epoch=epoch))
+
     def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble a prompt-ready ContextBlock from memory (P2.e).
 

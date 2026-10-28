@@ -1,14 +1,18 @@
-// test_memory_events.cpp — events 表读侧(迁移 0038):next_seq 与 pending_events。
-// 直接插行,不经写侧;零网络。写侧(remember_event / abandon_event)的用例随各自任务加入。
+// test_memory_events.cpp — events 表(迁移 0038)。读侧:next_seq 与 pending_events,
+// 直接插行、不经写侧。写侧:remember_event 的四条主路径(新 key、同文本已提交、
+// 异文本冲突、补齐不抽取),LLM 用 FakeLLMAdapter,零网络。
 
 #include "starling/memory/memory_events.hpp"
 
+#include "starling/extractor/fake_llm_adapter.hpp"
+#include "starling/memory/memory_ops.hpp"
 #include "starling/persistence/migration_runner.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/persistence/stmt.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -34,6 +38,47 @@ void insert_event(persistence::Connection& conn, std::string_view tenant, std::s
     s.bind(tenant, key, text, interlocutor, seq, state, failure_category);
     s.step_done();
 }
+
+constexpr const char* kCannedJson =
+    R"JSON([{"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Bob","predicate":"responsible_for","object":"auth","modality":"BELIEVES","polarity":"POS","nesting_depth":0}])JSON";
+
+constexpr const char* kEpoch = "2026-01-01T00:00:00Z";
+
+// remember_event 的基底参数:key 与 text 另传(key 的前缀由 remember_event 自己加,
+// payload 不在这里填),时刻由 seq 从 epoch 推出,created_at_iso8601 也不在这里填。
+RememberParams event_params() {
+    RememberParams p;
+    p.tenant_id     = "default";
+    p.holder_id     = "cog-self";
+    p.interlocutor  = "bob";
+    p.adapter_name  = "facade";
+    p.source_prefix = "mem-";
+    return p;
+}
+
+int row_count(persistence::Connection& conn, const char* sql) {
+    persistence::Stmt q(conn.raw(), sql);
+    EXPECT_TRUE(q.step_row());
+    return sqlite3_column_int(q.raw(), 0);
+}
+
+std::string event_state(persistence::Connection& conn, std::string_view key) {
+    persistence::Stmt q(conn.raw(),
+                        "SELECT state FROM events WHERE tenant_id='default' AND key=?1");
+    q.bind(key);
+    if (!q.step_row()) return {};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(q.raw(), 0));
+    return text != nullptr ? std::string(text) : std::string();
+}
+
+// 抽取总是失败的适配器:用来证明某条路径一次 LLM 都没调(调了就会 extraction_failed)。
+class AlwaysFailingLLMAdapter final : public extractor::LLMAdapter {
+public:
+    extractor::LLMResponse extract(std::string_view, std::string_view) override {
+        return {.raw_xml = "", .ok = false, .error = "forced extraction failure"};
+    }
+};
 
 }  // namespace
 
@@ -91,6 +136,109 @@ TEST(MemoryEvents, PendingEventsEmptyForUnknownTenant) {
     insert_event(conn, "default", "a", 0, "pending");
 
     EXPECT_TRUE(pending_events(conn, "none").empty());
+}
+
+// ── 写侧 remember_event ──
+
+TEST(MemoryEvents, RememberEventNewKeyCommitsAndAssignsSeq) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+
+    const auto res = remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                    "r1/turn#3", "bob:hi", kEpoch);
+    EXPECT_EQ(res.outcome, "accepted");
+    EXPECT_FALSE(res.extraction_failed);
+    EXPECT_FALSE(res.statement_ids.empty());
+
+    auto& conn = adapter->connection();
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "committed");
+    EXPECT_EQ(next_seq(conn, "default"), 1);        // 第一条事件的 seq 是 0
+    EXPECT_TRUE(pending_events(conn, "default").empty());
+    // key 作为前缀写进 Starling 的文本(设计源 4.3),前缀在 Starling 侧加。
+    persistence::Stmt q(conn.raw(), "SELECT payload_inline, created_at FROM engrams");
+    ASSERT_TRUE(q.step_row());
+    const auto* blob = static_cast<const char*>(sqlite3_column_blob(q.raw(), 0));
+    const std::string payload(blob, static_cast<std::size_t>(sqlite3_column_bytes(q.raw(), 0)));
+    EXPECT_EQ(payload, "[r1/turn#3] bob:hi");
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(sqlite3_column_text(q.raw(), 1))),
+              kEpoch);                              // seq=0 → epoch + 0 秒
+}
+
+TEST(MemoryEvents, RememberEventSameKeySameTextReturnsStoredIdsWithoutExtraction) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    const auto first = remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                      "r1/turn#3", "bob:hi", kEpoch);
+    ASSERT_FALSE(first.statement_ids.empty());
+    const int before = row_count(adapter->connection(), "SELECT COUNT(*) FROM statements");
+
+    // 行已 committed:一次 LLM 都不该调,所以换上永远失败的适配器也必须照常返回。
+    AlwaysFailingLLMAdapter failing;
+    const auto again = remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                                      "r1/turn#3", "bob:hi", kEpoch);
+    EXPECT_EQ(again.outcome, "idempotent");
+    EXPECT_FALSE(again.extraction_failed);
+    EXPECT_EQ(again.statement_ids, first.statement_ids);
+    EXPECT_EQ(again.engram_ref, first.engram_ref);
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM statements"), before);
+    EXPECT_EQ(next_seq(adapter->connection(), "default"), 1);   // 不另分配 seq
+}
+
+TEST(MemoryEvents, RememberEventSameKeyDifferentTextThrowsEventConflict) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                             "r1/turn#3", "bob:hi", kEpoch).outcome, "accepted");
+
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:bye", kEpoch),
+                 EventConflict);
+    // abandoned 行同样冲突(调用方已放弃这个 key,不能静默接着写)。
+    insert_event(adapter->connection(), "default", "r1/turn#4", 1, "abandoned");
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#4", "text-r1/turn#4", kEpoch),
+                 EventConflict);
+}
+
+TEST(MemoryEvents, RememberEventCompletesFromEngramWithoutReextracting) {
+    auto adapter = make_adapter();
+    // ① 抽取失败 → 行留 pending、无语句。
+    AlwaysFailingLLMAdapter failing;
+    const auto failed = remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                                       "r1/turn#3", "bob:hi", kEpoch);
+    EXPECT_TRUE(failed.extraction_failed);
+    EXPECT_FALSE(failed.failure_category.empty());
+    ASSERT_EQ(pending_events(adapter->connection(), "default").size(), 1U);
+    EXPECT_EQ(pending_events(adapter->connection(), "default")[0].failure_category,
+              failed.failure_category);
+
+    // ② 用裸 remember_all 把同一 payload 的语句落库(模拟"②成了、③没写成")。
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto landed_params = event_params();
+    const std::string payload = "[r1/turn#3] bob:hi";
+    landed_params.payload.assign(payload.begin(), payload.end());
+    landed_params.created_at_iso8601 = kEpoch;
+    const auto landed = remember_all(*adapter, llm, landed_params, RememberPrompts{});
+    ASSERT_FALSE(landed.statement_ids.empty());
+    const int before = row_count(adapter->connection(), "SELECT COUNT(*) FROM statements");
+
+    // ③ 补齐:按 engram 的 content_hash 找到语句,不再抽取一次(故用失败适配器)。
+    const auto completed = remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                                          "r1/turn#3", "bob:hi", kEpoch);
+    EXPECT_FALSE(completed.extraction_failed);
+    auto got = completed.statement_ids;
+    auto want = landed.statement_ids;
+    std::sort(got.begin(), got.end());
+    std::sort(want.begin(), want.end());
+    EXPECT_EQ(got, want);
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM statements"), before);
+    EXPECT_EQ(event_state(adapter->connection(), "r1/turn#3"), "committed");
+    EXPECT_TRUE(pending_events(adapter->connection(), "default").empty());
 }
 
 }  // namespace starling::memoryops

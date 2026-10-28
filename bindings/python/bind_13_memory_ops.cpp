@@ -694,6 +694,58 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return out;
           },
           py::arg("connection"), py::arg("tenant"));
+
+    // 同一个 key 要写另一段文本,或该 key 已 abandoned → starling.EventConflict。
+    py::register_exception<starling::memoryops::EventConflict>(
+        m, "EventConflict", PyExc_RuntimeError);
+
+    // events 表的写侧(迁移 0038):按 key 三段写入。第 2 段含 LLM 抽取(真模型几十秒
+    // 起),故整段释放 GIL——释放期间只执行纯 C++,不触碰 Python 对象。
+    m.def("memory_remember_event",
+          [](starling::persistence::SqliteAdapter& adapter,
+             starling::extractor::LLMAdapter& llm,
+             const std::string& belief_prompt,
+             const std::string& episodic_prompt,
+             const std::string& general_fact_prompt,
+             const std::string& tenant_id, const std::string& holder_id,
+             const std::string& interlocutor, const std::string& adapter_name,
+             const std::string& source_prefix, const std::string& key,
+             const std::string& text, const std::string& epoch_iso,
+             const starling::extractor::ValidationPolicy& policy) {
+              starling::memoryops::RememberParams base;
+              base.tenant_id     = tenant_id;
+              base.holder_id     = holder_id;
+              base.interlocutor  = interlocutor;
+              base.adapter_name  = adapter_name;
+              base.source_prefix = source_prefix;
+              // payload 与 created_at_iso8601 由 remember_event 从 key+text 与
+              // epoch+seq 推出,这里不填。
+              const starling::memoryops::RememberPrompts prompts{
+                  belief_prompt, episodic_prompt, general_fact_prompt};
+              starling::memoryops::RememberOutcome result;
+              {
+                  py::gil_scoped_release release;
+                  result = starling::memoryops::remember_event(
+                      adapter, llm, base, prompts, key, text, epoch_iso, policy);
+              }
+              return py::dict("engram_ref"_a = result.engram_ref,
+                              "statement_ids"_a = result.statement_ids,
+                              "outcome"_a = result.outcome,
+                              "extraction_failed"_a = result.extraction_failed,
+                              "failure_category"_a = result.failure_category,
+                              "failure_detail"_a = result.failure_detail,
+                              "catalog_version"_a = result.catalog_version,
+                              "source_preserved"_a = result.source_preserved,
+                              "structured_claims_persisted"_a = result.structured_claims_persisted,
+                              "accepted_by_predicate"_a = result.accepted_by_predicate,
+                              "rejected_by_predicate"_a = result.rejected_by_predicate);
+          },
+          py::arg("adapter"), py::arg("llm"), py::arg("belief_prompt"),
+          py::arg("episodic_prompt"), py::arg("general_fact_prompt"),
+          py::arg("tenant_id"), py::arg("holder_id"), py::arg("interlocutor"),
+          py::arg("adapter_name"), py::arg("source_prefix"), py::arg("key"),
+          py::arg("text"), py::arg("epoch_iso"),
+          py::arg("policy") = starling::extractor::ValidationPolicy{});
 }
 
 }  // namespace starling::bindings

@@ -442,6 +442,27 @@ class MemoryCore:
         `memoryops::pending_events`,这里原样返回 dict 列表,由门面包成 PendingEvent。"""
         return _core.memory_pending_events(self.conn, self.tenant)
 
+    def remember_event(self, key: str, text: str, *, interlocutor=None,
+                       epoch: str = "2026-01-01T00:00:00Z") -> dict:
+        """按调用方给的稳定 key 记一次写入,崩溃安全、可重放。三段状态机在 C++
+        `memoryops::remember_event`,这里只做 fail-fast 与绑定转发。
+
+        `epoch` 是时钟原点:engram 的 created_at 是 epoch + 事件行 seq 秒。时刻必须
+        由 seq 推出(seq 在第 1 段才分配,调用方事先拿不到),所以这里不收 `now`。"""
+        if self.llm is None:   # 与 remember 一致:第 1 段会写 pending 行,故在写前查
+            raise LLMNotConfigured(
+                "remember_event requires an llm adapter "
+                "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
+        return _core.memory_remember_event(
+            self.rt.adapter, self.llm,
+            self._extraction.belief_prompt,
+            self._extraction.episodic_prompt,
+            self._extraction.general_fact_prompt,
+            tenant_id=self.tenant, holder_id=self.agent,
+            interlocutor=interlocutor or "", adapter_name=self.adapter_name,
+            source_prefix=self.source_prefix, key=key, text=text,
+            epoch_iso=epoch, policy=_build_policy(self._extraction))
+
     def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
         forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""
