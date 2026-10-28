@@ -204,7 +204,7 @@ class Memory:
 
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic", holder: str | None = None,
-               strict: bool = False) -> list:
+               strict: bool = False, include_volatile: bool = False) -> list:
         """Retrieve memories by semantic similarity or pattern completion.
 
         mode="semantic"    — vector cosine search via SemanticRetriever.vector_recall
@@ -215,9 +215,15 @@ class Memory:
         strict: raise RecallDegradedError when the query embedding failed
         (semantic mode) instead of silently returning lexical-only results.
         strict=True with mode="completion" raises ValueError.
+        include_volatile: also return statements still in consolidation_state
+        'volatile' (embedded via embed_pending but not yet promoted by tick),
+        at the cost of possible near-duplicates. Widens only the consolidation
+        state; the review guard and holder/perspective predicates are unchanged.
+        include_volatile=True with mode="completion" raises ValueError.
         """
         return self._core.recall(query, perspective=perspective, k=k, mode=mode,
-                                 holder=holder, strict=strict)
+                                 holder=holder, strict=strict,
+                                 include_volatile=include_volatile)
 
     def query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
               perspective: str | None = None, target: str | None = None,

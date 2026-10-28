@@ -254,7 +254,7 @@ class MemoryCore:
 
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic", holder: str | None = None,
-               strict: bool = False) -> list:
+               strict: bool = False, include_volatile: bool = False) -> list:
         """mode="semantic" — vector cosine via SemanticRetriever.vector_recall;
         mode="completion" — associative spreading via PatternCompletor.
 
@@ -265,11 +265,19 @@ class MemoryCore:
 
         strict=True: 语义模式下查询词嵌入失败(SemanticResult.degraded)时抛
         RecallDegradedError,而不是静默返回只剩词法的结果。completion 模式没有
-        degraded 信号,strict=True 直接抛 ValueError。"""
+        degraded 信号,strict=True 直接抛 ValueError。
+
+        include_volatile=True:语义召回额外接受 consolidation_state='volatile'
+        的语句(只 embed_pending、未经 tick 回放),可能带来近重复。只放宽巩固
+        状态,review 守卫与 holder/视角谓词不变;放宽在 C++ 里做。completion
+        模式不支持,直接抛 ValueError。"""
         if strict and mode == "completion":
             raise ValueError(
                 "strict=True is not supported with mode='completion': "
                 "pattern completion has no degraded signal")
+        if include_volatile and mode == "completion":
+            raise ValueError(
+                "include_volatile=True is not supported with mode='completion'")
         holder_id = holder or self.agent
         # holder_perspective is stored lowercase (extractor normalizes the enum);
         # normalize the query perspective so a caller passing "FIRST_PERSON" still
@@ -282,7 +290,8 @@ class MemoryCore:
             return [{"row": s.row, "score": s.activation} for s in res.rows]
         res = self.semantic.vector_recall(_core.SemanticRetrieverParams(
             tenant_id=self.tenant, holder_id=holder_id,
-            holder_perspective=perspective, query_text=query, k=k))
+            holder_perspective=perspective, query_text=query, k=k,
+            include_volatile=include_volatile))
         if strict and res.degraded:
             raise RecallDegradedError("query embedding failed")
         return [{"row": s.row, "score": s.score} for s in res.rows]

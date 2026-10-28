@@ -15,6 +15,9 @@ struct SemanticRetrieverParams {
     std::string query_text;
     int k = 10;
     std::string trace_id, query_id;
+    // true:候选与二次校验都额外接受 consolidation_state='volatile'(只嵌入、
+    // 未经 tick 回放)。只放宽巩固状态;review 守卫与 holder/视角谓词不变。
+    bool include_volatile = false;
 };
 struct SemanticScored { StatementRow row; double score; };
 struct SemanticResult {

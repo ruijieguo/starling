@@ -60,3 +60,28 @@ def test_strict_recall_returns_hits_when_embedding_is_healthy(tmp_path):
     mem.tick("2026-01-01T00:00:01Z")
     hits = mem.recall("Bob owns the auth module", strict=True)
     assert len(hits) == 1 and hits[0]["row"].holder_id == "alice"
+
+
+def test_recall_sees_volatile_after_embed_only(tmp_path):
+    mem = _mem(tmp_path)
+    mem.remember("Bob owns the auth module", now="2026-01-01T00:00:00Z")
+    mem.embed_pending("2026-01-01T00:00:01Z")
+    assert mem.recall("Bob owns the auth module") == []          # 旧行为不变
+    hits = mem.recall("Bob owns the auth module", include_volatile=True)
+    assert len(hits) >= 1 and hits[0]["row"].consolidation_state == "volatile"
+
+
+def test_include_volatile_keeps_review_guard(tmp_path):
+    import sqlite3
+    mem = _mem(tmp_path)
+    mem.remember("Bob owns the auth module", now="2026-01-01T00:00:00Z")
+    mem.embed_pending("2026-01-01T00:00:01Z")
+    with sqlite3.connect(str(tmp_path / "m.db")) as c:
+        c.execute("UPDATE statements SET review_status='pending_review'")
+    assert mem.recall("Bob owns the auth module", include_volatile=True) == []
+
+
+def test_include_volatile_rejects_completion_mode(tmp_path):
+    # completion 模式的种子召回不走这道放宽;静默忽略会让调用方以为放宽生效了。
+    with pytest.raises(ValueError):
+        _mem(tmp_path).recall("x", mode="completion", include_volatile=True)
