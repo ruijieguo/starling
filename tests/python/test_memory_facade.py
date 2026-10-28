@@ -117,3 +117,12 @@ def test_recall_and_tick(tmp_path):
     hits = mem.recall("bob owns auth", mode="semantic", k=5)
     assert isinstance(hits, list)
     mem.close()
+
+
+def test_observed_at_follows_now_not_wall_clock(tmp_path):
+    import sqlite3
+    llm = starling.make_stub_llm(default_response=CANNED_JSON)
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=llm)
+    mem.remember("Bob owns the auth module", now="2026-01-01T00:00:07Z")
+    with sqlite3.connect(str(tmp_path / "m.db")) as c:
+        assert {r[0] for r in c.execute("SELECT observed_at FROM statements")} == {"2026-01-01T00:00:07Z"}
