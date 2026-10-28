@@ -216,7 +216,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 **调用点**：按会话的钩子在摄入线程上调用，位置在 transcript 写进来源通道（`retain_source_turns`）之前、代数检查之后，**不持 `engine._lock`**（钩子取的 `manager.lock` 在锁序上排在它之前）。它只在左脑 lane 开启时才被调用，lane 关闭时没有会话，也就没有按会话的快照，这是设计如此。按时间的触发由 lifespan 起的调度线程 `starling-auto-snapshot` 负责：启动后先等 60 秒，此后每 10 分钟检查一次，关停时停掉。
 
-**后台线程只用非阻塞方式取 `manager.lock`**。取不到（切换、回滚、手动快照正持着它）时：按时间跳过这一轮；按会话把摄入 job 原样放回 spool，**不计重试次数**（这个 job 还什么都没写），下一轮再来。这样切换和回滚不会被后台线程拖成 `ingest_busy`。
+**后台线程只用非阻塞方式取 `manager.lock`**。取不到（切换、回滚、手动快照正持着它）时：按时间跳过这一轮；按会话把摄入 job 原样放回 spool，**不计重试次数**（这个 job 还什么都没写），下一轮再来。这样切换和回滚不会被后台线程拖成 `ingest_busy`。活动世界按会话关着时（默认世界的默认配置），钩子先不加锁读一次注册表（`worlds.json` 原子替换）就直接返回，不取锁，摄入也就不会因无关的管理操作被推迟；按会话开着或这次读失败，才走上面的非阻塞取锁，在锁内按最新配置重新判（W4 终修 M-3）。
 
 **失败照常摄入**（用户裁定）：C++ 错误（如 `insufficient_disk`）、注册表存不下来（新快照文件随即删掉）都只计数、记 warning，钩子照常返回，摄入继续。失败计数、最近一次错误码及其时间在 `GET /api/worlds` 顶层的 `auto_snapshot_status: {failures, last_error, last_error_at}`，`/api/ingest_status` 另带 `auto_snapshot_failures` 与 `auto_snapshot_last_error`。计数从进程启动算起，busy 与各种跳过都不算失败。
 

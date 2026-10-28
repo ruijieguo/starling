@@ -3321,6 +3321,19 @@ def _hold_manager_lock(mgr):
     return holder, release
 
 
+def _manager_lock_is_free(mgr) -> bool:
+    """T2 review M-5：从另一个线程非阻塞取一次 manager.lock，取到就放开。RLock 可重入，在拿过锁的
+    同一线程上反复取看不出泄漏，所以必须换线程看。"""
+    def _probe() -> bool:
+        if mgr.lock.acquire(blocking=False):
+            mgr.lock.release()
+            return True
+        return False
+    prober, result = _call_in_thread(_probe)
+    assert not prober.is_alive()
+    return result.get("value") is True
+
+
 def _call_in_thread(fn, *args):
     """在独立线程里调 fn，最多等 5 秒。返回 (线程, 结果 dict)：结果里是 value 或 error。"""
     result: dict = {}
@@ -3591,6 +3604,7 @@ def test_auto_snapshot_registry_save_failure_discards_file_and_counts(tmp_path, 
     status = mgr.auto_snapshot_status()
     assert status == {"failures": 1, "last_error": "internal_error",
                       "last_error_at": "2026-10-28T00:00:00Z"}
+    assert _manager_lock_is_free(mgr), "failed 之后 manager.lock 必须已放开"
 
 
 def test_auto_snapshot_cpp_failure_is_counted_not_raised(tmp_path, monkeypatch, caplog):
@@ -3609,6 +3623,7 @@ def test_auto_snapshot_cpp_failure_is_counted_not_raised(tmp_path, monkeypatch, 
                                           "last_error_at": "2026-10-28T01:00:00Z"}
     assert "insufficient_disk" in caplog.text
     assert _auto_snaps(mgr) == []
+    assert _manager_lock_is_free(mgr), "failed 之后 manager.lock 必须已放开"
 
 
 def test_auto_snapshot_zvec_is_a_skip_not_a_failure(tmp_path):
@@ -3635,6 +3650,7 @@ def test_auto_snapshot_skips_when_live_db_is_not_the_active_world(tmp_path, move
     assert mgr._auto_snapshot("interval") == "skipped:world_moved"
     assert _auto_snaps(mgr) == []
     assert mgr.auto_snapshot_status()["failures"] == 0
+    assert _manager_lock_is_free(mgr), "world_moved 的提前 return 必须放开 manager.lock"
 
 
 def test_auto_snapshot_is_busy_without_waiting_when_the_lock_is_held(tmp_path):
@@ -3653,9 +3669,12 @@ def test_auto_snapshot_is_busy_without_waiting_when_the_lock_is_held(tmp_path):
     finally:
         release.set()
         holder.join(10)
+    assert not holder.is_alive()
+    assert _manager_lock_is_free(mgr), "busy 之后 manager.lock 必须已放开"
     assert _auto_snaps(mgr) == []
     assert mgr.auto_snapshot_status()["failures"] == 0          # busy 不是失败
     assert mgr._auto_snapshot("interval").startswith("taken:")  # 锁放开后照常
+    assert _manager_lock_is_free(mgr)
 
 
 # ── 会话钩子 ──
@@ -3703,6 +3722,90 @@ def test_session_hook_failure_returns_normally(tmp_path, monkeypatch):
     assert mgr.auto_snapshot_status()["failures"] == 1
 
 
+@pytest.mark.parametrize("on_session", [False, True], ids=["on_session_off", "on_session_on"])
+def test_session_hook_defers_only_when_the_active_world_snapshots_per_session(tmp_path,
+                                                                             on_session):
+    """T2 review M-3：按会话关着（默认世界的默认配置）时，钩子取锁之前就返回：manager.lock 被别的线程占着
+    （手动快照、删除、清理归档、非活动世界的回滚、调度线程自己的快照）也不推迟摄入，不等锁，不拍。
+    开着时照旧：取不到锁就抛 SessionSnapshotDeferred。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    mgr.set_auto_snapshot("default", on_session, 24)
+    hook = mgr._make_session_hook()
+    holder, release = _hold_manager_lock(mgr)
+    try:
+        hooked, result = _call_in_thread(hook, "s-1")
+        assert not hooked.is_alive(), "会话钩子在 manager.lock 上等了"
+    finally:
+        release.set()
+        holder.join(10)
+    assert not holder.is_alive()
+    if on_session:
+        assert isinstance(result.get("error"), SessionSnapshotDeferred), result
+    else:
+        assert result == {"value": None}, result
+    assert _auto_snaps(mgr) == []
+    assert mgr.auto_snapshot_status()["failures"] == 0
+
+
+def test_session_hook_falls_through_to_the_locked_path_when_the_lock_free_read_fails(
+        tmp_path, monkeypatch):
+    """M-3：锁外那次读注册表失败（registry_corrupt、瞬时读错）不算失败，也不当作关着跳过，而是走持锁
+    路径：锁被占就照样推迟；锁空着就在锁内重新读、照常拍。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    mgr.set_auto_snapshot("default", True, 0)
+    real_load = mgr.load
+    failing = {"next": 0}
+
+    def _load_failing_next():
+        # 钩子先锁外读一次（提前退出），取到锁之后再读一次：只让前一次失败。
+        if failing["next"] > 0:
+            failing["next"] -= 1
+            raise _core.WorldStoreError("registry_corrupt: transient read error")
+        return real_load()
+    monkeypatch.setattr(mgr, "load", _load_failing_next)
+    hook = mgr._make_session_hook()
+
+    failing["next"] = 1
+    holder, release = _hold_manager_lock(mgr)
+    try:
+        hooked, result = _call_in_thread(hook, "s-1")
+        assert not hooked.is_alive(), "会话钩子在 manager.lock 上等了"
+    finally:
+        release.set()
+        holder.join(10)
+    assert not holder.is_alive()
+    assert failing["next"] == 0, "锁外那次读没有发生"
+    assert isinstance(result.get("error"), SessionSnapshotDeferred), result     # 没跳过：照样推迟
+
+    failing["next"] = 1
+    assert hook("s-1") is None
+    assert failing["next"] == 0
+    assert [s["session_id"] for s in _auto_snaps(mgr)] == ["s-1"]                # 锁内重新读、照常拍
+    assert mgr.auto_snapshot_status()["failures"] == 0                            # 锁外读失败不计
+
+
+def test_session_hook_swallows_a_failure_in_recording_the_failure(tmp_path, monkeypatch, caplog):
+    """T2 review M-2：记失败本身也出错（例如日志 handler 抛异常）时，钩子的最外层兜底记 exception、照常
+    返回，坏掉的钩子不会变成摄入 job 的失败；manager.lock 照样放开。只有 SessionSnapshotDeferred 往外抛。"""
+    mgr, _state = _auto_manager(tmp_path, _Clock())
+    mgr.set_auto_snapshot("default", True, 0)
+
+    def _no_space(*_args, **_kwargs):
+        raise _core.WorldStoreError("insufficient_disk: need 3x live bytes")
+
+    def _broken_record(*_args, **_kwargs):
+        raise RuntimeError("logging handler exploded")
+    monkeypatch.setattr(_core, "world_take_auto_snapshot", _no_space)
+    monkeypatch.setattr(mgr, "_record_auto_failure", _broken_record)
+    with caplog.at_level("ERROR", logger="starling.dashboard.world_manager"):
+        assert mgr._make_session_hook()("s-1") is None
+    assert "session auto snapshot hook failed" in caplog.text
+    assert "logging handler exploded" in caplog.text
+    assert _manager_lock_is_free(mgr), "兜底之前 _auto_snapshot 的 finally 必须已放开 manager.lock"
+
+
 def test_start_workers_attaches_the_session_hook_before_threads_start(tmp_path, monkeypatch):
     mgr, state = _auto_manager(tmp_path, _Clock())
     engine = state.engine
@@ -3747,6 +3850,10 @@ def test_scheduler_rounds_run_on_their_own_thread(tmp_path, monkeypatch):
         snaps = _auto_snaps(mgr)
         assert [(s["reason"], s["created_at"]) for s in snaps] == [
             ("interval", "2026-10-29T01:00:00Z"), ("interval", "2026-10-28T00:00:00Z")]
+        # M-5：taken / skipped 轮次之后锁已放开。要趁调度线程还活着查（它此刻停在下一轮的闸门上）：
+        # 线程退出之后，探测线程可能复用它的线程 ident，RLock 会把漏放的锁当成探测线程重入，照样取到。
+        assert started[0].is_alive()
+        assert _manager_lock_is_free(mgr), "调度线程的 taken / skipped 轮次之后 manager.lock 必须已放开"
     finally:
         rounds.close()
         mgr.stop_scheduler()
@@ -3806,6 +3913,99 @@ def test_disable_workers_also_stops_the_scheduler(tmp_path):
     mgr.disable_workers()
     assert mgr.workers_enabled is False
     assert not started[0].is_alive()
+
+
+class _LockWithEnterHook:
+    """包住一把 Lock：with 进入、拿到锁之后先调 on_enter()，用来在「已持锁」这一刻确定性地插一步。"""
+
+    def __init__(self, inner, on_enter) -> None:
+        self._inner, self._on_enter = inner, on_enter
+
+    def __enter__(self):
+        self._inner.acquire()
+        try:
+            self._on_enter()
+        except BaseException:
+            self._inner.release()
+            raise
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._inner.release()
+
+
+class _StopThatAlsoWakes:
+    """调度线程停止事件的替身（只给 stop_scheduler 用）：set() 先 set 真事件，再叫醒在闸门上等的那一轮。
+    线程自己持有的仍是真事件，循环的 stop.wait 不变。"""
+
+    def __init__(self, real: threading.Event, wake: threading.Event) -> None:
+        self._real, self._wake = real, wake
+
+    def set(self) -> None:
+        self._real.set()
+        self._wake.set()
+
+
+def test_disable_workers_stops_the_scheduler_before_taking_the_locks(tmp_path, monkeypatch):
+    """T2 review M-1：关停一开始就停调度线程，不留「锁已放开、停止事件还没 set」的窗口。
+
+    调度线程的每一轮先停在闸门上（poll 将要到期），闸门由测试放行（fire）或由停止事件叫醒。关停拿到
+    _build_lock（manager.lock 已在手）那一刻：调度线程若还活着（旧顺序：先取锁、后停线程），就在此刻
+    放行，也就是旧顺序窗口里 poll 恰好到期，让那一轮真的开起来。新顺序下此刻线程已退出，什么都开
+    不起来。断言：关停开始之后没有开过一轮，取锁时线程已退出，返回后线程不在、锁已放开。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    mgr.workers_enabled = True
+    real_round = mgr._auto_snapshot
+    parked, fire, round_began = threading.Event(), threading.Event(), threading.Event()
+    real_stop: list = []
+    began: list = []
+
+    def _gated_round(kind, session_id="", **kwargs):
+        parked.set()
+        assert fire.wait(30)
+        if real_stop[0].is_set():
+            return "stopped"                 # 停止事件叫醒的：这一轮不开
+        began.append(kind)
+        round_began.set()
+        return real_round(kind, session_id, **kwargs)
+    monkeypatch.setattr(mgr, "_auto_snapshot", _gated_round)
+
+    before = set(_scheduler_threads())
+    mgr.start_scheduler(poll_s=0.01, first_delay_s=0)
+    started = [t for t in _scheduler_threads() if t not in before]
+    assert len(started) == 1
+    thread = started[0]
+    real_stop.append(mgr._scheduler_stop)
+    mgr._scheduler_stop = _StopThatAlsoWakes(real_stop[0], fire)
+    alive_at_locks: list = []
+
+    def _on_locks_taken():
+        alive = thread.is_alive()
+        alive_at_locks.append(alive)
+        if alive:
+            fire.set()                       # 旧顺序的窗口：poll 恰在此刻到期
+            assert round_began.wait(10)
+
+    real_build_lock = mgr._build_lock
+    try:
+        assert parked.wait(10), "调度线程没走到将要开的那一轮"
+        mgr._build_lock = _LockWithEnterHook(real_build_lock, _on_locks_taken)
+        mgr.disable_workers()
+        assert alive_at_locks == [False], "disable_workers 取锁时调度线程还活着"
+        assert began == [], "关停开始之后调度线程又开了一轮"
+        assert _auto_snaps(mgr) == []
+        assert not thread.is_alive()
+        assert mgr.workers_enabled is False
+        assert mgr._scheduler is None and mgr._scheduler_stop is None
+        assert _manager_lock_is_free(mgr)
+    finally:
+        mgr._build_lock = real_build_lock
+        real_stop[0].set()
+        fire.set()
+        mgr.stop_scheduler()
+        thread.join(10)
+    assert not thread.is_alive()
 
 
 # ───────────────────────── W4 T3：摄入调用点、路由、lifespan 接线 ─────────────────────────
@@ -3945,6 +4145,27 @@ def test_ingest_defers_the_job_without_an_attempt_while_the_manager_lock_is_held
     assert [s["session_id"] for s in snaps] == ["s-1"]
     assert _session_units(snaps[0]["path"], "s-1") == 0
     assert _session_units(eng._db_path, "s-1") == 2 and _count(eng._db_path) >= 1
+
+
+def test_ingest_is_not_deferred_by_the_manager_lock_when_on_session_is_off(tmp_path):
+    """T2 review M-3（端到端）：默认世界默认按会话关。manager.lock 被无关的管理操作占着时，摄入 job 照常
+    写完，不被放回 spool，也不拍快照。"""
+    _client, _app, eng, mgr = _lane_app(tmp_path)
+    mgr.set_auto_snapshot("default", False, 24)
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    holder, release = _hold_manager_lock(mgr)
+    try:
+        drainer, result = _call_in_thread(eng._ingest_drain_once)
+        assert not drainer.is_alive(), "摄入线程在 manager.lock 上等了"
+        assert result == {"value": "done"}, result
+    finally:
+        release.set()
+        holder.join(10)
+    assert not holder.is_alive()
+    assert (eng._ingest_spool / "done" / "job-1.json").exists()
+    assert _session_units(eng._db_path, "s-1") == 2
+    assert _auto_snaps(mgr) == []
+    assert mgr.auto_snapshot_status()["failures"] == 0
 
 
 def test_ingest_continues_when_the_session_snapshot_fails(tmp_path, monkeypatch):

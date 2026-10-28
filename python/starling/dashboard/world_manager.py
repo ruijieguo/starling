@@ -52,8 +52,10 @@
 记失败。后台调用方（摄入线程上的会话钩子、调度线程 starling-auto-snapshot）只用非阻塞方式取
 manager.lock，取不到就是 "busy"，从不等：切换、回滚持着 manager.lock 停摄入线程、等租约，摄入线程
 若在这里等锁，quiesce 就要等满 5 秒报 ingest_busy。摄入线程调钩子时不持 engine._lock（T3 的调用点
-保证），所以不会出现 engine._lock → manager.lock 的反向边。失败（C++ 错误、存注册表失败）只计数、
-记日志，不往外抛（用户裁定：照常摄入）。
+保证），所以不会出现 engine._lock → manager.lock 的反向边。会话钩子取锁之前先不加锁读一次注册表
+（worlds.json 原子替换），活动世界按会话关着就直接返回，不取锁，摄入不会因无关的管理操作被推迟；
+开着才走持锁路径，在锁内重新判。失败（C++ 错误、存注册表失败）只计数、记日志，不往外抛（用户裁定：
+照常摄入）；钩子另有最外层兜底，除 SessionSnapshotDeferred 外的任何异常都只记日志。
 """
 from __future__ import annotations
 
@@ -301,15 +303,17 @@ class WorldManager:
         self._workers_lost = False
 
     def disable_workers(self) -> None:
-        """lifespan 关停段调用：此后任何路径都不再起后台线程。按锁序先取 manager.lock（等进行中
-        的切换、回滚收尾），再取 _build_lock（等进行中的惰性构建连同补起线程收尾），然后关
-        workers_enabled。返回之前写回的引擎都在 app.state.engine 上，由关停段停掉它的线程；
-        返回之后的惰性构建看到的是 False，不再起线程。最后在锁外停掉按时间的调度线程（W4）。"""
+        """lifespan 关停段调用：此后任何路径都不再起后台线程。先在任何锁之外停掉按时间的调度
+        线程（W4），再按锁序取 manager.lock（等进行中的切换、回滚收尾）、_build_lock（等进行中的
+        惰性构建连同补起线程收尾），然后关 workers_enabled。返回之前写回的引擎都在 app.state.engine
+        上，由关停段停掉它的线程；返回之后的惰性构建看到的是 False，不再起线程。"""
+        # 调度线程先停：关停一开始就不再开新一轮。放在锁块之后的话，它的 poll 若恰好在锁放开之后、
+        # stop 之前到期，就会再拍一份，join 要等这一份拍完（库大时会活过关停）。调度线程不经
+        # _start_workers，workers_enabled 管不到它，所以不必等开关关掉再停。join 在锁外：调度线程
+        # 只做非阻塞取锁，从不等我们，最多等它进行中的那一份拍完，之后它看到停止事件就退出。
+        self.stop_scheduler()
         with self.lock, self._build_lock:
             self.workers_enabled = False
-        # 锁外：调度线程只做非阻塞取锁，不会等我们；但它可能正持着 manager.lock 拍快照，在锁内
-        # join 就是等自己。放在 workers_enabled 关掉之后：此后不再有新引擎挂上线程。
-        self.stop_scheduler()
 
     def _return_lease(self) -> None:
         with self._gate:
@@ -605,9 +609,38 @@ class WorldManager:
         def hook(session_id: str) -> None:
             # 摄入线程上、写入之前、不持 engine._lock 时调用。busy → 放回 spool（T3 的
             # _ingest_drain_once 接住）；拍了、跳过、失败都照常返回，摄入继续。
-            if self._auto_snapshot("session", session_id) == "busy":
-                raise SessionSnapshotDeferred(session_id)
+            # 最外层兜底：只有 SessionSnapshotDeferred 往外抛。其余异常（记失败本身出错、日志 handler
+            # 抛异常之类的 bug）记 exception 后照常返回，钩子坏了不能变成摄入 job 的失败（用户裁定：
+            # 快照失败照常摄入）。
+            try:
+                if self._session_trigger_off():
+                    return
+                if self._auto_snapshot("session", session_id) == "busy":
+                    raise SessionSnapshotDeferred(session_id)
+            except SessionSnapshotDeferred:
+                raise
+            except Exception:  # noqa: BLE001 — 后台路径：只记录，不外抛
+                try:
+                    logger.exception("session auto snapshot hook failed (%s)", session_id)
+                except Exception:  # noqa: BLE001 — 日志本身也坏了：照样不能连带摄入
+                    pass
         return hook
+
+    def _session_trigger_off(self) -> bool:
+        """钩子的提前退出：不取 manager.lock 读一次注册表，活动世界的 auto_snapshot.on_session 为
+        False 时返回 True，钩子直接返回，不取锁也不推迟摄入。默认世界只按时间，没有这一步的话，它的
+        每个摄入 job 都会因为无关的管理操作（手动快照、删除、清理归档、非活动世界的回滚、调度线程自己
+        的按时间快照）持着 manager.lock 而被放回 spool。
+
+        锁外读是安全的：worlds.json 是 tmp + rename 原子替换的，读到的不是旧文件就是新文件。这里只
+        决定「肯定不用拍」；读到开着就走持锁路径，在锁内重新 load 再判（配置在这之间被关掉时 C++ 回
+        disabled）。读失败（registry_corrupt、瞬时读错）返回 False，也走持锁路径：不算失败、不跳过，
+        由持锁路径去拍或记失败。"""
+        try:
+            reg = self.load()
+            return not reg["worlds"][reg["active"]]["auto_snapshot"]["on_session"]
+        except Exception:  # noqa: BLE001 — 提前退出读不到不是失败，交给持锁路径
+            return False
 
     def _auto_snapshot(self, trigger_kind: str, session_id: str = "", *,
                        blocking: bool = False) -> str:
