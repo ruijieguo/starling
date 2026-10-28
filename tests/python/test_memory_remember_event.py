@@ -171,6 +171,31 @@ def test_abandon_pending_then_same_key_conflicts(tmp_path):
         mem.remember_event(KEY, "bob:bye", interlocutor="bob")
 
 
+def test_conflict_on_abandoned_key_leaves_the_row_abandoned(tmp_path):
+    """放弃是终局:之后的 remember_event 抛 EventConflict,且一个字节都不许改回去。
+
+    这里测的是"两次调用之间放弃"这一半:第一次写抽取失败 → 行留 pending,放弃,第二次
+    写(LLM 正常)在**第 1 段**就冲突。真正的"第 2 段在途中被放弃"竞态在 Python 里表达
+    不出来(FakeLLMAdapter 没有响应回调,绑定也没给 LLMAdapter 装 trampoline,Python 子类
+    覆盖不了 extract),由 tests/cpp/test_memory_events.cpp 的
+    AbandonDuringExtractIsNotResurrectedByPhaseThree 钉住第 3 段的围栏。
+    """
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    mem.abandon_event(KEY)
+    mem._core.llm = starling.make_stub_llm(default_response=CANNED_JSON)
+
+    with pytest.raises(starling.EventConflict):
+        mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+
+    with sqlite3.connect(str(tmp_path / "m.db")) as c:
+        state, category = c.execute("SELECT state, failure_category FROM events").fetchone()
+    assert state == "abandoned"                  # 没被翻回 committed
+    assert category != ""                        # 放弃前记的原因原样留着
+    assert mem.pending_events() == []            # 终态不进待处理清单
+    assert mem.next_seq() == 1                   # 冲突没分配新序号
+
+
 def test_abandon_committed_is_refused(tmp_path):
     mem = _mem(tmp_path)
     mem.remember_event(KEY, "bob:hi", interlocutor="bob")

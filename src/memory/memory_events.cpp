@@ -116,6 +116,23 @@ std::vector<std::string> statements_for_engram(persistence::Connection& conn,
     return ids;
 }
 
+// 第 3 段收尾的 UPDATE 只许改 state='pending' 的行,改完必须查受影响行数。零行只有
+// 两种成因,都发生在第 2 段(抽取走网络,事务外):abandon_event 把这行改成了终态
+// 'abandoned',或 clear_tenant 把这行删了。两种都不能静默收尾——
+//   · 静默提交会把 'abandoned' 翻回 'committed',让一个已判终局的 key 复活
+//     (设计源 §8:放弃是终局)。rise 的触发路径是会话清理放弃了某实例的 pending
+//     事件,而这一轮的写入还在途中。
+//   · 静默跳过(行已被删)则让调用方以为收据写成了,而库里压根没有这行。
+// 故抛 EventConflict。语句可能已经落库了(第 2 段先于本段),消息里说清这一点。
+// 受影响行数照全仓既有写法取 sqlite3_changes(连接):见 pipeline_run_store.cpp 的
+// claim、pipeline_ledger.cpp 的 record_attempt、commitment_engine.cpp。
+void require_pending_row_updated(persistence::Connection& conn, std::string_view key) {
+    if (sqlite3_changes(conn.raw()) != 0) return;
+    throw EventConflict(
+        "remember_event: key was abandoned or removed while the write was in flight; "
+        "statements may already be stored (key=" + std::string(key) + ")");
+}
+
 }  // namespace
 
 std::int64_t next_seq(persistence::Connection& conn, std::string_view tenant) {
@@ -246,12 +263,16 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
     // 入库但抽取 LLM 失败」,见 memory_ops.hpp 的注释)。若据此标 committed,这个 key
     // 以后每次调用都回 idempotent + 空语句,记忆静默丢失(设计源 §9 禁止)。stored 的
     // 判据与 memory_ops.cpp 里 converse_commit 算 remember_ok 的那一处一致。
+    // 两条 UPDATE 都带 AND state='pending' 并查受影响行数(require_pending_row_updated):
+    // 第 2 段在事务外,期间这行可能已被 abandon_event 改成终态、或被 clear_tenant 删掉,
+    // 无围栏时本段会把 'abandoned' 覆写回 'committed',复活一个已判终局的 key。
     const bool stored = (result.outcome == "accepted" || result.outcome == "idempotent");
     {
         persistence::TransactionGuard txn(conn);
         if (!stored || result.extraction_failed) {
-            // 行留 pending:下次调用照原 seq 重试,不另分配序号。不抛——留着 pending 行
-            // 才让 rise 看得见(pending_events 带 failure_category,门②据此记 T2 失败)。
+            // 行留 pending:下次调用照原 seq 重试,不另分配序号。本支不因失败而抛——留着
+            // pending 行才让 rise 看得见(pending_events 带 failure_category,门②据此记 T2
+            // 失败);只有行已不是 pending(被放弃或删了)才抛。
             const std::string category = result.extraction_failed
                 ? result.failure_category : ("not_stored:" + result.outcome);
             // 返回值也带上这个原因:未入库时 remember_all 的 failure_category 是空的
@@ -261,18 +282,20 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
             persistence::Stmt upd(conn.raw(),
                                   "UPDATE events SET failure_category=?1, "
                                   "engram_ref=COALESCE(NULLIF(?2,''), engram_ref) "
-                                  "WHERE tenant_id=?3 AND key=?4");
+                                  "WHERE tenant_id=?3 AND key=?4 AND state='pending'");
             upd.bind(category, result.engram_ref, base.tenant_id, key);
             upd.step_done();
+            require_pending_row_updated(conn, key);
         } else {
             persistence::Stmt upd(conn.raw(),
                                   "UPDATE events SET state='committed', engram_ref=?1, "
                                   "statement_ids_json=?2, failure_category='' "
-                                  "WHERE tenant_id=?3 AND key=?4");
+                                  "WHERE tenant_id=?3 AND key=?4 AND state='pending'");
             upd.bind(result.engram_ref,
                      nlohmann::json(result.statement_ids).dump(),
                      base.tenant_id, key);
             upd.step_done();
+            require_pending_row_updated(conn, key);
         }
         txn.commit();
     }
@@ -306,6 +329,12 @@ void abandon_event(persistence::SqliteAdapter& adapter,
         upd.step_done();
     }
     // state == "abandoned":已是终态,什么都不改(幂等)。
+    //
+    // 本函数只改事件行,不碰 statements 与 engrams。注意:pending 行并不保证没有语句。
+    // 第 2 段(抽取与入库)跑完、第 3 段写收据前崩溃时,语句与 engram 已经落了库,而行
+    // 还是 pending。放弃这样一行,那批语句就留在 library 里,而它的 key 已经死了:
+    // 之后 remember_event 一律抛 EventConflict,再也不会走补齐分支把它收成 committed。
+    // 清掉这些语句不在本函数的职责里(要另设计一条回收路径),调用方需知道这个后果。
     txn.commit();
 }
 

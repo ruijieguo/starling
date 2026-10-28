@@ -14,10 +14,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace starling::memoryops {
 
@@ -63,14 +65,19 @@ int row_count(persistence::Connection& conn, const char* sql) {
     return sqlite3_column_int(q.raw(), 0);
 }
 
-std::string event_state(persistence::Connection& conn, std::string_view key) {
+std::string state_of(persistence::Connection& conn, std::string_view tenant,
+                     std::string_view key) {
     persistence::Stmt q(conn.raw(),
-                        "SELECT state FROM events WHERE tenant_id='default' AND key=?1");
-    q.bind(key);
+                        "SELECT state FROM events WHERE tenant_id=?1 AND key=?2");
+    q.bind(tenant, key);
     if (!q.step_row()) return {};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(q.raw(), 0));
     return text != nullptr ? std::string(text) : std::string();
+}
+
+std::string event_state(persistence::Connection& conn, std::string_view key) {
+    return state_of(conn, "default", key);
 }
 
 // 抽取总是失败的适配器:用来证明某条路径一次 LLM 都没调(调了就会 extraction_failed)。
@@ -79,6 +86,29 @@ public:
     extractor::LLMResponse extract(std::string_view, std::string_view) override {
         return {.raw_xml = "", .ok = false, .error = "forced extraction failure"};
     }
+};
+
+// 在第 2 段(抽取,事务外)里对同一个 key 动手的适配器:确定性地造出「写入在途中,
+// 行被改成终态或被删掉」这个竞态,不用线程、不靠时序。第一次 extract 时回调一次,
+// 之后照常返回 response(abandon_event 本身幂等,但只跑一次更贴近真实时序)。
+class MutateRowDuringExtractAdapter final : public extractor::LLMAdapter {
+public:
+    using Hook = std::function<void()>;
+    MutateRowDuringExtractAdapter(extractor::LLMResponse response, Hook hook)
+        : response_(std::move(response)), hook_(std::move(hook)) {}
+
+    extractor::LLMResponse extract(std::string_view, std::string_view) override {
+        if (!fired_) {
+            fired_ = true;
+            hook_();
+        }
+        return response_;
+    }
+
+private:
+    extractor::LLMResponse response_;
+    Hook                   hook_;
+    bool                   fired_ = false;
 };
 
 }  // namespace
@@ -289,6 +319,81 @@ TEST(MemoryEvents, AbandonEventUnknownKeyThrowsOutOfRange) {
 
     EXPECT_THROW(abandon_event(*adapter, "default", "r1/turn#3"), std::out_of_range);
     EXPECT_EQ(event_state(conn, "r1/turn#3"), "");            // 没有凭空造行
+}
+
+TEST(MemoryEvents, AbandonEventOnlyTouchesItsOwnTenant) {
+    // abandon 的 UPDATE 带 tenant_id 围栏:两个租户同名 key,放弃一个不许动另一个。
+    // 去掉 WHERE 里的 tenant_id=?1 时本用例必须失败(只剩 key 匹配 → 两行一起改)。
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    insert_event(conn, "default", "r1/turn#3", 0, "pending");
+    insert_event(conn, "other", "r1/turn#3", 0, "pending");
+
+    abandon_event(*adapter, "default", "r1/turn#3");
+
+    EXPECT_EQ(state_of(conn, "default", "r1/turn#3"), "abandoned");
+    EXPECT_EQ(state_of(conn, "other", "r1/turn#3"), "pending");   // 别的租户没被牵连
+    ASSERT_EQ(pending_events(conn, "other").size(), 1U);
+    EXPECT_EQ(pending_events(conn, "other")[0].key, "r1/turn#3");
+    EXPECT_TRUE(pending_events(conn, "default").empty());
+}
+
+TEST(MemoryEvents, AbandonDuringExtractIsNotResurrectedByPhaseThree) {
+    // 竞态:第 2 段(抽取,事务外)期间 abandon_event 提交,随后第 3 段的提交支不许把
+    // 'abandoned' 覆写回 'committed'(设计源 §8:放弃是终局)。零行 → EventConflict。
+    auto adapter = make_adapter();
+    MutateRowDuringExtractAdapter llm(
+        extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true},
+        [&adapter] { abandon_event(*adapter, "default", "r1/turn#3"); });
+
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:hi", kEpoch),
+                 EventConflict);
+
+    auto& conn = adapter->connection();
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "abandoned");   // 没复活
+    EXPECT_TRUE(pending_events(conn, "default").empty());
+    // 之后这个 key 照样是终局:再写一律冲突。
+    extractor::FakeLLMAdapter plain;
+    plain.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    EXPECT_THROW(remember_event(*adapter, plain, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:hi", kEpoch),
+                 EventConflict);
+}
+
+TEST(MemoryEvents, AbandonDuringExtractAlsoGuardsTheFailureBranch) {
+    // 同一竞态落在第 3 段的未入库/抽取失败支上:那条 UPDATE 也带 state='pending' 围栏,
+    // 零行同样抛。否则 failure_category 会写进一行已经放弃的收据里。
+    auto adapter = make_adapter();
+    MutateRowDuringExtractAdapter llm(
+        extractor::LLMResponse{.raw_xml = "", .ok = false, .error = "forced failure"},
+        [&adapter] { abandon_event(*adapter, "default", "r1/turn#3"); });
+
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:hi", kEpoch),
+                 EventConflict);
+
+    auto& conn = adapter->connection();
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "abandoned");
+    EXPECT_EQ(row_count(conn, "SELECT COUNT(*) FROM events WHERE failure_category<>''"), 0);
+}
+
+TEST(MemoryEvents, RowDeletedDuringExtractThrowsInsteadOfSilentlyDoingNothing) {
+    // 任务 6 搁置的那条发现:第 2 段期间 clear_tenant 把行删了,第 3 段的 UPDATE 匹配
+    // 零行。原先静默收尾、调用方以为收据写成了;现在抛 EventConflict。
+    auto adapter = make_adapter();
+    MutateRowDuringExtractAdapter llm(
+        extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true},
+        [&adapter] {
+            persistence::Stmt del(adapter->connection().raw(),
+                                  "DELETE FROM events WHERE tenant_id='default'");
+            del.step_done();
+        });
+
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:hi", kEpoch),
+                 EventConflict);
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM events"), 0);
 }
 
 TEST(MemoryEvents, AbandonedKeyRejectsLaterRememberEvent) {

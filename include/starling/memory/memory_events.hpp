@@ -64,8 +64,13 @@ struct PendingEventRow {
 //    extraction_failed 都是 false)行一律留 pending 并写 failure_category(抽取失败写原
 //    类别,未入库写 "not_stored:<outcome>";有 engram_ref 时一并写)。返回值的
 //    failure_category 与行里记的一致(未入库时 remember_all 不填这个字段,这里补上),
-//    不抛:留着 pending 行才让调用方看得见,下次调用照原 seq 重试,记忆不会静默丢失。
-//    remember_all 抛异常时行同样留 pending,异常原样上抛。
+//    不因失败而抛:留着 pending 行才让调用方看得见,下次调用照原 seq 重试,记忆不会静默
+//    丢失。remember_all 抛异常时行同样留 pending,异常原样上抛。
+//    两条收尾 UPDATE 都带 AND state='pending' 并查受影响行数:② 在事务外,期间这行可能
+//    已被 abandon_event 改成终态 'abandoned',或被 clear_tenant 删掉。零行时抛
+//    EventConflict,消息点明语句可能已入库。不设这道围栏就会把终态覆写回 committed,
+//    复活一个已判终局的 key(设计源 §8:放弃是终局),或在行已不存在时静默收尾、让调用
+//    方以为收据写成了。
 //
 // base 提供 tenant_id / holder_id / interlocutor / adapter_name / source_prefix;
 // base 的 payload 与 created_at_iso8601 被忽略(由 key+text 与 epoch+seq 推出)。
@@ -90,9 +95,13 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
 //               std::out_of_range 不继承 EventConflict;pybind11 默认把它译成
 //               IndexError,绑定层在转发时改译成 KeyError(见 memory_abandon_event)。
 //
-// 只改事件行,不碰 statements 与 engrams:pending 行本来就没有语句(若有,remember_event
-// 的补齐分支会先把它补成 committed,而 committed 不许放弃)。seq 不回收:next_seq
-// 的 MAX(seq)+1 含 abandoned 行。走 SqliteAdapter 以便经过写准入门(门前抛 = 零 DB 写)。
+// 只改事件行,不碰 statements 与 engrams。注意:pending 行并不保证没有语句——
+// remember_event 的第 2 段(抽取与入库)跑完、第 3 段写收据前崩溃时,语句与 engram 已经
+// 落了库,而行还是 pending。放弃这样一行,那批语句就留在 library 里,而它的 key 已经死
+// 了:之后 remember_event 一律抛 EventConflict,再也不会走补齐分支把它收成 committed。
+// 清掉这些语句不在本函数的职责里(要另设计一条回收路径),调用方需知道这个后果。
+// seq 不回收:next_seq 的 MAX(seq)+1 含 abandoned 行。
+// 走 SqliteAdapter 以便经过写准入门(门前抛 = 零 DB 写)。
 void abandon_event(persistence::SqliteAdapter& adapter,
                    std::string_view tenant,
                    std::string_view key);
