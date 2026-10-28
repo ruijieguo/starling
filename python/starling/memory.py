@@ -54,7 +54,9 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
     adapter — it is never accepted as a parameter, logged, or hardcoded here.
     Starts from `OpenAIAdapterConfig.from_env()` so env-provided defaults
     (base_url / model / timeouts) are honoured, then overrides only the
-    fields the caller explicitly set.
+    fields the caller explicitly set. `max_retries` is the exception: it is
+    always applied, because the C++ default is 3 and a caller-supplied 0
+    ("never retry") must not silently become 3 retries.
     """
     cfg = _core.OpenAIAdapterConfig.from_env()
     if model:
@@ -63,11 +65,29 @@ def make_openai_llm(*, model: str = "gpt-4o-mini", base_url: str = "",
         cfg.base_url = base_url
     if timeout_ms:
         cfg.timeout_ms = timeout_ms
-    if max_retries:
-        cfg.max_retries = max_retries
+    cfg.max_retries = max_retries
     if max_tokens:
         cfg.max_tokens = max_tokens
     return _core.OpenAIAdapter(cfg)
+
+
+def make_openai_embedder(*, model: str, base_url: str, dim: int,
+                         timeout_ms: int, max_retries: int = 0):
+    """Production embedder (`_core.OpenAIEmbeddingAdapter`) for `Memory.open`.
+
+    Built like `make_openai_llm`: the API key is read from the environment
+    (`OPENAI_API_KEY`) by the C++ config and is never a parameter. Starts from
+    `OpenAIEmbeddingConfig.from_env()`, then sets all five fields
+    unconditionally. In particular `max_retries=0` must reach the adapter as 0
+    (the C++ default is 3), so no override is skipped on a falsy value.
+    """
+    cfg = _core.OpenAIEmbeddingConfig.from_env()
+    cfg.model = model
+    cfg.base_url = base_url
+    cfg.dim = dim
+    cfg.timeout_ms = timeout_ms
+    cfg.max_retries = max_retries
+    return _core.OpenAIEmbeddingAdapter(cfg)
 
 
 def make_anthropic_llm(*, model: str = "", base_url: str = "",
@@ -137,19 +157,24 @@ class TickStats:
 class Memory:
     """Public facade over the Starling write path."""
 
-    def __init__(self, rt, *, agent: str, tenant_id: str, llm, extraction=None):
+    def __init__(self, rt, *, agent: str, tenant_id: str, llm, extraction=None,
+                 embedder=None):
         # `_rt` stays addressable: examples/quickstart.py and tests use
         # `mem._rt.adapter` as the single WAL adapter for C++ engine calls.
         self._rt = rt
         self._core = MemoryCore(rt, agent=agent, tenant_id=tenant_id, llm=llm,
                                 adapter_name="facade", source_prefix="mem-",
                                 extraction=extraction)
-        # Embedded facade: deterministic stub embedder (no network).
-        self._core.set_embedder(_core.StubEmbeddingAdapter(8))
+        # Default: deterministic stub embedder (no network). A caller-supplied
+        # embedder (e.g. `make_openai_embedder(...)`) replaces it wholesale via
+        # `set_embedder`, so the writing worker and the reading retriever are
+        # built from the same instance.
+        self._core.set_embedder(
+            _core.StubEmbeddingAdapter(8) if embedder is None else embedder)
 
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
-             llm=None, extraction=None) -> "Memory":
+             llm=None, extraction=None, embedder=None) -> "Memory":
         # The embedded single-process facade runs the reduced capability set
         # (testing_helper_marker is test-only; engram_per_record_key is deferred
         # to M0.4+KMS). _build_local_store_sqlite_runtime builds the C++
@@ -157,7 +182,8 @@ class Memory:
         # so preflight reaches READY — no Python-side global relaxation needed.
         rt = _runtime._build_local_store_sqlite_runtime(Path(db_path))
         rt.start()
-        return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm, extraction=extraction)
+        return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm,
+                   extraction=extraction, embedder=embedder)
 
     def remember(self, text: str, *, holder: Optional[str] = None,
                  interlocutor: Optional[str] = None,
