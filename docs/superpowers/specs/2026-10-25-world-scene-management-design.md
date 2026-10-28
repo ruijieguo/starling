@@ -188,7 +188,7 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 **`content_mark` 的格式**（W4）：三段依次是 `engrams`、`statements`、`source_unit_meta`，都按 `tenant_id` 过滤，每段 `<前缀><count>:<max_rowid>:<rowid 最大那一行的 id>`，用 `|` 连接，例如 `e3:3:eng-c|s5:5:st-9|u2:2:eng-c:c1`（`source_unit_meta` 的 id 是 `engram_ref || ':' || clause_id`）。计数为 0 时 id 为空（`s0:0:`），表不存在的那段写 `-`，三张表都为空时整个标记是空串。带上 rowid 最大那一行的 id，是为了让「删掉最大 rowid 再插入（rowid 被复用）」和「清空租户后重新摄入到相同行数（rowid 从 1 重来）」也能改变标记。
 
-**标记先于 `VACUUM INTO` 计算**，在同一条只读连接上：两者之间若有新写入，快照里的内容只会**多于**标记记下的，不会少于。下一轮判断时标记不同，会多拍一份，不会漏拍。
+**标记与会话数在拍出来的快照文件上算**（Codex I-2），在 `VACUUM INTO` 之后、校验 `integrity_check` 的那条只读连接上，与 `world_time` 同一处。快照文件是静止的，所以它们**恰好描述快照里有什么**，不需要任何先后顺序的论证。早先在源库上、`VACUUM INTO` 之前算是错的：autocommit 下每条语句读各自的版本，标记与复制之间提交的删除（`forget`、`clear_memory`）会让快照**少于**标记，三段标记也可能出自不同版本，`unchanged` 与按会话去重因此可能对着一个从未存在过的状态比较。拿当前标记（源库上算）与快照的标记比较仍然成立：rowid、主键与按租户的计数经 `VACUUM INTO` 原样保留（2026-10-29 在 SQLite 3.51 上实测：删出空洞的表复制后 rowid 集合不变）。
 
 **原地更新不改变标记，这是设计如此**：tick 改 activation、forget、archive、approve、置信度更新都是对已有行的 `UPDATE`，计数、最大 rowid 和它的 id 都不变。标记检测的是新增或删除的行，不是编辑。因此一段只有原地编辑的时间，对**按时间**触发算 `unchanged`（不拍），对**按会话**触发的重试去重（§4.3 的 I-1 规则）也算同一个标记。但「没有新摄入」不等于「只有原地编辑」：tick 与 idle replay 会插入新行，见 §4.3 的「稳态」一段（整支审查 M-3）。
 
@@ -216,9 +216,11 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 **稳态：每个间隔最多一份按时间的快照，由保留份数封顶（默认 5），而不是「空闲时不再拍」**（整支审查 M-3）。标记数的是 `engrams` / `statements` / `source_unit_meta` 的插入与删除；生产的 tick（默认每 30 秒）与 idle replay 不需要新摄入也能插入行——gist 语句经 `Bus::write` 写入（`src/replay/gist_writer.cpp`），推断语句同理（只读查询生产库：10-20 以来有 44 条 `tom_inferred` 语句落在没有 `user_input` 写入的 10 分钟窗口里，来源未进一步确认）。2026-10-28 生产副本上「25 小时后 `unchanged`」是在不跑 tick 的副本上测的，证明不了生产空闲期不拍。所以默认世界（24 小时）最坏每天一份，稳态约 5 × 114 MB ≈ 570 MB，有界、不会无限增长。同一机制也会削弱按会话的重试去重（I-1）：两次重试之间若 tick 插了行，标记就变了，同一会话的重试会再拍一份；这受 `_ingest_max_attempts=5` 限制，并同样受保留份数封顶。
 
-**调用点**：按会话的钩子在摄入线程上调用，位置在 transcript 写进来源通道（`retain_source_turns`）之前、代数检查之后，**不持 `engine._lock`**（钩子取的 `manager.lock` 在锁序上排在它之前）。它只在左脑 lane 开启时才被调用，lane 关闭时没有会话，也就没有按会话的快照，这是设计如此。按时间的触发由 lifespan 起的调度线程 `starling-auto-snapshot` 负责：启动后先等 60 秒，此后每 10 分钟检查一次，关停时停掉。
+**调用点**：按会话的钩子在摄入线程上调用，位置在 transcript 写进来源通道（`retain_source_turns`）之前、第一次代数检查之后，**不持 `engine._lock`**（钩子取的 `manager.lock` 在锁序上排在它之前）。钩子返回之后，权威的代数检查与 `retain_source_turns` 在同一个 `engine._lock` 块里完成（Codex C1，见 §12）：清空要么在检查之前（job 作废，一行不写），要么在写入之后（刚写的来源行随清空删掉），不会落在两者之间。`retain_source_turns` 只做本地校验与写行（向量行写 pending，由嵌入线程之后补），没有网络调用，持锁的代价与 `remember` 的 prepare / commit 段相同。它只在左脑 lane 开启时才被调用，lane 关闭时没有会话，也就没有按会话的快照，这是设计如此。按时间的触发由 lifespan 起的调度线程 `starling-auto-snapshot` 负责：启动后先等 60 秒，此后每 10 分钟检查一次，关停时停掉。
 
 **后台线程只用非阻塞方式取 `manager.lock`**。取不到（切换、回滚、手动快照正持着它）时：按时间跳过这一轮；按会话把摄入 job 原样放回 spool，**不计重试次数**（这个 job 还什么都没写），下一轮再来；claim 之后若发生过 `clear_memory`，则改进 `discarded/`、不放回（整支审查 I-1：清空只丢弃 spool 根下的 pending job，看不到正在处理的这一个，原样放回会把清空前的会话重新灌回来。比较代数与放回在 `engine._lock` 内，与清空互斥；通用重试分支走同一个判断）。这样切换和回滚不会被后台线程拖成 `ingest_busy`。活动世界按会话关着时（默认世界的默认配置），钩子先不加锁读一次注册表（`worlds.json` 原子替换）就直接返回，不取锁，摄入也就不会因无关的管理操作被推迟；按会话开着或这次读失败，才走上面的非阻塞取锁，在锁内按最新配置重新判（W4 终修 M-3）。
+
+**修剪卡住时自动快照拒绝拍**（Codex I-3）：手动快照有人在场，`take_snapshot` 吞掉修剪失败、暂时多一份；自动快照无人值守，最旧的 auto 条目若删不掉（路径越界、解析不了、文件删不掉），每次触发都会多登记一份，一直涨到磁盘守卫。所以 `take_auto_snapshot` 决定要拍之后、拍之前先跑一次修剪：修剪抛了、而快照数仍 ≥ 保留份数，就抛 `snapshot_failed`（消息点名 retention 与修剪的错误），不拍、不写盘、列表不变；这次拒绝按下面的失败处理计数，摄入照常继续，`/worlds` 的横幅显示它。修剪成功或本来就不超出时照常拍，`take_snapshot` 自己的修剪随后把总数压回保留份数。边界：修剪只在超出保留份数时才有事可做，所以一个恰好在保留份数上、最旧条目卡住的世界还会再拍一份（到保留份数 + 1，这次 `take_snapshot` 的修剪失败被吞掉），之后每次触发都拒绝。快照数因此封顶在保留份数 + 1，不随触发次数增长。手动快照不变（W2 语义）。
 
 **失败照常摄入**（用户裁定）：C++ 错误（如 `insufficient_disk`）、注册表存不下来（新快照文件随即删掉）都只计数、记 warning，钩子照常返回，摄入继续。失败计数、最近一次错误码及其时间在 `GET /api/worlds` 顶层的 `auto_snapshot_status: {failures, last_error, last_error_at}`，`/api/ingest_status` 另带 `auto_snapshot_failures` 与 `auto_snapshot_last_error`。计数从进程启动算起，busy 与各种跳过都不算失败。
 
@@ -478,6 +480,7 @@ GET    /api/worlds/{w}/sessions?limit=   会话清单（limit 1–1000，默认 
 |---|---|
 | 快照体积随记忆线性增长 | 保留 N 默认 5；`/worlds` 显示当前快照总量；磁盘守卫。按时间触发在空闲期也可能每个间隔拍一份（tick / idle replay 会插入行，§4.3「稳态」），默认世界稳态约 5 × 114 MB ≈ 570 MB |
 | 回滚窗口由保留份数与触发频率共同决定 | 保留 N 份（默认 5）：按会话触发时窗口约是最近 N 个会话，按时间触发时约是 N × `interval_hours`（默认世界约 5 天），两种都开时更短。窗口之外显式报 `snapshot too old`，不静默回退到更早的快照；要更长的窗口就调大保留份数或间隔 |
+| 清空与来源写入的竞态（Codex C1，W4 之前就有，W4 修掉） | W4 的基线 b5f43c7 上 `_retain_transcript_turns` 已经是「持锁查代数 → 放锁 → 锁外 `retain_source_turns`」：`clear_memory` 若落在两者之间（持 `engine._lock` 清库、前移代数、丢弃 pending job），清空前的 transcript 会在清空之后写回来源表；W4 在钩子之后加的第二次检查有同样的缺口。修法：钩子照旧在锁外调用，钩子返回之后代数检查与 `retain_source_turns` 在同一个 `engine._lock` 块里完成（§4.3「调用点」）。锁序不变（钩子的 `manager.lock` 非阻塞、已放开 → `engine._lock`），没有新边 |
 | 升级后第一轮会给默认世界拍一份快照 | 预期行为：默认世界按时间触发、库里有内容、又还没有自动快照，调度线程启动后约 60 秒的第一轮就会拍（2026-10-28 在生产副本上实测：114 MB、0.38 秒；同一副本上 `list_sessions` 2 毫秒）。写进 PR 描述 |
 | 降级到 W3 的程序 | W3 保存注册表时会丢掉自定义的 `auto_snapshot` 配置和快照条目上的三个新字段（`sessions_complete`、`session_id`、`content_mark`）。再升级回来，这些世界回到默认配置（§4.3 的默认值）；被 W3 存过的快照按 W4 之前的条目对待：两个外露字段为 `null`，按时间触发视为需要拍，按会话的快照丢了 `session_id`，会话清单里不再显示为锚点。方向是安全的：快照文件与 kind / reason 都在，仍可回滚，也不会少拍 |
 | zvec 向量后端（默认关闭）向量在 SQLite 之外 | **分片内 fail loud**：`vector_backend=zvec` 时快照/回滚直接拒绝（`snapshot_unsupported_backend`），不做半截快照 |
