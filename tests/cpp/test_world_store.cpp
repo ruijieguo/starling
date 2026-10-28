@@ -3,6 +3,7 @@
 
 #include "starling/governance/world_store.hpp"
 
+#include "starling/memory/memory_ops.hpp"
 #include "starling/persistence/sqlite_adapter.hpp"
 #include "starling/persistence/stmt.hpp"
 
@@ -690,6 +691,47 @@ TEST(WorldSnapshot, RejectsUnknownKindBeforeWriting) {
     }
     EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
     EXPECT_EQ(reg.snapshots.count("sim-1"), 0U);
+}
+
+// R3：kind 与 reason 不配对时，take_snapshot 在任何 I/O 之前抛 invalid_snapshot_kind。以前要到
+// save_registry 才报 registry_corrupt，那时快照文件已经写出。「之前」由三点证明：default 世界的库
+// 文件不存在（否则报 snapshot_failed）、它的快照目录没被建出来、磁盘守卫一次都没被调用。
+TEST(WorldSnapshot, RejectsMismatchedKindAndReasonBeforeAnyIo) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    int probed = 0;
+    for (const auto& [kind, reason] : std::vector<std::pair<std::string, std::string>>{
+             {"manual", "session"}, {"manual", "interval"}, {"manual", ""},
+             {"auto", "manual"}, {"auto", "scene_boundary"}, {"auto", ""}, {"auto", "Session"}}) {
+        SnapshotOptions opts;
+        opts.kind = kind;
+        opts.reason = reason;
+        opts.free_space = [&probed](const fs::path&) -> std::int64_t {
+            ++probed;
+            return std::numeric_limits<std::int64_t>::max();
+        };
+        for (const char* world : {"sim-1", "default"}) {
+            EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, world, opts); }),
+                      "invalid_snapshot_kind") << world << " " << kind << "/" << reason;
+        }
+    }
+    EXPECT_EQ(probed, 0);
+    EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
+    EXPECT_FALSE(fs::exists(reg.worlds.at("default").snapshot_dir));
+    EXPECT_FALSE(reg.snapshots.contains("sim-1"));
+    EXPECT_FALSE(reg.snapshots.contains("default"));
+    // 三种合法配对照常拍。
+    for (const auto& [kind, reason] : std::vector<std::pair<std::string, std::string>>{
+             {"manual", "manual"}, {"auto", "session"}, {"auto", "interval"}}) {
+        SnapshotOptions opts;
+        opts.kind = kind;
+        opts.reason = reason;
+        const auto snap = take_snapshot(reg, "sim-1", opts);
+        EXPECT_EQ(snap.kind, kind);
+        EXPECT_EQ(snap.reason, reason);
+    }
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 3U);
 }
 
 // 成功的快照一定返回它的条目：修剪失败（这里用自指符号链接让旧快照路径无法解析，
@@ -2782,7 +2824,7 @@ TEST(WorldSnapshotMeta, TakeSnapshotRecordsSessionsCompleteAndContentMark) {
     const auto snap = take_snapshot(reg, "sim-1", opts);
     ASSERT_TRUE(snap.sessions_complete.has_value());
     EXPECT_EQ(*snap.sessions_complete, 2);
-    EXPECT_EQ(snap.content_mark, "e3:3|s2:2|u3:3");
+    EXPECT_EQ(snap.content_mark, "e3:3:eng-2|s2:2:st-2|u3:3:eng-1:c0");
     EXPECT_EQ(snap.session_id, "s-c");   // 原样写进条目
     // 与库内容一致：快照文件里按租户数出来的就是这些。
     EXPECT_EQ(count_rows(snap.path, "SELECT COUNT(*) FROM engrams WHERE tenant_id='sim-1'"), 3);
@@ -2792,12 +2834,13 @@ TEST(WorldSnapshotMeta, TakeSnapshotRecordsSessionsCompleteAndContentMark) {
     // 条目 JSON 带上三个新字段，注册表往返后不变。
     const std::string json = snapshot_entry_to_json(snap);
     EXPECT_NE(json.find(R"("sessions_complete":2)"), std::string::npos) << json;
-    EXPECT_NE(json.find(R"("content_mark":"e3:3|s2:2|u3:3")"), std::string::npos) << json;
+    EXPECT_NE(json.find(R"("content_mark":"e3:3:eng-2|s2:2:st-2|u3:3:eng-1:c0")"), std::string::npos)
+        << json;
     EXPECT_NE(json.find(R"("session_id":"s-c")"), std::string::npos) << json;
     const auto back = registry_from_json(registry_to_json(reg));
     const auto& got = back.snapshots.at("sim-1").front();
     EXPECT_EQ(got.sessions_complete, std::optional<std::int64_t>{2});
-    EXPECT_EQ(got.content_mark, "e3:3|s2:2|u3:3");
+    EXPECT_EQ(got.content_mark, "e3:3:eng-2|s2:2:st-2|u3:3:eng-1:c0");
     EXPECT_EQ(got.session_id, "s-c");
 }
 
@@ -2828,7 +2871,7 @@ TEST(WorldSnapshotMeta, MissingTablesBecomeDashSegments) {
              "INSERT INTO engrams VALUES('a','sim-1','2026-01-01T00:00:00Z'),"
              "('b','other','2026-01-01T00:00:00Z'),('c','sim-1','2026-01-02T00:00:00Z');");
     const auto snap = take_snapshot(reg, "sim-1", SnapshotOptions{});
-    EXPECT_EQ(snap.content_mark, "e2:3|-|-");
+    EXPECT_EQ(snap.content_mark, "e2:3:c|-|-");
     EXPECT_EQ(snap.sessions_complete, std::optional<std::int64_t>{0});
 }
 
@@ -2852,7 +2895,7 @@ TEST(WorldSnapshotMeta, MarkIsTakenBeforeVacuumSoTheCopyNeverHoldsLess) {
                                           AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"}, base);
     ASSERT_TRUE(first.taken.has_value()) << first.skipped;
     EXPECT_EQ(fired, 1);
-    EXPECT_EQ(first.taken->content_mark, "e3:3|s0:0|u1:1");   // 钩子写入之前
+    EXPECT_EQ(first.taken->content_mark, "e3:3:eng-2|s0:0:|u1:1:eng-0:c0");   // 钩子写入之前
     EXPECT_EQ(first.taken->sessions_complete, std::optional<std::int64_t>{1});
     const std::string copy = first.taken->path;
     EXPECT_EQ(count_rows(copy, "SELECT COUNT(*) FROM engrams"), 4);   // >= 3
@@ -2862,7 +2905,65 @@ TEST(WorldSnapshotMeta, MarkIsTakenBeforeVacuumSoTheCopyNeverHoldsLess) {
     const auto second = take_auto_snapshot(reg, "sim-1",
                                            AutoTrigger{"interval", "", "2030-01-02T01:00:00Z"}, base);
     ASSERT_TRUE(second.taken.has_value()) << second.skipped;
-    EXPECT_EQ(second.taken->content_mark, "e4:4|s0:0|u2:2");
+    EXPECT_EQ(second.taken->content_mark, "e4:4:eng-3|s0:0:|u2:2:eng-3:c0");
+}
+
+// R2：注入的时钟（SnapshotOptions::now_iso）同时决定快照 id 的时间前缀与 created_at，两者是同一秒。
+// take_auto_snapshot 把触发的 now_iso 传下去。不注入时照旧用真实时钟。
+TEST(WorldSnapshotMeta, InjectedNowDrivesBothTheIdPrefixAndCreatedAt) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    SnapshotOptions opts;
+    opts.now_iso = "2030-01-03T04:05:06Z";
+    const auto first = take_snapshot(reg, "sim-1", opts);
+    EXPECT_EQ(first.created_at, "2030-01-03T04:05:06Z");
+    EXPECT_EQ(first.id.substr(0, 17), "20300103T040506Z-") << first.id;
+    EXPECT_EQ(first.id.size(), 21U);
+    EXPECT_TRUE(fs::exists(first.path));
+    // 同一秒再拍：时间前缀相同，只重抽十六进制部分，id 不重复。
+    const auto second = take_snapshot(reg, "sim-1", opts);
+    EXPECT_EQ(second.id.substr(0, 17), "20300103T040506Z-") << second.id;
+    EXPECT_NE(second.id, first.id);
+
+    const auto fresh = take_auto_snapshot(reg, "sim-1",
+                                          AutoTrigger{"session", "s-new", "2031-02-03T10:20:30Z"},
+                                          SnapshotOptions{});
+    ASSERT_TRUE(fresh.taken.has_value()) << fresh.skipped;
+    EXPECT_EQ(fresh.taken->created_at, "2031-02-03T10:20:30Z");
+    EXPECT_EQ(fresh.taken->id.substr(0, 17), "20310203T102030Z-") << fresh.taken->id;
+
+    const auto real = take_snapshot(reg, "sim-1", SnapshotOptions{});
+    EXPECT_EQ(real.created_at.size(), 20U);   // 2026-10-28T01:12:00Z
+    EXPECT_EQ(real.id.size(), 21U);           // 20261028T011200Z-a1b2
+    EXPECT_NE(real.id.substr(0, 4), "2030");
+}
+
+// R2：SnapshotOptions::now_iso 形状不对抛 invalid_auto_snapshot，在任何 I/O 之前（证明方式同
+// RejectsMismatchedKindAndReasonBeforeAnyIo）。Python isoformat() 的微秒与 +00:00 写法都不收。
+TEST(WorldSnapshotMeta, MalformedInjectedNowIsRejectedBeforeAnyIo) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    seed_world_db(reg.worlds.at("sim-1").db_path, "sim-1", 1);
+    int probed = 0;
+    for (const char* bad : {"2030-01-01 00:00:00Z", "2030-01-01T00:00:00", "2030-02-30T00:00:00Z",
+                            "2030-01-01T00:00:00.123456Z", "2030-01-01T00:00:00+00:00", "now"}) {
+        SnapshotOptions opts;
+        opts.now_iso = bad;
+        opts.free_space = [&probed](const fs::path&) -> std::int64_t {
+            ++probed;
+            return std::numeric_limits<std::int64_t>::max();
+        };
+        for (const char* world : {"sim-1", "default"}) {
+            EXPECT_EQ(code_of([&] { (void)take_snapshot(reg, world, opts); }),
+                      "invalid_auto_snapshot") << world << " now='" << bad << "'";
+        }
+    }
+    EXPECT_EQ(probed, 0);
+    EXPECT_TRUE(fs::is_empty(reg.worlds.at("sim-1").snapshot_dir));
+    EXPECT_FALSE(fs::exists(reg.worlds.at("default").snapshot_dir));
+    EXPECT_FALSE(reg.snapshots.contains("sim-1"));
+    EXPECT_FALSE(reg.snapshots.contains("default"));
 }
 
 // ---- 按会话 ----
@@ -2956,7 +3057,127 @@ TEST(WorldAutoSnapshot, SessionOnDbWithoutSourceUnitMetaTable) {
                                         SnapshotOptions{});
     ASSERT_TRUE(res.taken.has_value()) << res.skipped;
     EXPECT_EQ(res.taken->sessions_complete, std::optional<std::int64_t>{0});
-    EXPECT_EQ(res.taken->content_mark, "e1:1|-|-");
+    EXPECT_EQ(res.taken->content_mark, "e1:1:a|-|-");
+}
+
+// I-1 的几个用例共用：按会话触发 session，时间为 now。
+AutoSnapshotResult session_at(Registry& reg, const std::string& session, const std::string& now) {
+    return take_auto_snapshot(reg, "sim-1", AutoTrigger{"session", session, now},
+                              SnapshotOptions{});
+}
+
+// I-1：调用方在写入之前触发，写入反复失败（契约拒绝、策略拒绝、SQLite 错误）时会话一直是新的。
+// 同一会话已有内容相同的按会话快照就返回 unchanged：否则每次重试（engine 最多 5 次）一份，
+// 保留策略就把更早会话的锚点挤掉了。别的会话不受影响。
+TEST(WorldAutoSnapshot, SessionRetryWithoutAWriteDoesNotSnapshotAgain) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    seed_world_db(db_path, "sim-1", 2);
+    insert_units(db_path, "sim-1", {{0, "c0", "spk-1", "s-old", "2030-01-01T00:00:00Z"}});
+    const auto first = session_at(reg, "s-new", "2030-01-02T00:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    for (int retry = 1; retry <= 5; ++retry) {
+        const auto again = session_at(reg, "s-new",
+                                      "2030-01-02T00:00:0" + std::to_string(retry) + "Z");
+        EXPECT_FALSE(again.taken.has_value()) << "retry " << retry;
+        EXPECT_EQ(again.skipped, "unchanged") << "retry " << retry;
+    }
+    ASSERT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+    EXPECT_EQ(reg.snapshots.at("sim-1").front().id, first.taken->id);
+    // 规则只认同一个 session_id：另一个新会话照常拍。
+    const auto other = session_at(reg, "s-other", "2030-01-02T00:01:00Z");
+    ASSERT_TRUE(other.taken.has_value()) << other.skipped;
+    EXPECT_EQ(other.taken->session_id, "s-other");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
+}
+
+// I-1：两个空标记也算相同。新世界的库已建好、还没有内容，首个会话反复失败也只拍一份空库。
+TEST(WorldAutoSnapshot, SessionRetryOnAnEmptyWorldDoesNotSnapshotAgain) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    { auto adapter = persistence::SqliteAdapter::open(reg.worlds.at("sim-1").db_path); }
+    const auto first = session_at(reg, "s-1", "2030-01-01T00:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    EXPECT_EQ(first.taken->content_mark, "");
+    EXPECT_EQ(session_at(reg, "s-1", "2030-01-01T00:00:01Z").skipped, "unchanged");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 1U);
+}
+
+// I-1：两次触发之间有别的写入（另一个会话的 unit、一行 engram），标记变了，再拍一份：
+// 那份快照里没有这些写入，回滚到它会丢东西。
+TEST(WorldAutoSnapshot, SessionRetryAfterAnUnrelatedWriteSnapshotsAgain) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 10;
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    seed_world_db(db_path, "sim-1", 3);
+    insert_units(db_path, "sim-1", {{0, "c0", "spk-1", "s-old", "2030-01-01T00:00:00Z"}});
+    const auto first = session_at(reg, "s-new", "2030-01-02T00:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+
+    insert_units(db_path, "sim-1", {{1, "c0", "spk-2", "s-other", "2030-01-02T00:00:30Z"}});
+    const auto after_unit = session_at(reg, "s-new", "2030-01-02T00:01:00Z");
+    ASSERT_TRUE(after_unit.taken.has_value()) << after_unit.skipped;
+    EXPECT_NE(after_unit.taken->content_mark, first.taken->content_mark);
+
+    append_engrams(db_path, "sim-1", 3, 1);
+    const auto after_engram = session_at(reg, "s-new", "2030-01-02T00:02:00Z");
+    ASSERT_TRUE(after_engram.taken.has_value()) << after_engram.skipped;
+    EXPECT_NE(after_engram.taken->content_mark, after_unit.taken->content_mark);
+
+    const auto& list = reg.snapshots.at("sim-1");
+    ASSERT_EQ(list.size(), 3U);
+    for (const auto& snap : list) {
+        EXPECT_EQ(snap.reason, "session") << snap.id;
+        EXPECT_EQ(snap.session_id, "s-new") << snap.id;
+    }
+    // 之后没有新写入：再触发是 unchanged。
+    EXPECT_EQ(session_at(reg, "s-new", "2030-01-02T00:03:00Z").skipped, "unchanged");
+    EXPECT_EQ(list.size(), 3U);
+}
+
+// I-1：匹配任意一份按会话快照，不只看最新的 auto。两次重试之间落下一份按时间的快照、成了
+// created_at 最新的 auto，也不重复拍。（这里用 take_snapshot 直接记一份 auto/interval：内容没变时
+// 按时间触发自己会判 unchanged，这一步只为让它成为最新的 auto。）同一标记的按时间快照、带同一
+// session_id 的 manual 快照都不算按会话的快照：在它们之后第一次触发照常拍。
+TEST(WorldAutoSnapshot, SessionRetryAfterAnIntervalSnapshotStillDoesNotDuplicate) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    reg.snapshot_retention = 10;
+    set_auto_snapshot(reg, "sim-1", AutoSnapshotConfig{true, 24});
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    seed_world_db(db_path, "sim-1", 2);
+    {
+        SnapshotOptions interval;
+        interval.kind = "auto";
+        interval.reason = "interval";
+        interval.session_id = "s-new";
+        interval.now_iso = "2030-01-01T00:00:00Z";
+        (void)take_snapshot(reg, "sim-1", interval);
+        SnapshotOptions manual;
+        manual.session_id = "s-new";
+        manual.now_iso = "2030-01-01T00:10:00Z";
+        (void)take_snapshot(reg, "sim-1", manual);
+    }
+    const auto first = session_at(reg, "s-new", "2030-01-01T01:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+
+    SnapshotOptions between;
+    between.kind = "auto";
+    between.reason = "interval";
+    between.now_iso = "2030-01-02T02:00:00Z";
+    const auto newest_auto = take_snapshot(reg, "sim-1", between);
+    EXPECT_EQ(newest_auto.content_mark, first.taken->content_mark);
+
+    const auto retry = session_at(reg, "s-new", "2030-01-02T03:00:00Z");
+    EXPECT_FALSE(retry.taken.has_value());
+    EXPECT_EQ(retry.skipped, "unchanged");
+    const auto& list = reg.snapshots.at("sim-1");
+    EXPECT_EQ(std::ranges::count_if(list, [](const SnapshotEntry& snap) {
+                  return snap.kind == "auto" && snap.reason == "session";
+              }), 1);
+    EXPECT_EQ(list.size(), 4U);
 }
 
 // ---- 按时间 ----
@@ -2983,7 +3204,7 @@ TEST(WorldAutoSnapshot, IntervalTakesFirstWhenNoAutoSnapshotExists) {
     EXPECT_EQ(res.taken->reason, "interval");
     EXPECT_EQ(res.taken->session_id, "");
     EXPECT_EQ(res.taken->created_at, "2030-01-01T00:00:00Z");
-    EXPECT_EQ(res.taken->content_mark, "e3:3|s0:0|u0:0");
+    EXPECT_EQ(res.taken->content_mark, "e3:3:eng-2|s0:0:|u0:0:");
     EXPECT_TRUE(fs::exists(res.taken->path));
     ASSERT_EQ(reg.snapshots.at("sim-1").size(), 1U);
 }
@@ -3035,12 +3256,105 @@ TEST(WorldAutoSnapshot, IntervalTakesWhenContentChangedAfterTheInterval) {
     append_engrams(db_path, "sim-1", 3, 1);
     const auto inserted = interval_at(reg, "2030-01-02T01:00:00Z");
     ASSERT_TRUE(inserted.taken.has_value()) << inserted.skipped;
-    EXPECT_EQ(inserted.taken->content_mark, "e4:4|s0:0|u0:0");
+    EXPECT_EQ(inserted.taken->content_mark, "e4:4:eng-3|s0:0:|u0:0:");
     exec_sql(db_path, "DELETE FROM engrams WHERE id='eng-0'");
     const auto deleted = interval_at(reg, "2030-01-03T02:00:00Z");
     ASSERT_TRUE(deleted.taken.has_value()) << deleted.skipped;
-    EXPECT_EQ(deleted.taken->content_mark, "e3:4|s0:0|u0:0");
+    EXPECT_EQ(deleted.taken->content_mark, "e3:4:eng-3|s0:0:|u0:0:");
     EXPECT_EQ(reg.snapshots.at("sim-1").size(), 3U);
+}
+
+// 标记每段去掉 id 之后的 "<tag><count>:<max_rowid>"（W4 T1 的旧格式），用来证明用例确实落在
+// 旧格式看不见的情形里。表不存在的 "-" 原样保留。
+std::vector<std::string> count_rowid_parts(const std::string& mark) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= mark.size()) {
+        const std::size_t stop = std::min(mark.find('|', start), mark.size());
+        const std::string segment = mark.substr(start, stop - start);
+        const std::size_t first_colon = segment.find(':');
+        const std::size_t second_colon =
+            first_colon == std::string::npos ? first_colon : segment.find(':', first_colon + 1);
+        out.push_back(second_colon == std::string::npos ? segment
+                                                        : segment.substr(0, second_colon));
+        start = stop + 1;
+    }
+    return out;
+}
+
+// sim-1 只有本租户的行（没有别的租户插在中间抬高 rowid）：3 行 engram、2 条 statement、2 个 unit。
+void seed_single_tenant(const std::string& db_path) {
+    seed_world_db(db_path, "sim-1", 3);   // eng-0..2，rowid 1..3
+    insert_statement(db_path, "sim-1", "st-1");
+    insert_statement(db_path, "sim-1", "st-2");   // rowid 2
+    insert_units(db_path, "sim-1", {{0, "c0", "spk-1", "s-a", "2030-01-01T00:00:00Z"},
+                                    {1, "c0", "spk-1", "s-a", "2030-01-01T00:01:00Z"}});
+}
+
+// R1：删掉 rowid 最大的那一行、再插入一行，SQLite 复用那个 rowid，count:max_rowid 不变；标记里
+// 那一行的 id 不同，标记照样会变。三张表各验一次，都走按时间触发（旧格式会判 unchanged）。
+TEST(WorldSnapshotMeta, DeletingTheMaxRowThenInsertingChangesTheMark) {
+    const TempDir tmp;
+    auto reg = interval_world(tmp);   // 已有 eng-0..2
+    reg.snapshot_retention = 10;
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    insert_statement(db_path, "sim-1", "st-1");
+    insert_statement(db_path, "sim-1", "st-2");
+    insert_units(db_path, "sim-1", {{0, "c0", "spk-1", "s-a", "2030-01-01T00:00:00Z"},
+                                    {1, "c0", "spk-1", "s-a", "2030-01-01T00:01:00Z"}});
+    const auto first = interval_at(reg, "2030-01-01T00:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    std::string prev = first.taken->content_mark;
+    EXPECT_EQ(prev, "e3:3:eng-2|s2:2:st-2|u2:2:eng-1:c0");
+    const auto expect_retaken = [&](const std::string& now, const std::string& what,
+                                    const std::string& want) {
+        const auto res = interval_at(reg, now);
+        ASSERT_TRUE(res.taken.has_value()) << what << ": " << res.skipped;
+        EXPECT_EQ(res.taken->content_mark, want) << what;
+        EXPECT_EQ(count_rowid_parts(res.taken->content_mark), count_rowid_parts(prev)) << what;
+        prev = res.taken->content_mark;
+    };
+    exec_sql(db_path, "DELETE FROM engrams WHERE id='eng-2'");
+    append_engrams(db_path, "sim-1", 9, 1);   // 复用 rowid 3
+    expect_retaken("2030-01-02T01:00:00Z", "engrams", "e3:3:eng-9|s2:2:st-2|u2:2:eng-1:c0");
+    exec_sql(db_path, "DELETE FROM statements WHERE id='st-2'");
+    insert_statement(db_path, "sim-1", "st-3");   // 复用 rowid 2
+    expect_retaken("2030-01-03T02:00:00Z", "statements", "e3:3:eng-9|s2:2:st-3|u2:2:eng-1:c0");
+    exec_sql(db_path, "DELETE FROM source_unit_meta WHERE engram_ref='eng-1' AND clause_id='c0'");
+    insert_units(db_path, "sim-1", {{0, "c1", "spk-1", "s-a", "2030-01-01T00:02:00Z"}});
+    expect_retaken("2030-01-04T03:00:00Z", "source_unit_meta",
+                   "e3:3:eng-9|s2:2:st-3|u2:2:eng-0:c1");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 4U);
+}
+
+// R1：清空租户（dashboard 的 clear_memory 走的就是 memoryops::clear_tenant）后重新摄入到相同的
+// 行数：表空了，rowid 从 1 重新分配，count:max_rowid 与清空前一模一样；新行的 id 不同（真实 id
+// 是随机 UUID），标记照样会变。
+TEST(WorldSnapshotMeta, ClearingTheTenantThenReingestingTheSameCountsChangesTheMark) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    set_auto_snapshot(reg, "sim-1", AutoSnapshotConfig{false, 24});
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    seed_single_tenant(db_path);
+    const auto first = interval_at(reg, "2030-01-01T00:00:00Z");
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    EXPECT_EQ(first.taken->content_mark, "e3:3:eng-2|s2:2:st-2|u2:2:eng-1:c0");
+    {
+        auto adapter = persistence::SqliteAdapter::open(db_path);
+        EXPECT_GT(memoryops::clear_tenant(*adapter, "sim-1").total, 0);
+    }
+    EXPECT_EQ(interval_at(reg, "2030-01-02T01:00:00Z").skipped, "empty");
+    append_engrams(db_path, "sim-1", 10, 3);   // eng-10..12，rowid 1..3
+    insert_statement(db_path, "sim-1", "st-8");
+    insert_statement(db_path, "sim-1", "st-9");
+    insert_units(db_path, "sim-1", {{10, "c0", "spk-1", "s-b", "2030-01-02T00:00:00Z"},
+                                    {11, "c0", "spk-1", "s-b", "2030-01-02T00:01:00Z"}});
+    const auto again = interval_at(reg, "2030-01-03T01:00:00Z");
+    ASSERT_TRUE(again.taken.has_value()) << again.skipped;
+    EXPECT_EQ(again.taken->content_mark, "e3:3:eng-12|s2:2:st-9|u2:2:eng-11:c0");
+    EXPECT_EQ(count_rowid_parts(again.taken->content_mark),
+              count_rowid_parts(first.taken->content_mark));
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
 }
 
 TEST(WorldAutoSnapshot, IntervalSkipsAnEmptyWorld) {
@@ -3089,6 +3403,22 @@ TEST(WorldAutoSnapshot, IntervalTreatsUnparseableLastTimeAsDue) {
     ASSERT_TRUE(res.taken.has_value()) << res.skipped;
 }
 
+// M-1：last 晚于 now（时钟回拨，或那份快照的时间来自跳到未来的时钟）算「到了」，标记照常比较。
+// 以前差值为负判 not_due，一份未来时间的条目会让按时间的快照一直停到真实时间追上它。
+TEST(WorldAutoSnapshot, IntervalTreatsAFutureLastAsDue) {
+    const TempDir tmp;
+    auto reg = interval_world(tmp);
+    ASSERT_TRUE(interval_at(reg, "2030-06-01T00:00:00Z").taken.has_value());   // 跳到未来的时钟
+    const auto same = interval_at(reg, "2030-01-01T00:00:00Z");
+    EXPECT_FALSE(same.taken.has_value());
+    EXPECT_EQ(same.skipped, "unchanged");
+    append_engrams(reg.worlds.at("sim-1").db_path, "sim-1", 3, 1);
+    const auto changed = interval_at(reg, "2030-01-01T00:00:00Z");
+    ASSERT_TRUE(changed.taken.has_value()) << changed.skipped;
+    EXPECT_EQ(changed.taken->created_at, "2030-01-01T00:00:00Z");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
+}
+
 // 比 last 更新的 manual 快照不参与判断：时间和标记都只看最新的 auto。
 TEST(WorldAutoSnapshot, IntervalIgnoresANewerManualSnapshot) {
     const TempDir tmp;
@@ -3096,7 +3426,7 @@ TEST(WorldAutoSnapshot, IntervalIgnoresANewerManualSnapshot) {
     ASSERT_TRUE(interval_at(reg, "2030-01-01T00:00:00Z").taken.has_value());
     append_engrams(reg.worlds.at("sim-1").db_path, "sim-1", 3, 1);
     SnapshotOptions manual;
-    manual.created_at = "2030-01-01T23:00:00Z";   // 若算它：差 2 小时 not_due，标记也相同
+    manual.now_iso = "2030-01-01T23:00:00Z";   // 若算它：差 2 小时 not_due，标记也相同
     const auto snap = take_snapshot(reg, "sim-1", manual);
     ASSERT_EQ(snap.kind, "manual");
     const auto res = interval_at(reg, "2030-01-02T01:00:00Z");

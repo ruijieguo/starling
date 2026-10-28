@@ -65,6 +65,46 @@ std::string iso_now() { return format_utc_now("%Y-%m-%dT%H:%M:%SZ"); }
 // 20261025T011200Z（快照 id 前缀）
 std::string compact_now() { return format_utc_now("%Y%m%dT%H%M%SZ"); }
 
+// 严格解析 YYYY-MM-DDTHH:MM:SSZ（iso_now 与 Python _now_iso 的格式）。日期必须真实存在
+// （2030-02-30 不行），时分秒在 0–23 / 0–59 / 0–59 之内。别的写法一律解析不了。
+std::optional<std::chrono::sys_seconds> parse_utc_seconds(std::string_view text) {
+    constexpr std::string_view kShape = "dddd-dd-ddTdd:dd:ddZ";
+    if (text.size() != kShape.size()) { return std::nullopt; }
+    for (std::size_t pos = 0; pos < kShape.size(); ++pos) {
+        const char want = kShape.at(pos);
+        const char chr = text.at(pos);
+        const bool good = want == 'd' ? (chr >= '0' && chr <= '9') : chr == want;
+        if (!good) { return std::nullopt; }
+    }
+    const auto number = [text](std::size_t from, std::size_t len) {
+        int value = 0;
+        for (std::size_t pos = from; pos < from + len; ++pos) {
+            value = (value * 10) + (text.at(pos) - '0');
+        }
+        return value;
+    };
+    const int hour = number(11, 2);
+    const int minute = number(14, 2);
+    const int second = number(17, 2);
+    if (hour > 23 || minute > 59 || second > 59) { return std::nullopt; }
+    const std::chrono::year_month_day date{std::chrono::year{number(0, 4)},
+                                           std::chrono::month{static_cast<unsigned>(number(5, 2))},
+                                           std::chrono::day{static_cast<unsigned>(number(8, 2))}};
+    if (!date.ok()) { return std::nullopt; }
+    return std::chrono::sys_days{date} + std::chrono::hours{hour} + std::chrono::minutes{minute} +
+           std::chrono::seconds{second};
+}
+
+// 已校验的 2030-01-03T04:05:06Z → 20300103T040506Z（与 compact_now 同一形状）。
+std::string compact_of(std::string_view iso) {
+    std::string out;
+    out.reserve(iso.size());
+    for (const char chr : iso) {
+        if (chr != '-' && chr != ':') { out += chr; }
+    }
+    return out;
+}
+
 // ---- 路径 ----------------------------------------------------------------
 
 // lexically_normal 之后去掉末尾的分隔符（"/a/b/" → "/a/b"），否则 lexically_relative 会把
@@ -290,6 +330,14 @@ void require_valid_retention(int retention) {
     }
 }
 
+// kind 与 reason 配对：manual/manual，auto/session 或 auto/interval。注册表校验与 take_snapshot
+// 的入参校验共用。
+bool kind_reason_paired(const std::string& kind, const std::string& reason) {
+    if (kind == "manual") { return reason == "manual"; }
+    if (kind == "auto") { return reason == "session" || reason == "interval"; }
+    return false;
+}
+
 // 与注册表所在目录无关的不变式。registry_from_json（绑定层的 dict 入口）只能做这一层；
 // load / save 另加 validate_layout。load 拒绝的注册表，save 也不能写出去覆盖好文件。
 // retention 放在路径检查之前：retention 非法的注册表报 invalid_retention，不被路径问题
@@ -329,11 +377,7 @@ void validate_shape(const Registry& reg) {
                 corrupt("snapshot '" + snap.id + "' of '" + owner + "' has kind '" + snap.kind +
                         "'");
             }
-            // kind 与 reason 配对：manual/manual，auto/session 或 auto/interval。
-            const bool paired = snap.kind == "manual"
-                                    ? snap.reason == "manual"
-                                    : (snap.reason == "session" || snap.reason == "interval");
-            if (!paired) {
+            if (!kind_reason_paired(snap.kind, snap.reason)) {
                 corrupt("snapshot '" + snap.id + "' of '" + owner + "' has kind '" + snap.kind +
                         "' with reason '" + snap.reason + "'");
             }
@@ -704,35 +748,58 @@ std::int64_t sessions_on(sqlite3* dbh, const std::string& tenant) {
     return query.step_row() ? sqlite3_column_int64(query.raw(), 0) : 0;
 }
 
-// 内容标记 "e<count>:<max_rowid>|s<count>:<max_rowid>|u<count>:<max_rowid>"（engrams、statements、
-// source_unit_meta，都按租户过滤；表不存在那段写 "-"）。原地更新不改变它，插入与删除会改变。
-// 三张表的计数都为 0 时返回空串：库里没有这个世界的内容。
+// 内容标记 "e<count>:<max_rowid>:<id>|s<count>:<max_rowid>:<id>|u<count>:<max_rowid>:<id>"
+// （engrams、statements、source_unit_meta，都按租户过滤；表不存在那段写 "-"）。<id> 是 rowid
+// 最大那一行的主键：engrams.id、statements.id、source_unit_meta 的 engram_ref || ':' || clause_id，
+// 计数为 0 时为空。这些 id 是随机 UUID，所以只看 count:max_rowid 会漏掉的两种情况也会改变标记：
+//   - 删掉 rowid 最大的那一行再插入一行（SQLite 复用那个 rowid）；
+//   - 清空租户（clear_memory）后重新摄入到相同的行数（表空了，rowid 从 1 重新分配）。
+// 原地更新不改变它，插入与删除会改变。三张表的计数都为 0 时返回空串：库里没有这个世界的内容。
 std::string content_mark_on(sqlite3* dbh, const std::string& tenant) {
-    static constexpr std::array<std::pair<std::string_view, char>, 3> kSegments{
-        {{"engrams", 'e'}, {"statements", 's'}, {"source_unit_meta", 'u'}},};
+    struct Segment {
+        std::string_view table;
+        std::string_view id_expr;
+        char tag;
+    };
+    static constexpr std::array<Segment, 3> kSegments{{
+        {.table = "engrams", .id_expr = "id", .tag = 'e'},
+        {.table = "statements", .id_expr = "id", .tag = 's'},
+        {.table = "source_unit_meta", .id_expr = "engram_ref || ':' || clause_id", .tag = 'u'},
+    }};
     std::string mark;
     bool has_rows = false;
-    for (const auto& [table, tag] : kSegments) {
+    for (const auto& segment : kSegments) {
         if (!mark.empty()) { mark += '|'; }
-        const std::string name(table);
+        const std::string name(segment.table);
         if (!table_exists(dbh, name)) {
             mark += '-';
             continue;
         }
-        persistence::Stmt query(dbh, ("SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM " + name +
-                                      " WHERE tenant_id=?1").c_str());
+        // 一条语句（autocommit 下即一个读版本）：计数、max rowid 与那一行的 id 出自同一版本。
+        // 「该租户 rowid 最大的那一行」按聚合出的 MAX(rowid) 走 INTEGER PRIMARY KEY 查找（与
+        // ORDER BY rowid DESC LIMIT 1 是同一行；后者在这几张表上要临时 B 树排序整个租户，
+        // 实测见 EXPLAIN QUERY PLAN）。计数为 0 时 top=0，查不到行 → NULL → 空串。
+        persistence::Stmt query(dbh, ("SELECT agg.cnt, agg.top, (SELECT " +
+                                      std::string(segment.id_expr) + " FROM " + name +
+                                      " WHERE rowid=agg.top AND tenant_id=?1) FROM (SELECT "
+                                      "COUNT(*) AS cnt, COALESCE(MAX(rowid), 0) AS top FROM " +
+                                      name + " WHERE tenant_id=?1) AS agg").c_str());
         query.bind(tenant);
         std::int64_t rows = 0;
         std::int64_t top = 0;
+        std::string top_id;
         if (query.step_row()) {
             rows = sqlite3_column_int64(query.raw(), 0);
             top = sqlite3_column_int64(query.raw(), 1);
+            top_id = column_text(query.raw(), 2);
         }
         has_rows = has_rows || rows > 0;
-        mark += tag;
+        mark += segment.tag;
         mark += std::to_string(rows);
         mark += ':';
         mark += std::to_string(top);
+        mark += ':';
+        mark += top_id;
     }
     return has_rows ? mark : std::string{};
 }
@@ -769,9 +836,10 @@ std::int64_t available_bytes(const fs::path& dir) {
                             : static_cast<std::int64_t>(avail);
 }
 
-// 与该世界已有快照（注册项或磁盘文件）不重名的 id。
+// 与该世界已有快照（注册项或磁盘文件）不重名的 id。now_iso（已校验）非空时时间前缀取它，
+// 与条目的 created_at 是同一秒；为空时取真实时钟。
 std::string fresh_snapshot_id(const Registry& reg, const std::string& world,
-                              const fs::path& dir) {
+                              const fs::path& dir, const std::string& now_iso) {
     const auto listed = reg.snapshots.find(world);
     const auto taken = [&](const std::string& cand) {
         std::error_code err;
@@ -780,8 +848,12 @@ std::string fresh_snapshot_id(const Registry& reg, const std::string& world,
                std::ranges::any_of(listed->second,
                                    [&cand](const SnapshotEntry& snap) { return snap.id == cand; });
     };
-    std::string cand = compact_now() + "-" + random_hex().substr(0, 4);
-    while (taken(cand)) { cand = compact_now() + "-" + random_hex().substr(0, 4); }
+    const auto draw = [&now_iso] {
+        const std::string stamp = now_iso.empty() ? compact_now() : compact_of(now_iso);
+        return stamp + "-" + random_hex().substr(0, 4);
+    };
+    std::string cand = draw();
+    while (taken(cand)) { cand = draw(); }
     return cand;
 }
 
@@ -1022,6 +1094,18 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
         throw WorldStoreError("invalid_snapshot_kind",
                               "kind must be 'manual' or 'auto', got '" + opts.kind + "'");
     }
+    // reason 不配对（manual/session、auto/manual……）同样在任何 I/O 之前拒：否则快照文件已经
+    // 写出，要到 save_registry 才报 registry_corrupt。
+    if (!kind_reason_paired(opts.kind, opts.reason)) {
+        throw WorldStoreError("invalid_snapshot_kind",
+                              "kind '" + opts.kind + "' cannot have reason '" + opts.reason +
+                                  "' (manual/manual, auto/session, auto/interval)");
+    }
+    // 注入的时钟：快照 id 的时间前缀与 created_at 都由它推出，形状不对在 I/O 之前拒。
+    if (!opts.now_iso.empty() && !parse_utc_seconds(opts.now_iso)) {
+        throw WorldStoreError("invalid_auto_snapshot",
+                              "now_iso is not YYYY-MM-DDTHH:MM:SSZ: '" + opts.now_iso + "'");
+    }
     // 向量在库文件之外的后端（zvec）拍出来的快照缺向量，不是完整的世界（spec §12）。
     if (opts.vector_backend != "sqlite") {
         throw WorldStoreError("snapshot_unsupported_backend",
@@ -1066,7 +1150,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
         snap.sessions_complete = sessions_on(source.get(), entry.tenant);
         snap.content_mark = content_mark_on(source.get(), entry.tenant);
 
-        snap.id = fresh_snapshot_id(reg, world, dir);
+        snap.id = fresh_snapshot_id(reg, world, dir, opts.now_iso);
         partial = dir / (snap.id + ".db.partial");
         const fs::path final_path = dir / (snap.id + ".db");
         {
@@ -1096,7 +1180,7 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
         }
         snap.size_bytes = static_cast<std::int64_t>(fs::file_size(partial));
         snap.path = final_path.string();
-        snap.created_at = opts.created_at.empty() ? iso_now() : opts.created_at;
+        snap.created_at = opts.now_iso.empty() ? iso_now() : opts.now_iso;
         fs::rename(partial, final_path);
     } catch (const WorldStoreError&) {
         std::error_code ignore;
@@ -1773,38 +1857,11 @@ namespace {
     throw WorldStoreError("invalid_auto_snapshot", detail);
 }
 
-// 严格解析 YYYY-MM-DDTHH:MM:SSZ（iso_now 与 Python _now_iso 的格式）。日期必须真实存在
-// （2030-02-30 不行），时分秒在 0–23 / 0–59 / 0–59 之内。别的写法一律解析不了。
-std::optional<std::chrono::sys_seconds> parse_utc_seconds(std::string_view text) {
-    constexpr std::string_view kShape = "dddd-dd-ddTdd:dd:ddZ";
-    if (text.size() != kShape.size()) { return std::nullopt; }
-    for (std::size_t pos = 0; pos < kShape.size(); ++pos) {
-        const char want = kShape.at(pos);
-        const char chr = text.at(pos);
-        const bool good = want == 'd' ? (chr >= '0' && chr <= '9') : chr == want;
-        if (!good) { return std::nullopt; }
-    }
-    const auto number = [text](std::size_t from, std::size_t len) {
-        int value = 0;
-        for (std::size_t pos = from; pos < from + len; ++pos) {
-            value = (value * 10) + (text.at(pos) - '0');
-        }
-        return value;
-    };
-    const int hour = number(11, 2);
-    const int minute = number(14, 2);
-    const int second = number(17, 2);
-    if (hour > 23 || minute > 59 || second > 59) { return std::nullopt; }
-    const std::chrono::year_month_day date{std::chrono::year{number(0, 4)},
-                                           std::chrono::month{static_cast<unsigned>(number(5, 2))},
-                                           std::chrono::day{static_cast<unsigned>(number(8, 2))}};
-    if (!date.ok()) { return std::nullopt; }
-    return std::chrono::sys_days{date} + std::chrono::hours{hour} + std::chrono::minutes{minute} +
-           std::chrono::seconds{second};
-}
-
 // 列表里满足 pred 的条目中 created_at 最新的一份（按解析后的时间比较；解析不了的算最旧，
 // 只有全都解析不了时才轮到它；同一时刻取列表里靠前的，即注册表里更新的那份）。没有返回 nullptr。
+// 「解析不了的算最旧」是有意的取舍：真正最新的那份时间若坏了，判断会落到更旧的一份上。
+// 只有手改过的注册表才会出现这种条目：take_snapshot 写进去的 created_at 不是 iso_now()，
+// 就是校验过的 now_iso。
 template <typename Pred>
 const SnapshotEntry* newest_snapshot(const Registry& reg, const std::string& world,
                                      const Pred& pred) {
@@ -1871,11 +1928,24 @@ AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
     const AutoSnapshotConfig config = entry.auto_snapshot;
     SnapshotOptions opts = base;
     opts.kind = "auto";
-    opts.created_at = trigger.now_iso;   // 与「间隔到没到」用同一个时钟
+    opts.now_iso = trigger.now_iso;   // 与「间隔到没到」用同一个时钟：id 前缀与 created_at 都取它
     if (trigger.kind == "session") {
         if (!config.on_session) { return skipped_because("disabled"); }
         if (trigger.session_id.empty()) { invalid_auto("session trigger needs a session_id"); }
         if (session_known(entry, trigger.session_id)) { return skipped_because("known_session"); }
+        // 调用方在写入之前触发：写入反复失败（契约拒绝、策略拒绝、SQLite 错误）时会话一直是新的，
+        // 每次重试都会走到这里。同一会话已有内容相同的按会话快照就不再拍，否则几次重试就把更早
+        // 会话的锚点和按时间的快照挤出保留策略。任意一份都算，不只看最新的 auto：两次重试之间
+        // 拍了按时间的快照也不重复拍。两个空标记也算相同（新世界首个会话反复失败）。
+        const std::string mark = current_content_mark(entry);
+        const auto listed = reg.snapshots.find(world);
+        if (listed != reg.snapshots.end() &&
+            std::ranges::any_of(listed->second, [&](const SnapshotEntry& snap) {
+                return snap.kind == "auto" && snap.reason == "session" &&
+                       snap.session_id == trigger.session_id && snap.content_mark == mark;
+            })) {
+            return skipped_because("unchanged");
+        }
         opts.reason = "session";
         opts.session_id = trigger.session_id;
     } else {
@@ -1887,8 +1957,12 @@ AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
             reg, world, [](const SnapshotEntry& snap) { return snap.kind == "auto"; });
         if (last != nullptr) {
             // 解析不了的 created_at、没有标记的旧条目：对应那一项按「需要拍」处理。
+            // last 晚于 now（时钟回拨，或那份快照的时间来自跳到未来的时钟）也算「到了」：
+            // 否则一份未来时间的条目会让按时间的快照一直停到真实时间追上它。标记照常比较，
+            // 内容没变仍是 unchanged，最坏多拍一份。
             const auto last_at = parse_utc_seconds(last->created_at);
-            if (last_at && *now - *last_at < std::chrono::hours{config.interval_hours}) {
+            if (last_at && *now >= *last_at &&
+                *now - *last_at < std::chrono::hours{config.interval_hours}) {
                 return skipped_because("not_due");
             }
             if (!last->content_mark.empty() && last->content_mark == mark) {
