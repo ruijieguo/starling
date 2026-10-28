@@ -16,6 +16,7 @@
 //   memory_cleared         {tenant, total, spool_discarded}  commands.py clear_memory
 //   world_switched         {active}                    routes/worlds.py(W1/W2)
 //   snapshot_created       {world, id}                 routes/worlds.py(W1/W2)
+//   world_rolled_back      {world, snapshot_id}        routes/worlds.py(W3)
 //
 // 未知类型/缺字段/脏 payload 一律优雅回退(只读面板,不因后端加事件或改 payload 而崩)。
 // 原则:宁可少说,不断言——无法确认时给空细节,不编造「空转」之类的结论。
@@ -176,6 +177,17 @@ export function describeEvent(type: string, payload: unknown): FeedEventView {
 				detail: world ? `世界 ${world} 拍了快照` : '',
 				tone: 'success'
 			};
+		}
+		case 'world_rolled_back': {
+			// 世界页「回滚到此」成功:快照之后的写入被丢弃(旧库进了 archive/),用 warn 提醒这是有损操作。
+			const world = typeof p.world === 'string' ? p.world : '';
+			const snap = typeof p.snapshot_id === 'string' ? p.snapshot_id : '';
+			const detail = !world
+				? ''
+				: snap
+					? `世界 ${world} 已回滚到快照 ${snap}`
+					: `世界 ${world} 已回滚`;
+			return { label: '世界回滚', detail, tone: 'warn' };
 		}
 		default:
 			// 后端新增事件类型时不崩:显示原类型名,细节留空。

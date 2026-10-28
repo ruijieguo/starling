@@ -21,6 +21,8 @@ const remove = vi.fn();
 const snapshots = vi.fn();
 const snapshot = vi.fn();
 const removeSnapshot = vi.fn();
+const rollback = vi.fn();
+const purgeArchives = vi.fn();
 vi.mock('$lib/worlds', async (orig) => {
 	const real = await orig<typeof import('$lib/worlds')>();
 	return {
@@ -32,12 +34,15 @@ vi.mock('$lib/worlds', async (orig) => {
 			remove: (...a: unknown[]) => remove(...a),
 			snapshots: (...a: unknown[]) => snapshots(...a),
 			snapshot: (...a: unknown[]) => snapshot(...a),
-			removeSnapshot: (...a: unknown[]) => removeSnapshot(...a)
+			removeSnapshot: (...a: unknown[]) => removeSnapshot(...a),
+			rollback: (...a: unknown[]) => rollback(...a),
+			purgeArchives: (...a: unknown[]) => purgeArchives(...a)
 		}
 	};
 });
 
 import Worlds from './+page.svelte';
+import { worldErrorMessage } from '$lib/worlds';
 
 const settle = async () => {
 	await tick();
@@ -51,9 +56,10 @@ const DATA = {
 	worlds: [
 		{ name: 'default', label: '主世界', tenant: 'default', created_at: '', active: true,
 		  db_bytes: 2_500_000_000, live_bytes: 60_000_000, statements: 3632, engrams: 101,
-		  snapshots: 0, snapshot_bytes: 0 },
+		  snapshots: 0, snapshot_bytes: 0, archives: 0, archive_bytes: 0 },
 		{ name: 'sim-1', label: '', tenant: 'sim-1', created_at: '', active: false,
-		  db_bytes: 0, live_bytes: 0, statements: 0, engrams: 0, snapshots: 0, snapshot_bytes: 0 }
+		  db_bytes: 0, live_bytes: 0, statements: 0, engrams: 0, snapshots: 0, snapshot_bytes: 0,
+		  archives: 0, archive_bytes: 0 }
 	]
 };
 
@@ -177,7 +183,9 @@ describe('/worlds 切换', () => {
 		await settle();
 		await fireEvent.click(inBody('切换')!);
 		await settle();
-		expect(toastError).toHaveBeenCalledWith('摄入任务正在进行，暂时不能切换，请稍后再试');
+		expect(toastError).toHaveBeenCalledWith(
+			'后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试'
+		);
 		expect(reload).not.toHaveBeenCalled();
 		expect(button(container, '切换到此世界')!.disabled).toBe(false);
 	});
@@ -381,7 +389,9 @@ describe('/worlds 快照抽屉', () => {
 		await openSnaps(container);
 		await fireEvent.click(inBody('立即拍快照')!);
 		await settle();
-		expect(toastError).toHaveBeenCalledWith('磁盘空间不足，快照需要至少 3 倍于数据量的可用空间');
+		expect(toastError).toHaveBeenCalledWith(
+			'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间'
+		);
 	});
 
 	it('删除快照要经 ConfirmDialog 确认', async () => {
@@ -422,6 +432,7 @@ describe('/worlds ws 事件', () => {
 	it.each([
 		['world_switched', { active: 'sim-1' }],
 		['snapshot_created', { world: 'sim-1', id: 's1' }],
+		['world_rolled_back', { world: 'sim-1', snapshot_id: 's1' }],
 		['statement_added', {}]
 	] as const)('收到 %s 事件时重取列表', async (type, payload) => {
 		render(Worlds);
@@ -439,5 +450,317 @@ describe('/worlds ws 事件', () => {
 		lastWsEvent.set({ type: 'recall', payload: {} });
 		await settle();
 		expect(list.mock.calls.length).toBe(before);
+	});
+});
+
+// ── W3:回滚到快照、清理回滚归档 ──────────────────────────────────────────
+const byLabel = (root: ParentNode, label: string) =>
+	[...root.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === label) as
+		| HTMLButtonElement
+		| undefined;
+
+describe('/worlds 回滚到快照', () => {
+	const reload = vi.fn();
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(DATA);
+		snapshots.mockReset().mockResolvedValue({ snapshots: SNAPS });
+		rollback.mockReset();
+		removeSnapshot.mockReset();
+		reload.mockReset();
+		toastError.mockReset();
+		toastSuccess.mockReset();
+		vi.stubGlobal('location', { ...window.location, reload });
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const openRollback = async (container: HTMLElement, world: string, snap = SNAPS[1]) => {
+		await fireEvent.click(byLabel(container, `快照 ${world}`)!);
+		await settle();
+		await fireEvent.click(byLabel(document.body, `回滚到快照 ${snap.created_at}`)!);
+		await settle();
+	};
+	const confirmInput = () =>
+		document.body.querySelector('input[name="world-rollback-confirm"]') as HTMLInputElement;
+
+	it('每个快照行都有「回滚到此」;点开只弹确认框,显示丢弃后续与归档说明,不直接回滚', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(byLabel(container, '快照 sim-1')!);
+		await settle();
+		const rows = [...document.body.querySelectorAll('button')].filter(
+			(b) => b.textContent?.trim() === '回滚到此'
+		);
+		expect(rows.length).toBe(2);
+		await fireEvent.click(byLabel(document.body, `回滚到快照 ${SNAPS[1].created_at}`)!);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('回滚世界 sim-1');
+		expect(text).toContain(SNAPS[1].created_at);
+		expect(text).toContain(
+			'该世界在这份快照之后写入的所有记忆都会被丢弃。当前的库会改名保留在该世界的 archive 目录，可手动恢复。'
+		);
+		expect(rollback).not.toHaveBeenCalled();
+	});
+
+	it('文件缺失的快照不给「回滚到此」(后端必回 snapshot_corrupt)', async () => {
+		snapshots.mockReset().mockResolvedValue({
+			snapshots: [{ ...SNAPS[0], size_bytes: 0, missing: true }, SNAPS[1]]
+		});
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(byLabel(container, '快照 sim-1')!);
+		await settle();
+		expect(byLabel(document.body, `回滚到快照 ${SNAPS[0].created_at}`)).toBeUndefined();
+		expect(byLabel(document.body, `回滚到快照 ${SNAPS[1].created_at}`)).toBeDefined();
+	});
+
+	it('手输世界名完全一致之前确认键禁用;一致后才调用 rollback(name, snapshotId, confirm)', async () => {
+		rollback.mockResolvedValue({ world: 'sim-1', snapshot_id: 's-man', archived: true, active: false });
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+		await fireEvent.click(inBody('确认回滚')!);
+		expect(rollback).not.toHaveBeenCalled();
+
+		for (const wrong of ['sim', 'sim-1 ', 'SIM-1', 'default']) {
+			await fireEvent.input(confirmInput(), { target: { value: wrong } });
+			await tick();
+			expect(inBody('确认回滚')!.disabled, wrong).toBe(true);
+		}
+
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		expect(inBody('确认回滚')!.disabled).toBe(false);
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(rollback).toHaveBeenCalledTimes(1);
+		expect(rollback).toHaveBeenCalledWith('sim-1', 's-man', 'sim-1');
+	});
+
+	it('函数级守卫:绕过按钮的 disabled 也不会在名称不符时调用 rollback', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim' } });
+		await tick();
+		const btn = inBody('确认回滚')!;
+		btn.disabled = false;
+		await fireEvent.click(btn);
+		await settle();
+		expect(rollback).not.toHaveBeenCalled();
+	});
+
+	it('回滚活动世界成功:整页刷新', async () => {
+		rollback.mockResolvedValue({ world: 'default', snapshot_id: 's-man', archived: true, active: true });
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'default');
+		expect(document.body.textContent).toContain('完成后页面会自动刷新');
+		await fireEvent.input(confirmInput(), { target: { value: 'default' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(rollback).toHaveBeenCalledWith('default', 's-man', 'default');
+		expect(reload).toHaveBeenCalledTimes(1);
+		// 重载前的空档里按钮不复位,免得再点一次
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+	});
+
+	it('回滚非活动世界成功:toast、关确认框、重取列表,不整页刷新', async () => {
+		rollback.mockResolvedValue({ world: 'sim-1', snapshot_id: 's-man', archived: true, active: false });
+		const { container } = render(Worlds);
+		await settle();
+		const before = list.mock.calls.length;
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(reload).not.toHaveBeenCalled();
+		expect(list.mock.calls.length).toBeGreaterThan(before);
+		expect(toastSuccess).toHaveBeenCalledTimes(1);
+		expect(String(toastSuccess.mock.calls[0][0])).toContain('sim-1');
+		expect(confirmInput()).toBeNull(); // 确认框已关
+	});
+
+	it('请求在途:确认键、各行「回滚到此」与「删除」都禁用,不能重复提交', async () => {
+		let resolve!: (v: unknown) => void;
+		rollback.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+		expect(document.body.textContent).toContain('请不要关闭页面');
+		const rowButtons = [...document.body.querySelectorAll('button')].filter((b) => {
+			const l = b.getAttribute('aria-label') ?? '';
+			return l.startsWith('回滚到快照') || l.startsWith('删除快照');
+		});
+		expect(rowButtons.length).toBe(4);
+		expect(rowButtons.every((b) => b.disabled)).toBe(true);
+		expect(button(container, '切换到此世界')!.disabled).toBe(true);
+		await fireEvent.click(inBody('确认回滚')!);
+		expect(rollback).toHaveBeenCalledTimes(1);
+		resolve({ world: 'sim-1', snapshot_id: 's-man', archived: true, active: false });
+		await settle();
+	});
+
+	it('失败:错误码经 worldErrorMessage 出中文 toast,不刷新页面,确认键恢复可点', async () => {
+		rollback.mockRejectedValue(apiErr(409, 'snapshot_corrupt'));
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(toastError).toHaveBeenCalledWith('快照文件损坏或缺失，未做任何改动');
+		expect(reload).not.toHaveBeenCalled();
+		expect(inBody('确认回滚')!.disabled).toBe(false);
+	});
+
+	it('已回滚但引擎重开失败(rollback_reopen_failed):toast 后整页刷新,确认键保持禁用', async () => {
+		rollback.mockRejectedValue(apiErr(500, 'rollback_reopen_failed'));
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'default');
+		await fireEvent.input(confirmInput(), { target: { value: 'default' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(toastError).toHaveBeenCalledWith(
+			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务'
+		);
+		expect(reload).toHaveBeenCalledTimes(1);
+		// 重载前的空档里按钮不复位,免得再回滚一次(会把恢复后的库也归档一份)
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+	});
+
+	it('活动世界回滚被拒(ingest_busy)同样不刷新页面', async () => {
+		rollback.mockRejectedValue(apiErr(409, 'ingest_busy'));
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'default');
+		await fireEvent.input(confirmInput(), { target: { value: 'default' } });
+		await tick();
+		await fireEvent.click(inBody('确认回滚')!);
+		await settle();
+		expect(toastError).toHaveBeenCalledWith(worldErrorMessage('ingest_busy'));
+		expect(reload).not.toHaveBeenCalled();
+	});
+});
+
+describe('/worlds 回滚归档', () => {
+	const WITH_ARCHIVES = {
+		...DATA,
+		worlds: [DATA.worlds[0], { ...DATA.worlds[1], archives: 2, archive_bytes: 1536 }]
+	};
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(WITH_ARCHIVES);
+		purgeArchives.mockReset();
+		toastError.mockReset();
+		toastSuccess.mockReset();
+	});
+	const purgeInput = () =>
+		document.body.querySelector('input[name="world-purge-confirm"]') as HTMLInputElement;
+
+	it('archives 为 0 时不显示归档行与「清理归档」', async () => {
+		list.mockReset().mockResolvedValue(DATA);
+		const { container } = render(Worlds);
+		await settle();
+		expect(button(container, '清理归档')).toBeUndefined();
+		expect(container.textContent).not.toMatch(/归档 \d+ 份/);
+	});
+
+	it('archives > 0 时只在那一行显示「归档 N 份 · 大小」与「清理归档」', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent).toContain('归档 2 份 · 1.5 KB');
+		expect(container.textContent?.match(/归档 \d+ 份/g)?.length).toBe(1);
+		const btns = [...container.querySelectorAll('button')].filter(
+			(b) => b.textContent?.trim() === '清理归档'
+		);
+		expect(btns.length).toBe(1);
+		expect(btns[0].getAttribute('aria-label')).toBe('清理归档 sim-1');
+	});
+
+	it('手输世界名一致后才调用 purgeArchives(name, confirm);成功后 toast 并重取列表', async () => {
+		purgeArchives.mockResolvedValue({ deleted: 2 });
+		const { container } = render(Worlds);
+		await settle();
+		const before = list.mock.calls.length;
+		await fireEvent.click(button(container, '清理归档')!);
+		await settle();
+		expect(document.body.textContent).toContain('清理 sim-1 的回滚归档');
+		expect(document.body.textContent).toContain('将永久删除世界「sim-1」的 2 份回滚归档（1.5 KB）');
+
+		expect(inBody('确认清理')!.disabled).toBe(true);
+		await fireEvent.click(inBody('确认清理')!);
+		expect(purgeArchives).not.toHaveBeenCalled();
+
+		await fireEvent.input(purgeInput(), { target: { value: 'sim' } });
+		await tick();
+		expect(inBody('确认清理')!.disabled).toBe(true);
+		await fireEvent.input(purgeInput(), { target: { value: 'sim-1' } });
+		await tick();
+		expect(inBody('确认清理')!.disabled).toBe(false);
+		await fireEvent.click(inBody('确认清理')!);
+		await settle();
+		expect(purgeArchives).toHaveBeenCalledWith('sim-1', 'sim-1');
+		expect(toastSuccess).toHaveBeenCalledTimes(1);
+		expect(String(toastSuccess.mock.calls[0][0])).toContain('2');
+		expect(list.mock.calls.length).toBeGreaterThan(before);
+		expect(purgeInput()).toBeNull();
+	});
+
+	it('函数级守卫:绕过 disabled 也不会在名称不符时调用 purgeArchives', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(button(container, '清理归档')!);
+		await settle();
+		const btn = inBody('确认清理')!;
+		btn.disabled = false;
+		await fireEvent.click(btn);
+		await settle();
+		expect(purgeArchives).not.toHaveBeenCalled();
+	});
+
+	it('请求在途时确认键禁用,不能重复提交', async () => {
+		let resolve!: (v: unknown) => void;
+		purgeArchives.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(button(container, '清理归档')!);
+		await settle();
+		await fireEvent.input(purgeInput(), { target: { value: 'sim-1' } });
+		await tick();
+		await fireEvent.click(inBody('确认清理')!);
+		await settle();
+		expect(inBody('确认清理')!.disabled).toBe(true);
+		await fireEvent.click(inBody('确认清理')!);
+		expect(purgeArchives).toHaveBeenCalledTimes(1);
+		resolve({ deleted: 2 });
+		await settle();
+	});
+
+	it('失败:错误码经 worldErrorMessage 出中文 toast', async () => {
+		purgeArchives.mockRejectedValue(apiErr(400, 'confirm_mismatch'));
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(button(container, '清理归档')!);
+		await settle();
+		await fireEvent.input(purgeInput(), { target: { value: 'sim-1' } });
+		await tick();
+		await fireEvent.click(inBody('确认清理')!);
+		await settle();
+		expect(toastError).toHaveBeenCalledWith('输入的名称与世界名不一致');
+		expect(inBody('确认清理')!.disabled).toBe(false);
 	});
 });

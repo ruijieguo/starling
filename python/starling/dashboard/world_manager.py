@@ -1,8 +1,9 @@
-"""世界管理：注册表读改写 + 世界切换时的引擎生命周期（W1）。
+"""世界管理：注册表读改写 + 世界切换与回滚时的引擎生命周期（W1、W3）。
 
-注册表、快照、保留策略、租户不变式都在 C++（`_core.world_*`）；这里只做 Python 才能做
-的事：切换时重建 DashboardEngine（停线程、等在飞请求、释放 C++ 写连接、开新库、失败回滚）。
-设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §8
+注册表、快照、保留策略、租户不变式、回滚的顺序与原子性都在 C++（`_core.world_*`）；这里
+只做 Python 才能做的事：切换时重建 DashboardEngine（停线程、等在飞请求、释放 C++ 写连接、
+开新库、失败回滚），回滚活动世界时同样停引擎、确认旧 Runtime 已回收、调 C++、再重建。
+设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §5.1、§8
 
 引擎租约（lease）
 -----------------
@@ -15,11 +16,19 @@
 租约按请求发放，不按 WebSocket 连接：长连接的对话 socket 在两轮之间不持租约，不挡切换。
 后台 tick / 摄入线程不是租约，切换用 quiesce 停它们。
 
+本进程里打开活动世界库文件的每条路径，从打开之前到关闭之后都持一份租约（只读的也一样）：
+检视 SQL 路由（routes/inspect.py）与 GET /api/worlds 的统计（routes/worlds.py）都是。回滚把同一
+路径上的 inode 换掉，一条在替换之前打开了旧 inode、替换之后才第一次读的只读连接会按路径打开
+新库的 -shm，在同进程里认为自己是第一个连接，把引擎正在用的 wal-index 截断重建。C++ 的连接
+探测（world_in_use）看不见这种「打开了还没读」的连接，在 delete 模式的库上连读过库的闲置连接
+也看不见（实测表见 rollback 的文档），它只是纵深防御，所以要靠租约：回滚等租约归零才动文件。
+
 锁顺序（全局唯一，任何代码都不得反向持有）
 ------------------------------------------
-  1. manager.lock（RLock）：activate / create / delete / take_snapshot / delete_snapshot，
-     以及 lifespan 关停。可能被占几秒到几十秒（VACUUM、等租约），所以事件循环上的代码
-     从不拿它。
+  1. manager.lock（RLock）：activate / create / delete / take_snapshot / delete_snapshot /
+     rollback / purge_archives，以及 lifespan 关停。可能被占几秒到几十秒（VACUUM、复制快照、
+     等租约），所以事件循环上的代码从不拿它。C++ 要求按世界串行化回滚，rollback 全程持它
+     即满足。
   2. manager._gate（Lock，短）：只保护 switching 标志和租约计数，持有期间不做任何 I/O、
      不建引擎、不拿别的锁。_drained 是建在它上面的 Condition：切换等租约归零时 wait 会
      放开 _gate，所以「等租约」从不持着 _gate。
@@ -59,7 +68,7 @@ _RUNTIME_RELEASE_GRACE_S = 1.0
 
 class WorldSwitchError(Exception):
     """code: "world_not_found" | "ingest_busy" | "world_open_failed"
-    | "world_tenant_mismatch" | "world_switching" """
+    | "world_tenant_mismatch" | "world_switching" | "rollback_reopen_failed" """
 
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -167,14 +176,20 @@ class WorldManager:
         self.lock = threading.RLock()
         self.workers_enabled = False
         self.on_tick = None
-        # 切换窗口标志：activate 动引擎期间为 True（见 _switch_window）。此时新租约一律拒绝，
-        # 路由回 503 world_switching，而不是在 engine 暂时为 None 时按旧 config 惰性重建引擎。
-        # 只读标志的检视路由（inspect._cfg）不加锁读；写它和发租约只在 _gate 内。
+        # 切换窗口标志：activate 与活动世界回滚动引擎期间为 True（见 _switch_window）。此时新
+        # 租约一律拒绝，路由回 503 world_switching，而不是在 engine 暂时为 None 时按旧 config
+        # 惰性重建引擎。写它和发租约只在 _gate 内；rollback 开头与 GET /api/config 不加锁读。
         self.switching = False
         self._gate = threading.Lock()
         self._drained = threading.Condition(self._gate)   # 租约归零时 notify
         self._leases = 0
         self._build_lock = threading.Lock()
+        # 切换后没能回收的旧 Runtime：[(它打开的库路径, 弱引用)]。它还开着那个库的写连接。
+        # 那个库若被回滚替换，这条连接会继续写旧 inode 和它已被 unlink 的 WAL：这些写入在
+        # 恢复出来的库里没有，静默丢失，归档（旧 inode 唯一剩下的名字）也可能被改动。关掉它时
+        # SQLite 发现主文件已被换掉，不做 checkpoint、不删文件，恢复出来的库不受影响（实测）。
+        # rollback 据此拒绝。只在 manager.lock 内读写。
+        self._leaked_runtimes: list[tuple[str, weakref.ref]] = []
 
     def load(self) -> dict:
         return _core.world_load_registry(self.registry_path)
@@ -317,21 +332,39 @@ class WorldManager:
                 raise WorldSwitchError("world_tenant_mismatch", str(exc)) from exc
             raise WorldSwitchError("world_open_failed", str(exc)) from exc
 
-    def _release_old_runtime(self, rt_ref) -> None:
+    def _release_old_runtime(self, rt_ref, db_path: str, after: str = "switch") -> bool:
+        """丢掉引擎之后等旧 Runtime 被回收，返回是否已回收。宽限期过了仍活着就记 warning，
+        并把 (db_path, 弱引用) 记进 _leaked_runtimes（见 _refuse_leaked_runtime）。"""
         gc.collect()
         deadline = time.monotonic() + _RUNTIME_RELEASE_GRACE_S
         while rt_ref() is not None and time.monotonic() < deadline:
             time.sleep(0.02)
             gc.collect()
-        if rt_ref() is not None:
-            # C++ 连接没释放：同进程里会暂时有第二条写连接
-            logger.warning("old runtime still referenced after switch")
+        if rt_ref() is None:
+            return True
+        # C++ 连接没释放：同进程里会暂时有第二条写连接
+        logger.warning("old runtime still referenced after %s", after)
+        self._prune_leaked_runtimes()
+        self._leaked_runtimes.append((db_path, rt_ref))
+        return False
 
-    def _swap_engine(self, reg: dict, name: str) -> None:
-        """activate 的主体，调用时已持管理锁并处于切换窗口内（标志已置位）。
-        engine 与 config 都在租约归零之后才定稿：等待期间惰性构建可能刚写回一个引擎，
-        在途的配置请求也可能刚改过 config。"""
-        self._verify_tenant(reg["worlds"][name])
+    def _prune_leaked_runtimes(self) -> None:
+        self._leaked_runtimes = [(path, ref) for path, ref in self._leaked_runtimes
+                                 if ref() is not None]
+
+    def _refuse_leaked_runtime(self, db_path: str) -> None:
+        """之前的切换或回滚留下的旧 Runtime 还开着 db_path 的写连接时抛 ingest_busy。先 gc 并
+        摘掉已回收的条目。在动任何引擎或文件之前调用。"""
+        gc.collect()
+        self._prune_leaked_runtimes()
+        if any(_same_db(path, db_path) for path, _ref in self._leaked_runtimes):
+            raise WorldSwitchError(
+                "ingest_busy", "old runtime still referenced: an earlier switch or rollback left "
+                               "a write connection open on this database")
+
+    def _quiesce_and_drain(self) -> None:
+        """停当前引擎的后台线程，再等在途租约归零（切换窗口内调用）。任一步失败：恢复后台
+        线程、引擎原样留在 app.state 上，抛 ingest_busy。activate 与 rollback 共用。"""
         quiesced = self._state.engine
         if quiesced is not None and not quiesced.quiesce():
             # 后台线程没停下：恢复后台线程，状态不前进。码保持 ingest_busy（前端按
@@ -345,7 +378,13 @@ class WorldManager:
             if quiesced is not None:
                 self._restart_workers(quiesced)
             raise
-        quiesced = None
+
+    def _swap_engine(self, reg: dict, name: str) -> None:
+        """activate 的主体，调用时已持管理锁并处于切换窗口内（标志已置位）。
+        engine 与 config 都在租约归零之后才定稿：等待期间惰性构建可能刚写回一个引擎，
+        在途的配置请求也可能刚改过 config。"""
+        self._verify_tenant(reg["worlds"][name])
+        self._quiesce_and_drain()
         old_engine = self._state.engine
         old_cfg = self._state.config
         new_cfg = dataclasses.replace(old_cfg)
@@ -353,9 +392,10 @@ class WorldManager:
         new_cfg.tenant = reg["worlds"][name]["tenant"]
         if old_engine is not None:
             rt_ref = weakref.ref(old_engine._rt)
+            old_db = old_engine._db_path
             self._state.engine = None
             old_engine = None
-            self._release_old_runtime(rt_ref)
+            self._release_old_runtime(rt_ref, old_db)
         try:
             new_engine = DashboardEngine(new_cfg)
         except Exception as exc:
@@ -436,3 +476,121 @@ class WorldManager:
         with self.lock:
             reg = self.load()
             self.save(_core.world_delete_snapshot(reg, name, snapshot_id))
+
+    # ---- 回滚语义 A 与归档（W3，spec §5.1） ----
+
+    def rollback(self, name: str, snapshot_id: str) -> dict:
+        """把世界 name 恢复到快照 snapshot_id（丢掉快照之后的一切）。替换、校验、归档都在
+        C++（world_rollback）；注册表不变，被替换的库留在 <世界 home>/archive/。
+
+        返回 {"world", "snapshot_id", "archived", "active"}。active 看 live config 指着哪个
+        库（与 delete 同一判据），不看注册表的 active，也不看引擎在不在：引擎还是 None 时，
+        窗口外的惰性构建同样会在回滚中途打开这个库。
+
+        抛错：world_switching（切换窗口已打开：切换或另一次活动世界回滚正在进行；不排队等
+        管理锁）；world_not_found 与 C++ 的码
+        （snapshot_not_found / snapshot_corrupt / world_tenant_mismatch / insufficient_disk /
+        snapshot_failed / snapshot_unsupported_backend / world_in_use）是 _core.WorldStoreError，
+        原样抛出，失败时目标库原样不动；ingest_busy（之前的切换留下的旧 Runtime 还开着这个库、
+        后台线程停不下、在途请求不结束，或旧 Runtime 回收不了，库未动）；world_open_failed
+        （库未动，但活动世界的引擎重建失败）；rollback_reopen_failed（库已替换成快照的内容，
+        但活动世界的引擎重建失败）。后两种 engine 都留 None，路由之后惰性重建。
+
+        动引擎之前先调 C++ 的预检（world_check_rollback，只读、什么都不动）：不存在的快照、缺失
+        或不是普通文件的快照文件、不支持的向量后端、磁盘不足，这几种不改输入重试也过不了，在
+        这里直接原样抛出，活动世界的引擎、线程、库文件都不动，也不进切换窗口。预检通过之后
+        world_rollback 仍会再查一遍，以它为准。
+
+        C++ 的连接探测（world_in_use）只是纵深防御。它看得见哪些连接取决于库的日志模式（在生产库
+        副本上实测）：WAL 库上读过库的闲置连接（只读、读写都算）与开着的读事务都看得见；
+        rollback-journal（delete）模式的库上只看得见开着的读事务；只打开、从没读过的连接两种模式
+        都看不见。恢复出来的库是 VACUUM INTO 的产物，引擎打开它之前一直是 delete 模式。别的进程
+        对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的安全靠这里：在切换窗口内停
+        线程、等租约（打开这个库的每条路径都持租约，见模块文档）、丢引擎，旧 Runtime 的弱引用
+        失效了才调 C++，失效不了就不动文件（切换时这里只记 warning；回滚替换的是同一个库文件，
+        必须严格）；切换遗留的 Runtime 还开着这个库就拒绝（_refuse_leaked_runtime）。活动世界的
+        每个出口都按原 config 重建引擎、起线程（打开时会跑迁移，旧 schema 的快照会补齐）；
+        app.state.config 不变。"""
+        with self._gate:
+            if self.switching:
+                raise WorldSwitchError("world_switching")
+        with self.lock:
+            reg = self.load()
+            entry = reg["worlds"].get(name)
+            if entry is None:
+                raise _core.WorldStoreError(f"world_not_found: {name}")
+            backend = getattr(self._state.config, "vector_backend", "sqlite")
+            # 停引擎之前的只读预检（C++），失败原样抛出。
+            _core.world_check_rollback(reg, self.registry_dir, name, snapshot_id,
+                                       vector_backend=backend)
+            self._refuse_leaked_runtime(entry["db_path"])
+            active = _same_db(self._state.config.db_path, entry["db_path"])
+            if active:
+                with self._switch_window():
+                    result = self._rollback_live_world(reg, name, snapshot_id)
+            else:
+                # 没有引擎在写它（上面已排除切换遗留的旧 Runtime）。
+                result = _core.world_rollback(reg, self.registry_dir, name, snapshot_id,
+                                              vector_backend=backend)
+            return {"world": name, "snapshot_id": snapshot_id,
+                    "archived": bool(result["archive_path"]), "active": active}
+
+    def _rollback_live_world(self, reg: dict, name: str, snapshot_id: str) -> dict:
+        """rollback 的活动世界路径，调用时已持管理锁并处于切换窗口内。config 在租约归零之后
+        才定稿（与 _swap_engine 同理）。"""
+        self._quiesce_and_drain()                 # ingest_busy：引擎原样、线程已恢复
+        cfg = self._state.config
+        engine = self._state.engine
+        if engine is not None:
+            rt_ref = weakref.ref(engine._rt)
+            db_path = engine._db_path
+            self._state.engine = None
+            engine = None
+            if not self._release_old_runtime(rt_ref, db_path, after="rollback"):
+                busy = WorldSwitchError(
+                    "ingest_busy", "old runtime still referenced; the database was not replaced")
+                self._reopen_live_world(cfg, busy)
+                raise busy
+        backend = getattr(cfg, "vector_backend", "sqlite")
+        try:
+            result = _core.world_rollback(reg, self.registry_dir, name, snapshot_id,
+                                          vector_backend=backend)
+        except Exception as exc:
+            self._reopen_live_world(cfg, exc)     # C++ 已保证目标库未动；原样抛出
+            raise
+        self._reopen_live_world(cfg, None)
+        return result
+
+    def _reopen_live_world(self, cfg, cause: Exception | None) -> None:
+        """回滚活动世界的每个出口：按原 config 重建引擎、起线程。重建失败时 engine 留 None，
+        路由之后惰性重建。码按库有没有被替换来分：
+        - cause 为 None（替换成功之后）：库已是快照的内容，抛 rollback_reopen_failed，链到
+          重建的异常。路由仍广播 world_rolled_back，前端整页刷新。
+        - 其余出口（C++ 失败、弱引用拒绝、遗留 Runtime 拒绝）：库未动，抛 world_open_failed，
+          链到 cause。
+        重建成功则返回，由调用方抛 cause 或返回结果。"""
+        try:
+            engine = DashboardEngine(cfg)
+        except Exception as exc:
+            self._state.engine = None
+            # 路由只回码，detail 不进响应，所以在这里留日志。
+            if cause is None:
+                detail = f"rollback applied, but the world cannot be reopened: {exc}"
+                logger.error("world rollback: %s", detail)
+                raise WorldSwitchError("rollback_reopen_failed", detail) from exc
+            detail = f"{cause}; reopening the world also failed: {exc}"
+            logger.error("world rollback: %s", detail)
+            raise WorldSwitchError("world_open_failed", detail) from cause
+        self._state.engine = engine
+        self._start_workers(engine, cfg)
+
+    def archives(self, name: str, reg: dict | None = None) -> list[dict]:
+        """该世界 archive/ 下的回滚归档 [{"name", "size_bytes"}]，最新在前。只读，不持管理锁，
+        不打开库。reg 给出时直接用（GET /api/worlds 已经读过注册表），否则重读。"""
+        return _core.world_list_archives(self.load() if reg is None else reg,
+                                         self.registry_dir, name)
+
+    def purge_archives(self, name: str) -> int:
+        """删除该世界的全部回滚归档，返回删掉的文件数。"""
+        with self.lock:
+            return _core.world_purge_archives(self.load(), self.registry_dir, name)

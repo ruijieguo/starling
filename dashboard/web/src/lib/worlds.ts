@@ -1,4 +1,4 @@
-// W1/W2 — 世界管理的前端数据层(HTTP 契约:routes/worlds.py)。
+// W1/W2/W3 — 世界管理的前端数据层(HTTP 契约:routes/worlds.py)。
 //
 // 一个世界 = 一个库文件 + 一个租户。本模块只放类型、与后端同一规则的名称校验、
 // 字节格式化、REST 客户端和错误码 → 中文提示;页面(/worlds)只读这里。
@@ -20,6 +20,9 @@ export type WorldRow = {
 	engrams: number;
 	snapshots: number;
 	snapshot_bytes: number;
+	/** W3:回滚时被替换下来的库,保留在 <世界 home>/archive/ 下的份数与总字节。 */
+	archives: number;
+	archive_bytes: number;
 	/** 该世界的库读不出(损坏、被占):统计全为 0。只在出错的行上出现。 */
 	stats_error?: boolean;
 };
@@ -34,6 +37,18 @@ export type SnapshotRow = {
 	size_bytes: number;
 	/** 注册项还在、文件已不在:size_bytes 为 0,仍可删除。只在缺失的行上出现。 */
 	missing?: boolean;
+};
+
+/** W3 回滚语义:目前只有语义 A「丢掉快照之后的写入」;"scene"(语义 B)属于 W5。 */
+export type RollbackMode = 'discard_after';
+
+export type RollbackResult = {
+	world: string;
+	snapshot_id: string;
+	/** 回滚前库存在、已改名进 archive/;库原本不存在时为 false。 */
+	archived: boolean;
+	/** 回滚的是活动世界(引擎已重建),前端应整页刷新。 */
+	active: boolean;
 };
 
 export type WorldsData = {
@@ -79,7 +94,22 @@ export const worldsApi = {
 	snapshot: (name: string, note?: string) =>
 		api.post<SnapshotRow>(`${base(name)}/snapshots`, { note }, { timeoutMs: 120_000 }),
 	removeSnapshot: (name: string, id: string) =>
-		api.del<{ deleted: string }>(`${base(name)}/snapshots/${encodeURIComponent(id)}`)
+		api.del<{ deleted: string }>(`${base(name)}/snapshots/${encodeURIComponent(id)}`),
+	// W3 回滚:校验快照 + 复制到 partial + 活动世界还要停引擎、重建引擎,与拍快照同量级,放宽到 120s。
+	// mode 显式发送:确认框描述的正是语义 A,别让后端默认值悄悄决定用户确认过的东西。
+	rollback: (name: string, snapshotId: string, confirm: string) =>
+		api.post<RollbackResult>(
+			`${base(name)}/rollback`,
+			{ snapshot_id: snapshotId, confirm, mode: 'discard_after' satisfies RollbackMode },
+			{ timeoutMs: 120_000 }
+		),
+	// 清理要排队等世界管理锁:前面若有快照或回滚在跑(回滚最长约 40s),默认 15s 会先超时,
+	// 后端随后照样删完,UI 却报了失败。与 rollback 一样放宽到 120s。
+	purgeArchives: (name: string, confirm: string) =>
+		api.del<{ deleted: number }>(
+			`${base(name)}/archives?confirm=${encodeURIComponent(confirm)}`,
+			{ timeoutMs: 120_000 }
+		)
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -88,13 +118,19 @@ const ERROR_MESSAGES: Record<string, string> = {
 	world_not_found: '世界不存在',
 	world_protected: '默认世界和当前活动世界不能删除',
 	confirm_mismatch: '输入的名称与世界名不一致',
-	ingest_busy: '摄入任务正在进行，暂时不能切换，请稍后再试',
-	world_open_failed: '新世界打不开，已留在原世界',
+	ingest_busy: '后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试',
+	world_open_failed: '引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新或重启服务',
 	snapshot_unsupported_backend: '当前向量后端（zvec）不支持快照',
-	insufficient_disk: '磁盘空间不足，快照需要至少 3 倍于数据量的可用空间',
+	insufficient_disk:
+		'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间',
+	snapshot_failed: '文件操作失败，数据库未改动；详情见服务日志',
+	world_in_use: '该世界的数据库正被其他程序打开，未做任何改动；请关闭后重试',
+	rollback_reopen_failed: '已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务',
 	snapshot_not_found: '快照不存在',
 	world_tenant_mismatch: '该世界的数据库里有其他租户的数据，拒绝打开',
 	world_switching: '正在切换世界，请稍后再试',
+	snapshot_corrupt: '快照文件损坏或缺失，未做任何改动',
+	rollback_mode_unsupported: '不支持的回滚方式',
 	internal_error: '服务器内部错误'
 };
 

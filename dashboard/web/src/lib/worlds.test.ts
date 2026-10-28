@@ -54,11 +54,107 @@ describe('worldsApi 路径与方法', () => {
 	});
 });
 
+describe('worldsApi 回滚与清理归档（W3）', () => {
+	it('rollback：POST /rollback，body 显式带 mode=discard_after（确认框文案描述的正是语义 A）', async () => {
+		await worldsApi.rollback('sim-1', '20261026T120000Z-ab12', 'sim-1');
+		expect(calls.map(([p, i]) => `${i.method ?? 'GET'} ${p}`)).toEqual([
+			'POST /api/worlds/sim-1/rollback'
+		]);
+		expect(JSON.parse(String(calls[0][1].body))).toEqual({
+			snapshot_id: '20261026T120000Z-ab12',
+			confirm: 'sim-1',
+			mode: 'discard_after'
+		});
+	});
+
+	it('purgeArchives：DELETE /archives?confirm=<编码后的确认名>', async () => {
+		await worldsApi.purgeArchives('sim-1', 'sim-1');
+		await worldsApi.purgeArchives('sim-1', 'a b&c');
+		expect(calls.map(([p, i]) => `${i.method ?? 'GET'} ${p}`)).toEqual([
+			'DELETE /api/worlds/sim-1/archives?confirm=sim-1',
+			'DELETE /api/worlds/sim-1/archives?confirm=a%20b%26c'
+		]);
+		expect(calls[0][1].body).toBeUndefined();
+	});
+
+	it('purgeArchives 的超时放宽到 120s（要排队等快照或回滚持有的管理锁）', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn(
+				(_p: string, init: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						init.signal?.addEventListener('abort', () =>
+							reject(new DOMException('aborted', 'AbortError'))
+						);
+					})
+			) as unknown as typeof fetch;
+			const caught = worldsApi.purgeArchives('sim-1', 'sim-1').catch((e) => e as ApiError);
+			let settled = false;
+			void caught.then(() => (settled = true));
+			await vi.advanceTimersByTimeAsync(119_000); // 越过默认 15s:仍在等
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(2_000);
+			const err = (await caught) as ApiError;
+			expect(err).toBeInstanceOf(ApiError);
+			expect(err.message).toContain('120');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('rollback 的超时放宽到 120s（默认 15s 不够复制快照 + 重建引擎）', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn(
+				(_p: string, init: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						init.signal?.addEventListener('abort', () =>
+							reject(new DOMException('aborted', 'AbortError'))
+						);
+					})
+			) as unknown as typeof fetch;
+			const caught = worldsApi.rollback('sim-1', 's1', 'sim-1').catch((e) => e as ApiError);
+			let settled = false;
+			void caught.then(() => (settled = true));
+			await vi.advanceTimersByTimeAsync(119_000); // 越过默认 15s 与切换的 60s:仍在等
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(2_000); // 越过 120s → 中断
+			const err = (await caught) as ApiError;
+			expect(err).toBeInstanceOf(ApiError);
+			expect(err.message).toContain('120');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe('错误文案', () => {
+	it('回滚新增的两个错误码有中文文案', () => {
+		expect(worldErrorMessage('snapshot_corrupt')).toBe('快照文件损坏或缺失，未做任何改动');
+		expect(worldErrorMessage('rollback_mode_unsupported')).toBe('不支持的回滚方式');
+	});
 	it('已知码与兜底', () => {
-		expect(worldErrorMessage('ingest_busy')).toContain('摄入');
-		expect(worldErrorMessage('insufficient_disk')).toContain('3 倍');
 		expect(worldErrorMessage('weird')).toBe('操作失败：weird');
+	});
+	it('切换与回滚共用的码:文案对两种语境都成立', () => {
+		expect(worldErrorMessage('ingest_busy')).toBe(
+			'后台任务或在途请求暂时停不下来，未做任何改动，请稍后再试'
+		);
+		expect(worldErrorMessage('world_open_failed')).toBe(
+			'引擎打开失败，数据库未改动（切换时已留在原世界）；若页面异常请刷新或重启服务'
+		);
+		expect(worldErrorMessage('insufficient_disk')).toBe(
+			'磁盘空间不足：快照需要至少 3 倍于数据量、回滚需要至少 2 倍于快照大小的可用空间'
+		);
+		expect(worldErrorMessage('snapshot_failed')).toBe('文件操作失败，数据库未改动；详情见服务日志');
+	});
+	it('回滚的两个新码:world_in_use 与 rollback_reopen_failed', () => {
+		expect(worldErrorMessage('world_in_use')).toBe(
+			'该世界的数据库正被其他程序打开，未做任何改动；请关闭后重试'
+		);
+		expect(worldErrorMessage('rollback_reopen_failed')).toBe(
+			'已回滚到快照，但引擎重开失败；页面即将刷新，若仍异常请重启服务'
+		);
 	});
 	it('snapshot_not_found（契约里 DELETE 快照的 404）有中文文案', () => {
 		expect(worldErrorMessage('snapshot_not_found')).toBe('快照不存在');

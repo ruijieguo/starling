@@ -22,17 +22,18 @@
 		isValidWorldName,
 		worldErrorMessage,
 		worldsApi,
+		type RollbackResult,
 		type SnapshotRow,
 		type WorldRow
 	} from '$lib/worlds';
 
-	// W1/W2 — 世界管理:一个世界 = 一个库文件 + 一个租户(HTTP 契约见 $lib/worlds)。
+	// W1–W3 — 世界管理:一个世界 = 一个库文件 + 一个租户(HTTP 契约见 $lib/worlds)。
 	const q = createQuery(() => worldsApi.list());
 	$effect(() => {
 		q.refetch();
 	});
-	// world_switched / snapshot_created 都归入 mutatesMemory 的「会改变可见状态」一侧
-	// (只有 recall 是纯读,见 $lib/ws),所以这一个判据同时覆盖两种事件。
+	// world_switched / snapshot_created / world_rolled_back 都归入 mutatesMemory 的「会改变可见状态」一侧
+	// (只有 recall 是纯读,见 $lib/ws),所以这一个判据同时覆盖这几种事件。
 	// 快照抽屉开着时一并重取它的列表;抽屉状态用 untrack 读,免得开关抽屉本身触发重取。
 	$effect(() => {
 		if (!mutatesMemory($lastWsEvent)) return;
@@ -222,11 +223,114 @@
 			removingSnap = null;
 		}
 	}
+
+	// ── 回滚到快照(W3 语义 A:丢掉快照之后的写入;抽屉 + 手输世界名) ──────────
+	// 被替换的库不删,改名进该世界的 archive/;注册表不变,所以快照列表回滚前后一样。
+	let rollbackOpen = $state(false);
+	let rollbackTarget = $state<{ world: string; snap: SnapshotRow } | null>(null);
+	let rollbackConfirm = $state('');
+	let rollingBack = $state<string | null>(null); // 在途回滚的快照 id
+	let rollbackRow = $derived.by(() => {
+		const t = rollbackTarget;
+		return t ? worlds.find((w) => w.name === t.world) : undefined;
+	});
+	// 同删除:抽屉开着时列表可能因 ws 事件刷新,每次按最新行重判。
+	let canRollback = $derived(
+		!!rollbackTarget &&
+			!!rollbackRow &&
+			rollbackConfirm === rollbackRow.name &&
+			rollingBack === null &&
+			switching === null
+	);
+	let snapRowBusy = $derived(
+		rollingBack !== null || removingSnap !== null || snapshotting || switching !== null
+	);
+
+	function askRollback(s: SnapshotRow) {
+		rollbackTarget = { world: snapWorld, snap: s };
+		rollbackConfirm = '';
+		rollbackOpen = true;
+	}
+
+	async function doRollback() {
+		const target = rollbackTarget;
+		if (!canRollback || !target) return; // 函数级守卫:前端校验一次,后端 confirm_mismatch 再校验一次
+		const { world, snap } = target;
+		const wasActive = rollbackRow?.active === true;
+		rollingBack = snap.id;
+		let r: RollbackResult;
+		try {
+			r = await worldsApi.rollback(world, snap.id, rollbackConfirm);
+		} catch (e) {
+			toast.error(errText(e));
+			// 库已经换成快照的内容、只是引擎没能重开:页面缓存的全是回滚前的数据,与活动世界
+			// 回滚成功一样整页刷新,rollingBack 保持置位直到重载。
+			if (apiDetail(e) === 'rollback_reopen_failed') {
+				location.reload();
+				return;
+			}
+			rollingBack = null;
+			return;
+		}
+		// 同切换:活动世界的引擎已在恢复后的库上重建,各页缓存的都是回滚前的数据,整页刷新;
+		// 不复位 rollingBack,别让按钮在重载前的空档里重新可点。以服务端的 active 为准,
+		// 列表那一行兜底(列表可能陈旧;多刷一次无害,少刷一次会留下陈旧缓存)。
+		if (r.active || wasActive) {
+			location.reload();
+			return;
+		}
+		toast.success(`已将「${world}」回滚到 ${snap.created_at} 的快照`);
+		rollingBack = null;
+		rollbackOpen = false;
+		rollbackConfirm = '';
+		await q.refetch();
+	}
+
+	// ── 清理回滚归档(抽屉 + 手输世界名) ─────────────────────────────────
+	let purgeOpen = $state(false);
+	let purgeTarget = $state('');
+	let purgeConfirm = $state('');
+	let purging = $state(false);
+	let purgeRow = $derived(worlds.find((w) => w.name === purgeTarget));
+	let canPurge = $derived(
+		!!purgeRow &&
+			purgeRow.archives > 0 &&
+			purgeConfirm === purgeRow.name &&
+			!purging &&
+			switching === null &&
+			rollingBack === null
+	);
+
+	// 任一会动库文件或引擎的请求在途时,世界行上的切换/清理/删除按钮一律禁用。
+	let worldBusy = $derived(switching !== null || deleting || rollingBack !== null || purging);
+
+	function askPurge(name: string) {
+		purgeTarget = name;
+		purgeConfirm = '';
+		purgeOpen = true;
+	}
+
+	async function doPurge() {
+		if (!canPurge) return; // 函数级守卫
+		const name = purgeTarget;
+		purging = true;
+		try {
+			const r = await worldsApi.purgeArchives(name, purgeConfirm);
+			toast.success(`已清理「${name}」的 ${r.deleted} 份回滚归档`);
+			purgeOpen = false;
+			purgeConfirm = '';
+			await q.refetch();
+		} catch (e) {
+			toast.error(errText(e));
+		} finally {
+			purging = false;
+		}
+	}
 </script>
 
 <PageHeader
 	title="世界"
-	subtitle="一个世界 = 一个数据库文件 + 一个租户。切换世界会重建引擎；快照是该世界库的紧凑只读副本。"
+	subtitle="一个世界 = 一个数据库文件 + 一个租户。切换世界会重建引擎；快照是该世界库的紧凑只读副本，可以回滚到它。"
 />
 
 {#if q.error && !q.data}
@@ -249,13 +353,18 @@
 					{#if w.stats_error}<Badge tone="warn">统计不可用</Badge>{/if}
 				{/snippet}
 				<p class="text-xs tabular-nums text-muted">{statsLine(w)}</p>
+				{#if w.archives > 0}
+					<p class="mt-1 text-xs tabular-nums text-muted">
+						归档 {w.archives} 份 · {formatBytes(w.archive_bytes)}
+					</p>
+				{/if}
 				<div class="mt-3 flex flex-wrap gap-2">
 					{#if !w.active}
 						<Button
 							variant="soft"
 							aria-label={`切换到此世界 ${w.name}`}
 							loading={switching === w.name}
-							disabled={switching !== null || deleting}
+							disabled={worldBusy}
 							onclick={() => askSwitch(w.name)}>切换到此世界</Button
 						>
 					{/if}
@@ -264,11 +373,19 @@
 						aria-label={`快照 ${w.name}`}
 						onclick={() => openSnapshots(w.name)}>快照</Button
 					>
+					{#if w.archives > 0}
+						<Button
+							variant="secondary"
+							aria-label={`清理归档 ${w.name}`}
+							disabled={worldBusy}
+							onclick={() => askPurge(w.name)}>清理归档</Button
+						>
+					{/if}
 					{#if isDeletable(w)}
 						<Button
 							variant="secondary"
 							aria-label={`删除 ${w.name}`}
-							disabled={switching !== null}
+							disabled={worldBusy}
 							onclick={() => askDelete(w.name)}>删除</Button
 						>
 					{/if}
@@ -361,7 +478,12 @@
 				autocomplete="off"
 				aria-label="快照备注"
 			/>
-			<Button variant="soft" loading={snapshotting} onclick={doSnapshot}>立即拍快照</Button>
+			<Button
+				variant="soft"
+				loading={snapshotting}
+				disabled={rollingBack !== null}
+				onclick={doSnapshot}>立即拍快照</Button
+			>
 			{#if snapshotting}
 				<p class="text-xs text-subtle">正在拷贝整库，数据量大时需要一两分钟，请不要关闭页面。</p>
 			{/if}
@@ -391,13 +513,25 @@
 							</div>
 							{#if s.note}<div class="break-words text-xs text-muted">{s.note}</div>{/if}
 						</div>
-						<Button
-							variant="secondary"
-							aria-label={`删除快照 ${s.created_at}`}
-							loading={removingSnap === s.id}
-							disabled={removingSnap !== null}
-							onclick={() => askRemoveSnap(s)}>删除</Button
-						>
+						<div class="flex shrink-0 flex-wrap justify-end gap-2">
+							<!-- 文件缺失的快照回滚必回 snapshot_corrupt,不给入口;删除仍可。 -->
+							{#if !s.missing}
+								<Button
+									variant="danger"
+									aria-label={`回滚到快照 ${s.created_at}`}
+									loading={rollingBack === s.id}
+									disabled={snapRowBusy}
+									onclick={() => askRollback(s)}>回滚到此</Button
+								>
+							{/if}
+							<Button
+								variant="secondary"
+								aria-label={`删除快照 ${s.created_at}`}
+								loading={removingSnap === s.id}
+								disabled={removingSnap !== null || rollingBack !== null}
+								onclick={() => askRemoveSnap(s)}>删除</Button
+							>
+						</div>
 					</li>
 				{/each}
 			</ul>
@@ -421,3 +555,68 @@
 	danger
 	onconfirm={doRemoveSnap}
 />
+
+<Drawer bind:open={rollbackOpen} title={`回滚世界 ${rollbackTarget?.world ?? ''}`}>
+	{#if rollbackTarget && rollbackRow}
+		{@const snap = rollbackTarget.snap}
+		<div class="space-y-3 text-sm">
+			<p class="text-xs tabular-nums text-subtle">
+				目标快照：{snap.created_at} · {snap.kind} · {formatBytes(snap.size_bytes)}{snap.note
+					? ` · ${snap.note}`
+					: ''}
+			</p>
+			<p class="text-xs text-muted">
+				该世界在这份快照之后写入的所有记忆都会被丢弃。当前的库会改名保留在该世界的 archive 目录，可手动恢复。
+			</p>
+			{#if rollbackRow.active}
+				<p class="text-xs text-warn">
+					这是当前活动世界：回滚期间会停止后台维护与摄入并重建引擎，完成后页面会自动刷新。
+				</p>
+			{/if}
+			<Field label={`输入世界名「${rollbackRow.name}」以确认`} for="world-rollback-confirm">
+				<Input
+					id="world-rollback-confirm"
+					name="world-rollback-confirm"
+					bind:value={rollbackConfirm}
+					placeholder={rollbackRow.name}
+					autocomplete="off"
+				/>
+			</Field>
+			<Button
+				variant="danger"
+				loading={rollingBack !== null}
+				disabled={!canRollback}
+				onclick={doRollback}>确认回滚</Button
+			>
+			{#if rollingBack !== null}
+				<p class="text-xs text-subtle">
+					正在校验并复制快照，数据量大时需要一两分钟，请不要关闭页面。
+				</p>
+			{/if}
+		</div>
+	{/if}
+</Drawer>
+
+<Drawer bind:open={purgeOpen} title={`清理 ${purgeTarget} 的回滚归档`}>
+	{#if purgeRow}
+		<div class="space-y-3 text-sm">
+			<p class="text-xs text-muted">
+				将永久删除世界「{purgeRow.name}」的 {purgeRow.archives} 份回滚归档（{formatBytes(
+					purgeRow.archive_bytes
+				)}）。归档是每次回滚前被替换下来的库，删除后不能再手动恢复；快照不受影响。
+			</p>
+			<Field label={`输入世界名「${purgeRow.name}」以确认`} for="world-purge-confirm">
+				<Input
+					id="world-purge-confirm"
+					name="world-purge-confirm"
+					bind:value={purgeConfirm}
+					placeholder={purgeRow.name}
+					autocomplete="off"
+				/>
+			</Field>
+			<Button variant="danger" loading={purging} disabled={!canPurge} onclick={doPurge}
+				>确认清理</Button
+			>
+		</div>
+	{/if}
+</Drawer>

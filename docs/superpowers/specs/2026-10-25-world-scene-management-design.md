@@ -1,6 +1,6 @@
 # 世界/场景管理：完整设计
 
-日期 2026-10-25。状态：**W1+W2 已在 `feat/world-core` 分支实现（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3–W5（回滚、场景清单与自动快照、分叉）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
+日期 2026-10-25。状态：**W1+W2 已实现并合入 main（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3 回滚语义 A（丢掉后续）与归档已在 `feat/world-rollback` 分支实现（含前端：C++ `rollback_world` / 归档列出与清理、绑定、`WorldManager.rollback`、`POST /api/worlds/{name}/rollback`、`DELETE /api/worlds/{name}/archives`、`/worlds` 页的回滚与清理归档）；W4–W5（场景清单与自动快照、分叉与语义 B）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
 
 **范围**：多世界 Dashboard、快照、回滚（两种语义）、分叉、场景清单。
 
@@ -222,6 +222,26 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 - 语义是"回到那一刻"，因此 S 之后的一切（包括其他并发场景）一并消失——这正是 §14.2 说的并发场景下的必然结果。
 - 旧库不删，改名保留；清理交给显式的"清理回收站"操作，避免一次误操作不可逆。
 
+**已实现（W3，2026-10-26；最终修复轮 2026-10-27）**，与上面的草图有几处不同：
+
+- **归档位置**：`<世界 home>/archive/<库文件名>.pre-rollback-<UTC 时刻>-<4 hex>`，世界 home 是 `<注册表目录>/worlds/<name>`，与新建、删除世界同一推导，`snapshot_dir` 不参与（默认世界即 `worlds/default/archive/`，它的库仍在原地）。建归档、列出、清理之前都先确认 `worlds/` 与世界 home 解析符号链接后仍在注册表目录之下，否则 `snapshot_failed`，世界目录之外什么都不建、不删。列出与清理：`GET /api/worlds` 每行的 `archives` / `archive_bytes`，`DELETE /api/worlds/{name}/archives?confirm=<name>`。
+- **硬链接归档 + 原子替换**：不改名挪走旧库，而是给它在 `archive/` 里建一个硬链接，再把校验过的副本 `rename` 到库路径。库路径上任何时刻都是一份完整的库，旧 inode 最后只剩归档这一个名字。若进程死在建链接之后、替换之前，`archive/` 里会多一个现役库的第二个名字：列出与清理都跳过它（`fs::equivalent`），下一次回滚开头摘掉它。
+- **不写注册表**：快照与世界条目都不变，没有「先动磁盘、后存注册表」的分叉。
+- **停引擎之前的预检（Codex 修复轮 2026-10-27）**：`WorldManager.rollback` 在进切换窗口之前先调 C++ `check_rollback`（绑定 `world_check_rollback`）。它只做 `rollback_world` 第 1–4 步的只读检查，顺序与错误码相同：世界、快照、向量后端、快照路径不越出 `snapshot_dir`、快照文件存在且是普通文件、世界 home、2 倍磁盘守卫。它不清扫、不复制、不建目录。不存在的快照 id、缺失的快照文件、zvec 后端、磁盘不足，这几种不改输入重试也过不了，在这里直接拒，活动世界的引擎、后台线程、库文件都不动。`rollback_world` 自己仍会再查一遍，以它为准。
+- **别的连接（`world_in_use`）**：建硬链接之前，C++ 新开一条读写连接，`busy_timeout` 0，`PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE`，拿不到锁就拒绝并回 `world_in_use`（409），什么都不改。它看得见哪些连接取决于库的日志模式（在生产库副本上实测）：
+
+  | | WAL | rollback-journal（delete） |
+  |---|---|---|
+  | 闲置的只读连接（读过） | BUSY | 看不见 |
+  | 闲置的读写连接（读过） | BUSY | 看不见 |
+  | 开着的读事务 | BUSY | BUSY |
+  | 打开了、从没读过 | 看不见 | 看不见 |
+
+  恢复出来的库是 `VACUUM INTO` 的产物，引擎打开它之前一直是 delete 模式（例如回滚过、还没激活过的非活动世界）。所以这个探测只是纵深防御：别的进程（sqlite3 CLI、运维脚本）对 dashboard 管的库开写连接不在支持的使用方式之内；进程内的安全靠 Python 的租约（见 §8.1）、旧 Runtime 弱引用已失效的证明，以及切换遗留 Runtime 的登记。
+- **旁车**：`-wal` / `-journal` 必须为空或不存在，`-shm` 必须是普通文件或不存在（大小不论，wal-index 不承载持久数据），否则 `snapshot_failed`。三者在替换之前删掉：它们不带状态，替换随后失败时旧库少了它们照常可用；替换之后再删，会有一段时间旧库的 `-shm` / `-wal` 挂在新库旁边。
+- **失败复原**：先把快照复制到库所在目录的隐藏 partial，`integrity_check` 与租户校验针对这份副本；替换之前任何一步失败，目标库原样不动、partial 删掉；替换失败时库仍是旧库，归档名摘掉。要被替换的文件头不是 `SQLite format 3\0` 时拒绝（`snapshot_failed`）。活动世界的旧 Runtime（写连接）回收不了就拒绝（`ingest_busy`），绝不在写连接还开着时替换库文件；每个出口都按原配置重建引擎。替换成功、重建失败时回 `rollback_reopen_failed`（500），仍广播 `world_rolled_back`，前端整页刷新；其余重建失败（库未动）回 `world_open_failed`。zvec 向量后端拒绝（`snapshot_unsupported_backend`，见 §12）。
+- **已知限制**：归档是硬链接，归档目录（`<注册表目录>/worlds/<name>/archive`）和库必须在同一个卷上。`STARLING_WORLDS_REGISTRY` 指到另一个卷、default 世界的库还在原卷时，每次回滚 default 世界都会 fail closed，回 `snapshot_failed`，库不动，错误信息写明要把注册表挪到库旁边；别的世界的库在 `worlds/<name>/` 下，不受影响。不退回复制：复制要双倍磁盘和另一套磁盘守卫，而这种配置今天没人部署。
+
 ### 5.2 语义 B — 只回滚该场景，保留后续
 
 场景 S 的边界：
@@ -328,7 +348,8 @@ activate(world):                          # 实现：python/starling/dashboard/w
 - 租约按请求发放，不按 WebSocket 连接；后台 tick / 摄入线程不是租约，由 `quiesce` 停（两次 join 各有上限）。
 - 任何一步失败，注册表 `active`、`app.state.config`、`app.state.engine` 三者都留在旧世界，不分叉。
 - 锁顺序见 `world_manager.py` 模块文档：`manager.lock → _gate → _build_lock → engine._lock → supervisor`，持租约的代码不得去拿 `manager.lock`。
-- 已知限制：inspect 的 SQL 路由（按 `app.state.config` 只读打开库）只检查 `switching` 标志、不持租约；在切换开始前已发出的查询可能返回一次旧世界的数据。只读，不写错。
+- **打开活动世界库的路径都持租约**：inspect 的 SQL 路由（按 `app.state.config` 只读打开库）和 `GET /api/worlds`（`world_stats` 只读打开每个世界的库）从打开库之前到关闭之后都持一份租约（不惰性建引擎），窗口内回 503 `world_switching`。只读也要持：回滚替换的是同一路径上的 inode，一条在替换之前打开了旧 inode、替换之后才第一次读的只读连接，会按路径打开新库的 `-shm`；SQLite 的进程内锁记录按 inode 区分，同进程的 fcntl 锁互不冲突，它会认为自己是第一个连接，把引擎正在用的 wal-index 截断重建（实测 iChange 从 5 变 0）。C++ 的 `world_in_use` 探测看不见这种「打开了还没读」的连接，所以靠租约：回滚等租约归零才动文件。
+- 已接受的限制：回滚**非活动**世界不进切换窗口、不等租约，可能与 `GET /api/worlds` 对那个世界的 `world_stats` 交错，`world_stats` 可能读到一次旧 inode，或重置新库的 `-shm`。那个库上没有写连接，所以无害。
 
 ### 8.2 metrics.db 与 spool
 
@@ -360,6 +381,7 @@ GET    /api/worlds/{w}/snapshots         快照列表
 POST   /api/worlds/{w}/snapshots         手动快照 {note}
 DELETE /api/worlds/{w}/snapshots/{id}    删除快照
 POST   /api/worlds/{w}/rollback          回滚 {mode: "discard_after"|"scene", cutoff|snapshot_id, confirm}
+DELETE /api/worlds/{w}/archives?confirm= 清理该世界的全部回滚归档（须 confirm=<w>）
 POST   /api/worlds/{w}/fork              分叉 {snapshot_id, name}
 GET    /api/worlds/{w}/scenes            场景清单
 ```

@@ -195,6 +195,13 @@ describe('mutatesMemory', () => {
 		]);
 	});
 
+	it('W3 的 world_rolled_back 在词表里,且算「改变可见状态」', () => {
+		expect(WS_EVENT_TYPES).toContain('world_rolled_back');
+		expect(
+			mutatesMemory({ type: 'world_rolled_back', payload: { world: 'sim-1', snapshot_id: 's1' } })
+		).toBe(true);
+	});
+
 	it('无事件(尚未收到任何帧)不触发刷新', () => {
 		expect(mutatesMemory(null)).toBe(false);
 		expect(mutatesMemory(undefined)).toBe(false);
