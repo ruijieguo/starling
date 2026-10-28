@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/memory/memory_events.hpp"
 #include "starling/memory/memory_ops.hpp"
 #include "starling/persistence/connection.hpp"
 #include "starling/store/episodic_event_store.hpp"
@@ -673,6 +674,26 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return store.latest_event_location(tenant, theme);
           },
           py::arg("connection"), py::arg("tenant"), py::arg("theme"));
+
+    // 迁移 0038 events 表的读侧,纯本地 SQLite 读(无网络),不放 GIL,薄转发到
+    // memoryops::next_seq / pending_events。查询在 C++,这里只把行转成 dict。
+    m.def("memory_next_seq",
+          [](starling::persistence::Connection& conn, const std::string& tenant) {
+              return starling::memoryops::next_seq(conn, tenant);
+          },
+          py::arg("connection"), py::arg("tenant"));
+
+    m.def("memory_pending_events",
+          [](starling::persistence::Connection& conn, const std::string& tenant) {
+              py::list out;
+              for (const auto& row : starling::memoryops::pending_events(conn, tenant)) {
+                  out.append(py::dict("key"_a = row.key, "text"_a = row.text,
+                                      "interlocutor"_a = row.interlocutor, "seq"_a = row.seq,
+                                      "failure_category"_a = row.failure_category));
+              }
+              return out;
+          },
+          py::arg("connection"), py::arg("tenant"));
 }
 
 }  // namespace starling::bindings

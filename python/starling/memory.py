@@ -157,6 +157,18 @@ class TickStats:
     stages_skipped: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PendingEvent:
+    """One `events` row still in state 'pending': a keyed write that was recorded
+    but not yet committed. `seq` is the per-tenant sequence number (starts at 0);
+    `failure_category` is '' until a failed attempt records one."""
+    key: str
+    text: str
+    interlocutor: str
+    seq: int
+    failure_category: str
+
+
 @dataclass
 class EmbedStats:
     """Counts from `Memory.embed_pending`: statements embedded / statements whose
@@ -283,6 +295,18 @@ class Memory:
         counted in `EmbedStats.failed`, not raised.
         """
         return EmbedStats(**self._core.embed_pending(now))
+
+    def next_seq(self) -> int:
+        """Next free event sequence number for this tenant.
+
+        0 on an empty library, so the first event's `seq` is 0. Abandoned events
+        count, so a number is never reused.
+        """
+        return self._core.next_seq()
+
+    def pending_events(self) -> list[PendingEvent]:
+        """Events recorded in state 'pending', ordered by `seq` ascending."""
+        return [PendingEvent(**row) for row in self._core.pending_events()]
 
     def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble a prompt-ready ContextBlock from memory (P2.e).

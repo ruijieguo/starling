@@ -1,6 +1,7 @@
 """Starling Memory public API."""
 from starling import _core
-from starling.memory import (EmbedStats, Memory, RecallDegradedError,
+from starling.memory import (EmbedStats, Memory, PendingEvent,
+                             RecallDegradedError,
                              make_anthropic_llm, make_openai_embedder,
                              make_openai_llm, make_stub_llm, RememberResult,
                              TickStats)
@@ -8,5 +9,6 @@ from starling.extractor.config import ExtractionConfig
 
 __all__ = ["_core", "Memory", "make_stub_llm", "make_openai_llm",
            "make_anthropic_llm", "make_openai_embedder", "RememberResult",
-           "TickStats", "EmbedStats", "ExtractionConfig", "RecallDegradedError"]
+           "TickStats", "EmbedStats", "ExtractionConfig", "RecallDegradedError",
+           "PendingEvent"]
 __version__ = "0.0.1"

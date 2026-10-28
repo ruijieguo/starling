@@ -432,6 +432,16 @@ class MemoryCore:
         `EpisodicEventStore::latest_event_location`(纯本地 SQLite 读)。"""
         return _core.latest_event_location(self.conn, self.tenant, theme)
 
+    def next_seq(self) -> int:
+        """本租户 events 表的下一个序号(空库为 0,含 abandoned 行,只增不复用)。
+        查询在 C++ `memoryops::next_seq`,这里只是绑定转发。"""
+        return _core.memory_next_seq(self.conn, self.tenant)
+
+    def pending_events(self) -> list[dict]:
+        """本租户 state='pending' 的 events 行,按 seq 升序。查询在 C++
+        `memoryops::pending_events`,这里原样返回 dict 列表,由门面包成 PendingEvent。"""
+        return _core.memory_pending_events(self.conn, self.tenant)
+
     def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
         forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""

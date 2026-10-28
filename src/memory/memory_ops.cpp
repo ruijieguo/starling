@@ -831,6 +831,8 @@ ClearTenantOutcome clear_tenant(persistence::SqliteAdapter& adapter,
     static constexpr std::array kSteps{
         Step{.table = "episodic_events", .sql = "DELETE FROM episodic_events WHERE tenant_id=?1"},
         Step{.table = "source_documents", .sql = "DELETE FROM source_documents WHERE tenant_id=?1"},
+        // 0038:写入收据。engram_ref 只是文本列,无外键,排在哪里都不影响删除顺序。
+        Step{.table = "events", .sql = "DELETE FROM events WHERE tenant_id=?1"},
         // 0037：左脑原文元数据与派生向量，均引用 engrams 故必须排在它之前。
         Step{.table = "source_unit_vectors",
              .sql = "DELETE FROM source_unit_vectors WHERE tenant_id=?1",},

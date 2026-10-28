@@ -158,6 +158,7 @@ add_executable(starling_tests
     test_persistence_stmt.cpp
     test_working_set.cpp
     test_memory_ops.cpp
+    test_memory_events.cpp
     test_converse_phases.cpp
     test_remember_phases.cpp
     test_affect_reranker.cpp
