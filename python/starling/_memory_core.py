@@ -463,6 +463,12 @@ class MemoryCore:
             source_prefix=self.source_prefix, key=key, text=text,
             epoch_iso=epoch, policy=_build_policy(self._extraction))
 
+    def abandon_event(self, key: str) -> None:
+        """把 pending 事件改成终态 abandoned。状态机在 C++
+        `memoryops::abandon_event`(committed 抛 EventConflict,未知 key 抛 KeyError,
+        已 abandoned 幂等),这里只是绑定转发。"""
+        _core.memory_abandon_event(self.rt.adapter, self.tenant, key)
+
     def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。
         forgotten 立即移出检索;向量/投影清理由 tick 跟进。"""

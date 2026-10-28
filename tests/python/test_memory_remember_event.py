@@ -155,3 +155,34 @@ def test_remember_event_requires_llm(tmp_path):
     with pytest.raises(starling._memory_core.LLMNotConfigured):
         mem.remember_event(KEY, "bob:hi", interlocutor="bob")
     assert mem.next_seq() == 0                      # 没写 pending 行
+
+
+def test_abandon_pending_then_same_key_conflicts(tmp_path):
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    mem.abandon_event(KEY)
+    assert mem.pending_events() == []
+    assert _count(tmp_path, "SELECT COUNT(*) FROM events WHERE state='abandoned'") == 1
+    assert mem.next_seq() == 1                       # 放弃不回收 seq
+    mem._core.llm = starling.make_stub_llm(default_response=CANNED_JSON)
+    with pytest.raises(starling.EventConflict):
+        mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    with pytest.raises(starling.EventConflict):
+        mem.remember_event(KEY, "bob:bye", interlocutor="bob")
+
+
+def test_abandon_committed_is_refused(tmp_path):
+    mem = _mem(tmp_path)
+    mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    with pytest.raises(starling.EventConflict):
+        mem.abandon_event(KEY)
+    assert _count(tmp_path, "SELECT state FROM events") == "committed"
+
+
+def test_abandon_unknown_key_raises_keyerror_and_twice_is_noop(tmp_path):
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    with pytest.raises(KeyError):
+        mem.abandon_event("nope#0")
+    mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    mem.abandon_event(KEY)
+    mem.abandon_event(KEY)                           # 已是终态,幂等

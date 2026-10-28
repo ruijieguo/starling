@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -746,6 +747,21 @@ void bind_13_memory_ops(pybind11::module_& m) {
           py::arg("adapter_name"), py::arg("source_prefix"), py::arg("key"),
           py::arg("text"), py::arg("epoch_iso"),
           py::arg("policy") = starling::extractor::ValidationPolicy{});
+
+    // 放弃一个 key(events 表,迁移 0038):一个短本地事务,无网络,不放 GIL。
+    // committed → starling.EventConflict(上面已注册);未知 key → C++ 抛
+    // std::out_of_range。pybind11 对 out_of_range 的默认译法是 IndexError,不是
+    // KeyError,所以这里显式改译:调用方拼错 key 该得到 KeyError。
+    m.def("memory_abandon_event",
+          [](starling::persistence::SqliteAdapter& adapter, const std::string& tenant,
+             const std::string& key) {
+              try {
+                  starling::memoryops::abandon_event(adapter, tenant, key);
+              } catch (const std::out_of_range& e) {
+                  throw py::key_error(e.what());
+              }
+          },
+          py::arg("adapter"), py::arg("tenant"), py::arg("key"));
 }
 
 }  // namespace starling::bindings

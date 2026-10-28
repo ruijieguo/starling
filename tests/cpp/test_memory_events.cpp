@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -239,6 +240,71 @@ TEST(MemoryEvents, RememberEventCompletesFromEngramWithoutReextracting) {
     EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM statements"), before);
     EXPECT_EQ(event_state(adapter->connection(), "r1/turn#3"), "committed");
     EXPECT_TRUE(pending_events(adapter->connection(), "default").empty());
+}
+
+// ── abandon_event ──
+
+TEST(MemoryEvents, AbandonEventTurnsPendingIntoAbandonedAndKeepsSeq) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    // pending 行可以带 failure_category(第 3 段未入库或抽取失败时留下的),照样能放弃。
+    insert_event(conn, "default", "r1/turn#3", 0, "pending", "bob", "not_stored:rejected");
+    insert_event(conn, "default", "r1/turn#4", 1, "pending");
+
+    abandon_event(*adapter, "default", "r1/turn#3");
+
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "abandoned");
+    EXPECT_EQ(event_state(conn, "r1/turn#4"), "pending");     // 只动目标 key
+    const auto rows = pending_events(conn, "default");
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_EQ(rows[0].key, "r1/turn#4");
+    EXPECT_EQ(next_seq(conn, "default"), 2);                  // 放弃不回收 seq
+}
+
+TEST(MemoryEvents, AbandonEventTwiceIsNoop) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    insert_event(conn, "default", "r1/turn#3", 0, "pending");
+
+    abandon_event(*adapter, "default", "r1/turn#3");
+    EXPECT_NO_THROW(abandon_event(*adapter, "default", "r1/turn#3"));
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "abandoned");
+}
+
+TEST(MemoryEvents, AbandonEventRefusesCommittedWithEventConflict) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                             "r1/turn#3", "bob:hi", kEpoch).outcome, "accepted");
+
+    EXPECT_THROW(abandon_event(*adapter, "default", "r1/turn#3"), EventConflict);
+    EXPECT_EQ(event_state(adapter->connection(), "r1/turn#3"), "committed");
+}
+
+TEST(MemoryEvents, AbandonEventUnknownKeyThrowsOutOfRange) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    insert_event(conn, "other", "r1/turn#3", 0, "pending");   // 别的租户的同名 key 不算
+
+    EXPECT_THROW(abandon_event(*adapter, "default", "r1/turn#3"), std::out_of_range);
+    EXPECT_EQ(event_state(conn, "r1/turn#3"), "");            // 没有凭空造行
+}
+
+TEST(MemoryEvents, AbandonedKeyRejectsLaterRememberEvent) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    AlwaysFailingLLMAdapter failing;
+    // 抽取失败 → 行留 pending(带 failure_category),随后放弃。
+    ASSERT_TRUE(remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                               "r1/turn#3", "bob:hi", kEpoch).extraction_failed);
+    abandon_event(*adapter, "default", "r1/turn#3");
+
+    EXPECT_THROW(remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                "r1/turn#3", "bob:hi", kEpoch),
+                 EventConflict);
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM statements"), 0);
 }
 
 }  // namespace starling::memoryops

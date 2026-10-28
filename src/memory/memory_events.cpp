@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <ctime>
 #include <format>
+#include <stdexcept>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -276,6 +277,36 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
         txn.commit();
     }
     return result;
+}
+
+void abandon_event(persistence::SqliteAdapter& adapter,
+                   std::string_view tenant,
+                   std::string_view key) {
+    governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
+    auto& conn = adapter.connection();
+
+    // 读状态与改状态在同一个事务里:TransactionGuard 的最外层是 BEGIN IMMEDIATE,
+    // 读到 pending 之后别的写者插不进来改成 committed。两条抛出路径都没 commit,
+    // 守卫析构时回滚,什么都不留。
+    persistence::TransactionGuard txn(conn);
+    const EventRow row = read_event(conn, tenant, key);
+    if (!row.found) {
+        throw std::out_of_range("abandon_event: no such key (key=" + std::string(key) + ")");
+    }
+    if (row.state == "committed") {
+        throw EventConflict(
+            "abandon_event: key already committed, cannot abandon (key=" +
+            std::string(key) + ")");
+    }
+    if (row.state == "pending") {
+        persistence::Stmt upd(conn.raw(),
+                              "UPDATE events SET state='abandoned' "
+                              "WHERE tenant_id=?1 AND key=?2 AND state='pending'");
+        upd.bind(tenant, key);
+        upd.step_done();
+    }
+    // state == "abandoned":已是终态,什么都不改(幂等)。
+    txn.commit();
 }
 
 }  // namespace starling::memoryops

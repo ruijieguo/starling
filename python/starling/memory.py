@@ -327,6 +327,20 @@ class Memory:
         return RememberResult(**self._core.remember_event(
             key, text, interlocutor=interlocutor, epoch=epoch))
 
+    def abandon_event(self, key: str) -> None:
+        """Abandon the event recorded under `key`: it will never be written.
+
+        Only the receipt row changes (state 'pending' -> 'abandoned'); nothing
+        else is touched, and the event's `seq` is not reused. Abandoning is
+        final: a later `remember_event` on this key raises `EventConflict`,
+        whatever the text. Abandoning an already abandoned key is a no-op.
+
+        Raises `EventConflict` when the event is already committed (its
+        statements are stored and cannot be taken back), and `KeyError` when no
+        event was ever recorded under `key`.
+        """
+        self._core.abandon_event(key)
+
     def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble a prompt-ready ContextBlock from memory (P2.e).
 

@@ -3,8 +3,7 @@
 //
 // rise 的记忆写入要幂等:同一个 key 重放不会再抽取一次。收据行记下 key、原文、
 // 说话对象、序号和状态(pending / committed / abandoned)。本头文件放读侧(序号时钟
-// next_seq 与待处理清单 pending_events)与写侧(remember_event)。abandon_event 随
-// 后续任务加进同一对文件。
+// next_seq 与待处理清单 pending_events)与写侧(remember_event 与 abandon_event)。
 //
 // 状态机与查询放在 C++(Starling CLAUDE.md 的边界);Python 绑定只转发,门面只把
 // 行包成 PendingEvent。
@@ -80,5 +79,22 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
                                std::string_view text,
                                std::string_view epoch_iso,
                                const extractor::ValidationPolicy& policy = {});
+
+// 放弃一个 key:一个短事务,把 state='pending' 的行改成终态 'abandoned'。放弃是终局,
+// 之后同一个 key 再 remember_event 一律抛 EventConflict(不论文本是否相同)。
+//
+//   pending   → UPDATE state='abandoned'(failure_category 原样留着,供事后查原因)
+//   abandoned → 不动,返回(幂等)
+//   committed → 抛 EventConflict:语句已经落库,放弃改不掉它,不能让收据说谎
+//   无此行    → 抛 std::out_of_range:未知 key 多半是调用方拼错了,不静默。
+//               std::out_of_range 不继承 EventConflict;pybind11 默认把它译成
+//               IndexError,绑定层在转发时改译成 KeyError(见 memory_abandon_event)。
+//
+// 只改事件行,不碰 statements 与 engrams:pending 行本来就没有语句(若有,remember_event
+// 的补齐分支会先把它补成 committed,而 committed 不许放弃)。seq 不回收:next_seq
+// 的 MAX(seq)+1 含 abandoned 行。走 SqliteAdapter 以便经过写准入门(门前抛 = 零 DB 写)。
+void abandon_event(persistence::SqliteAdapter& adapter,
+                   std::string_view tenant,
+                   std::string_view key);
 
 }  // namespace starling::memoryops
