@@ -5,6 +5,8 @@
 	import { mutatesMemory } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import AutoSnapshotFields from '$lib/components/AutoSnapshotFields.svelte';
+	import WorldRollbackDrawer from '$lib/components/WorldRollbackDrawer.svelte';
 	import {
 		Badge,
 		Button,
@@ -18,16 +20,20 @@
 	} from '$lib/components/ui';
 	import {
 		apiDetail,
+		autoSnapshotLabel,
 		formatBytes,
 		isValidWorldName,
+		NEW_WORLD_AUTO_SNAPSHOT,
+		parseIntervalHours,
+		shortId,
+		snapshotReasonLabel,
 		worldErrorMessage,
 		worldsApi,
-		type RollbackResult,
 		type SnapshotRow,
 		type WorldRow
 	} from '$lib/worlds';
 
-	// W1–W3 — 世界管理:一个世界 = 一个库文件 + 一个租户(HTTP 契约见 $lib/worlds)。
+	// W1–W4 — 世界管理:一个世界 = 一个库文件 + 一个租户(HTTP 契约见 $lib/worlds)。
 	const q = createQuery(() => worldsApi.list());
 	$effect(() => {
 		q.refetch();
@@ -46,6 +52,14 @@
 	let worlds = $derived(q.data?.worlds ?? []);
 	let defaultName = $derived(q.data?.default ?? '');
 	let retention = $derived(q.data?.snapshot_retention);
+	// W4:自动快照失败只记录、不影响摄入;有失败时在页面顶部提示一次。
+	let autoStatus = $derived(q.data?.auto_snapshot_status);
+	let autoFailureText = $derived.by(() => {
+		const st = autoStatus;
+		if (!st || st.failures <= 0) return '';
+		const last = [st.last_error_at, st.last_error].filter(Boolean).join(' ') || '—';
+		return `自动快照失败 ${st.failures} 次，最近一次：${last}；摄入未受影响，失败的会话没有回滚锚点`;
+	});
 
 	const errText = (e: unknown) => worldErrorMessage(apiDetail(e));
 	const worldTitle = (w: WorldRow) => (w.label ? `${w.name} · ${w.label}` : w.name);
@@ -58,20 +72,30 @@
 	// ── 新建 ──────────────────────────────────────────────────────────────
 	let newName = $state('');
 	let newLabel = $state('');
+	let newOnSession = $state(NEW_WORLD_AUTO_SNAPSHOT.on_session);
+	let newHours = $state<number | string | null>(NEW_WORLD_AUTO_SNAPSHOT.interval_hours);
 	let creating = $state(false);
 	let nameValid = $derived(isValidWorldName(newName));
 	// 空输入不标红:还没写不算写错,只是不能提交。
 	let nameInvalid = $derived(newName !== '' && !nameValid);
+	let newHoursParsed = $derived(parseIntervalHours(newHours));
+	let canCreate = $derived(nameValid && newHoursParsed !== null && !creating);
 
 	async function doCreate() {
-		if (creating || !nameValid) return; // 函数级守卫:不依赖按钮的 disabled
+		const hours = newHoursParsed;
+		if (!canCreate || hours === null) return; // 函数级守卫:不依赖按钮的 disabled
 		const name = newName;
 		creating = true;
 		try {
-			await worldsApi.create(name, newLabel.trim());
+			await worldsApi.create(name, newLabel.trim(), {
+				on_session: newOnSession,
+				interval_hours: hours
+			});
 			toast.success(`已创建世界「${name}」`);
 			newName = '';
 			newLabel = '';
+			newOnSession = NEW_WORLD_AUTO_SNAPSHOT.on_session;
+			newHours = NEW_WORLD_AUTO_SNAPSHOT.interval_hours;
 			await q.refetch();
 		} catch (e) {
 			toast.error(errText(e));
@@ -104,6 +128,42 @@
 		// 成功后不复位 switching:页面马上整页重载,别让按钮在重载前的空档里重新可点。
 		// 其他页面都按旧世界缓存了数据;整页刷新是唯一可靠的清法(spec §8:切换后新请求都走新引擎)。
 		location.reload();
+	}
+
+	// ── 自动快照设置(W4,抽屉) ──────────────────────────────────────────
+	let autoOpen = $state(false);
+	let autoWorld = $state('');
+	let autoOnSession = $state(false);
+	let autoHours = $state<number | string | null>(0);
+	let autoSaving = $state(false);
+	let autoHoursParsed = $derived(parseIntervalHours(autoHours));
+	let canSaveAuto = $derived(!!autoWorld && autoHoursParsed !== null && !autoSaving);
+
+	function openAutoSnapshot(w: WorldRow) {
+		autoWorld = w.name;
+		autoOnSession = w.auto_snapshot.on_session;
+		autoHours = w.auto_snapshot.interval_hours;
+		autoOpen = true;
+	}
+
+	async function doSaveAuto() {
+		const name = autoWorld;
+		const hours = autoHoursParsed;
+		if (!canSaveAuto || hours === null) return; // 函数级守卫;范围的最终校验在后端
+		autoSaving = true;
+		try {
+			const r = await worldsApi.setAutoSnapshot(name, {
+				on_session: autoOnSession,
+				interval_hours: hours
+			});
+			toast.success(`已更新「${name}」的自动快照：${autoSnapshotLabel(r.auto_snapshot)}`);
+			autoOpen = false;
+			await q.refetch();
+		} catch (e) {
+			toast.error(errText(e));
+		} finally {
+			autoSaving = false;
+		}
 	}
 
 	// ── 删除(抽屉 + 手输世界名) ─────────────────────────────────────────
@@ -225,65 +285,25 @@
 	}
 
 	// ── 回滚到快照(W3 语义 A:丢掉快照之后的写入;抽屉 + 手输世界名) ──────────
-	// 被替换的库不删,改名进该世界的 archive/;注册表不变,所以快照列表回滚前后一样。
+	// 确认、调用、错误文案与刷新规则都在 WorldRollbackDrawer(/sessions 页共用)。
 	let rollbackOpen = $state(false);
 	let rollbackTarget = $state<{ world: string; snap: SnapshotRow } | null>(null);
-	let rollbackConfirm = $state('');
-	let rollingBack = $state<string | null>(null); // 在途回滚的快照 id
+	let rollbackBusy = $state(false);
+	let rollingBack = $derived(rollbackBusy ? (rollbackTarget?.snap.id ?? null) : null); // 在途回滚的快照 id
 	let rollbackRow = $derived.by(() => {
 		const t = rollbackTarget;
 		return t ? worlds.find((w) => w.name === t.world) : undefined;
 	});
-	// 同删除:抽屉开着时列表可能因 ws 事件刷新,每次按最新行重判。
-	let canRollback = $derived(
-		!!rollbackTarget &&
-			!!rollbackRow &&
-			rollbackConfirm === rollbackRow.name &&
-			rollingBack === null &&
-			switching === null
-	);
 	let snapRowBusy = $derived(
 		rollingBack !== null || removingSnap !== null || snapshotting || switching !== null
 	);
+	const snapSummary = (snap: SnapshotRow) =>
+		`${snap.created_at} · ${snapshotReasonLabel(snap.reason)} · ${formatBytes(snap.size_bytes)}` +
+		(snap.note ? ` · ${snap.note}` : '');
 
 	function askRollback(s: SnapshotRow) {
 		rollbackTarget = { world: snapWorld, snap: s };
-		rollbackConfirm = '';
 		rollbackOpen = true;
-	}
-
-	async function doRollback() {
-		const target = rollbackTarget;
-		if (!canRollback || !target) return; // 函数级守卫:前端校验一次,后端 confirm_mismatch 再校验一次
-		const { world, snap } = target;
-		const wasActive = rollbackRow?.active === true;
-		rollingBack = snap.id;
-		let r: RollbackResult;
-		try {
-			r = await worldsApi.rollback(world, snap.id, rollbackConfirm);
-		} catch (e) {
-			toast.error(errText(e));
-			// 库已经换成快照的内容、只是引擎没能重开:页面缓存的全是回滚前的数据,与活动世界
-			// 回滚成功一样整页刷新,rollingBack 保持置位直到重载。
-			if (apiDetail(e) === 'rollback_reopen_failed') {
-				location.reload();
-				return;
-			}
-			rollingBack = null;
-			return;
-		}
-		// 同切换:活动世界的引擎已在恢复后的库上重建,各页缓存的都是回滚前的数据,整页刷新;
-		// 不复位 rollingBack,别让按钮在重载前的空档里重新可点。以服务端的 active 为准,
-		// 列表那一行兜底(列表可能陈旧;多刷一次无害,少刷一次会留下陈旧缓存)。
-		if (r.active || wasActive) {
-			location.reload();
-			return;
-		}
-		toast.success(`已将「${world}」回滚到 ${snap.created_at} 的快照`);
-		rollingBack = null;
-		rollbackOpen = false;
-		rollbackConfirm = '';
-		await q.refetch();
 	}
 
 	// ── 清理回滚归档(抽屉 + 手输世界名) ─────────────────────────────────
@@ -343,6 +363,14 @@
 	{#if q.error}
 		<p class="mb-3 text-xs text-danger">刷新失败，下面可能是旧数据：{q.error.message}</p>
 	{/if}
+	{#if autoFailureText}
+		<p
+			role="status"
+			class="mb-3 break-words rounded-control border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn"
+		>
+			{autoFailureText}
+		</p>
+	{/if}
 
 	<div class="space-y-3">
 		{#each worlds as w (w.name)}
@@ -356,6 +384,11 @@
 				{#if w.archives > 0}
 					<p class="mt-1 text-xs tabular-nums text-muted">
 						归档 {w.archives} 份 · {formatBytes(w.archive_bytes)}
+					</p>
+				{/if}
+				{#if w.auto_snapshot}
+					<p class="mt-1 text-xs tabular-nums text-muted">
+						自动快照：{autoSnapshotLabel(w.auto_snapshot)}
 					</p>
 				{/if}
 				<div class="mt-3 flex flex-wrap gap-2">
@@ -373,6 +406,13 @@
 						aria-label={`快照 ${w.name}`}
 						onclick={() => openSnapshots(w.name)}>快照</Button
 					>
+					{#if w.auto_snapshot}
+						<Button
+							variant="secondary"
+							aria-label={`设置自动快照 ${w.name}`}
+							onclick={() => openAutoSnapshot(w)}>设置</Button
+						>
+					{/if}
 					{#if w.archives > 0}
 						<Button
 							variant="secondary"
@@ -410,15 +450,18 @@
 					hint="小写字母或数字开头，可含下划线和连字符，最长 32 个字符"
 					error={nameInvalid ? worldErrorMessage('invalid_world_name') : ''}
 				>
-					<Input
-						id="world-name"
-						name="world-name"
-						bind:value={newName}
-						invalid={nameInvalid}
-						placeholder="sim-1"
-						autocomplete="off"
-						class="max-w-64"
-					/>
+					{#snippet children(f)}
+						<Input
+							id="world-name"
+							name="world-name"
+							bind:value={newName}
+							invalid={f.invalid}
+							aria-describedby={f.describedBy}
+							placeholder="sim-1"
+							autocomplete="off"
+							class="max-w-64"
+						/>
+					{/snippet}
 				</Field>
 				<Field label="显示名" for="world-label" hint="可选，只用来在列表里辨认">
 					<Input
@@ -429,7 +472,12 @@
 						class="max-w-64"
 					/>
 				</Field>
-				<Button type="submit" variant="soft" loading={creating} disabled={!nameValid}
+				<AutoSnapshotFields
+					idPrefix="world-new"
+					bind:onSession={newOnSession}
+					bind:hours={newHours}
+				/>
+				<Button type="submit" variant="soft" loading={creating} disabled={!canCreate}
 					>新建世界</Button
 				>
 			</form>
@@ -505,11 +553,20 @@
 						<div class="min-w-0 flex-1 space-y-1">
 							<div class="flex flex-wrap items-center gap-2">
 								<span class="break-all tabular-nums text-fg">{s.created_at}</span>
-								<Badge tone={s.kind === 'auto' ? 'info' : 'neutral'}>{s.kind}</Badge>
+								<Badge tone={s.kind === 'auto' ? 'info' : 'neutral'}
+									>{snapshotReasonLabel(s.reason)}</Badge
+								>
+								{#if s.reason === 'session' && s.session_id}
+									<span class="font-mono text-xs text-muted" title={s.session_id}
+										>会话 {shortId(s.session_id, 8)}</span
+									>
+								{/if}
 								{#if s.missing}<Badge tone="warn">文件缺失</Badge>{/if}
 							</div>
 							<div class="text-xs tabular-nums text-subtle">
-								世界时间 {s.world_time || '—'} · {formatBytes(s.size_bytes)}
+								世界时间 {s.world_time || '—'} · 会话数 {s.sessions_complete ?? '—'} · {formatBytes(
+									s.size_bytes
+								)}
 							</div>
 							{#if s.note}<div class="break-words text-xs text-muted">{s.note}</div>{/if}
 						</div>
@@ -549,52 +606,42 @@
 	bind:open={removeSnapOpen}
 	title="删除这份快照？"
 	description={removeSnapTarget
-		? `${removeSnapTarget.created_at} 的 ${removeSnapTarget.kind} 快照（${formatBytes(removeSnapTarget.size_bytes)}）将被永久删除。`
+		? `${removeSnapTarget.created_at} 的「${snapshotReasonLabel(removeSnapTarget.reason)}」快照（${formatBytes(removeSnapTarget.size_bytes)}）将被永久删除。`
 		: ''}
 	confirmLabel="确认删除"
 	danger
 	onconfirm={doRemoveSnap}
 />
 
-<Drawer bind:open={rollbackOpen} title={`回滚世界 ${rollbackTarget?.world ?? ''}`}>
-	{#if rollbackTarget && rollbackRow}
-		{@const snap = rollbackTarget.snap}
-		<div class="space-y-3 text-sm">
-			<p class="text-xs tabular-nums text-subtle">
-				目标快照：{snap.created_at} · {snap.kind} · {formatBytes(snap.size_bytes)}{snap.note
-					? ` · ${snap.note}`
-					: ''}
-			</p>
-			<p class="text-xs text-muted">
-				该世界在这份快照之后写入的所有记忆都会被丢弃。当前的库会改名保留在该世界的 archive 目录，可手动恢复。
-			</p>
-			{#if rollbackRow.active}
-				<p class="text-xs text-warn">
-					这是当前活动世界：回滚期间会停止后台维护与摄入并重建引擎，完成后页面会自动刷新。
-				</p>
-			{/if}
-			<Field label={`输入世界名「${rollbackRow.name}」以确认`} for="world-rollback-confirm">
-				<Input
-					id="world-rollback-confirm"
-					name="world-rollback-confirm"
-					bind:value={rollbackConfirm}
-					placeholder={rollbackRow.name}
-					autocomplete="off"
-				/>
-			</Field>
-			<Button
-				variant="danger"
-				loading={rollingBack !== null}
-				disabled={!canRollback}
-				onclick={doRollback}>确认回滚</Button
-			>
-			{#if rollingBack !== null}
-				<p class="text-xs text-subtle">
-					正在校验并复制快照，数据量大时需要一两分钟，请不要关闭页面。
-				</p>
-			{/if}
-		</div>
-	{/if}
+<WorldRollbackDrawer
+	bind:open={rollbackOpen}
+	bind:busy={rollbackBusy}
+	worldName={rollbackTarget?.world ?? ''}
+	row={rollbackRow}
+	snapshot={rollbackTarget?.snap ?? null}
+	summary={rollbackTarget ? snapSummary(rollbackTarget.snap) : ''}
+	blocked={switching !== null}
+	onsuccess={() => q.refetch()}
+/>
+
+<Drawer bind:open={autoOpen} title={`${autoWorld} 的自动快照`}>
+	<form
+		class="space-y-3 text-sm"
+		onsubmit={(e) => {
+			e.preventDefault();
+			void doSaveAuto();
+		}}
+	>
+		<AutoSnapshotFields
+			idPrefix="auto-snapshot"
+			bind:onSession={autoOnSession}
+			bind:hours={autoHours}
+		/>
+		<p class="text-xs text-subtle">
+			两种触发可以同时开。自动快照失败不影响摄入，只会记录失败次数。
+		</p>
+		<Button type="submit" variant="soft" loading={autoSaving} disabled={!canSaveAuto}>保存</Button>
+	</form>
 </Drawer>
 
 <Drawer bind:open={purgeOpen} title={`清理 ${purgeTarget} 的回滚归档`}>

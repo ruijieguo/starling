@@ -34,11 +34,21 @@ describe('NAV_GROUPS — 类脑 IA', () => {
 		expect(allHrefs).toContain('/engrams');
 	});
 
-	it('surfaces /worlds (W1/W2 — 世界 · 会话)', () => {
+	it('surfaces /worlds 与 /sessions (W1/W2/W4 — 世界 · 会话)', () => {
 		expect(allHrefs).toContain('/worlds');
+		expect(allHrefs).toContain('/sessions');
 		const worldGroup = NAV_GROUPS.find((g) => g.title === '世界 · 会话');
 		expect(worldGroup).toBeDefined();
-		expect(worldGroup!.items).toEqual([{ href: '/worlds', label: '世界', icon: 'globe' }]);
+		expect(worldGroup!.items).toEqual([
+			{ href: '/worlds', label: '世界', icon: 'globe' },
+			{ href: '/sessions', label: '会话', icon: 'list' }
+		]);
+	});
+
+	it('/sessions 的面包屑落在「世界 · 会话」组', () => {
+		const item = activeNavItem(new URL('http://x/sessions'));
+		expect(item?.label).toBe('会话');
+		expect(item?.group).toBe('世界 · 会话');
 	});
 
 	it('orphans no existing route in the reorg', () => {

@@ -23,6 +23,8 @@ const snapshot = vi.fn();
 const removeSnapshot = vi.fn();
 const rollback = vi.fn();
 const purgeArchives = vi.fn();
+const setAutoSnapshot = vi.fn();
+const listSessions = vi.fn();
 vi.mock('$lib/worlds', async (orig) => {
 	const real = await orig<typeof import('$lib/worlds')>();
 	return {
@@ -36,7 +38,9 @@ vi.mock('$lib/worlds', async (orig) => {
 			snapshot: (...a: unknown[]) => snapshot(...a),
 			removeSnapshot: (...a: unknown[]) => removeSnapshot(...a),
 			rollback: (...a: unknown[]) => rollback(...a),
-			purgeArchives: (...a: unknown[]) => purgeArchives(...a)
+			purgeArchives: (...a: unknown[]) => purgeArchives(...a),
+			setAutoSnapshot: (...a: unknown[]) => setAutoSnapshot(...a),
+			listSessions: (...a: unknown[]) => listSessions(...a)
 		}
 	};
 });
@@ -53,13 +57,15 @@ const settle = async () => {
 
 const DATA = {
 	active: 'default', default: 'default', snapshot_retention: 5,
+	auto_snapshot_status: { failures: 0, last_error: null, last_error_at: null },
 	worlds: [
 		{ name: 'default', label: '主世界', tenant: 'default', created_at: '', active: true,
 		  db_bytes: 2_500_000_000, live_bytes: 60_000_000, statements: 3632, engrams: 101,
-		  snapshots: 0, snapshot_bytes: 0, archives: 0, archive_bytes: 0 },
+		  snapshots: 0, snapshot_bytes: 0, archives: 0, archive_bytes: 0,
+		  auto_snapshot: { on_session: false, interval_hours: 24 } },
 		{ name: 'sim-1', label: '', tenant: 'sim-1', created_at: '', active: false,
 		  db_bytes: 0, live_bytes: 0, statements: 0, engrams: 0, snapshots: 0, snapshot_bytes: 0,
-		  archives: 0, archive_bytes: 0 }
+		  archives: 0, archive_bytes: 0, auto_snapshot: { on_session: true, interval_hours: 0 } }
 	]
 };
 
@@ -117,7 +123,8 @@ describe('/worlds', () => {
 		await tick();
 		await fireEvent.click(button(container, '新建世界')!);
 		await settle();
-		expect(create).toHaveBeenCalledWith('sim-2', '');
+		// 新建世界的自动快照默认值:按会话开、定时关(用户裁定 2026-10-28)
+		expect(create).toHaveBeenCalledWith('sim-2', '', { on_session: true, interval_hours: 0 });
 	});
 
 	it('加载失败显示错误态', async () => {
@@ -133,10 +140,10 @@ const inBody = (text: string) => button(document.body, text);
 const apiErr = (status: number, detail: string) => new ApiError(status, '', `${status} ${detail}`);
 
 const SNAPS = [
-	{ id: 's-auto', kind: 'auto', reason: 'pre_switch', note: '', created_at: '2026-10-25T08:00:00Z',
-	  world_time: '', size_bytes: 57 * 1024 * 1024 },
+	{ id: 's-auto', kind: 'auto', reason: 'interval', note: '', created_at: '2026-10-25T08:00:00Z',
+	  world_time: '', size_bytes: 57 * 1024 * 1024, sessions_complete: null, session_id: null },
 	{ id: 's-man', kind: 'manual', reason: 'manual', note: '切换前留底', created_at: '2026-10-25T09:00:00Z',
-	  world_time: '2026-03-01T00:00:00Z', size_bytes: 1536 }
+	  world_time: '2026-03-01T00:00:00Z', size_bytes: 1536, sessions_complete: 3, session_id: null }
 ];
 
 describe('/worlds 切换', () => {
@@ -280,6 +287,44 @@ describe('/worlds 新建的错误与 label', () => {
 		expect(container.textContent).toContain('世界名只能用小写字母');
 	});
 
+	it('世界名输入框经 aria-describedby 关联提示；出错时改为关联错误并标 aria-invalid', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		const input = container.querySelector('input[name="world-name"]') as HTMLInputElement;
+		const described = () =>
+			(input.getAttribute('aria-describedby') ?? '')
+				.split(/\s+/)
+				.filter(Boolean)
+				.map((id) => document.getElementById(id)?.textContent?.trim());
+		expect(described()).toEqual(['小写字母或数字开头，可含下划线和连字符，最长 32 个字符']);
+		expect(input.getAttribute('aria-invalid')).toBe('false');
+
+		await fireEvent.input(input, { target: { value: 'Bad Name' } });
+		await tick();
+		expect(described()).toEqual([worldErrorMessage('invalid_world_name')]);
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+
+	it('间隔小时数输入框经 aria-describedby 关联提示；出错时改为关联错误并标 aria-invalid', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		const input = container.querySelector('input[name="world-new-interval"]') as HTMLInputElement;
+		const described = () =>
+			(input.getAttribute('aria-describedby') ?? '')
+				.split(/\s+/)
+				.filter(Boolean)
+				.map((id) => document.getElementById(id)?.textContent?.trim());
+		expect(described()).toEqual([
+			'0 表示关闭；距上一份自动快照超过这么多小时、且期间有新写入时拍一份'
+		]);
+		expect(input.getAttribute('aria-invalid')).toBe('false');
+
+		await fireEvent.input(input, { target: { value: '9000' } });
+		await tick();
+		expect(described()).toEqual([worldErrorMessage('invalid_auto_snapshot')]);
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+
 	it('显示名随名称一起提交,world_exists 走中文 toast', async () => {
 		create.mockRejectedValue(apiErr(409, 'world_exists'));
 		const { container } = render(Worlds);
@@ -289,7 +334,7 @@ describe('/worlds 新建的错误与 label', () => {
 		await tick();
 		await fireEvent.click(button(container, '新建世界')!);
 		await settle();
-		expect(create).toHaveBeenCalledWith('sim-1', '推演');
+		expect(create).toHaveBeenCalledWith('sim-1', '推演', { on_session: true, interval_hours: 0 });
 		expect(toastError).toHaveBeenCalledWith('同名世界已存在');
 	});
 
@@ -342,8 +387,8 @@ describe('/worlds 快照抽屉', () => {
 		const text = document.body.textContent ?? '';
 		expect(text).toContain('sim-1 的快照');
 		expect(text).toContain('2026-10-25T08:00:00Z');
-		expect(text).toContain('auto');
-		expect(text).toContain('manual');
+		expect(text).toContain('定时');
+		expect(text).toContain('手动');
 		expect(text).toContain('57.0 MB');
 		expect(text).toContain('1.5 KB');
 		expect(text).toContain('切换前留底');
@@ -539,6 +584,28 @@ describe('/worlds 回滚到快照', () => {
 		await settle();
 		expect(rollback).toHaveBeenCalledTimes(1);
 		expect(rollback).toHaveBeenCalledWith('sim-1', 's-man', 'sim-1');
+	});
+
+	it('输入过确认名后关掉抽屉，重新打开时输入框为空、确认键禁用', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		expect(inBody('确认回滚')!.disabled).toBe(false);
+		// 用回滚抽屉自带的关闭键(✕)关掉
+		const dlg = [...document.body.querySelectorAll('[role="dialog"]')].find((d) =>
+			d.textContent?.includes('回滚世界 sim-1')
+		)!;
+		await fireEvent.click(button(dlg as HTMLElement, '✕')!);
+		await settle();
+		expect(confirmInput()).toBeNull();
+
+		await fireEvent.click(byLabel(document.body, `回滚到快照 ${SNAPS[1].created_at}`)!);
+		await settle();
+		expect(confirmInput().value).toBe('');
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+		expect(rollback).not.toHaveBeenCalled();
 	});
 
 	it('函数级守卫:绕过按钮的 disabled 也不会在名称不符时调用 rollback', async () => {
@@ -762,5 +829,260 @@ describe('/worlds 回滚归档', () => {
 		await settle();
 		expect(toastError).toHaveBeenCalledWith('输入的名称与世界名不一致');
 		expect(inBody('确认清理')!.disabled).toBe(false);
+	});
+});
+
+// ── W4:自动快照设置、快照元数据、失败提示 ────────────────────────────────
+const checkbox = (root: ParentNode, name: string) =>
+	root.querySelector(`input[type="checkbox"][name="${name}"]`) as HTMLInputElement;
+const field = (root: ParentNode, name: string) =>
+	root.querySelector(`input[name="${name}"]`) as HTMLInputElement;
+
+// 世界行(Card)= 只含这一个世界「设置自动快照」按钮的最外层祖先。
+const worldRow = (root: HTMLElement, name: string) => {
+	let el: HTMLElement | null | undefined = byLabel(root, `设置自动快照 ${name}`);
+	const settingButtons = (n: Element) =>
+		[...n.querySelectorAll('button')].filter((b) =>
+			b.getAttribute('aria-label')?.startsWith('设置自动快照 ')
+		).length;
+	while (el?.parentElement && el.parentElement !== root && settingButtons(el.parentElement) === 1)
+		el = el.parentElement;
+	return el ?? undefined;
+};
+const autoLine = (row: HTMLElement) =>
+	[...row.querySelectorAll('p')]
+		.map((p) => p.textContent?.trim() ?? '')
+		.filter((t) => t.startsWith('自动快照：'));
+
+describe('/worlds 自动快照设置', () => {
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(DATA);
+		setAutoSnapshot.mockReset();
+		toastError.mockReset();
+		toastSuccess.mockReset();
+	});
+
+	it('每个世界行显示自己的自动快照设置', async () => {
+		list.mockReset().mockResolvedValue({
+			...DATA,
+			worlds: [
+				DATA.worlds[0],
+				DATA.worlds[1],
+				{ ...DATA.worlds[1], name: 'sim-2', tenant: 'sim-2',
+				  auto_snapshot: { on_session: true, interval_hours: 24 } },
+				{ ...DATA.worlds[1], name: 'sim-3', tenant: 'sim-3',
+				  auto_snapshot: { on_session: false, interval_hours: 0 } }
+			]
+		});
+		const { container } = render(Worlds);
+		await settle();
+		const expected: Record<string, string> = {
+			default: '自动快照：每 24 小时',
+			'sim-1': '自动快照：按会话',
+			'sim-2': '自动快照：按会话 · 每 24 小时',
+			'sim-3': '自动快照：关闭'
+		};
+		for (const [n, line] of Object.entries(expected)) {
+			// 只在该世界自己那一行里找,别的行的「按会话 · 每 24 小时」不能替 sim-1 过关
+			const row = worldRow(container, n);
+			expect(row, n).toBeDefined();
+			expect(autoLine(row!), n).toEqual([line]); // 恰好一行,且是这一行自己的设置
+		}
+	});
+
+	it('「设置」打开表单，预填当前值；保存时 PUT 新配置，成功后关表单并重取列表', async () => {
+		setAutoSnapshot.mockResolvedValue({
+			world: 'default', auto_snapshot: { on_session: true, interval_hours: 6 }
+		});
+		const { container } = render(Worlds);
+		await settle();
+		const before = list.mock.calls.length;
+		await fireEvent.click(byLabel(container, '设置自动快照 default')!);
+		await settle();
+		expect(document.body.textContent).toContain('default 的自动快照');
+		const on = checkbox(document.body, 'auto-snapshot-on-session');
+		const hours = field(document.body, 'auto-snapshot-interval');
+		expect(on.checked).toBe(false);
+		expect(hours.value).toBe('24');
+		expect(setAutoSnapshot).not.toHaveBeenCalled();
+
+		await fireEvent.click(on);
+		await fireEvent.input(hours, { target: { value: '6' } });
+		await tick();
+		await fireEvent.click(inBody('保存')!);
+		await settle();
+		expect(setAutoSnapshot).toHaveBeenCalledTimes(1);
+		expect(setAutoSnapshot).toHaveBeenCalledWith('default', { on_session: true, interval_hours: 6 });
+		expect(toastSuccess).toHaveBeenCalledTimes(1);
+		expect(list.mock.calls.length).toBeGreaterThan(before);
+		expect(field(document.body, 'auto-snapshot-interval')).toBeNull(); // 表单已关
+	});
+
+	it('间隔不在 0–8760 的整数内：显示错误、保存禁用，绕过 disabled 也不调用 PUT', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(byLabel(container, '设置自动快照 sim-1')!);
+		await settle();
+		const hours = field(document.body, 'auto-snapshot-interval');
+		for (const bad of ['8761', '-1', '1.5', '']) {
+			await fireEvent.input(hours, { target: { value: bad } });
+			await tick();
+			expect(inBody('保存')!.disabled, bad).toBe(true);
+		}
+		expect(document.body.textContent).toContain('自动快照设置无效（间隔须为 0–8760 小时）');
+		const btn = inBody('保存')!;
+		btn.disabled = false;
+		await fireEvent.click(btn);
+		await settle();
+		expect(setAutoSnapshot).not.toHaveBeenCalled();
+	});
+
+	it('后端拒绝（invalid_auto_snapshot）时 toast 中文提示，表单不关', async () => {
+		setAutoSnapshot.mockRejectedValue(apiErr(400, 'invalid_auto_snapshot'));
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.click(byLabel(container, '设置自动快照 sim-1')!);
+		await settle();
+		await fireEvent.click(inBody('保存')!);
+		await settle();
+		expect(setAutoSnapshot).toHaveBeenCalledWith('sim-1', { on_session: true, interval_hours: 0 });
+		expect(toastError).toHaveBeenCalledWith('自动快照设置无效（间隔须为 0–8760 小时）');
+		expect(field(document.body, 'auto-snapshot-interval')).not.toBeNull();
+		expect(inBody('保存')!.disabled).toBe(false);
+	});
+});
+
+describe('/worlds 新建世界带自动快照配置', () => {
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(DATA);
+		create.mockReset();
+	});
+
+	it('默认按会话开、间隔 0；改过之后随新建一起提交', async () => {
+		create.mockResolvedValue({ ...DATA.worlds[1], name: 'sim-2' });
+		const { container } = render(Worlds);
+		await settle();
+		const on = checkbox(container, 'world-new-on-session');
+		const hours = field(container, 'world-new-interval');
+		expect(on.checked).toBe(true);
+		expect(hours.value).toBe('0');
+		await fireEvent.input(field(container, 'world-name'), { target: { value: 'sim-2' } });
+		await fireEvent.click(on);
+		await fireEvent.input(hours, { target: { value: '12' } });
+		await tick();
+		await fireEvent.click(button(container, '新建世界')!);
+		await settle();
+		expect(create).toHaveBeenCalledWith('sim-2', '', { on_session: false, interval_hours: 12 });
+		// 成功后表单回到默认值
+		expect(checkbox(container, 'world-new-on-session').checked).toBe(true);
+		expect(field(container, 'world-new-interval').value).toBe('0');
+	});
+
+	it('间隔不合法时新建禁用，且不调用 create', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await fireEvent.input(field(container, 'world-name'), { target: { value: 'sim-2' } });
+		await fireEvent.input(field(container, 'world-new-interval'), { target: { value: '9000' } });
+		await tick();
+		const btn = button(container, '新建世界')!;
+		expect(btn.disabled).toBe(true);
+		expect(container.textContent).toContain('自动快照设置无效（间隔须为 0–8760 小时）');
+		btn.disabled = false;
+		await fireEvent.click(btn);
+		await settle();
+		expect(create).not.toHaveBeenCalled();
+	});
+});
+
+describe('/worlds 快照行的 W4 元数据', () => {
+	const SESSION_SNAP = {
+		id: 's-sess', kind: 'auto', reason: 'session', note: '', created_at: '2026-10-27T08:59:59Z',
+		world_time: '', size_bytes: 2048, sessions_complete: 4, session_id: 'abcdef1234567890'
+	};
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(DATA);
+		snapshots.mockReset().mockResolvedValue({ snapshots: [SESSION_SNAP, ...SNAPS] });
+		removeSnapshot.mockReset();
+		rollback.mockReset();
+	});
+
+	const openSnaps = async (container: HTMLElement) => {
+		await fireEvent.click(byLabel(container, '快照 sim-1')!);
+		await settle();
+	};
+
+	it('reason 显示为「会话开始前」「定时」「手动」', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openSnaps(container);
+		const items = [...document.body.querySelectorAll('li')];
+		expect(items.length).toBe(3);
+		expect(items[0].textContent).toContain('会话开始前');
+		expect(items[1].textContent).toContain('定时');
+		expect(items[2].textContent).toContain('手动');
+	});
+
+	it('sessions_complete 有值时显示数字，为 null 时显示 —', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openSnaps(container);
+		const items = [...document.body.querySelectorAll('li')];
+		expect(items[0].textContent).toContain('会话数 4');
+		expect(items[1].textContent).toContain('会话数 —');
+		expect(items[2].textContent).toContain('会话数 3');
+	});
+
+	it('「会话开始前」的快照显示 session_id 前 8 位，悬停显示全文；其他 reason 不显示', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openSnaps(container);
+		const tag = document.body.querySelector(`[title="${SESSION_SNAP.session_id}"]`);
+		expect(tag).not.toBeNull();
+		expect(tag!.textContent).toContain('abcdef12');
+		expect(tag!.textContent).not.toContain('abcdef123');
+		const items = [...document.body.querySelectorAll('li')];
+		expect(items[1].textContent).not.toMatch(/会话 [0-9a-f]{8}/);
+	});
+
+	it('删除快照的确认框用 reason 文案描述快照，而不是 kind', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openSnaps(container);
+		await fireEvent.click(byLabel(document.body, `删除快照 ${SESSION_SNAP.created_at}`)!);
+		await settle();
+		const dialog = [...document.body.querySelectorAll('[role="dialog"]')].find((d) =>
+			d.textContent?.includes('删除这份快照？')
+		)!;
+		expect(dialog.textContent).toContain(`${SESSION_SNAP.created_at} 的「会话开始前」快照`);
+		expect(dialog.textContent).not.toContain('auto');
+	});
+});
+
+describe('/worlds 自动快照失败提示', () => {
+	beforeEach(() => {
+		list.mockReset();
+	});
+
+	it('failures > 0 时页面顶部显示次数、最近一次的时间与错误', async () => {
+		list.mockResolvedValue({
+			...DATA,
+			auto_snapshot_status: {
+				failures: 2, last_error: 'insufficient_disk', last_error_at: '2026-10-28T01:00:00Z'
+			}
+		});
+		const { container } = render(Worlds);
+		await settle();
+		const status = container.querySelector('[role="status"]');
+		expect(status).not.toBeNull();
+		expect(status!.textContent?.trim()).toBe(
+			'自动快照失败 2 次，最近一次：2026-10-28T01:00:00Z insufficient_disk；摄入未受影响，失败的会话没有回滚锚点'
+		);
+	});
+
+	it('failures 为 0 时不显示', async () => {
+		list.mockResolvedValue(DATA);
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent).not.toContain('自动快照失败');
 	});
 });

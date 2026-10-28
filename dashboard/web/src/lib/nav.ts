@@ -17,8 +17,12 @@ export const NAV_GROUPS: NavGroup[] = [
 	{
 		// W1/W2 — 世界是比 engram 更上游的划分（一个世界 = 一个库文件 + 一个租户），
 		// 故排在「原始数据 · 证据」之前。设计：2026-10-25-world-scene-management-design.md §9。
+		// W4 — 会话清单(按 session_id 汇总,含回滚锚点)。
 		title: '世界 · 会话',
-		items: [{ href: '/worlds', label: '世界', icon: 'globe' }]
+		items: [
+			{ href: '/worlds', label: '世界', icon: 'globe' },
+			{ href: '/sessions', label: '会话', icon: 'list' }
+		]
 	},
 	{
 		// T0a — 原始数据·证据(engram):记忆流最上游的不可变原文来源,排在

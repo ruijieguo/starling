@@ -1,4 +1,5 @@
-// W1/W2/W3 — 世界管理的前端数据层(HTTP 契约:routes/worlds.py)。
+// W1–W4 — 世界管理的前端数据层(HTTP 契约:routes/worlds.py;W4 契约见
+// docs/superpowers/plans/2026-10-28-world-w4-sessions.md「HTTP 契约」)。
 //
 // 一个世界 = 一个库文件 + 一个租户。本模块只放类型、与后端同一规则的名称校验、
 // 字节格式化、REST 客户端和错误码 → 中文提示;页面(/worlds)只读这里。
@@ -7,6 +8,23 @@
 // 但快照 id 等路径段不受此约束,统一编码比逐个判断更不易漏。
 
 import { api, ApiError } from './api';
+
+/**
+ * W4 每个世界各自的自动快照配置。两种触发互不排斥:
+ * on_session —— 某个 session_id 在该世界第一次写入之前先拍一份;
+ * interval_hours —— 距上一份自动快照超过这么多小时、且期间有新写入时拍一份,0 = 关闭。
+ */
+export type AutoSnapshotConfig = {
+	on_session: boolean;
+	interval_hours: number;
+};
+
+/** W4 自动快照失败的累计情况(GET /api/worlds 顶层)。失败不影响摄入。 */
+export type AutoSnapshotStatus = {
+	failures: number;
+	last_error: string | null;
+	last_error_at: string | null;
+};
 
 export type WorldRow = {
 	name: string;
@@ -25,18 +43,54 @@ export type WorldRow = {
 	archive_bytes: number;
 	/** 该世界的库读不出(损坏、被占):统计全为 0。只在出错的行上出现。 */
 	stats_error?: boolean;
+	/** W4:该世界的自动快照配置。 */
+	auto_snapshot: AutoSnapshotConfig;
 };
+
+/** W4 快照的触发原因:manual 对应 kind=manual,session / interval 对应 kind=auto。 */
+export type SnapshotReason = 'manual' | 'session' | 'interval';
 
 export type SnapshotRow = {
 	id: string;
 	kind: 'auto' | 'manual';
-	reason: string;
+	/** 契约取值见 SnapshotReason;类型放宽到 string,未知值原样显示而不是崩。 */
+	reason: SnapshotReason | (string & {});
 	note: string;
 	created_at: string;
 	world_time: string;
 	size_bytes: number;
 	/** 注册项还在、文件已不在:size_bytes 为 0,仍可删除。只在缺失的行上出现。 */
 	missing?: boolean;
+	/** W4:快照时该世界已有的会话数;W4 之前的条目为 null。 */
+	sessions_complete: number | null;
+	/** W4:触发这份快照的会话;只有 reason="session" 时非空。 */
+	session_id: string | null;
+};
+
+/** W4 会话清单的一行(按 session_id 汇总 source_unit_meta)。 */
+export type SessionRow = {
+	session_id: string;
+	/** 该会话的话轮(unit)数。 */
+	units: number;
+	speakers: number;
+	/** observed_at 的最早 / 最晚值;全为 NULL 时为 null。 */
+	first_at: string | null;
+	last_at: string | null;
+	/** 该会话开始前拍的那份快照(reason="session",同一会话多份时取最新);没有时为 null。 */
+	anchor: { snapshot_id: string; created_at: string } | null;
+};
+
+/** GET /api/worlds/{w}/sessions 的响应。 */
+export type SessionList = {
+	world: string;
+	/** 当前 config 的左脑 lane 开关:为 false 时新的写入不会记录会话(对非活动世界也取这个值)。 */
+	source_lane_enabled: boolean;
+	total: number;
+	/** observed_at IS NULL 的 unit 数。 */
+	null_observed: number;
+	/** total > limit:只返回了按开始时间最近的 limit 个。 */
+	truncated: boolean;
+	sessions: SessionRow[];
 };
 
 /** W3 回滚语义:目前只有语义 A「丢掉快照之后的写入」;"scene"(语义 B)属于 W5。 */
@@ -55,6 +109,8 @@ export type WorldsData = {
 	active: string;
 	default: string;
 	snapshot_retention: number;
+	/** W4:自动快照失败计数与最近一次错误。 */
+	auto_snapshot_status: AutoSnapshotStatus;
 	worlds: WorldRow[];
 };
 
@@ -79,11 +135,70 @@ export function formatBytes(n: number): string {
 	return i === 0 ? `${Math.round(v)} B` : `${v.toFixed(1)} ${UNITS[i]}`;
 }
 
+/** 契约:interval_hours 取 0–8760,0 表示关闭。 */
+export const MAX_INTERVAL_HOURS = 8760;
+
+/** 新建世界的默认值(用户裁定 2026-10-28):按会话开、定时关。 */
+export const NEW_WORLD_AUTO_SNAPSHOT: Readonly<AutoSnapshotConfig> = Object.freeze({
+	on_session: true,
+	interval_hours: 0
+});
+
+/**
+ * 把表单里的间隔(type=number 的 input 绑定出来可能是 number、空串或 null)解析成
+ * 0–8760 的整数;不合法返回 null。前端只做提示与禁用,范围的最终校验在 C++
+ * (invalid_auto_snapshot)。
+ */
+export function parseIntervalHours(v: unknown): number | null {
+	let n: number;
+	if (typeof v === 'number') n = v;
+	else if (typeof v === 'string' && v.trim() !== '') n = Number(v.trim());
+	else return null;
+	return Number.isInteger(n) && n >= 0 && n <= MAX_INTERVAL_HOURS ? n : null;
+}
+
+/** 世界行上的一句话描述:「按会话 · 每 24 小时」「按会话」「每 24 小时」「关闭」。 */
+export function autoSnapshotLabel(cfg: AutoSnapshotConfig): string {
+	const parts: string[] = [];
+	if (cfg.on_session) parts.push('按会话');
+	if (cfg.interval_hours > 0) parts.push(`每 ${cfg.interval_hours} 小时`);
+	return parts.length ? parts.join(' · ') : '关闭';
+}
+
+const REASON_LABELS: Record<string, string> = {
+	manual: '手动',
+	session: '会话开始前',
+	interval: '定时'
+};
+
+/** 快照 reason → 中文;未知值原样返回(同 worldErrorMessage,用 hasOwn 防原型链键)。 */
+export function snapshotReasonLabel(reason: string): string {
+	return Object.hasOwn(REASON_LABELS, reason) ? REASON_LABELS[reason] : reason;
+}
+
+/** session_id 等长 id 的前 n 位(界面上省地方,全文放 title)。 */
+export function shortId(id: string, n: number): string {
+	return id.slice(0, n);
+}
+
 const base = (name: string) => `/api/worlds/${encodeURIComponent(name)}`;
 
 export const worldsApi = {
 	list: () => api.get<WorldsData>('/api/worlds'),
-	create: (name: string, label?: string) => api.post<WorldRow>('/api/worlds', { name, label }),
+	// auto_snapshot 可选:不传时不发这个字段,由后端按新世界默认值补。
+	create: (name: string, label?: string, autoSnapshot?: AutoSnapshotConfig) =>
+		api.post<WorldRow>('/api/worlds', {
+			name,
+			label,
+			...(autoSnapshot
+				? {
+						auto_snapshot: {
+							on_session: autoSnapshot.on_session,
+							interval_hours: autoSnapshot.interval_hours
+						}
+					}
+				: {})
+		}),
 	// 切换要等摄入线程停稳 + 重开库,放宽到 60s(后端 ingest_busy 的等待上限是 5s,余量给开库)。
 	activate: (name: string) =>
 		api.post<{ active: string }>(`${base(name)}/activate`, {}, { timeoutMs: 60_000 }),
@@ -103,6 +218,17 @@ export const worldsApi = {
 			{ snapshot_id: snapshotId, confirm, mode: 'discard_after' satisfies RollbackMode },
 			{ timeoutMs: 120_000 }
 		),
+	// W4:改自动快照配置。只发契约里的两个字段。写注册表要等世界管理锁,
+	// 前面若有快照或回滚在跑会排队,与 purgeArchives 一样放宽到 120s。
+	setAutoSnapshot: (name: string, cfg: AutoSnapshotConfig) =>
+		api.put<{ world: string; auto_snapshot: AutoSnapshotConfig }>(
+			`${base(name)}/auto_snapshot`,
+			{ on_session: cfg.on_session, interval_hours: cfg.interval_hours },
+			{ timeoutMs: 120_000 }
+		),
+	// W4 会话清单:契约 limit 取 1–1000,默认 200。只读,走默认超时。
+	listSessions: (name: string, limit = 200) =>
+		api.get<SessionList>(`${base(name)}/sessions?limit=${encodeURIComponent(String(limit))}`),
 	// 清理要排队等世界管理锁:前面若有快照或回滚在跑(回滚最长约 40s),默认 15s 会先超时,
 	// 后端随后照样删完,UI 却报了失败。与 rollback 一样放宽到 120s。
 	purgeArchives: (name: string, confirm: string) =>
@@ -131,6 +257,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 	world_switching: '正在切换世界，请稍后再试',
 	snapshot_corrupt: '快照文件损坏或缺失，未做任何改动',
 	rollback_mode_unsupported: '不支持的回滚方式',
+	invalid_auto_snapshot: '自动快照设置无效（间隔须为 0–8760 小时）',
 	internal_error: '服务器内部错误'
 };
 

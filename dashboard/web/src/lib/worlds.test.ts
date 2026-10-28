@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as tok from './token';
 import { ApiError } from './api';
 import {
-	worldsApi, isValidWorldName, formatBytes, worldErrorMessage, apiDetail
+	worldsApi, isValidWorldName, formatBytes, worldErrorMessage, apiDetail,
+	parseIntervalHours, autoSnapshotLabel, snapshotReasonLabel, shortId
 } from './worlds';
 
 let calls: Array<[string, RequestInit]> = [];
@@ -177,5 +178,98 @@ describe('错误文案', () => {
 	it('从 ApiError 提取 detail', () => {
 		expect(apiDetail(new ApiError(409, '/api/worlds', '409 world_exists'))).toBe('world_exists');
 		expect(apiDetail(new Error('x'))).toBe('Error: x');
+	});
+});
+
+// ── W4:自动快照设置、会话清单 ────────────────────────────────────────────
+describe('worldsApi 自动快照与会话清单（W4）', () => {
+	it('setAutoSnapshot：PUT /auto_snapshot，body 只有 {on_session, interval_hours}', async () => {
+		const cfg = { on_session: false, interval_hours: 24, extra: 'x' };
+		await worldsApi.setAutoSnapshot('sim-1', cfg);
+		expect(calls.map(([p, i]) => `${i.method ?? 'GET'} ${p}`)).toEqual([
+			'PUT /api/worlds/sim-1/auto_snapshot'
+		]);
+		expect(JSON.parse(String(calls[0][1].body))).toEqual({ on_session: false, interval_hours: 24 });
+	});
+
+	it('listSessions：GET /sessions?limit=N，默认 limit=200', async () => {
+		await worldsApi.listSessions('sim-1', 50);
+		await worldsApi.listSessions('sim-1');
+		expect(calls.map(([p, i]) => `${i.method ?? 'GET'} ${p}`)).toEqual([
+			'GET /api/worlds/sim-1/sessions?limit=50',
+			'GET /api/worlds/sim-1/sessions?limit=200'
+		]);
+	});
+
+	it('create 带自动快照配置时 body 里有 auto_snapshot；不带时不发这个字段', async () => {
+		await worldsApi.create('sim-2', '', { on_session: true, interval_hours: 0 });
+		await worldsApi.create('sim-3', 'x');
+		expect(JSON.parse(String(calls[0][1].body))).toEqual({
+			name: 'sim-2',
+			label: '',
+			auto_snapshot: { on_session: true, interval_hours: 0 }
+		});
+		expect(JSON.parse(String(calls[1][1].body))).toEqual({ name: 'sim-3', label: 'x' });
+	});
+
+	it('setAutoSnapshot 的超时放宽到 120s（要排队等快照或回滚持有的管理锁）', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn(
+				(_p: string, init: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						init.signal?.addEventListener('abort', () =>
+							reject(new DOMException('aborted', 'AbortError'))
+						);
+					})
+			) as unknown as typeof fetch;
+			const caught = worldsApi
+				.setAutoSnapshot('sim-1', { on_session: true, interval_hours: 0 })
+				.catch((e) => e as ApiError);
+			let settled = false;
+			void caught.then(() => (settled = true));
+			await vi.advanceTimersByTimeAsync(119_000);
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(2_000);
+			const err = (await caught) as ApiError;
+			expect(err).toBeInstanceOf(ApiError);
+			expect(err.message).toContain('120');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe('自动快照与会话的显示辅助（W4）', () => {
+	it('invalid_auto_snapshot 有中文文案', () => {
+		expect(worldErrorMessage('invalid_auto_snapshot')).toBe('自动快照设置无效（间隔须为 0–8760 小时）');
+	});
+
+	it.each([
+		[0, 0], [24, 24], [8760, 8760], ['12', 12], [' 6 ', 6]
+	] as const)('parseIntervalHours 接受 %s → %s', (v, want) => expect(parseIntervalHours(v)).toBe(want));
+	it.each([-1, 8761, 1.5, '', '  ', 'abc', null, undefined, Number.NaN])(
+		'parseIntervalHours 拒绝 %s',
+		(v) => expect(parseIntervalHours(v)).toBeNull()
+	);
+
+	it('autoSnapshotLabel：按会话 / 每 N 小时 / 两者 / 关闭', () => {
+		expect(autoSnapshotLabel({ on_session: true, interval_hours: 24 })).toBe('按会话 · 每 24 小时');
+		expect(autoSnapshotLabel({ on_session: true, interval_hours: 0 })).toBe('按会话');
+		expect(autoSnapshotLabel({ on_session: false, interval_hours: 24 })).toBe('每 24 小时');
+		expect(autoSnapshotLabel({ on_session: false, interval_hours: 0 })).toBe('关闭');
+	});
+
+	it('snapshotReasonLabel：manual/session/interval 有中文，未知值原样显示', () => {
+		expect(snapshotReasonLabel('manual')).toBe('手动');
+		expect(snapshotReasonLabel('session')).toBe('会话开始前');
+		expect(snapshotReasonLabel('interval')).toBe('定时');
+		expect(snapshotReasonLabel('pre_switch')).toBe('pre_switch');
+		expect(snapshotReasonLabel('constructor')).toBe('constructor');
+	});
+
+	it('shortId 取前 N 位', () => {
+		expect(shortId('0123456789abcdef', 8)).toBe('01234567');
+		expect(shortId('abc', 8)).toBe('abc');
 	});
 });
