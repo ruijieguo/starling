@@ -502,7 +502,14 @@ class DashboardEngine:
 
         返回写入的 engram 数；clear 语义与 remember 一致：代数过期即作废。
 
-        按会话的自动快照（W4，设计稿 §4.3）：代数检查通过之后、``retain_source_turns`` 之前调
+        代数检查与 ``retain_source_turns`` 在同一个 ``with self._lock:`` 块里（Codex C1，W4 之前就有的
+        竞态）：clear_memory 也持这把锁清库、前移代数，所以它要么在检查之前（代数过期 →
+        _TenantCleared，一行不写），要么在写入之后（清空把刚写的来源行一并删掉）。检查与写入之间
+        放开锁，清空就可能落在两者之间，清空前的 transcript 会在清空之后写回库里。
+        ``retain_source_turns`` 只做本地校验与写行（向量行写 pending，嵌入线程之后再补），没有网络
+        调用，持锁的代价与 remember 的 prepare/commit 段相同。
+
+        按会话的自动快照（W4，设计稿 §4.3）：第一次代数检查通过之后、上面那个持锁块之前调
         ``session_snapshot_hook(session_id)``，此时这个 job 还什么都没写，快照里没有这个会话。钩子
         抛 ``SessionSnapshotDeferred`` 时原样外抛，``_ingest_drain_once`` 把 job 放回 spool。只有
         lane 开启时才走到这里，所以 lane 关闭时没有按会话的快照（设计如此）。
@@ -510,15 +517,15 @@ class DashboardEngine:
         turns = clean_turns_ts(lines)
         if not turns:
             return 0
-        self._check_clear_generation(generation)
         session_id = job.get("session_id") or ""
         hook = self.session_snapshot_hook
         if hook is not None and session_id:
-            # 锁顺序：钩子（非阻塞）取 manager.lock，它排在 engine._lock 之前，所以这里不得持有
-            # self._lock——上面的代数检查已经放开了它，下面的 retain_source_turns 本来也在锁外。
-            hook(session_id)
-            # 快照可能要几秒（VACUUM INTO）：这期间的清空同样让 job 作废，再查一次代数。
+            # 提前查一次：钩子之前已经清空过，就不必为一个注定作废的 job 拍快照。持锁块里那次
+            # 才是权威的检查。
             self._check_clear_generation(generation)
+            # 锁顺序：钩子（非阻塞）取 manager.lock，它排在 engine._lock 之前，所以调钩子时不得持有
+            # self._lock——上面的提前检查已经放开了它，下面的持锁块在钩子返回之后才取锁。
+            hook(session_id)
 
         speaker_of = {"user": self._cfg.agent or "self",
                       "assistant": f"claude-code:{project}"}
@@ -534,10 +541,14 @@ class DashboardEngine:
              "observed_at": event_time}
             for role, text, event_time, turn_index in turns
         ]
-        out = _core.retain_source_turns(
-            self._rt.adapter, self._cfg.tenant, listeners,
-            json.dumps(payload, ensure_ascii=False),
-            payload[0]["observed_at"])
+        turns_json = json.dumps(payload, ensure_ascii=False)
+        # 代数检查与写入同一把锁、中间不放开（见 docstring）。快照可能要几秒（VACUUM INTO），这期间的
+        # 清空也由这次检查让 job 作废。
+        with self._lock:
+            self._check_clear_generation(generation)   # RLock：同一线程重入
+            out = _core.retain_source_turns(
+                self._rt.adapter, self._cfg.tenant, listeners, turns_json,
+                payload[0]["observed_at"])
         return len(json.loads(out).get("engram_refs") or ())
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,

@@ -4235,6 +4235,67 @@ def test_deferred_job_is_discarded_not_requeued_when_memory_is_cleared_during_th
     assert _auto_snaps(mgr) == []
 
 
+def test_clear_memory_cannot_land_between_the_generation_check_and_the_source_write(
+        tmp_path, monkeypatch):
+    """Codex C1（W4 之前就有的竞态）：代数检查与 retain_source_turns 之间若放开 engine._lock，另一个
+    线程的 clear_memory 会落在两者之间，清空前的 transcript 在清空之后写回来源表。两者必须同一把锁：
+    写入进行时清空只能等，等它拿到锁，刚写下的来源行随清空一起删掉。
+
+    必须两个真线程：engine._lock 是 RLock，在同一线程里调 clear_memory 会直接重入，看不出竞态。"""
+    _client, _app, eng, _mgr = _lane_app(tmp_path)
+    import starling.dashboard.engine as engine_mod
+    real_retain = engine_mod._core.retain_source_turns
+    in_retain, may_write = threading.Event(), threading.Event()
+
+    def _paused_retain(*args, **kwargs):
+        in_retain.set()                        # 代数检查已过，马上写来源行
+        assert may_write.wait(10), "测试没有放行写入"
+        return real_retain(*args, **kwargs)
+    monkeypatch.setattr(engine_mod._core, "retain_source_turns", _paused_retain)
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+
+    drain_result: dict = {}
+
+    def _drain():
+        try:
+            drain_result["value"] = eng._ingest_drain_once()
+        except BaseException as exc:  # noqa: BLE001 — 测试要看见 drain 抛了什么
+            drain_result["error"] = exc
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    clearer = None
+    try:
+        drainer.start()
+        assert in_retain.wait(10), "drain 没走到 retain_source_turns"
+        clear_result: dict = {}
+
+        def _clear():
+            try:
+                clear_result["value"] = eng.clear_memory(confirm=eng._cfg.tenant)
+            except BaseException as exc:  # noqa: BLE001
+                clear_result["error"] = exc
+
+        clearer = threading.Thread(target=_clear, daemon=True)
+        clearer.start()
+        clearer.join(timeout=0.2)
+        assert clearer.is_alive(), "retain_source_turns 进行中 clear_memory 不该拿到 engine._lock"
+        assert clear_result == {}
+    finally:
+        may_write.set()
+        drainer.join(10)
+        if clearer is not None:
+            clearer.join(10)
+    assert not drainer.is_alive() and clearer is not None and not clearer.is_alive()
+    assert "error" not in clear_result, clear_result
+    assert "error" not in drain_result, drain_result
+    # 清空排在写入之后：刚写下的来源行随清空一起删掉，清空之后库里没有这个会话。
+    assert _session_units(eng._db_path, "s-1") == 0
+    # 记录 drain 的去向（报告用；不作断言）：清空落在 remember 之前 → 代数过期 → discarded/。
+    print("C1 drain outcome:", drain_result,
+          sorted(p.relative_to(eng._ingest_spool).as_posix()
+                 for p in eng._ingest_spool.rglob("*.json")))
+
+
 def test_ingest_with_the_lane_off_takes_no_session_snapshot(tmp_path):
     """调用点在来源通道的写入里：lane 关闭就没有会话，也就没有按会话的快照（设计如此）。"""
     _client, _app, eng, mgr = _lane_app(tmp_path, lane=False)

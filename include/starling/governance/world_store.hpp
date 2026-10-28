@@ -196,7 +196,8 @@ struct SnapshotOptions {
     // 形状不对抛 invalid_auto_snapshot，在任何 I/O 之前。take_auto_snapshot 填入触发的 now_iso，
     // 判断「间隔到没到」、快照 id 与记录用的是同一个时钟。
     std::string now_iso;
-    // 测试注入用：算完 sessions_complete / content_mark 之后、VACUUM INTO 之前调用。为空时不调用。
+    // 测试注入用：磁盘守卫与快照 id 都定好之后、VACUUM INTO 之前调用（模拟复制前落下的写入或删除）。
+    // 为空时不调用。
     std::function<void()> before_vacuum;
 };
 
@@ -212,21 +213,23 @@ struct SnapshotOptions {
 //    还没登记的文件当成残留。
 // 2. 只读打开 db_path，计算 live_bytes；free_space(snapshot_dir) < 3 * live_bytes 时
 //    抛 insufficient_disk（不写任何文件）。恰好 3 倍放行。
-// 2a. 在同一条只读连接上、VACUUM INTO 之前算出 sessions_complete 与 content_mark（W4）：
+// 2a. sessions_complete 与 content_mark（W4）在第 5 步、拍出来的快照文件上算（Codex I-2），所以它们
+//    恰好描述快照里有什么；复制之前落下的插入或删除都如实反映在快照与标记里，两者不会不一致：
 //    sessions_complete = COUNT(DISTINCT session_id) FROM source_unit_meta WHERE tenant_id=?，
 //    表不存在记 0；content_mark = "e<count>:<max_rowid>:<id>|s<count>:<max_rowid>:<id>|
 //    u<count>:<max_rowid>:<id>"，三段依次是 engrams、statements、source_unit_meta，都按 tenant_id
 //    过滤；<id> 是该租户 rowid 最大那一行的主键（engrams.id、statements.id、source_unit_meta 的
 //    engram_ref || ':' || clause_id），计数为 0 时为空（"s0:0:"）。表不存在的那段写 "-"，三张表
-//    的计数都为 0 时取空串。先算后拍，快照里的内容只会多于标记、不会少于标记。
+//    的计数都为 0 时取空串。rowid、主键与计数经 VACUUM INTO 原样保留，所以快照的标记可以直接与
+//    源库上算出的当前标记比较（第 3、4 步的 unchanged）。
 //    原地更新（tick 改 activation）不改变标记，插入与删除会改变它；删掉 rowid 最大的一行再插入
 //    （rowid 被复用）、清空租户后重新摄入到相同行数（rowid 从 1 重来）也会改变它（id 不同）。
 // 3. id = <UTC 紧凑时刻> + "-" + 4 位随机十六进制；时刻取 opts.now_iso（非空时）或 compact_now()。
 //    与该世界已有的 id 重复时重新生成（now_iso 固定时只重抽十六进制部分）。
 // 4. 删掉残留的 <id>.db.partial，再用只读连接执行 VACUUM INTO ?（绑定参数）写到 partial。
 // 5. 关闭连接，再用只读连接打开 partial，PRAGMA integrity_check 必须为 "ok"，
-//    否则删掉 partial 并抛 snapshot_failed。
-// 6. fs::rename(partial, <id>.db)，填 size_bytes、world_time、created_at（opts.now_iso 非空时就是它，
+//    否则删掉 partial 并抛 snapshot_failed。在这条连接上算 world_time、sessions_complete、content_mark。
+// 6. fs::rename(partial, <id>.db)，填 size_bytes、created_at（opts.now_iso 非空时就是它，
 //    否则取当前时间），session_id 取 opts.session_id。
 // 7. 插到 reg.snapshots[world] 的开头（最新在前），然后调用 apply_retention。
 //    成功的快照一定返回它的条目：修剪失败（旧快照路径无法解析或删不掉）在这里
@@ -296,9 +299,16 @@ struct AutoSnapshotResult {
 //      否则拍一份，reason="interval"。没有 last、last 的 created_at 解析不了、last 晚于 now（时钟
 //      回拨，或那份快照的时间来自跳到未来的时钟）、last 没有 content_mark（W4 之前的条目），对应
 //      那一项都按「需要拍」处理。manual 快照不参与判断。
+//   5. 决定要拍之后、拍之前（Codex I-3）：先跑一次 apply_retention（异常接住）；之后该世界的快照数
+//      仍 >= snapshot_retention 就抛 snapshot_failed（detail 点名 retention 与修剪的错误），不拍、
+//      不写盘、列表不变。否则修剪卡住（最旧的 auto 路径越界或删不掉）时，每次触发都会多登记一份，
+//      无人值守地一直涨到磁盘守卫。修剪成功或本来就少于保留份数时照常拍，新快照让总数至多到
+//      保留份数。手动 take_snapshot 不做这一步（W2 语义：有人在场，修剪失败只是暂时多一份）。
 // 拍出来的条目 created_at 与 id 的时间前缀都取 trigger.now_iso（经 SnapshotOptions::now_iso）。
 // base 的 free_space / before_vacuum / note 照传，kind / reason / session_id / now_iso 由这里决定。
-// take_snapshot 的磁盘守卫与保留策略照常生效，失败照常抛出。
+// take_snapshot 的磁盘守卫与保留策略照常生效，失败照常抛出。第 5 步的修剪若删掉了旧条目，reg 已
+// 改动；即使随后拍快照失败，这些删除也已落盘（文件先删、注册项后摘），调用方照样不保存也无妨：
+// 注册项指向的文件不在了，下次修剪照摘。
 AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
                                       const AutoTrigger& trigger, const SnapshotOptions& base);
 

@@ -1148,12 +1148,6 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
                                       dir.string() + ", have " + std::to_string(avail));
         }
 
-        // 会话数与内容标记必须先于 VACUUM INTO、在同一条只读连接上算：两步之间落下的写入
-        // 进了快照却不在标记里，快照只会多于标记、不会少于标记。最坏是下一轮按时间检查
-        // 看到标记不同而多拍一份，不会因为标记跑在内容前面而把没进快照的写入当成拍过了。
-        snap.sessions_complete = sessions_on(source.get(), entry.tenant);
-        snap.content_mark = content_mark_on(source.get(), entry.tenant);
-
         snap.id = fresh_snapshot_id(reg, world, dir, opts.now_iso);
         partial = dir / (snap.id + ".db.partial");
         const fs::path final_path = dir / (snap.id + ".db");
@@ -1180,7 +1174,14 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
                 throw WorldStoreError("snapshot_failed",
                                       "integrity_check failed for " + partial.string());
             }
+            // 会话数与内容标记在拍出来的快照文件上算（Codex I-2）：快照是静止的，标记因此恰好描述
+            // 快照里有什么。在源库上、VACUUM 之前算是错的：autocommit 下每条语句读各自的版本，标记
+            // 与复制之间提交的删除（forget、clear_memory）会让快照少于标记，三段标记也可能出自不同
+            // 版本。比较当前标记（current_content_mark，源库上算）与快照的标记是可以的：rowid、
+            // 主键与按租户的计数经 VACUUM INTO 原样保留。
             snap.world_time = world_time_on(copy.get(), entry.tenant);
+            snap.sessions_complete = sessions_on(copy.get(), entry.tenant);
+            snap.content_mark = content_mark_on(copy.get(), entry.tenant);
         }
         snap.size_bytes = static_cast<std::int64_t>(fs::file_size(partial));
         snap.path = final_path.string();
@@ -1912,6 +1913,30 @@ AutoSnapshotResult skipped_because(std::string reason) {
     return result;
 }
 
+// 自动快照拍之前的修剪（Codex I-3）。take_snapshot 吞掉修剪失败（手动快照有人在场，暂时多一份）；
+// 自动快照无人值守，修剪卡在同一个旧条目上（路径越界、解析不了、删不掉）时每次触发都会多登记
+// 一份，一直涨到磁盘守卫。所以先修剪一次：修剪抛了、而快照数仍 >= 保留份数，就拒绝这一次，
+// 不拍、不写盘。修剪成功（或本来就不超出）照常拍，take_snapshot 自己的修剪随后把总数压回保留份数。
+// 稳态（恰好等于保留份数、修剪无事可做）不受影响；卡住时快照数至多停在保留份数 + 1。
+void require_retention_room(Registry& reg, const std::string& world) {
+    std::string prune_error;
+    try {
+        (void)apply_retention(reg, world);
+    } catch (const WorldStoreError& err) {
+        prune_error = err.what();
+    }
+    if (prune_error.empty()) { return; }
+    const auto listed = reg.snapshots.find(world);
+    const std::size_t held = listed == reg.snapshots.end() ? 0 : listed->second.size();
+    if (held >= static_cast<std::size_t>(reg.snapshot_retention)) {
+        throw WorldStoreError("snapshot_failed",
+                              "retention cannot prune the snapshots of '" + world + "' (" +
+                                  std::to_string(held) + " held, retention " +
+                                  std::to_string(reg.snapshot_retention) +
+                                  "); refusing an auto snapshot: " + prune_error);
+    }
+}
+
 }  // namespace
 
 AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
@@ -1976,6 +2001,7 @@ AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
         opts.reason = "interval";
         opts.session_id.clear();
     }
+    require_retention_room(reg, world);
     AutoSnapshotResult result;
     result.taken = take_snapshot(reg, world, opts);
     return result;
