@@ -163,6 +163,13 @@ class ClearConfirmMismatch(ValueError):
     """clear_memory 的 confirm 与当前租户名不符:零写入,路由回 400。"""
 
 
+class SessionSnapshotDeferred(Exception):
+    """按会话的自动快照这一轮没拿到管理锁（WorldManager 的会话钩子抛出，W4）。
+
+    钩子在写入之前调用，所以抛出时这个摄入 job 还什么都没写：摄入 worker 把它放回 spool，
+    不计重试次数，下一轮再来。快照失败不抛这个（照常摄入，只记录失败）。"""
+
+
 class DashboardEngine:
     def __init__(self, config) -> None:
         # Embedded facade runs the reduced capability set (testing_helper_marker
@@ -225,6 +232,10 @@ class DashboardEngine:
             config.ingest_spool_root(), config.tenant)
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
+        # W4 按会话的自动快照：hook(session_id)，某个会话第一次写入之前调用。由 WorldManager 在
+        # 起摄入线程之前挂上（_start_workers）；没有世界管理（:memory: 等）时保持 None。
+        # 返回即可继续写入；抛 SessionSnapshotDeferred 表示这一轮没拿到管理锁、job 要放回 spool。
+        self.session_snapshot_hook = None
         # 最近一次 quiesce() 没停下的线程名（"ingest" / "tick"），供调用方在
         # ingest_busy 里点名；每次 quiesce 开头重置，所以不会读到上一轮的陈旧值。
         self.quiesce_stuck: tuple[str, ...] = ()

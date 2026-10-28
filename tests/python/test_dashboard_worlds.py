@@ -5,6 +5,8 @@
 import gc
 import json
 import os
+import queue
+import re
 import sqlite3
 import subprocess
 import sys
@@ -18,7 +20,7 @@ from fastapi.testclient import TestClient
 from starling import _core
 from starling.dashboard import DashboardConfig, create_app
 from starling.dashboard import queries
-from starling.dashboard.engine import DashboardEngine
+from starling.dashboard.engine import DashboardEngine, SessionSnapshotDeferred
 from starling.dashboard.world_manager import (WorldManager, WorldSwitchError,
                                               bootstrap_worlds, registry_path_for)
 
@@ -3263,3 +3265,542 @@ def test_worker_handle_is_set_only_after_the_thread_has_started(tmp_path, monkey
         release.set()
         starter.join(15)
         eng.quiesce()
+
+
+# ───────────────────────── W4 T2：自动快照（绑定、触发核心、会话钩子、调度线程） ─────────────────────────
+
+_SECONDS_ISO = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+
+
+class _Clock:
+    """可推进的注入时钟：WorldManager 每次取时刻都调它。"""
+    def __init__(self, now: str = "2026-10-28T00:00:00Z") -> None:
+        self.now = now
+
+    def __call__(self) -> str:
+        return self.now
+
+
+def _auto_manager(tmp_path, clock=None):
+    cfg = _cfg(tmp_path)
+    reg_path = bootstrap_worlds(cfg)
+    state = _State(cfg)
+    state.engine = DashboardEngine(cfg)
+    return WorldManager(state, reg_path, clock=clock), state
+
+
+def _turns(session_id: str, observed: str = "2026-10-27T09:00:00Z") -> str:
+    speakers = ["self", "claude-code:proj"]
+    return json.dumps([
+        {"speaker": speaker, "text": f"{session_id} turn {index}", "session_id": session_id,
+         "turn_index": index, "audience": speakers, "provenance": "source_time",
+         "turn_id": None, "observed_at": observed}
+        for index, speaker in enumerate(speakers)])
+
+
+def _retain_session(adapter, tenant: str, session_id: str) -> None:
+    """真往 source_unit_meta 写一个会话的两条话轮（与摄入走同一个 C++ 写入口）。"""
+    _core.retain_source_turns(adapter, tenant, ["self", "claude-code:proj"],
+                              _turns(session_id), "2026-10-27T09:00:00Z")
+
+
+def _hold_manager_lock(mgr):
+    """另一个线程持住 manager.lock，直到返回的 Event 被 set。"""
+    held, release = threading.Event(), threading.Event()
+
+    def _holder():
+        with mgr.lock:
+            held.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=_holder, daemon=True)
+    holder.start()
+    assert held.wait(10)
+    return holder, release
+
+
+def _call_in_thread(fn, *args):
+    """在独立线程里调 fn，最多等 5 秒。返回 (线程, 结果 dict)：结果里是 value 或 error。"""
+    result: dict = {}
+
+    def _run():
+        try:
+            result["value"] = fn(*args)
+        except BaseException as exc:  # noqa: BLE001 — 测试要看见钩子抛了什么
+            result["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(5)
+    return worker, result
+
+
+def _auto_snaps(mgr, world: str = "default") -> list:
+    return [s for s in mgr.load()["snapshots"].get(world, []) if s["kind"] == "auto"]
+
+
+def _scheduler_threads() -> list:
+    return [t for t in threading.enumerate() if t.name == "starling-auto-snapshot" and t.is_alive()]
+
+
+class _Rounds:
+    """把调度线程的每一轮变成测试可控的一步：线程每轮先等 step() 放行，再跑真的 _auto_snapshot，
+    结果放进队列。close() 之后放行的轮次不再调真方法，stop_scheduler 才不会等一轮快照。"""
+
+    def __init__(self, mgr, monkeypatch) -> None:
+        self._go = threading.Semaphore(0)
+        self._closed = False
+        self.results: queue.Queue = queue.Queue()
+        self.thread_names: set = set()
+        real = mgr._auto_snapshot
+
+        def _spy(kind, session_id="", **kwargs):
+            # 先看 closed：close() 之后的轮次立刻返回，不再在信号量上等。
+            if self._closed or not self._go.acquire(timeout=30) or self._closed:
+                return "closed"
+            self.thread_names.add(threading.current_thread().name)
+            out = real(kind, session_id, **kwargs)
+            self.results.put(out)
+            return out
+
+        monkeypatch.setattr(mgr, "_auto_snapshot", _spy)
+
+    def step(self, timeout: float = 10.0) -> str:
+        self._go.release()
+        return self.results.get(timeout=timeout)
+
+    def close(self) -> None:
+        self._closed = True
+        self._go.release()
+
+
+# ── 绑定 ──
+
+def test_binding_auto_snapshot_config_roundtrip(tmp_path):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    assert reg["worlds"]["default"]["auto_snapshot"] == {"on_session": False, "interval_hours": 24}
+    plain = _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-28T00:00:00Z")
+    assert plain["world"]["auto_snapshot"] == {"on_session": True, "interval_hours": 0}
+    out = _core.world_create(plain["registry"], str(tmp_path), "sim-2", "", "2026-10-28T00:00:00Z",
+                             auto_snapshot={"on_session": False, "interval_hours": 12})
+    assert out["world"]["auto_snapshot"] == {"on_session": False, "interval_hours": 12}
+    reg = out["registry"]
+    assert reg["worlds"]["sim-2"]["auto_snapshot"] == {"on_session": False, "interval_hours": 12}
+
+    updated = _core.world_set_auto_snapshot(reg, "sim-1", False, 6)
+    assert updated["worlds"]["sim-1"]["auto_snapshot"] == {"on_session": False, "interval_hours": 6}
+    assert reg["worlds"]["sim-1"]["auto_snapshot"] == {"on_session": True, "interval_hours": 0}
+
+    reg_path = str(tmp_path / "w.json")
+    _core.world_save_registry(reg_path, updated)
+    assert _core.world_load_registry(reg_path)["worlds"]["sim-1"]["auto_snapshot"] == {
+        "on_session": False, "interval_hours": 6}
+
+
+@pytest.mark.parametrize("on_session, hours", [
+    (True, 8761), (True, -1), (1, 6), (True, True), (True, 6.0), (True, "6"), (True, 2 ** 70)])
+def test_binding_set_auto_snapshot_rejects_bad_config(tmp_path, on_session, hours):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_set_auto_snapshot(reg, "default", on_session, hours)
+    assert _code(ei.value) == "invalid_auto_snapshot"
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-28T00:00:00Z",
+                           auto_snapshot={"on_session": on_session, "interval_hours": hours})
+    assert _code(ei.value) == "invalid_auto_snapshot"
+    assert not os.path.exists(tmp_path / "worlds" / "sim-1")
+
+
+@pytest.mark.parametrize("config", [{}, {"on_session": True}, {"interval_hours": 0}, [True, 0]])
+def test_binding_create_rejects_malformed_auto_snapshot(tmp_path, config):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-28T00:00:00Z",
+                           auto_snapshot=config)
+    assert _code(ei.value) == "invalid_auto_snapshot"
+
+
+def test_binding_set_auto_snapshot_unknown_world(tmp_path):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_set_auto_snapshot(reg, "nope", True, 0)
+    assert _code(ei.value) == "world_not_found"
+
+
+def test_binding_snapshot_dict_carries_w4_fields(tmp_path):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    reg = _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    db = reg["worlds"]["sim-1"]["db_path"]
+    adapter = _core.SqliteAdapter.open(db)
+    _retain_session(adapter, "sim-1", "s-old")
+
+    manual = _core.world_take_snapshot(reg, "sim-1", note="手动")["snapshot"]
+    assert manual["sessions_complete"] == 1
+    assert manual["session_id"] is None
+    assert isinstance(manual["content_mark"], str) and manual["content_mark"]
+
+    out = _core.world_take_auto_snapshot(reg, "sim-1", "session", "2026-10-28T08:00:00Z", "s-new")
+    snap = out["snapshot"]
+    assert out["skipped"] is None
+    assert (snap["kind"], snap["reason"], snap["session_id"]) == ("auto", "session", "s-new")
+    assert snap["created_at"] == "2026-10-28T08:00:00Z"
+    assert snap["id"].startswith("20261028T080000Z-")
+    assert snap["sessions_complete"] == 1 and snap["content_mark"] == manual["content_mark"]
+    assert out["registry"]["snapshots"]["sim-1"][0]["id"] == snap["id"]
+    assert reg.get("snapshots", {}).get("sim-1", []) == []          # 入参 dict 不变
+
+    again = _core.world_take_auto_snapshot(out["registry"], "sim-1", "session",
+                                           "2026-10-28T08:05:00Z", "s-new")
+    assert again["snapshot"] is None and again["skipped"] == "unchanged"
+    known = _core.world_take_auto_snapshot(out["registry"], "sim-1", "session",
+                                           "2026-10-28T08:05:00Z", "s-old")
+    assert known["snapshot"] is None and known["skipped"] == "known_session"
+    zvec = _core.world_take_auto_snapshot(out["registry"], "sim-1", "session",
+                                          "2026-10-28T08:05:00Z", "s-x", vector_backend="zvec")
+    assert zvec["snapshot"] is None and zvec["skipped"] == "unsupported_backend"
+    del adapter
+    gc.collect()
+
+
+def test_binding_take_auto_snapshot_rejects_microsecond_now(tmp_path):
+    """C++ 只认秒精度（addendum M-5）：engine.py 里 isoformat 的那种时刻会被拒。"""
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_take_auto_snapshot(reg, "default", "interval", "2026-10-28T08:00:00.123456Z")
+    assert _code(ei.value) == "invalid_auto_snapshot"
+
+
+def test_binding_list_sessions_shape(tmp_path):
+    reg = _core.world_ensure_registry(str(tmp_path / "w.json"), str(tmp_path / "d.db"), "default")
+    reg = _core.world_create(reg, str(tmp_path), "sim-1", "", "2026-10-25T01:00:00Z")["registry"]
+    assert _core.world_list_sessions(reg, "sim-1", 200) == {
+        "total": 0, "null_observed": 0, "truncated": False, "sessions": []}
+
+    db = reg["worlds"]["sim-1"]["db_path"]
+    adapter = _core.SqliteAdapter.open(db)
+    reg = _core.world_take_auto_snapshot(reg, "sim-1", "session", "2026-10-28T08:00:00Z",
+                                         "s-1")["registry"]
+    anchor = reg["snapshots"]["sim-1"][0]
+    _retain_session(adapter, "sim-1", "s-1")
+    _retain_session(adapter, "sim-1", "s-2")
+
+    listed = _core.world_list_sessions(reg, "sim-1", 1)
+    assert (listed["total"], listed["null_observed"], listed["truncated"]) == (2, 0, True)
+    assert len(listed["sessions"]) == 1
+    full = _core.world_list_sessions(reg, "sim-1", 200)
+    rows = {row["session_id"]: row for row in full["sessions"]}
+    assert set(rows) == {"s-1", "s-2"} and full["truncated"] is False
+    assert rows["s-1"] == {"session_id": "s-1", "units": 2, "speakers": 2,
+                           "first_at": "2026-10-27T09:00:00Z", "last_at": "2026-10-27T09:00:00Z",
+                           "anchor": {"snapshot_id": anchor["id"],
+                                      "created_at": "2026-10-28T08:00:00Z"}}
+    assert rows["s-2"]["anchor"] is None
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_list_sessions(reg, "sim-1", 0)
+    assert _code(ei.value) == "invalid_auto_snapshot"
+    with pytest.raises(_core.WorldStoreError) as ei:
+        _core.world_list_sessions(reg, "nope", 10)
+    assert _code(ei.value) == "world_not_found"
+    del adapter
+    gc.collect()
+
+
+# ── WorldManager：配置与状态 ──
+
+def test_manager_create_passes_auto_snapshot_config(tmp_path):
+    mgr, _state = _auto_manager(tmp_path)
+    assert mgr.create("sim-1", "")["auto_snapshot"] == {"on_session": True, "interval_hours": 0}
+    entry = mgr.create("sim-2", "", auto_snapshot={"on_session": False, "interval_hours": 48})
+    assert entry["auto_snapshot"] == {"on_session": False, "interval_hours": 48}
+    assert mgr.load()["worlds"]["sim-2"]["auto_snapshot"] == {"on_session": False,
+                                                              "interval_hours": 48}
+
+
+def test_manager_set_auto_snapshot_persists_and_rejects(tmp_path):
+    mgr, _state = _auto_manager(tmp_path)
+    assert mgr.set_auto_snapshot("default", True, 6) == {"on_session": True, "interval_hours": 6}
+    assert mgr.load()["worlds"]["default"]["auto_snapshot"] == {"on_session": True,
+                                                                "interval_hours": 6}
+    before = mgr.load()
+    with pytest.raises(_core.WorldStoreError) as ei:
+        mgr.set_auto_snapshot("default", True, 9000)
+    assert _code(ei.value) == "invalid_auto_snapshot"
+    with pytest.raises(_core.WorldStoreError) as ei:
+        mgr.set_auto_snapshot("nope", True, 0)
+    assert _code(ei.value) == "world_not_found"
+    assert mgr.load() == before
+
+
+def test_auto_snapshot_status_starts_clean(tmp_path):
+    mgr, _state = _auto_manager(tmp_path)
+    assert mgr.auto_snapshot_status() == {"failures": 0, "last_error": None, "last_error_at": None}
+
+
+# ── _auto_snapshot：两种触发共用的核心 ──
+
+def test_auto_snapshot_interval_follows_the_injected_clock(tmp_path):
+    clock = _Clock("2026-10-28T00:00:00Z")
+    mgr, state = _auto_manager(tmp_path, clock)
+    _remember(state.engine, "Bob owns auth")
+
+    first = mgr._auto_snapshot("interval")
+    assert first.startswith("taken:"), first
+    snaps = _auto_snaps(mgr)
+    assert [s["id"] for s in snaps] == [first.split(":", 1)[1]]
+    assert (snaps[0]["reason"], snaps[0]["created_at"]) == ("interval", "2026-10-28T00:00:00Z")
+    assert snaps[0]["sessions_complete"] == 0
+    assert os.path.isfile(snaps[0]["path"])
+
+    clock.now = "2026-10-28T23:59:59Z"
+    assert mgr._auto_snapshot("interval") == "skipped:not_due"
+    clock.now = "2026-10-29T00:00:00Z"
+    assert mgr._auto_snapshot("interval") == "skipped:unchanged"       # 到期了，但内容没变
+    _remember(state.engine, "Carol owns billing")
+    second = mgr._auto_snapshot("interval")
+    assert second.startswith("taken:"), second
+    assert [s["created_at"] for s in _auto_snaps(mgr)] == ["2026-10-29T00:00:00Z",
+                                                           "2026-10-28T00:00:00Z"]
+    assert mgr.auto_snapshot_status()["failures"] == 0
+
+
+def test_auto_snapshot_default_clock_is_seconds_precision(tmp_path):
+    """addendum M-5：不注入时钟时，交给 C++ 的必须是秒精度（YYYY-MM-DDTHH:MM:SSZ），否则每一轮
+    都会 invalid_auto_snapshot、计为失败。"""
+    mgr, state = _auto_manager(tmp_path)
+    _remember(state.engine, "Bob owns auth")
+    outcome = mgr._auto_snapshot("interval")
+    assert outcome.startswith("taken:"), (outcome, mgr.auto_snapshot_status())
+    assert _SECONDS_ISO.fullmatch(_auto_snaps(mgr)[0]["created_at"])
+    assert mgr.auto_snapshot_status()["failures"] == 0
+
+
+def test_auto_snapshot_registry_save_failure_discards_file_and_counts(tmp_path, monkeypatch):
+    clock = _Clock("2026-10-28T00:00:00Z")
+    mgr, state = _auto_manager(tmp_path, clock)
+    _remember(state.engine, "Bob owns auth")
+    before = mgr.load()
+    snap_dir = before["worlds"]["default"]["snapshot_dir"]
+    monkeypatch.setattr(mgr, "save", _boom_save)
+    assert mgr._auto_snapshot("interval") == "failed"                  # 不往外抛
+    monkeypatch.undo()
+    assert mgr.load() == before
+    leftovers = os.listdir(snap_dir) if os.path.isdir(snap_dir) else []
+    assert leftovers == [], "注册表没存下来，新快照文件必须删掉"
+    status = mgr.auto_snapshot_status()
+    assert status == {"failures": 1, "last_error": "internal_error",
+                      "last_error_at": "2026-10-28T00:00:00Z"}
+
+
+def test_auto_snapshot_cpp_failure_is_counted_not_raised(tmp_path, monkeypatch, caplog):
+    clock = _Clock("2026-10-28T00:00:00Z")
+    mgr, state = _auto_manager(tmp_path, clock)
+    _remember(state.engine, "Bob owns auth")
+
+    def _no_space(*_args, **_kwargs):
+        raise _core.WorldStoreError("insufficient_disk: need 3x live bytes")
+    monkeypatch.setattr(_core, "world_take_auto_snapshot", _no_space)
+    with caplog.at_level("WARNING", logger="starling.dashboard.world_manager"):
+        assert mgr._auto_snapshot("interval") == "failed"
+        clock.now = "2026-10-28T01:00:00Z"
+        assert mgr._auto_snapshot("session", "s-1") == "failed"
+    assert mgr.auto_snapshot_status() == {"failures": 2, "last_error": "insufficient_disk",
+                                          "last_error_at": "2026-10-28T01:00:00Z"}
+    assert "insufficient_disk" in caplog.text
+    assert _auto_snaps(mgr) == []
+
+
+def test_auto_snapshot_zvec_is_a_skip_not_a_failure(tmp_path):
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    state.config.vector_backend = "zvec"
+    assert mgr._auto_snapshot("interval") == "skipped:unsupported_backend"
+    assert mgr.auto_snapshot_status()["failures"] == 0
+    assert _auto_snaps(mgr) == []
+
+
+@pytest.mark.parametrize("moved", ["config", "engine"])
+def test_auto_snapshot_skips_when_live_db_is_not_the_active_world(tmp_path, moved):
+    """切换 / 回滚失败路径留下的分叉（注册表说 A，config 或引擎在写 B）：不给错的世界拍。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    elsewhere = str(tmp_path / "elsewhere.db")
+    if moved == "config":
+        state.config.db_path = elsewhere
+    else:
+        state.engine = DashboardEngine(DashboardConfig(
+            db_path=elsewhere, token="", tick_interval_s=0, source_lane_enabled=False,
+            ingest_spool_path=str(tmp_path / "spool")))
+    assert mgr._auto_snapshot("interval") == "skipped:world_moved"
+    assert _auto_snaps(mgr) == []
+    assert mgr.auto_snapshot_status()["failures"] == 0
+
+
+def test_auto_snapshot_is_busy_without_waiting_when_the_lock_is_held(tmp_path):
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    mgr.set_auto_snapshot("default", True, 24)
+    hook = mgr._make_session_hook()
+    holder, release = _hold_manager_lock(mgr)
+    try:
+        caller, result = _call_in_thread(mgr._auto_snapshot, "interval")
+        assert not caller.is_alive(), "后台调用方在 manager.lock 上等了"
+        assert result == {"value": "busy"}
+        hooked, hook_result = _call_in_thread(hook, "s-1")
+        assert not hooked.is_alive(), "会话钩子在 manager.lock 上等了"
+        assert isinstance(hook_result.get("error"), SessionSnapshotDeferred), hook_result
+    finally:
+        release.set()
+        holder.join(10)
+    assert _auto_snaps(mgr) == []
+    assert mgr.auto_snapshot_status()["failures"] == 0          # busy 不是失败
+    assert mgr._auto_snapshot("interval").startswith("taken:")  # 锁放开后照常
+
+
+# ── 会话钩子 ──
+
+def test_session_hook_snapshots_a_new_session_once(tmp_path):
+    clock = _Clock("2026-10-28T00:00:00Z")
+    mgr, state = _auto_manager(tmp_path, clock)
+    _remember(state.engine, "Bob owns auth")
+    mgr.set_auto_snapshot("default", True, 0)
+    hook = mgr._make_session_hook()
+
+    assert hook("s-1") is None
+    snaps = _auto_snaps(mgr)
+    assert [(s["reason"], s["session_id"]) for s in snaps] == [("session", "s-1")]
+    assert _count(snaps[0]["path"], "source_unit_meta") == 0     # 快照里还没有这个会话
+
+    _retain_session(state.engine._rt.adapter, state.config.tenant, "s-1")
+    clock.now = "2026-10-28T00:05:00Z"
+    assert mgr._auto_snapshot("session", "s-1") == "skipped:known_session"
+    assert hook("s-1") is None
+    assert len(_auto_snaps(mgr)) == 1                            # 同一会话第二次不拍
+
+
+def test_session_hook_retry_with_unchanged_content_is_a_normal_skip(tmp_path):
+    """I-1：写入失败、会话一直是新的时，同一会话、同一标记不再拍；钩子照常返回。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    mgr.set_auto_snapshot("default", True, 0)
+    hook = mgr._make_session_hook()
+    assert hook("s-2") is None
+    assert mgr._auto_snapshot("session", "s-2") == "skipped:unchanged"
+    assert hook("s-2") is None
+    assert len(_auto_snaps(mgr)) == 1
+
+
+def test_session_hook_failure_returns_normally(tmp_path, monkeypatch):
+    """用户裁定：快照失败照常摄入，钩子不抛。"""
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    mgr.set_auto_snapshot("default", True, 0)
+
+    def _no_space(*_args, **_kwargs):
+        raise _core.WorldStoreError("insufficient_disk: need 3x live bytes")
+    monkeypatch.setattr(_core, "world_take_auto_snapshot", _no_space)
+    assert mgr._make_session_hook()("s-1") is None
+    assert mgr.auto_snapshot_status()["failures"] == 1
+
+
+def test_start_workers_attaches_the_session_hook_before_threads_start(tmp_path, monkeypatch):
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    engine = state.engine
+    assert engine.session_snapshot_hook is None
+    seen = {}
+    real_start = engine.start_ingest_worker
+
+    def _spy_start(*args, **kwargs):
+        seen["hook"] = engine.session_snapshot_hook
+        return real_start(*args, **kwargs)
+    monkeypatch.setattr(engine, "start_ingest_worker", _spy_start)
+    mgr.workers_enabled = True
+    mgr._start_workers(engine, state.config)
+    try:
+        assert seen["hook"] is not None, "摄入线程起来之前钩子就要挂上"
+        assert engine.session_snapshot_hook is not None
+        mgr.set_auto_snapshot("default", True, 0)
+        assert engine.session_snapshot_hook("s-9") is None
+        assert [s["session_id"] for s in _auto_snaps(mgr)] == ["s-9"]
+    finally:
+        assert engine.quiesce()
+
+
+# ── 按时间的调度线程 ──
+
+def test_scheduler_rounds_run_on_their_own_thread(tmp_path, monkeypatch):
+    clock = _Clock("2026-10-28T00:00:00Z")
+    mgr, state = _auto_manager(tmp_path, clock)
+    _remember(state.engine, "Bob owns auth")
+    rounds = _Rounds(mgr, monkeypatch)
+    before = set(_scheduler_threads())
+    mgr.start_scheduler(poll_s=0.01, first_delay_s=0)
+    started = [t for t in _scheduler_threads() if t not in before]
+    try:
+        assert len(started) == 1 and started[0].daemon
+        assert rounds.step().startswith("taken:")
+        assert rounds.step() == "skipped:not_due"                # 时钟没推进
+        clock.now = "2026-10-29T01:00:00Z"
+        _remember(state.engine, "Carol owns billing")
+        assert rounds.step().startswith("taken:")
+        assert rounds.thread_names == {"starling-auto-snapshot"}
+        snaps = _auto_snaps(mgr)
+        assert [(s["reason"], s["created_at"]) for s in snaps] == [
+            ("interval", "2026-10-29T01:00:00Z"), ("interval", "2026-10-28T00:00:00Z")]
+    finally:
+        rounds.close()
+        mgr.stop_scheduler()
+    assert all(not t.is_alive() for t in started)
+
+
+def test_scheduler_skips_a_busy_round_and_takes_the_next(tmp_path, monkeypatch):
+    mgr, state = _auto_manager(tmp_path, _Clock())
+    _remember(state.engine, "Bob owns auth")
+    rounds = _Rounds(mgr, monkeypatch)
+    mgr.start_scheduler(poll_s=0.01, first_delay_s=0)
+    try:
+        holder, release = _hold_manager_lock(mgr)
+        try:
+            assert rounds.step() == "busy"
+        finally:
+            release.set()
+            holder.join(10)
+        assert _auto_snaps(mgr) == []
+        assert rounds.step().startswith("taken:")
+        assert mgr.auto_snapshot_status()["failures"] == 0
+    finally:
+        rounds.close()
+        mgr.stop_scheduler()
+
+
+def test_stop_scheduler_joins_the_thread(tmp_path):
+    mgr, _state = _auto_manager(tmp_path, _Clock())
+    before = set(_scheduler_threads())
+    mgr.start_scheduler(poll_s=3600.0, first_delay_s=3600.0)
+    started = [t for t in _scheduler_threads() if t not in before]
+    assert len(started) == 1
+    mgr.stop_scheduler()
+    assert not started[0].is_alive()
+    mgr.stop_scheduler()                                         # 再停一次是 no-op
+
+
+def test_start_scheduler_twice_runs_one_thread(tmp_path):
+    mgr, _state = _auto_manager(tmp_path, _Clock())
+    before = set(_scheduler_threads())
+    mgr.start_scheduler(poll_s=3600.0, first_delay_s=3600.0)
+    mgr.start_scheduler(poll_s=3600.0, first_delay_s=3600.0)
+    try:
+        assert len([t for t in _scheduler_threads() if t not in before]) == 1
+    finally:
+        mgr.stop_scheduler()
+    assert [t for t in _scheduler_threads() if t not in before] == []
+
+
+def test_disable_workers_also_stops_the_scheduler(tmp_path):
+    mgr, _state = _auto_manager(tmp_path, _Clock())
+    mgr.workers_enabled = True
+    before = set(_scheduler_threads())
+    mgr.start_scheduler(poll_s=3600.0, first_delay_s=3600.0)
+    started = [t for t in _scheduler_threads() if t not in before]
+    assert len(started) == 1
+    mgr.disable_workers()
+    assert mgr.workers_enabled is False
+    assert not started[0].is_alive()
