@@ -20,7 +20,7 @@ from typing import Optional
 
 from starling import _core
 from starling import runtime as _runtime
-from starling._memory_core import MemoryCore
+from starling._memory_core import MemoryCore, RecallDegradedError
 
 
 def make_stub_llm(*, default_response: str, responses: Optional[dict] = None):
@@ -195,13 +195,21 @@ class Memory:
             text, holder=holder, interlocutor=interlocutor, now=now))
 
     def recall(self, query: str, *, perspective: str = "first_person",
-               k: int = 10, mode: str = "semantic") -> list:
+               k: int = 10, mode: str = "semantic", holder: str | None = None,
+               strict: bool = False) -> list:
         """Retrieve memories by semantic similarity or pattern completion.
 
         mode="semantic"    — vector cosine search via SemanticRetriever.vector_recall
         mode="completion"  — associative spreading via PatternCompletor.complete
+
+        holder: whose memory to recall (default: this Memory's agent). Must match
+        the holder the statements were written under.
+        strict: raise RecallDegradedError when the query embedding failed
+        (semantic mode) instead of silently returning lexical-only results.
+        strict=True with mode="completion" raises ValueError.
         """
-        return self._core.recall(query, perspective=perspective, k=k, mode=mode)
+        return self._core.recall(query, perspective=perspective, k=k, mode=mode,
+                                 holder=holder, strict=strict)
 
     def query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
               perspective: str | None = None, target: str | None = None,

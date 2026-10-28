@@ -54,6 +54,11 @@ class LLMNotConfigured(RuntimeError):
     make_anthropic_llm, or the dashboard provider factory)."""
 
 
+class RecallDegradedError(RuntimeError):
+    """recall(strict=True) 时查询词嵌入失败:语义召回退化成只剩词法结果,
+    调用方不能把它当成"没有相关记忆"。信息里不带端点与密钥。"""
+
+
 def parse_now(now: "Optional[str | datetime]") -> datetime:
     """Coerce an optional ISO-8601 string (or an already-resolved datetime)
     into a tz-aware datetime.
@@ -248,14 +253,23 @@ class MemoryCore:
             policy=_build_policy(self._extraction))
 
     def recall(self, query: str, *, perspective: str = "first_person",
-               k: int = 10, mode: str = "semantic", holder: str | None = None) -> list:
+               k: int = 10, mode: str = "semantic", holder: str | None = None,
+               strict: bool = False) -> list:
         """mode="semantic" — vector cosine via SemanticRetriever.vector_recall;
         mode="completion" — associative spreading via PatternCompletor.
 
         holder overrides the recall holder dimension (default self.agent). A
         caller that wrote statements under a non-default holder MUST recall with
         the same holder, else the candidate SQL's `s.holder_id = ?` predicate
-        excludes them (P3.b2: OpenClaw plugin holder must round-trip)."""
+        excludes them (P3.b2: OpenClaw plugin holder must round-trip).
+
+        strict=True: 语义模式下查询词嵌入失败(SemanticResult.degraded)时抛
+        RecallDegradedError,而不是静默返回只剩词法的结果。completion 模式没有
+        degraded 信号,strict=True 直接抛 ValueError。"""
+        if strict and mode == "completion":
+            raise ValueError(
+                "strict=True is not supported with mode='completion': "
+                "pattern completion has no degraded signal")
         holder_id = holder or self.agent
         # holder_perspective is stored lowercase (extractor normalizes the enum);
         # normalize the query perspective so a caller passing "FIRST_PERSON" still
@@ -269,6 +283,8 @@ class MemoryCore:
         res = self.semantic.vector_recall(_core.SemanticRetrieverParams(
             tenant_id=self.tenant, holder_id=holder_id,
             holder_perspective=perspective, query_text=query, k=k))
+        if strict and res.degraded:
+            raise RecallDegradedError("query embedding failed")
         return [{"row": s.row, "score": s.score} for s in res.rows]
 
     def plan_query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
