@@ -49,7 +49,7 @@ py::object text_or_none(const std::string& text) {
 py::object snap_out(const gov::SnapshotEntry& snap) {
     auto out = to_py(gov::snapshot_entry_to_json(snap)).cast<py::dict>();
     for (const char* key : {"sessions_complete", "session_id", "content_mark"}) {
-        if (!out.contains(key)) { out[key] = py::none(); }
+        out.attr("setdefault")(key, py::none());
     }
     return out;
 }
@@ -88,7 +88,7 @@ gov::AutoSnapshotConfig auto_config_from_dict(const py::handle& obj) {
     if (!config.contains("on_session") || !config.contains("interval_hours")) {
         invalid_auto("auto_snapshot needs both on_session and interval_hours");
     }
-    return auto_config_in(config["on_session"], config["interval_hours"]);
+    return auto_config_in(config.attr("get")("on_session"), config.attr("get")("interval_hours"));
 }
 
 }  // namespace
