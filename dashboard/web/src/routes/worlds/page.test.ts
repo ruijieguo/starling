@@ -1075,7 +1075,7 @@ describe('/worlds 自动快照失败提示', () => {
 		const status = container.querySelector('[role="status"]');
 		expect(status).not.toBeNull();
 		expect(status!.textContent?.trim()).toBe(
-			'自动快照失败 2 次，最近一次：2026-10-28T01:00:00Z insufficient_disk；摄入未受影响，失败的会话没有回滚锚点'
+			'自动快照失败 2 次，最近一次：2026-10-28T01:00:00Z insufficient_disk；摄入未受影响，这几次没拍成的快照不会作为回滚点'
 		);
 	});
 

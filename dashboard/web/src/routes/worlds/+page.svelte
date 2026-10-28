@@ -58,7 +58,7 @@
 		const st = autoStatus;
 		if (!st || st.failures <= 0) return '';
 		const last = [st.last_error_at, st.last_error].filter(Boolean).join(' ') || '—';
-		return `自动快照失败 ${st.failures} 次，最近一次：${last}；摄入未受影响，失败的会话没有回滚锚点`;
+		return `自动快照失败 ${st.failures} 次，最近一次：${last}；摄入未受影响，这几次没拍成的快照不会作为回滚点`;
 	});
 
 	const errText = (e: unknown) => worldErrorMessage(apiDetail(e));

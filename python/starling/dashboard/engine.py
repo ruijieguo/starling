@@ -919,6 +919,31 @@ class DashboardEngine:
             moved += 1
         return moved
 
+    def _requeue_unless_cleared(self, claimed: Path, job_path: Path, generation: int,
+                                job: dict | None = None) -> str:
+        """把已 claim 的 job 放回 spool 根，除非 claim 之后发生过 clear_memory（整支审查 I-1）。
+
+        _ingest_discard_pending 只看 spool 根下的 ``*.json``，看不到正在处理的 ``.processing``。
+        claim 之后、放回之前若有一次清空，原样放回就会让下一轮 drain 用新代数重新 claim，把清空前
+        的 transcript 再写进库。所以比较代数与放回都在 ``self._lock`` 内做：clear_memory 也在这把锁内
+        前移代数、丢弃 pending job，两者因此互斥——要么清空在先（代数过期 → 移进 discarded/，与
+        _TenantCleared 同一归宿，返回 "done"），要么放回在先（job 回到 spool 根，清空随即把它当
+        pending 丢弃）。
+
+        ``job`` 给出时（通用重试分支，attempts 已 +1）先把它写回再放回；推迟分支不传，job 原样不变。
+        只在 drain 的 except 分支里调用，此时不持别的锁、钩子已经返回，短暂取 ``self._lock`` 与 claim
+        时取它的方式一致，不跨任何钩子调用。"""
+        sp = self._ingest_spool
+        with self._lock:
+            if generation != self._clear_generation:
+                (sp / "discarded").mkdir(exist_ok=True)
+                claimed.rename(sp / "discarded" / job_path.name)
+                return "done"
+            if job is not None:
+                claimed.write_text(json.dumps(job))
+            claimed.rename(job_path)
+            return "deferred"
+
     def _ingest_drain_once(self) -> str:
         """Drain ONE spool job: claim (atomic rename to .json.processing) ->
         read transcript -> clean/chunk -> self.remember() each chunk -> done/
@@ -1037,8 +1062,8 @@ class DashboardEngine:
         except SessionSnapshotDeferred:
             # 按会话的自动快照这一轮没拿到 manager.lock（切换、回滚、手动快照正持着它）。钩子在任何
             # 写入之前调用，这个 job 什么都没写：原样放回 spool，不计 attempts（不是失败），下一轮再来。
-            claimed.rename(job_path)
-            return "deferred"
+            # 钩子期间若发生了清空，放回就会把清空前的会话重新灌回来：改进 discarded/（整支审查 I-1）。
+            return self._requeue_unless_cleared(claimed, job_path, generation)
         except _TenantCleared:
             # 清空发生在本 job claim 之后:不重试、不进 failed/,与清空时尚未 claim 的
             # job 一样归档到 discarded/(手动移回 spool 根即可重新摄入)。清空前已提交的
@@ -1050,9 +1075,9 @@ class DashboardEngine:
             attempts = int(job.get("attempts") or 0) + 1
             if attempts < self._ingest_max_attempts:
                 job["attempts"] = attempts
-                claimed.write_text(json.dumps(job))
-                claimed.rename(job_path)            # 留 spool,下轮重扫自动重试(本次不 hot-reclaim)
-                return "deferred"
+                # 留 spool,下轮重扫自动重试(本次不 hot-reclaim);claim 之后发生过清空则改进
+                # discarded/、不写回 attempts(整支审查 I-1,W4 之前就有的同类缺口)。
+                return self._requeue_unless_cleared(claimed, job_path, generation, job)
             (sp / "failed").mkdir(exist_ok=True)
             claimed.rename(sp / "failed" / job_path.name)
             (sp / "failed" / (job_path.name + ".error")).write_text(str(exc)[:1000])

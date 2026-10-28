@@ -4206,6 +4206,35 @@ def test_ingest_discards_the_job_when_memory_is_cleared_during_the_session_snaps
     assert len(_auto_snaps(mgr)) == 1
 
 
+def test_deferred_job_is_discarded_not_requeued_when_memory_is_cleared_during_the_hook(tmp_path):
+    """整支审查 I-1：job claim 之后、钩子推迟之前发生了清空。clear_memory 只丢弃 spool 根下的 pending
+    job，看不到这个 `.processing`；推迟分支若原样放回，下一轮 drain 会用新代数重新 claim，把清空前的
+    会话写回库里。必须改进 discarded/，与 _TenantCleared 同一归宿。"""
+    _client, _app, eng, mgr = _lane_app(tmp_path)
+    real_hook = eng.session_snapshot_hook
+    calls = []
+
+    def _clear_then_defer(session_id):
+        calls.append(session_id)
+        if len(calls) == 1:
+            eng.clear_memory(confirm=eng._cfg.tenant)      # 用户在钩子的窗口里点了清空
+            raise SessionSnapshotDeferred("manager lock busy")
+        real_hook(session_id)                               # 之后的调用照常拍、照常写
+    eng.session_snapshot_hook = _clear_then_defer
+    job_path, _job = _spool_job(tmp_path, eng, "job-1", "s-1")
+
+    assert eng._ingest_drain_once() == "done"
+    spool = eng._ingest_spool
+    assert (spool / "discarded" / "job-1.json").exists()
+    assert not job_path.exists(), "清空之后不得放回 spool 根"
+    assert not job_path.with_suffix(".json.processing").exists()
+
+    assert eng._ingest_drain_once() == "empty"             # 再 drain 一轮：没有东西可重新灌回来
+    assert calls == ["s-1"]
+    assert _session_units(eng._db_path, "s-1") == 0 and _count(eng._db_path) == 0
+    assert _auto_snaps(mgr) == []
+
+
 def test_ingest_with_the_lane_off_takes_no_session_snapshot(tmp_path):
     """调用点在来源通道的写入里：lane 关闭就没有会话，也就没有按会话的快照（设计如此）。"""
     _client, _app, eng, mgr = _lane_app(tmp_path, lane=False)
@@ -4236,6 +4265,33 @@ def test_routes_put_auto_snapshot_writes_and_rejects(tmp_path):
     assert (r.status_code, r.json()["detail"]) == (404, "world_not_found")
     assert client.put("/api/worlds/default/auto_snapshot", json={"on_session": True}).status_code == 422
     assert mgr.load() == before
+
+
+def test_routes_auto_snapshot_body_is_strictly_typed(tmp_path):
+    """整支审查 M-2：宽松模式会把 "yes" 转成 True、true 转成 1、5.0 转成 5。严格类型下这些都回 422，
+    注册表不变；PUT 与新建世界带的 auto_snapshot 是同一个模型，两处都钉住。"""
+    client, app = _client(tmp_path)
+    mgr = app.state.worlds
+    before = mgr.load()
+    bad_bodies = ({"on_session": "yes", "interval_hours": 5},
+                  {"on_session": True, "interval_hours": True},
+                  {"on_session": True, "interval_hours": 5.0},
+                  {"on_session": True, "interval_hours": "7"},
+                  {"on_session": 1, "interval_hours": 5})
+    for body in bad_bodies:
+        r = client.put("/api/worlds/default/auto_snapshot", json=body)
+        assert r.status_code == 422, (body, r.json())
+        r = client.post("/api/worlds", json={"name": "sim-strict", "auto_snapshot": body})
+        assert r.status_code == 422, (body, r.json())
+    assert mgr.load() == before
+
+    r = client.put("/api/worlds/default/auto_snapshot", json={"on_session": False, "interval_hours": 5})
+    assert r.status_code == 200
+    assert r.json()["auto_snapshot"] == {"on_session": False, "interval_hours": 5}
+    r = client.post("/api/worlds", json={"name": "sim-strict",
+                                         "auto_snapshot": {"on_session": True, "interval_hours": 0}})
+    assert r.status_code == 200, r.json()
+    assert mgr.load()["worlds"]["sim-strict"]["auto_snapshot"] == {"on_session": True, "interval_hours": 0}
 
 
 def test_routes_create_world_with_and_without_auto_snapshot(tmp_path):

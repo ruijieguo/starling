@@ -17,7 +17,7 @@ from functools import partial
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, StrictInt
 
 from starling import _core
 from starling.dashboard.world_manager import WorldSwitchError
@@ -42,8 +42,10 @@ _STATUS = {
 
 class AutoSnapshotBody(BaseModel):
     # 只做形状：取值范围（interval_hours 0–8760）由 C++ 校验，越界回 400 invalid_auto_snapshot。
-    on_session: bool
-    interval_hours: int
+    # 严格类型（整支审查 M-2）：宽松模式会把 "yes" 转成 True、true 转成 1、5.0 转成 5，到不了绑定层
+    # 的严格校验；这里直接回 422。
+    on_session: StrictBool
+    interval_hours: StrictInt
 
 
 class CreateWorldBody(BaseModel):
