@@ -3010,6 +3010,87 @@ TEST(WorldSnapshotMeta, SessionCountDescribesTheCopyWhenASessionVanishesBeforeVa
     EXPECT_EQ(retry.skipped, "unchanged");
 }
 
+// 一张表按 rowid 排的 "rowid=id" 列表（只看 sim-1），用来比对源库与快照的 rowid → id。
+std::string rowid_map(const std::string& db_path, const std::string& table, const std::string& id_expr) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(("file:" + db_path + "?mode=ro").c_str(), &raw,
+                              SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr), SQLITE_OK);
+    const persistence::SqliteHandle handle(raw);
+    const std::string sql = "SELECT rowid, " + id_expr + " FROM " + table +
+                            " WHERE tenant_id='sim-1' ORDER BY rowid";
+    persistence::Stmt query(raw, sql.c_str());
+    std::string out;
+    while (query.step_row()) {
+        out += std::to_string(sqlite3_column_int64(query.raw(), 0)) + "=" +
+               reinterpret_cast<const char*>(sqlite3_column_text(query.raw(), 1)) + ";";
+    }
+    return out;
+}
+
+// 契约钉测（Codex r2 R2-1）：标记里有 max_rowid，「当前标记（源库上算）== 快照标记」这一比较依赖
+// VACUUM INTO 保留 rowid。SQLite 文档并不承诺这一点：没有 INTEGER PRIMARY KEY 的表（engrams、
+// statements、source_unit_meta 都是）VACUUM 可以重排 rowid；当前 SQLite（3.51.3）实测保留，生产副本上
+// 三张表 rowid → id 也完全一致。这里用真实迁移的 schema，在三张表里各删掉一行**中间**的行（max rowid
+// 之下留出空洞，重排就会让 max_rowid 变小），再走真实的 take_auto_snapshot：快照标记必须等于源库当前
+// 标记，按时间到期后与按会话重试都得是 unchanged。将来哪个 SQLite 在 VACUUM INTO 里重排 rowid，这条
+// 测试就会失败，届时标记要换成与 rowid 无关的形式。失败方向是安全的：误判 changed → 多拍（受保留
+// 份数封顶），不会漏拍。没有回退验证：没法让 SQLite 重排 rowid。
+TEST(WorldSnapshotMeta, VacuumIntoKeepsRowidsAcrossAMiddleGapContract) {
+    const TempDir tmp;
+    auto reg = registry_with_world(tmp, "sim-1");
+    set_auto_snapshot(reg, "sim-1", AutoSnapshotConfig{true, 24});
+    const std::string db_path = reg.worlds.at("sim-1").db_path;
+    seed_marked_world(db_path);   // engrams sim-1 rowid 1..3（other 4）；statements 1..2（other 3）；
+                                  // units sim-1 1..3（other 4）
+    append_engrams(db_path, "sim-1", 3, 2);   // eng-3、eng-4：rowid 5、6
+    insert_statement(db_path, "sim-1", "st-3");   // rowid 4
+    insert_statement(db_path, "sim-1", "st-4");   // rowid 5
+    insert_units(db_path, "sim-1", {{3, "c0", "spk-1", "s-c", "2030-01-01T00:03:00Z"},    // rowid 5
+                                    {4, "c0", "spk-2", "s-c", "2030-01-01T00:04:00Z"}});  // rowid 6
+    // 各删一行中间的：engrams 的 eng-1（rowid 2，先删引用它的 unit，外键）、statements 的 st-2（rowid 2）、
+    // source_unit_meta 的 eng-0:c1（rowid 2）。max rowid 都不变，之下留出空洞。
+    exec_sql(db_path,
+             "DELETE FROM source_unit_meta WHERE tenant_id='sim-1' AND engram_ref='eng-1';"
+             "DELETE FROM source_unit_meta WHERE tenant_id='sim-1' AND engram_ref='eng-0' AND clause_id='c1';"
+             "DELETE FROM engrams WHERE tenant_id='sim-1' AND id='eng-1';"
+             "DELETE FROM statements WHERE tenant_id='sim-1' AND id='st-2';");
+    const std::string source_mark = mark_of(db_path, "sim-1");
+    ASSERT_EQ(source_mark, "e4:6:eng-4|s3:5:st-4|u3:6:eng-4:c0");
+    ASSERT_EQ(rowid_map(db_path, "engrams", "id"), "1=eng-0;3=eng-2;5=eng-3;6=eng-4;");
+
+    const auto first = take_auto_snapshot(reg, "sim-1",
+                                          AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
+                                          SnapshotOptions{});
+    ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    const std::string copy = first.taken->path;
+    EXPECT_EQ(first.taken->content_mark, source_mark);
+    for (const auto& [table, id_expr] : std::vector<std::pair<std::string, std::string>>{
+             {"engrams", "id"}, {"statements", "id"},
+             {"source_unit_meta", "engram_ref || ':' || clause_id"}}) {
+        EXPECT_EQ(rowid_map(copy, table, id_expr), rowid_map(db_path, table, id_expr)) << table;
+    }
+
+    // 按时间：间隔早已到了（48 小时），内容没变 → unchanged（比较走的是 world_store 自己的当前标记）。
+    const auto later = take_auto_snapshot(reg, "sim-1",
+                                          AutoTrigger{"interval", "", "2030-01-03T00:00:00Z"},
+                                          SnapshotOptions{});
+    EXPECT_FALSE(later.taken.has_value());
+    EXPECT_EQ(later.skipped, "unchanged");
+
+    // 按会话：新会话拍一份，同一会话重试（写入没发生）→ unchanged（I-1 去重）。
+    const auto session = take_auto_snapshot(reg, "sim-1",
+                                            AutoTrigger{"session", "s-new", "2030-01-03T00:00:01Z"},
+                                            SnapshotOptions{});
+    ASSERT_TRUE(session.taken.has_value()) << session.skipped;
+    EXPECT_EQ(session.taken->content_mark, source_mark);
+    const auto retry = take_auto_snapshot(reg, "sim-1",
+                                          AutoTrigger{"session", "s-new", "2030-01-03T00:00:05Z"},
+                                          SnapshotOptions{});
+    EXPECT_FALSE(retry.taken.has_value());
+    EXPECT_EQ(retry.skipped, "unchanged");
+    EXPECT_EQ(reg.snapshots.at("sim-1").size(), 2U);
+}
+
 // R2：注入的时钟（SnapshotOptions::now_iso）同时决定快照 id 的时间前缀与 created_at，两者是同一秒。
 // take_auto_snapshot 把触发的 now_iso 传下去。不注入时照旧用真实时钟。
 TEST(WorldSnapshotMeta, InjectedNowDrivesBothTheIdPrefixAndCreatedAt) {
@@ -3679,8 +3760,9 @@ std::size_t files_in(const fs::path& dir) {
     return held;
 }
 
-// 修剪卡住、快照数已超出保留份数（上一次修剪失败留下的样子）：到期的按时间触发抛 snapshot_failed，
-// 错误里点名 retention；不拍、快照目录不多文件、列表不变，越界的那份也没被碰。
+// 修剪卡住、快照数已超出保留份数（上一次修剪失败留下的样子）：到期的按时间触发返回 refused（不抛），
+// 原因点名 retention；不拍、快照目录不多文件、列表不变（卡住的是唯一的 victim，没有可删的），越界的
+// 那份也没被碰。
 TEST(WorldAutoRetention, IntervalRefusesWhenRetentionCannotPrune) {
     const TempDir tmp;
     const TempDir outside;
@@ -3689,16 +3771,14 @@ TEST(WorldAutoRetention, IntervalRefusesWhenRetentionCannotPrune) {
     const auto before = ids_of(reg.snapshots.at("sim-1"));
     ASSERT_EQ(before.size(), 4U);
     const auto files_before = files_in(dir);
-    std::string message;
-    try {
-        (void)take_auto_snapshot(reg, "sim-1", AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
-                                 SnapshotOptions{});
-        ADD_FAILURE() << "expected snapshot_failed";
-    } catch (const WorldStoreError& err) {
-        EXPECT_EQ(err.code(), "snapshot_failed");
-        message = err.what();
-    }
-    EXPECT_NE(message.find("retention"), std::string::npos) << message;
+    AutoSnapshotResult res;
+    ASSERT_NO_THROW(res = take_auto_snapshot(reg, "sim-1",
+                                             AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
+                                             SnapshotOptions{}));
+    EXPECT_FALSE(res.taken.has_value());
+    EXPECT_EQ(res.skipped, "");
+    EXPECT_TRUE(res.refused.starts_with("retention cannot prune")) << res.refused;
+    EXPECT_NE(res.refused.find("snapshot_failed"), std::string::npos) << res.refused;   // 修剪的错误
     EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), before);
     EXPECT_EQ(files_in(dir), files_before);
     EXPECT_TRUE(fs::exists(outside.path() / "a1.db"));
@@ -3712,23 +3792,63 @@ TEST(WorldAutoRetention, SessionRefusesWhenRetentionCannotPrune) {
     const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
     const auto before = ids_of(reg.snapshots.at("sim-1"));
     const auto files_before = files_in(dir);
-    std::string message;
-    try {
-        (void)take_auto_snapshot(reg, "sim-1", AutoTrigger{"session", "s-new", "2030-01-01T00:00:00Z"},
-                                 SnapshotOptions{});
-        ADD_FAILURE() << "expected snapshot_failed";
-    } catch (const WorldStoreError& err) {
-        EXPECT_EQ(err.code(), "snapshot_failed");
-        message = err.what();
-    }
-    EXPECT_NE(message.find("retention"), std::string::npos) << message;
+    AutoSnapshotResult res;
+    ASSERT_NO_THROW(res = take_auto_snapshot(reg, "sim-1",
+                                             AutoTrigger{"session", "s-new", "2030-01-01T00:00:00Z"},
+                                             SnapshotOptions{}));
+    EXPECT_FALSE(res.taken.has_value());
+    EXPECT_TRUE(res.refused.starts_with("retention cannot prune")) << res.refused;
     EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")), before);
     EXPECT_EQ(files_in(dir), files_before);
 }
 
+// Codex r2 R2-2：积压到保留份数 + 2（手动快照或调低了保留份数），最旧的正常 victim 排在卡住的那份
+// 之前。修剪先删掉正常 victim（文件 + 注册项），再卡在越界的那份上。拒绝必须把这份部分修剪后的
+// 注册表留给调用方保存：正常 victim 的文件与注册项都没了，卡住的那份还在，没有写新快照文件。
+// 抛出去的话，绑定拿的注册表副本就丢了，worlds.json 里留下文件已不在的条目。
+TEST(WorldAutoRetention, RefusalKeepsThePartialPruneForTheCallerToSave) {
+    const TempDir tmp;
+    const TempDir outside;
+    auto reg = stuck_retention_world(tmp, outside, 1);   // a4 a3 a2 + 越界的 a1（created_at 12-01）
+    const fs::path dir = reg.worlds.at("sim-1").snapshot_dir;
+    // 再加一份更旧、能正常删的 auto（a0，11-30）：victim 从最旧起，它排在 a1 之前。共 5 = R + 2。
+    auto normal = fake_snapshot(dir, "a0", "auto");
+    normal.reason = "interval";
+    normal.created_at = "2029-11-30T00:00:00Z";
+    reg.snapshots.at("sim-1").push_back(normal);
+    ASSERT_EQ(ids_of(reg.snapshots.at("sim-1")),
+              (std::vector<std::string>{"a4", "a3", "a2", "a1", "a0"}));
+    ASSERT_TRUE(fs::exists(dir / "a0.db"));
+    const auto files_before = files_in(dir);
+
+    AutoSnapshotResult res;
+    ASSERT_NO_THROW(res = take_auto_snapshot(reg, "sim-1",
+                                             AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
+                                             SnapshotOptions{}));
+    EXPECT_FALSE(res.taken.has_value());
+    EXPECT_TRUE(res.refused.starts_with("retention cannot prune")) << res.refused;
+    EXPECT_NE(res.refused.find("4 held"), std::string::npos) << res.refused;
+    // 正常 victim：文件删了，注册项也摘了（就在调用方拿到的 reg 里）。
+    EXPECT_FALSE(fs::exists(dir / "a0.db"));
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")),
+              (std::vector<std::string>{"a4", "a3", "a2", "a1"}));
+    // 卡住的那份还在，文件没被碰；没有写新快照文件（目录里只少了 a0.db）。
+    EXPECT_TRUE(fs::exists(outside.path() / "a1.db"));
+    EXPECT_EQ(files_in(dir), files_before - 1);
+
+    // 调用方存下这份注册表之后，再触发不会重演：没有可删的正常 victim，照样拒绝，列表不变。
+    const auto again = take_auto_snapshot(reg, "sim-1",
+                                          AutoTrigger{"interval", "", "2030-01-02T01:00:00Z"},
+                                          SnapshotOptions{});
+    EXPECT_FALSE(again.taken.has_value());
+    EXPECT_FALSE(again.refused.empty());
+    EXPECT_EQ(ids_of(reg.snapshots.at("sim-1")),
+              (std::vector<std::string>{"a4", "a3", "a2", "a1"}));
+}
+
 // 卡住的世界恰好在保留份数上（修剪无事可做，不会抛）：这一次照常拍，take_snapshot 自己的修剪
-// 随后卡在越界的那份上（吞掉），总数到保留份数 + 1；之后的每一次触发都拒绝。快照数因此有上限，
-// 不随触发次数增长。
+// 随后卡在越界的那份上（吞掉），总数到保留份数 + 1；之后的每一次触发都拒绝。自动触发的快照数
+// 因此有上限，不随触发次数增长（手动快照仍沿用吞掉修剪失败的语义，可以越过它）。
 TEST(WorldAutoRetention, StuckWorldIsCappedAtRetentionPlusOne) {
     const TempDir tmp;
     const TempDir outside;
@@ -3739,15 +3859,16 @@ TEST(WorldAutoRetention, StuckWorldIsCappedAtRetentionPlusOne) {
                                           AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
                                           SnapshotOptions{});
     ASSERT_TRUE(first.taken.has_value()) << first.skipped;
+    EXPECT_EQ(first.refused, "");
     EXPECT_EQ(reg.snapshots.at("sim-1").size(), 4U);
     for (int day = 2; day <= 6; ++day) {
         append_engrams(db_path, "sim-1", 10 + day, 1);   // 每天都有新内容：不会因 unchanged 跳过
-        EXPECT_EQ(code_of([&] {
-            (void)take_auto_snapshot(reg, "sim-1",
-                                     AutoTrigger{"interval", "", "2030-01-0" + std::to_string(day) +
-                                                                     "T01:00:00Z"},
-                                     SnapshotOptions{});
-        }), "snapshot_failed") << day;
+        const auto res = take_auto_snapshot(
+            reg, "sim-1",
+            AutoTrigger{"interval", "", "2030-01-0" + std::to_string(day) + "T01:00:00Z"},
+            SnapshotOptions{});
+        EXPECT_FALSE(res.taken.has_value()) << day;
+        EXPECT_FALSE(res.refused.empty()) << day;
         EXPECT_EQ(reg.snapshots.at("sim-1").size(), 4U) << day;
     }
     EXPECT_TRUE(fs::exists(outside.path() / "a1.db"));
@@ -3772,6 +3893,7 @@ TEST(WorldAutoRetention, PrunableWorldProceedsAndStaysAtRetention) {
                                           AutoTrigger{"interval", "", "2030-01-01T00:00:00Z"},
                                           SnapshotOptions{});
     ASSERT_TRUE(taken.taken.has_value()) << taken.skipped;
+    EXPECT_EQ(taken.refused, "");
     const auto& after = reg.snapshots.at("sim-1");
     EXPECT_EQ(after.size(), 3U);
     EXPECT_EQ(after.front().id, taken.taken->id);

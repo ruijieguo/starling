@@ -250,10 +250,13 @@ void bind_15_world(pybind11::module_& m) {
     // 按触发判断要不要拍一份自动快照（规则全在 C++ take_auto_snapshot）。trigger 是 "session" |
     // "interval"；now_iso 是调用方的时钟，必须是 YYYY-MM-DDTHH:MM:SSZ（快照 id 前缀与 created_at
     // 都取它；带小数秒等形状不对抛 invalid_auto_snapshot）；session_id 只给 "session" 触发。
-    // 返回 {"registry", "snapshot", "skipped"}：拍了时 snapshot 是条目（同 world_take_snapshot 的
-    // 形状）、skipped 为 None；没拍时 snapshot 为 None、skipped 是原因（disabled | known_session |
-    // unchanged | not_due | empty | unsupported_backend），registry 与入参内容相同。拍了时快照文件
-    // 已落盘，调用方存注册表失败要 world_discard_snapshot_file 补偿（同 world_take_snapshot）。
+    // 返回 {"registry", "snapshot", "skipped", "refused"}：拍了时 snapshot 是条目（同 world_take_snapshot
+    // 的形状）、skipped 与 refused 为 None；没拍时 snapshot 为 None、skipped 是原因（disabled |
+    // known_session | unchanged | not_due | empty | unsupported_backend），registry 与入参内容相同。
+    // 修剪卡住而拒绝拍时 refused 是原因（"retention cannot prune ..."），snapshot 与 skipped 为 None，
+    // registry 是部分修剪后的注册表（已删文件的条目已摘掉）：调用方必须保存它，并计为失败
+    // （码 snapshot_failed）。拍了时快照文件已落盘，调用方存注册表失败要 world_discard_snapshot_file
+    // 补偿（同 world_take_snapshot）。
     m.def("world_take_auto_snapshot",
           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
           [](const py::dict& reg, const std::string& world, const std::string& trigger,
@@ -272,7 +275,8 @@ void bind_15_world(pybind11::module_& m) {
               py::object snapshot = py::none();
               if (result.taken.has_value()) { snapshot = snap_out(*result.taken); }
               return py::dict("registry"_a = reg_out(registry), "snapshot"_a = snapshot,
-                              "skipped"_a = text_or_none(result.skipped));
+                              "skipped"_a = text_or_none(result.skipped),
+                              "refused"_a = text_or_none(result.refused));
           }, py::arg("registry"), py::arg("world"), py::arg("trigger"), py::arg("now_iso"),
           py::arg("session_id") = "", py::kw_only(), py::arg("vector_backend") = "sqlite");
 

@@ -1177,8 +1177,9 @@ SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
             // 会话数与内容标记在拍出来的快照文件上算（Codex I-2）：快照是静止的，标记因此恰好描述
             // 快照里有什么。在源库上、VACUUM 之前算是错的：autocommit 下每条语句读各自的版本，标记
             // 与复制之间提交的删除（forget、clear_memory）会让快照少于标记，三段标记也可能出自不同
-            // 版本。比较当前标记（current_content_mark，源库上算）与快照的标记是可以的：rowid、
-            // 主键与按租户的计数经 VACUUM INTO 原样保留。
+            // 版本。比较当前标记（current_content_mark，源库上算）与快照的标记，依赖 VACUUM INTO 保留
+            // rowid：这是实测行为（SQLite 3.51.3、生产副本），由契约测试 VacuumIntoKeepsRowidsAcrossA-
+            // MiddleGapContract 钉住，SQLite 文档不承诺。坏了的方向是误判有变化、多拍，不会漏拍。
             snap.world_time = world_time_on(copy.get(), entry.tenant);
             snap.sessions_complete = sessions_on(copy.get(), entry.tenant);
             snap.content_mark = content_mark_on(copy.get(), entry.tenant);
@@ -1915,26 +1916,27 @@ AutoSnapshotResult skipped_because(std::string reason) {
 
 // 自动快照拍之前的修剪（Codex I-3）。take_snapshot 吞掉修剪失败（手动快照有人在场，暂时多一份）；
 // 自动快照无人值守，修剪卡在同一个旧条目上（路径越界、解析不了、删不掉）时每次触发都会多登记
-// 一份，一直涨到磁盘守卫。所以先修剪一次：修剪抛了、而快照数仍 >= 保留份数，就拒绝这一次，
-// 不拍、不写盘。修剪成功（或本来就不超出）照常拍，take_snapshot 自己的修剪随后把总数压回保留份数。
-// 稳态（恰好等于保留份数、修剪无事可做）不受影响；卡住时快照数至多停在保留份数 + 1。
-void require_retention_room(Registry& reg, const std::string& world) {
+// 一份，一直涨到磁盘守卫。所以先修剪一次：修剪抛了、而快照数仍 >= 保留份数，返回拒绝原因（非空），
+// 调用方不拍。修剪成功（或本来就不超出）返回空串，照常拍，take_snapshot 自己的修剪随后把总数压回
+// 保留份数。稳态（恰好等于保留份数、修剪无事可做）不受影响；卡住时自动触发的快照数至多停在保留份数 + 1。
+//
+// 不抛（Codex r2 R2-2）：apply_retention 逐个「先删文件、再摘注册项」，卡住的条目之前排着的正常 victim
+// 已经删掉文件、摘掉注册项。抛出去，调用方（绑定拿的是注册表副本）就丢了这些删除，worlds.json 留下
+// 文件已不在的条目，而且每次触发都从旧注册表重来、重演一遍。所以把部分修剪后的 reg 留给调用方保存。
+std::string retention_refusal(Registry& reg, const std::string& world) {
     std::string prune_error;
     try {
         (void)apply_retention(reg, world);
     } catch (const WorldStoreError& err) {
         prune_error = err.what();
     }
-    if (prune_error.empty()) { return; }
+    if (prune_error.empty()) { return {}; }
     const auto listed = reg.snapshots.find(world);
     const std::size_t held = listed == reg.snapshots.end() ? 0 : listed->second.size();
-    if (std::cmp_greater_equal(held, reg.snapshot_retention)) {
-        throw WorldStoreError("snapshot_failed",
-                              "retention cannot prune the snapshots of '" + world + "' (" +
-                                  std::to_string(held) + " held, retention " +
-                                  std::to_string(reg.snapshot_retention) +
-                                  "); refusing an auto snapshot: " + prune_error);
-    }
+    if (!std::cmp_greater_equal(held, reg.snapshot_retention)) { return {}; }
+    return "retention cannot prune the snapshots of '" + world + "' (" + std::to_string(held) +
+           " held, retention " + std::to_string(reg.snapshot_retention) +
+           "); refusing an auto snapshot: " + prune_error;
 }
 
 }  // namespace
@@ -2001,8 +2003,9 @@ AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
         opts.reason = "interval";
         opts.session_id.clear();
     }
-    require_retention_room(reg, world);
     AutoSnapshotResult result;
+    result.refused = retention_refusal(reg, world);
+    if (!result.refused.empty()) { return result; }   // reg 已部分修剪：调用方保存，并计为失败
     result.taken = take_snapshot(reg, world, opts);
     return result;
 }

@@ -3456,7 +3456,7 @@ def test_binding_snapshot_dict_carries_w4_fields(tmp_path):
 
     out = _core.world_take_auto_snapshot(reg, "sim-1", "session", "2026-10-28T08:00:00Z", "s-new")
     snap = out["snapshot"]
-    assert out["skipped"] is None
+    assert out["skipped"] is None and out["refused"] is None
     assert (snap["kind"], snap["reason"], snap["session_id"]) == ("auto", "session", "s-new")
     assert snap["created_at"] == "2026-10-28T08:00:00Z"
     assert snap["id"].startswith("20261028T080000Z-")
@@ -3467,6 +3467,7 @@ def test_binding_snapshot_dict_carries_w4_fields(tmp_path):
     again = _core.world_take_auto_snapshot(out["registry"], "sim-1", "session",
                                            "2026-10-28T08:05:00Z", "s-new")
     assert again["snapshot"] is None and again["skipped"] == "unchanged"
+    assert again["refused"] is None
     known = _core.world_take_auto_snapshot(out["registry"], "sim-1", "session",
                                            "2026-10-28T08:05:00Z", "s-old")
     assert known["snapshot"] is None and known["skipped"] == "known_session"
@@ -4294,6 +4295,87 @@ def test_clear_memory_cannot_land_between_the_generation_check_and_the_source_wr
     print("C1 drain outcome:", drain_result,
           sorted(p.relative_to(eng._ingest_spool).as_posix()
                  for p in eng._ingest_spool.rglob("*.json")))
+
+
+def _stuck_retention_registry(mgr) -> tuple[str, str]:
+    """Codex r2 R2-2 的真实卡住场景：默认世界拍 4 份手动快照（m1 最旧），保留份数调到 2，把第二旧的
+    那份（m2）换成指向自己的符号链接（解析时 ELOOP，修剪删不掉它）。修剪从最旧起：先删掉正常的
+    m1，再卡在 m2 上。返回 (m1, m2) 的 id。"""
+    ids = [mgr.take_snapshot("default", f"m{index}")["id"] for index in range(1, 5)]
+    reg = mgr.load()
+    reg["snapshot_retention"] = 2
+    mgr.save(reg)
+    stuck = next(s for s in mgr.load()["snapshots"]["default"] if s["id"] == ids[1])["path"]
+    os.remove(stuck)
+    os.symlink(os.path.basename(stuck), stuck)
+    return ids[0], ids[1]
+
+
+def test_refused_auto_snapshot_saves_the_partial_prune_and_counts_snapshot_failed(tmp_path):
+    """Codex r2 R2-2：修剪先删掉正常 victim 的文件、再卡住时，C++ 返回 refused 与部分修剪后的注册表。
+    Python 必须存下它（worlds.json 里没有文件已不在的条目），按 snapshot_failed 计一次失败，摄入
+    job 照常写完。"""
+    client, _app, eng, mgr = _lane_app(tmp_path)
+    normal, stuck = _stuck_retention_registry(mgr)
+    normal_path = next(s for s in mgr.load()["snapshots"]["default"] if s["id"] == normal)["path"]
+    assert os.path.exists(normal_path)
+
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    assert (eng._ingest_spool / "done" / "job-1.json").exists()      # 摄入不因拒绝而推迟或失败
+    assert _session_units(eng._db_path, "s-1") == 2
+
+    saved = [s["id"] for s in mgr.load()["snapshots"]["default"]]
+    assert normal not in saved, "部分修剪后的注册表必须存下：正常 victim 的条目已摘"
+    assert not os.path.exists(normal_path)
+    assert stuck in saved and len(saved) == 3
+    assert _auto_snaps(mgr) == []                                      # 没拍新的
+    status = mgr.auto_snapshot_status()
+    assert (status["failures"], status["last_error"]) == (1, "snapshot_failed")
+    body = client.get("/api/ingest_status").json()
+    assert (body["auto_snapshot_failures"], body["auto_snapshot_last_error"]) == (1, "snapshot_failed")
+    assert _manager_lock_is_free(mgr)
+
+    # 按时间触发同样拒绝；注册表已存过，没有可删的正常 victim，列表不再变。
+    mgr.set_auto_snapshot("default", True, 1)
+    assert mgr._auto_snapshot("interval") == "failed"
+    assert [s["id"] for s in mgr.load()["snapshots"]["default"]] == saved
+    assert mgr.auto_snapshot_status()["failures"] == 2
+
+
+def test_refused_auto_snapshot_whose_save_fails_is_still_one_counted_failure(tmp_path, monkeypatch):
+    """拒绝之后存注册表本身失败：外层照常记一次失败（internal_error），不外抛；没有新快照文件要补偿。"""
+    _client, _app, _eng, mgr = _lane_app(tmp_path)
+    _stuck_retention_registry(mgr)
+    files_before = sorted(os.listdir(mgr.load()["worlds"]["default"]["snapshot_dir"]))
+
+    def _disk_gone(_reg):
+        raise OSError("registry write failed")
+    monkeypatch.setattr(mgr, "save", _disk_gone)
+    assert mgr._auto_snapshot("session", "s-1") == "failed"
+    status = mgr.auto_snapshot_status()
+    assert (status["failures"], status["last_error"]) == (1, "internal_error")
+    # 正常 victim 的文件已被修剪删掉（只少这一个），没有多出新快照文件。
+    files_after = sorted(os.listdir(mgr.load()["worlds"]["default"]["snapshot_dir"]))
+    assert len(files_after) == len(files_before) - 1 and set(files_after) <= set(files_before)
+    assert _manager_lock_is_free(mgr)
+
+
+def test_binding_take_auto_snapshot_refused_shape(tmp_path):
+    """绑定的 refused：拒绝时是原因字符串、snapshot 与 skipped 为 None、registry 是部分修剪后的；
+    其余结果 refused 为 None。"""
+    _client, _app, _eng, mgr = _lane_app(tmp_path)
+    normal, stuck = _stuck_retention_registry(mgr)
+    reg = mgr.load()
+    out = _core.world_take_auto_snapshot(reg, "default", "session", "2026-10-28T08:00:00Z", "s-1")
+    assert out["snapshot"] is None and out["skipped"] is None
+    assert out["refused"].startswith("retention cannot prune")
+    ids = [s["id"] for s in out["registry"]["snapshots"]["default"]]
+    assert normal not in ids and stuck in ids
+    assert normal in [s["id"] for s in reg["snapshots"]["default"]]      # 入参 dict 不变
+    skipped = _core.world_take_auto_snapshot(out["registry"], "default", "session",
+                                             "2026-10-28T08:00:00Z", "s-x", vector_backend="zvec")
+    assert skipped["refused"] is None and skipped["skipped"] == "unsupported_backend"
 
 
 def test_ingest_with_the_lane_off_takes_no_session_snapshot(tmp_path):

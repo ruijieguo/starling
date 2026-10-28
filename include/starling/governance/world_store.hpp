@@ -220,8 +220,9 @@ struct SnapshotOptions {
 //    u<count>:<max_rowid>:<id>"，三段依次是 engrams、statements、source_unit_meta，都按 tenant_id
 //    过滤；<id> 是该租户 rowid 最大那一行的主键（engrams.id、statements.id、source_unit_meta 的
 //    engram_ref || ':' || clause_id），计数为 0 时为空（"s0:0:"）。表不存在的那段写 "-"，三张表
-//    的计数都为 0 时取空串。rowid、主键与计数经 VACUUM INTO 原样保留，所以快照的标记可以直接与
-//    源库上算出的当前标记比较（第 3、4 步的 unchanged）。
+//    的计数都为 0 时取空串。快照的标记直接与源库上算出的当前标记比较（第 3、4 步的 unchanged），
+//    这依赖 VACUUM INTO 保留 rowid：实测成立、由契约测试钉住，SQLite 文档并不承诺（没有
+//    INTEGER PRIMARY KEY 的表允许被重排）。坏了的方向是误判有变化、多拍，不会漏拍。
 //    原地更新（tick 改 activation）不改变标记，插入与删除会改变它；删掉 rowid 最大的一行再插入
 //    （rowid 被复用）、清空租户后重新摄入到相同行数（rowid 从 1 重来）也会改变它（id 不同）。
 // 3. id = <UTC 紧凑时刻> + "-" + 4 位随机十六进制；时刻取 opts.now_iso（非空时）或 compact_now()。
@@ -278,6 +279,10 @@ struct AutoSnapshotResult {
     // 没拍时的原因：disabled | known_session | not_due | unchanged | empty | unsupported_backend。
     // unchanged 两种触发都会给（按会话：同一会话已有内容相同的按会话快照）。拍了快照时为空。
     std::string skipped;
+    // 修剪卡住、拒绝拍时的原因（第 5 步，Codex I-3 / r2 R2-2），以 "retention cannot prune" 开头，
+    // 附修剪的错误。非空时 taken 为空、skipped 为空，reg 可能已被部分修剪：调用方必须保存 reg，
+    // 并把这次当作失败（码 snapshot_failed）。
+    std::string refused;
 };
 
 // 按触发判断要不要拍一份自动快照，要拍就走 take_snapshot（kind="auto"）。只改内存，调用方保存。
@@ -300,15 +305,17 @@ struct AutoSnapshotResult {
 //      回拨，或那份快照的时间来自跳到未来的时钟）、last 没有 content_mark（W4 之前的条目），对应
 //      那一项都按「需要拍」处理。manual 快照不参与判断。
 //   5. 决定要拍之后、拍之前（Codex I-3）：先跑一次 apply_retention（异常接住）；之后该世界的快照数
-//      仍 >= snapshot_retention 就抛 snapshot_failed（detail 点名 retention 与修剪的错误），不拍、
-//      不写盘、列表不变。否则修剪卡住（最旧的 auto 路径越界或删不掉）时，每次触发都会多登记一份，
-//      无人值守地一直涨到磁盘守卫。修剪成功或本来就少于保留份数时照常拍，新快照让总数至多到
-//      保留份数。手动 take_snapshot 不做这一步（W2 语义：有人在场，修剪失败只是暂时多一份）。
+//      仍 >= snapshot_retention 就返回 refused（原因点名 retention 与修剪的错误），不拍、不写新文件、
+//      不抛。否则修剪卡住（最旧的 auto 路径越界或删不掉）时，每次触发都会多登记一份，无人值守地
+//      一直涨到磁盘守卫。拒绝时 reg 保留部分修剪的结果：卡住条目之前排着的正常 victim 已删文件、
+//      已摘注册项（r2 R2-2），调用方必须保存 reg 并计为失败，否则注册表里留下文件已不在的条目。
+//      修剪成功或本来就少于保留份数时照常拍，新快照让总数至多到保留份数。手动 take_snapshot 不做
+//      这一步（W2 语义：有人在场，修剪失败只是暂时多一份），所以封顶只约束自动触发。
 // 拍出来的条目 created_at 与 id 的时间前缀都取 trigger.now_iso（经 SnapshotOptions::now_iso）。
 // base 的 free_space / before_vacuum / note 照传，kind / reason / session_id / now_iso 由这里决定。
 // take_snapshot 的磁盘守卫与保留策略照常生效，失败照常抛出。第 5 步的修剪若删掉了旧条目，reg 已
-// 改动；即使随后拍快照失败，这些删除也已落盘（文件先删、注册项后摘），调用方照样不保存也无妨：
-// 注册项指向的文件不在了，下次修剪照摘。
+// 改动；随后拍快照抛错时这些删除已落盘（文件先删、注册项后摘），而调用方拿不到 reg：注册表里留下
+// 文件已不在的条目，下一次成功的修剪会把它们摘掉（remove_within 对不存在的文件照常返回）。
 AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
                                       const AutoTrigger& trigger, const SnapshotOptions& base);
 

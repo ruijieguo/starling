@@ -649,8 +649,10 @@ class WorldManager:
         后台调用方用默认的 blocking=False：manager.lock 被占（切换、回滚、手动快照）就返回
         "busy"，从不等。取到锁之后确认 live config 写的库就是注册表里活动世界的库（不一致是
         切换或回滚失败路径留下的分叉，拍了也是给错的世界拍，跳过 world_moved），再交给 C++。
-        拍了就存注册表；存失败删掉新文件（同 take_snapshot）。任何异常都计为失败、记 warning、
-        返回 "failed"，不往外抛：这是后台线程，失败不能连带摄入或调度线程。"""
+        拍了就存注册表；存失败删掉新文件（同 take_snapshot）。修剪卡住时 C++ 不拍、返回 refused 与
+        部分修剪后的注册表（Codex I-3 / r2 R2-2）：先存下它（已删文件的条目随之摘掉），再按
+        snapshot_failed 计一次失败，返回 "failed"。任何异常都计为失败、记 warning、返回 "failed"，
+        不往外抛：这是后台线程，失败不能连带摄入或调度线程。"""
         if not self.lock.acquire(blocking=blocking):
             return "busy"
         now = None
@@ -663,6 +665,14 @@ class WorldManager:
             backend = getattr(self._state.config, "vector_backend", "sqlite")
             out = _core.world_take_auto_snapshot(reg, active, trigger_kind, now, session_id,
                                                  vector_backend=backend)
+            refused = out.get("refused")
+            if refused:
+                # 卡住的条目之前排着的 victim 文件已删、注册项已摘：不存就会在 worlds.json 里留下文件
+                # 已不在的条目，且每次触发都重演一遍。没有写新快照文件，存失败也无需补偿（外层照记失败）。
+                self.save(out["registry"])
+                logger.warning("auto snapshot (%s) refused: %s", trigger_kind, refused)
+                self._count_auto_failure("snapshot_failed", now)
+                return "failed"
             snap = out["snapshot"]
             if snap is None:
                 return f"skipped:{out['skipped']}"
@@ -695,6 +705,10 @@ class WorldManager:
         code = _core.world_store_error_code(exc) if domain else "internal_error"
         # 领域错误的文本已说清原因；其余（OSError、Bug）带上回溯。
         logger.warning("auto snapshot (%s) failed: %s", trigger_kind, exc, exc_info=not domain)
+        self._count_auto_failure(code, now)
+
+    def _count_auto_failure(self, code: str, now: str | None) -> None:
+        """失败计数、最近一次错误码与时刻（GET /api/worlds、/api/ingest_status 外露的只有码）。"""
         if now is None:
             now = _now_iso()        # 注入的时钟本身抛了：时刻退回真实时钟
         with self._gate:
