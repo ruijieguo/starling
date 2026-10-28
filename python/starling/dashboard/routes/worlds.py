@@ -5,7 +5,9 @@
 世界路径只来自服务端注册表：任何路由都不接受客户端传入的文件路径，请求里只有
 世界名（C++ 侧按 ^[a-z0-9][a-z0-9_-]{0,31}$ 校验）和快照 id（只在注册表里查找）。
 回滚同样只收快照 id，库、快照与归档的路径都从注册表推出。
-设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §5.1、§9
+W4：每个世界的自动快照配置（PUT …/auto_snapshot）、会话清单（GET …/sessions）、快照行的
+sessions_complete / session_id；内容标记 content_mark 只在注册表与绑定内部，不外露。
+设计：docs/superpowers/specs/2026-10-25-world-scene-management-design.md §4.3、§5.1、§7、§9
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import os
 from functools import partial
 
 from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from starling import _core
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 # 一律原样回传错误码。未登记的码按 500 处理。
 _STATUS = {
     "invalid_world_name": 400, "confirm_mismatch": 400, "rollback_mode_unsupported": 400,
+    "invalid_auto_snapshot": 400,
     "world_not_found": 404, "snapshot_not_found": 404,
     "world_exists": 409, "world_protected": 409, "ingest_busy": 409,
     "snapshot_unsupported_backend": 409, "invalid_retention": 409,
@@ -37,9 +40,16 @@ _STATUS = {
 }
 
 
+class AutoSnapshotBody(BaseModel):
+    # 只做形状：取值范围（interval_hours 0–8760）由 C++ 校验，越界回 400 invalid_auto_snapshot。
+    on_session: bool
+    interval_hours: int
+
+
 class CreateWorldBody(BaseModel):
     name: str
     label: str = ""
+    auto_snapshot: AutoSnapshotBody | None = None     # None：新世界默认值（按会话开、按时间关）
 
 
 class SnapshotBody(BaseModel):
@@ -122,7 +132,9 @@ def _world_row(mgr, name: str, entry: dict, snaps: list[dict], active: bool,
            "statements": stats["statements"], "engrams": stats["engrams"],
            "snapshots": len(snaps),
            "snapshot_bytes": sum(s["size_bytes"] for s in snaps if not _snapshot_missing(s)),
-           "archives": archives, "archive_bytes": archive_bytes}
+           "archives": archives, "archive_bytes": archive_bytes,
+           "auto_snapshot": {"on_session": entry["auto_snapshot"]["on_session"],
+                             "interval_hours": entry["auto_snapshot"]["interval_hours"]}}
     if stats_error:
         row["stats_error"] = True
     return row
@@ -136,8 +148,12 @@ def _snapshot_missing(snap: dict) -> bool:
 def _snapshot_row(snap: dict) -> dict:
     # 白名单：条目里的 path 是服务器上的绝对路径，不外露。文件缺失的条目照常列出（还能
     # 从界面删掉），size_bytes 记 0，并带 missing: true（只在缺失的行上出现的附加字段）。
+    # W4 的 sessions_complete / session_id 在 W4 之前的条目里没有，给 None；content_mark 只给
+    # 自动快照的判断用，不在白名单里。
     row = {key: snap[key] for key in ("id", "kind", "reason", "note", "created_at",
                                       "world_time", "size_bytes")}
+    row["sessions_complete"] = snap.get("sessions_complete")
+    row["session_id"] = snap.get("session_id")
     if _snapshot_missing(snap):
         row["size_bytes"] = 0
         row["missing"] = True
@@ -158,14 +174,48 @@ def _list_worlds(mgr) -> dict:
                            name == reg["active"], reg)
                 for name in sorted(reg["worlds"])]
     return {"active": reg["active"], "default": reg["default"],
-            "snapshot_retention": reg["snapshot_retention"], "worlds": rows}
+            "snapshot_retention": reg["snapshot_retention"],
+            "auto_snapshot_status": mgr.auto_snapshot_status(), "worlds": rows}
 
 
-def _create_world(mgr, name: str, label: str) -> dict:
-    entry = mgr.create(name, label)
+def _create_world(mgr, name: str, label: str, auto_snapshot: dict | None) -> dict:
+    entry = mgr.create(name, label, auto_snapshot)
     # 新世界不会是活动世界，也还没有快照；用 create 返回的条目而不是重读注册表，
     # 避免与并发的删除/切换错位。它的库文件还不存在，world_stats 不打开任何库，不需要租约。
     return _world_row(mgr, name, entry, [], False)
+
+
+def _set_auto_snapshot(mgr, name: str, on_session: bool, interval_hours: int) -> dict:
+    return {"world": name, "auto_snapshot": mgr.set_auto_snapshot(name, on_session, interval_hours)}
+
+
+def _text_or_none(value):
+    # C++ 的 SessionRow 没有时间、没有锚点时是空串；契约给 null（前端类型是 string | null）。
+    return value or None
+
+
+def _session_row(row: dict) -> dict:
+    anchor = row.get("anchor") or {}
+    return {"session_id": row["session_id"], "units": row["units"], "speakers": row["speakers"],
+            "first_at": _text_or_none(row.get("first_at")),
+            "last_at": _text_or_none(row.get("last_at")),
+            "anchor": ({"snapshot_id": anchor["snapshot_id"], "created_at": anchor["created_at"]}
+                       if anchor.get("snapshot_id") else None)}
+
+
+def _list_sessions(mgr, state, name: str, limit: int) -> dict:
+    # world_list_sessions 只读打开该世界的库（可能就是活动世界的库）：与 _list_worlds 一样全程持
+    # 一份租约（不惰性建引擎），切换窗口内 lease 抛 world_switching → 503。不拿 manager.lock。
+    # source_lane_enabled 取当前 config（拿到租约之后才读，同 inspect 的 _cfg），对非活动世界也是：
+    # 它表示「新写入会不会产生会话」。
+    with mgr.lease():
+        lane_enabled = bool(state.config.source_lane_enabled)
+        reg = mgr.load()
+        listed = _core.world_list_sessions(reg, name, limit)
+    return {"world": name, "source_lane_enabled": lane_enabled,
+            "total": listed["total"], "null_observed": listed["null_observed"],
+            "truncated": listed["truncated"],
+            "sessions": [_session_row(row) for row in listed["sessions"]]}
 
 
 def _list_snapshots(mgr, name: str) -> dict:
@@ -195,7 +245,8 @@ def build_worlds_router(require_token) -> APIRouter:
     @router.post("/worlds")
     async def create_world(request: Request, body: CreateWorldBody):
         mgr = _manager(request)
-        return await _run(_create_world, mgr, body.name, body.label)
+        auto = body.auto_snapshot.model_dump() if body.auto_snapshot is not None else None
+        return await _run(_create_world, mgr, body.name, body.label, auto)
 
     @router.post("/worlds/{name}/activate")
     async def activate_world(request: Request, name: str):
@@ -211,6 +262,19 @@ def build_worlds_router(require_token) -> APIRouter:
             raise _fail("confirm_mismatch")      # 不碰 manager
         await _run(mgr.delete, name)
         return {"deleted": name}
+
+    @router.put("/worlds/{name}/auto_snapshot")
+    async def set_auto_snapshot(request: Request, name: str, body: AutoSnapshotBody):
+        mgr = _manager(request)
+        return await _run(_set_auto_snapshot, mgr, name, body.on_session, body.interval_hours)
+
+    @router.get("/worlds/{name}/sessions")
+    async def list_sessions(request: Request, name: str,
+                            limit: int = Query(200, ge=1, le=1000)):
+        # 越界的 limit 在这里回 422（C++ 的 1–1000 校验留作兜底，那条会回 400
+        # invalid_auto_snapshot，前端会显示成「自动快照设置无效」）。
+        mgr = _manager(request)
+        return await _run(_list_sessions, mgr, request.app.state, name, limit)
 
     @router.get("/worlds/{name}/snapshots")
     async def list_snapshots(request: Request, name: str):

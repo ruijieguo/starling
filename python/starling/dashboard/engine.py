@@ -482,6 +482,13 @@ class DashboardEngine:
             return _build_chat_adapter(cfg)
         return self._core.llm
 
+    def _check_clear_generation(self, generation: int) -> None:
+        """代数过期（claim 之后发生了 clear_memory）抛 _TenantCleared。短暂持 self._lock 读代数。"""
+        with self._lock:
+            if generation != self._clear_generation:
+                raise _TenantCleared(
+                    "tenant memory was cleared after this job was claimed")
+
     def _retain_transcript_turns(self, lines, *, job: dict, project: str,
                                  generation: int) -> int:
         """把 transcript 的逐话轮写进左脑来源通道（形态 S §6.3）。
@@ -494,19 +501,28 @@ class DashboardEngine:
         在场集合与右脑抽取的语句归属对不上，可见性会被静默放宽或收窄。
 
         返回写入的 engram 数；clear 语义与 remember 一致：代数过期即作废。
+
+        按会话的自动快照（W4，设计稿 §4.3）：代数检查通过之后、``retain_source_turns`` 之前调
+        ``session_snapshot_hook(session_id)``，此时这个 job 还什么都没写，快照里没有这个会话。钩子
+        抛 ``SessionSnapshotDeferred`` 时原样外抛，``_ingest_drain_once`` 把 job 放回 spool。只有
+        lane 开启时才走到这里，所以 lane 关闭时没有按会话的快照（设计如此）。
         """
         turns = clean_turns_ts(lines)
         if not turns:
             return 0
-        with self._lock:
-            if generation != self._clear_generation:
-                raise _TenantCleared(
-                    "tenant memory was cleared after this job was claimed")
+        self._check_clear_generation(generation)
+        session_id = job.get("session_id") or ""
+        hook = self.session_snapshot_hook
+        if hook is not None and session_id:
+            # 锁顺序：钩子（非阻塞）取 manager.lock，它排在 engine._lock 之前，所以这里不得持有
+            # self._lock——上面的代数检查已经放开了它，下面的 retain_source_turns 本来也在锁外。
+            hook(session_id)
+            # 快照可能要几秒（VACUUM INTO）：这期间的清空同样让 job 作废，再查一次代数。
+            self._check_clear_generation(generation)
 
         speaker_of = {"user": self._cfg.agent or "self",
                       "assistant": f"claude-code:{project}"}
         listeners = sorted(set(speaker_of.values()))
-        session_id = job.get("session_id") or ""
         payload = [
             {"speaker": speaker_of.get(role, role),
              "text": text,
@@ -1018,6 +1034,11 @@ class DashboardEngine:
             (sp / "done").mkdir(exist_ok=True)
             claimed.rename(sp / "done" / job_path.name)
             return "done"
+        except SessionSnapshotDeferred:
+            # 按会话的自动快照这一轮没拿到 manager.lock（切换、回滚、手动快照正持着它）。钩子在任何
+            # 写入之前调用，这个 job 什么都没写：原样放回 spool，不计 attempts（不是失败），下一轮再来。
+            claimed.rename(job_path)
+            return "deferred"
         except _TenantCleared:
             # 清空发生在本 job claim 之后:不重试、不进 failed/,与清空时尚未 claim 的
             # job 一样归档到 discarded/(手动移回 spool 根即可重新摄入)。清空前已提交的

@@ -1,6 +1,6 @@
 # 世界/场景管理：完整设计
 
-日期 2026-10-25。状态：**W1+W2 已实现并合入 main（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3 回滚语义 A（丢掉后续）与归档已在 `feat/world-rollback` 分支实现（含前端：C++ `rollback_world` / 归档列出与清理、绑定、`WorldManager.rollback`、`POST /api/worlds/{name}/rollback`、`DELETE /api/worlds/{name}/archives`、`/worlds` 页的回滚与清理归档）；W4–W5（场景清单与自动快照、分叉与语义 B）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
+日期 2026-10-25。状态：**W1+W2 已实现并合入 main（注册表、新建/切换/删除世界、手动快照与保留策略、`/worlds` 页）；W3 回滚语义 A（丢掉后续）与归档已在 `feat/world-rollback` 分支实现（含前端：C++ `rollback_world` / 归档列出与清理、绑定、`WorldManager.rollback`、`POST /api/worlds/{name}/rollback`、`DELETE /api/worlds/{name}/archives`、`/worlds` 页的回滚与清理归档）；W4（会话清单、每个世界各自配置的按会话 / 按时间自动快照、快照元数据 `sessions_complete` / `session_id` / `content_mark`，含 `/sessions` 页）在 `feat/world-sessions` 分支实现；W5（分叉与语义 B）未实现**。承接 `2026-10-19-form-s-source-lane-design.md` §14 的用户裁定。
 
 **范围**：多世界 Dashboard、快照、回滚（两种语义）、分叉、场景清单。
 
@@ -14,6 +14,9 @@
 | 默认世界是否搬家 | **不搬**，`dashboard.db` 原地；新世界才进 `worlds/`。理由：不动物理部署；代价是两套布局并存，写进 §2.3 | 2026-10-25 默认值 |
 | 快照保留份数 | **5**，清理优先保留 manual；且至少留 1 份 auto 作回滚锚点（N<2 拒绝） | 2026-10-25 默认值 |
 | 分片推进 | **W1+W2 先做完停下**，看过效果再决定 W3–W5 | 2026-10-25 默认值 |
+| 场景是否是通用概念 | **不是**。陪伴机器人这类真实部署是长时程连续交互，不按场景组织；`session_id` 只当元数据保留，取「一次相遇」，界面统一叫「会话」（§7） | 2026-10-28 用户裁定 |
+| 自动快照的触发 | **按会话、按时间两种都做，每个世界单独配置**；默认世界按时间 24 小时、按会话关，新建世界按会话开、按时间关（§4.3） | 2026-10-28 用户裁定 |
+| 自动快照失败 | **照常摄入，只记录失败**（日志 + `/api/ingest_status`、`GET /api/worlds` 的计数与最近错误） | 2026-10-28 用户裁定 |
 
 后三项是按设计默认值定的，不是我替你做的产品决定——任何一项要改，改配置或改分片顺序即可，不影响别处。
 
@@ -51,7 +54,7 @@
 | 租户数 | 1（`default`） |
 | `schema_migrations` 最高版本 | **36** |
 
-**最后一条是关键**：生产库还没有 `source_unit_meta`、`source_unit_vectors`、`cognizer_group_membership`——迁移 0037 尚未应用（服务自 10-17 起没重启过）。也就是说**场景层今天是空的**，场景 UI 上线后第一次打开会是空列表，这不是 bug。
+> 2026-10-28 更新：上表是 10-25 的测量。此后生产库已迁移到 **37**，`source_unit_meta` 有 **1393** 行、**1 个会话**；10-25 时「场景层为空」的说法已经过时。
 
 ### 1.2 快照机制实测
 
@@ -170,27 +173,52 @@ VACUUM INTO '<snapshot_dir>/<id>.db'    -- 独立连接，事务之外
 
 ### 4.2 元数据
 
-每条快照记录四个关键字段：
+每条快照记录这些字段：
 
 | 字段 | 用途 |
 |---|---|
 | `world_time` | 快照覆盖到的**世界时刻水位**（`MAX(observed_at)` on `source_unit_meta`，为空则 `MAX(created_at)` on `engrams`） |
-| `sessions_complete` | 快照时该世界已有的场景数 |
+| `sessions_complete` | 快照时该世界已有的会话数（`COUNT(DISTINCT session_id)` on `source_unit_meta`，按租户；表不存在记 0）。W4 之前的条目没有，HTTP 给 `null` |
+| `session_id` | 触发它的会话，只有 `reason="session"` 时非空；其余为 `null` |
+| `content_mark` | 内容标记（格式见下），只给自动快照判断「有没有新写入」用，**只在注册表与绑定内部，HTTP 不外露** |
 | `size_bytes` | 显示与配额判断 |
-| `kind` | `auto`（场景边界）/ `manual` |
+| `kind` / `reason` | `manual` / `manual`，或 `auto` / `session` \| `interval` |
 
 `world_time` 是回滚的锚：**"丢掉后续"回滚到哪个快照，就是看它的 `world_time`**。
 
-> `sessions_complete` 推迟到 W4：它要数场景，而场景层（`source_unit_meta`，迁移 37）在生产库里还不存在（生产迁移停在 36）。W2 的快照条目暂不带这个字段，W4 落场景清单时再补进 C++ 元数据、绑定、HTTP 与前端。
+**`content_mark` 的格式**（W4）：三段依次是 `engrams`、`statements`、`source_unit_meta`，都按 `tenant_id` 过滤，每段 `<前缀><count>:<max_rowid>:<rowid 最大那一行的 id>`，用 `|` 连接，例如 `e3:3:eng-c|s5:5:st-9|u2:2:eng-c:c1`（`source_unit_meta` 的 id 是 `engram_ref || ':' || clause_id`）。计数为 0 时 id 为空（`s0:0:`），表不存在的那段写 `-`，三张表都为空时整个标记是空串。带上 rowid 最大那一行的 id，是为了让「删掉最大 rowid 再插入（rowid 被复用）」和「清空租户后重新摄入到相同行数（rowid 从 1 重来）」也能改变标记。
+
+**标记先于 `VACUUM INTO` 计算**，在同一条只读连接上：两者之间若有新写入，快照里的内容只会**多于**标记记下的，不会少于。下一轮判断时标记不同，会多拍一份，不会漏拍。
+
+**原地更新不改变标记，这是设计如此**：tick 改 activation、forget、archive、approve、置信度更新都是对已有行的 `UPDATE`，计数、最大 rowid 和它的 id 都不变。标记检测的是新增或删除的行，不是编辑。因此一段只有原地编辑的时间，对**按时间**触发算 `unchanged`（不拍），对**按会话**触发的重试去重（§4.3 的 I-1 规则）也算同一个标记。
 
 ### 4.3 触发
 
-| 触发 | 时机 | kind |
+| 触发 | 时机 | kind / reason |
 |---|---|---|
-| 场景边界 | 摄入批次的 `session_id` 在该世界内**首次出现**时，先拍快照再写 | auto |
-| 手动 | Dashboard 按钮 / `POST /api/worlds/{w}/snapshots` | manual |
+| 按会话 | 某个 `session_id` 在该世界**第一次写入之前**，先拍快照再写 | auto / session |
+| 按时间 | 距上一份自动快照超过 `interval_hours`，且这期间有新写入 | auto / interval |
+| 手动 | Dashboard 按钮 / `POST /api/worlds/{w}/snapshots` | manual / manual |
 
-场景边界自动快照是"能回滚到任意场景之前"的前提：没有它，手动快照只能回到拍过的点。
+按会话的快照是「能回滚到任意会话之前」的前提；按时间的快照给长时程连续部署（一个会话一直不结束）一个按天的回滚点。没有它们，手动快照只能回到拍过的点。
+
+**每个世界单独配置**（W4，用户 2026-10-28 裁定）：注册表每个世界条目带 `auto_snapshot: {on_session: bool, interval_hours: int}`，`interval_hours` 取 0–8760，0 表示关闭，越界回 400 `invalid_auto_snapshot`。
+
+- **默认世界**：按时间 24 小时，按会话关。它是日常在用的连续部署。
+- **新建世界**：按会话开，按时间关。`POST /api/worlds` 可带 `auto_snapshot` 改掉，之后用 `PUT /api/worlds/{w}/auto_snapshot` 再改。
+- 已有注册表里没有这个字段的世界，加载时按上面两条补默认值。
+
+**要不要拍全由 C++ 判**（`take_auto_snapshot`），Python 只取锁、存注册表、记失败：
+
+- 向量后端是 zvec 时直接不拍（`unsupported_backend`），**不计为失败**。
+- 按会话：配置关 → 不拍；库里已有这个会话 → `known_session`；注册表里已有一份同一 `session_id`、同一 `content_mark` 的按会话快照 → `unchanged`（**I-1**：钩子在写入之前触发，写入反复失败时会话一直是新的；没有这条，每次重试都拍一份一样的快照，把更早的锚点挤出保留策略）。否则拍一份。
+- 按时间：配置为 0 → 不拍；库里没有内容（标记为空）→ `empty`；取最新一份 auto 快照（任意 reason）作 last：没到间隔 → `not_due`，到了但标记与 last 相同 → `unchanged`，否则拍一份。**M-1**：`now` 早于 last 的 `created_at`（时钟回拨，或 last 来自跳到未来的时钟）时，时间条件按「已满足」处理，标记照常比较；last 没有标记（W4 之前的条目）、时间解析不了，也都按需要拍处理。手动快照不参与判断。
+
+**调用点**：按会话的钩子在摄入线程上调用，位置在 transcript 写进来源通道（`retain_source_turns`）之前、代数检查之后，**不持 `engine._lock`**（钩子取的 `manager.lock` 在锁序上排在它之前）。它只在左脑 lane 开启时才被调用，lane 关闭时没有会话，也就没有按会话的快照，这是设计如此。按时间的触发由 lifespan 起的调度线程 `starling-auto-snapshot` 负责：启动后先等 60 秒，此后每 10 分钟检查一次，关停时停掉。
+
+**后台线程只用非阻塞方式取 `manager.lock`**。取不到（切换、回滚、手动快照正持着它）时：按时间跳过这一轮；按会话把摄入 job 原样放回 spool，**不计重试次数**（这个 job 还什么都没写），下一轮再来。这样切换和回滚不会被后台线程拖成 `ingest_busy`。
+
+**失败照常摄入**（用户裁定）：C++ 错误（如 `insufficient_disk`）、注册表存不下来（新快照文件随即删掉）都只计数、记 warning，钩子照常返回，摄入继续。失败计数、最近一次错误码及其时间在 `GET /api/worlds` 顶层的 `auto_snapshot_status: {failures, last_error, last_error_at}`，`/api/ingest_status` 另带 `auto_snapshot_failures` 与 `auto_snapshot_last_error`。计数从进程启动算起，busy 与各种跳过都不算失败。
 
 成本：实测 0.16 秒 / 57MB（当前库）。**快照体积 ≈ 活数据量，不是库文件大小**——57MB 来自 2.4GB 库里 97.7% 是 freelist；库若已被 `VACUUM` 压过，快照与库文件基本同大（实测 65.6MB 的紧凑副本拍出 65.6MB / 282 毫秒）。**代价随记忆量线性增长**，`statement_vectors` 已占 29MB/57MB，是主要增长项。
 
@@ -298,9 +326,11 @@ POST /api/worlds/{w}/fork {snapshot_id, name}
 
 ---
 
-## 7. 场景清单
+## 7. 会话清单
 
-数据来源只有一处：`source_unit_meta`。
+**场景不是通用概念**（用户 2026-10-28 裁定）。陪伴机器人这类真实部署是长时程的连续交互，不需要按场景组织。`session_id` 只当作元数据保留，取「一次相遇」最自然；它不切断召回（2026-10-25 已裁定）。界面与 API 统一叫「会话」，不叫「场景」。下文其余章节里的「场景」都按「会话」读。
+
+数据来源只有一处：`source_unit_meta`。实现在 C++ `list_sessions`（`src/governance/world_store.cpp`），接口 `GET /api/worlds/{w}/sessions?limit=200`（`limit` 取 1–1000，越界 422）。
 
 ```sql
 SELECT session_id,
@@ -314,12 +344,15 @@ SELECT session_id,
  ORDER BY first_at DESC
 ```
 
+实际的排序是 `first_at` 为空的排最后、同值按 `session_id` 升序；空串的 `observed_at` 与 NULL 一样不算时间。每行另带 `anchor`：注册表里该会话最新一份按会话快照的 `{snapshot_id, created_at}`，没有时为 `null`。`first_at` / `last_at` 全为 NULL 时为 `null`。响应顶层带 `total`（会话总数，不受 `limit` 影响）、`null_observed`（无时间的 unit 数）、`truncated`（`total > limit`）和 `source_lane_enabled`（取当前 config，对非活动世界也是：它表示新写入会不会产生会话）。路由持引擎租约只读打开库，切换窗口内回 503 `world_switching`。
+
 | 限制 | 状态 |
 |---|---|
-| 只覆盖形态 S 之后的数据 | 已知。生产库今天 0 行（迁移 0037 未应用） |
-| 没有场景列的表无法归属 | 已知。`statements` 无法确定性地回溯到场景——因此场景删除**只能**走快照回滚 |
-| 场景名来自调用方 | `session_id` 是可信后端的断言（信任模型 A），Starling 不验证，只展示 |
-| 无 `observed_at` 的 unit | `observed_at IS NULL` 的 unit 不参与召回（设计如此），场景清单里单独计数但不参与 `world_time` 水位 |
+| 只覆盖形态 S 之后的数据 | 已知。生产库 2026-10-28 有 1393 个 unit、1 个会话 |
+| 没有会话列的表无法归属 | 已知。`statements` 无法确定性地回溯到会话——因此删除一个会话**只能**走快照回滚 |
+| 会话名来自调用方 | `session_id` 是可信后端的断言（信任模型 A），Starling 不验证，只展示 |
+| 无 `observed_at` 的 unit | `observed_at IS NULL` 的 unit 不参与召回（设计如此），会话清单里单独计数（`null_observed`）但不参与 `world_time` 水位 |
+| lane 关闭 | 不写 `source_unit_meta`，新写入不产生会话，也不触发按会话的快照；页面据 `source_lane_enabled` 提示 |
 
 ---
 
@@ -370,16 +403,17 @@ activate(world):                          # 实现：python/starling/dashboard/w
 | 页面 | 内容 |
 |---|---|
 | `/worlds` | 世界列表：名称、路径、大小、场景数、语句数、最后活动、是否当前；操作：新建、切换、快照、分叉、删除 |
-| `/worlds/[name]`（或 `/worlds?world=`） | 该世界的场景清单 + 快照清单（含 `world_time`、大小、kind、删除） |
-| `/scenes`（可选，或并入上表） | 当前世界的场景列表，含每条场景的时间区间与 unit 数 |
+| `/worlds`（W4 起） | 每个世界的自动快照设置（按会话开关、按时间间隔），新建世界时也可设；快照清单显示 reason、`sessions_complete`、触发它的会话；顶部显示自动快照失败计数与最近错误 |
+| `/sessions` | 会话清单（W4）：可选世界，默认活动世界；每个会话的 unit 数、说话人数、时间区间与回滚锚点 |
 
 危险操作（删除世界、回滚）要求**手输世界名确认**——沿用 `clear_memory` 的 `confirm` 范式（`engine.py:626`），它有现成的 400 `confirm_mismatch` 语义。
 
 API：
 
 ```
-GET    /api/worlds                       列表（注册表 + 每个世界一行统计）
-POST   /api/worlds                       新建 {name, label}
+GET    /api/worlds                       列表（注册表 + 每个世界一行统计 + auto_snapshot；顶层 auto_snapshot_status）
+POST   /api/worlds                       新建 {name, label, auto_snapshot?}
+PUT    /api/worlds/{w}/auto_snapshot     改自动快照配置 {on_session, interval_hours}
 POST   /api/worlds/{w}/activate          切换
 DELETE /api/worlds/{w}                   删除（须 confirm，且不能删 default 或 active）
 GET    /api/worlds/{w}/snapshots         快照列表
@@ -388,7 +422,7 @@ DELETE /api/worlds/{w}/snapshots/{id}    删除快照
 POST   /api/worlds/{w}/rollback          回滚 {mode: "discard_after"|"scene", cutoff|snapshot_id, confirm}
 DELETE /api/worlds/{w}/archives?confirm= 清理该世界的全部回滚归档（须 confirm=<w>）
 POST   /api/worlds/{w}/fork              分叉 {snapshot_id, name}
-GET    /api/worlds/{w}/scenes            场景清单
+GET    /api/worlds/{w}/sessions?limit=   会话清单（limit 1–1000，默认 200）
 ```
 
 统计数字从各世界库只读连接查（`mode=ro`，与 `engine.py:391` 的既有做法一致），**不打开引擎**——否则列 5 个世界就要建 5 个引擎。
@@ -404,7 +438,9 @@ GET    /api/worlds/{w}/scenes            场景清单
 | 快照（`VACUUM INTO` + 校验 + 元数据） | **C++** `src/governance/world_store.cpp` | 换语言要重写：连接管理、一致性、错误分类 |
 | 回滚的顺序与原子性 | **C++** 同上 | 状态机语义 |
 | 保留 N 份的裁剪策略 | **C++** 同上 | 策略，不是适配 |
-| 场景清单查询 | **C++** 同上 | 单一权威 SQL |
+| 会话清单查询 | **C++** 同上 | 单一权威 SQL |
+| 自动快照要不要拍（两种触发、内容标记、I-1 / M-1） | **C++** 同上（`take_auto_snapshot`） | 判断规则，不是适配 |
+| 自动快照的取锁、存注册表、失败计数、调度线程、摄入钩子 | **Python** `dashboard/world_manager.py`、`engine.py` | 锁与线程是 Python 侧的引擎生命周期 |
 | 注册表读写（JSON） | **C++**（`nlohmann::json` 已用） | 同一份逻辑换语言要重写 |
 | 世界切换时引擎重建 | **Python** `dashboard/world_manager.py` | 它调的就是 Python 侧的引擎生命周期；没有绑定语言能共享 |
 | 路由 | Python | 适配 |
@@ -425,7 +461,7 @@ GET    /api/worlds/{w}/scenes            场景清单
 | W1 | 注册表 + 新建/列出/切换/删除世界 + `/worlds` 页 | 单测：注册表原子写、路径校验（拒相对路径/越界路径）、tenant 不变式；手动：新建 worlds 里点一遍 |
 | W2 | 快照（手动）+ 列表 + 删除 + 保留 N | 单测：`VACUUM INTO` 产物可打开且 `integrity_check=ok`、`world_time` 正确、裁剪按 N 且保留至少 1 份 auto、磁盘守卫；实测：在生产库副本上拍，比对 57MB 量级 |
 | W3 | 回滚语义 A（丢掉后续） | 单测：回滚后语句数等于快照时的数、旧库被改名保留、失败时目标库不被破坏（用损坏快照 + 只读目录两条路测） |
-| W4 | 场景清单 + 场景边界自动快照 + `/scenes` 页 | 单测：新 session 首次写入触发一次快照且只触发一次；场景清单的 `first_at/last_at` 与写入一致 |
+| W4 | 会话清单 + 每个世界各自配置的按会话 / 按时间自动快照 + 快照元数据（`sessions_complete`、`session_id`、`content_mark`）+ `/sessions` 页 | 单测：新会话的摄入 job 在写入前拍一份 `reason="session"` 快照、快照里没有这个会话，同一会话不再拍；取不到管理锁时 job 回 spool 且不计重试；快照失败照常摄入、失败计数可见；按时间触发按注入时钟拍或不拍（到期且有新写入才拍）；会话清单的 `first_at/last_at`、锚点与写入一致，无时间、无锚点给 `null`；`content_mark` 不出现在任何 HTTP 响应里 |
 | W5 | 分叉 + 回滚语义 B（重新摄入） | 单测：分叉后两库互不影响（写一个不动另一个）、tenant id 相同的不变式例外成立；语义 B 用 stub LLM 验证"原话被重新提交"，不验证内容一致 |
 
 **预注册**：W1–W5 都是功能交付，不是基准增益，验收判据是上面的确定性测试。凡涉及评测数字的（如重新摄入后的召回质量）都属于新的评测任务，需要单独预注册。
@@ -437,7 +473,9 @@ GET    /api/worlds/{w}/scenes            场景清单
 | 风险 | 处置 |
 |---|---|
 | 快照体积随记忆线性增长 | 保留 N 默认 5；`/worlds` 显示当前快照总量；磁盘守卫 |
-| 回滚窗口 = 最后 N 个场景 | 显式报 `snapshot too old`，不静默回退到更早的快照 |
+| 回滚窗口由保留份数与触发频率共同决定 | 保留 N 份（默认 5）：按会话触发时窗口约是最近 N 个会话，按时间触发时约是 N × `interval_hours`（默认世界约 5 天），两种都开时更短。窗口之外显式报 `snapshot too old`，不静默回退到更早的快照；要更长的窗口就调大保留份数或间隔 |
+| 升级后第一轮会给默认世界拍一份快照 | 预期行为：默认世界按时间触发、库里有内容、又还没有自动快照，调度线程启动后约 60 秒的第一轮就会拍（按 W3 实测约 100 MB、0.4 秒）。写进 PR 描述 |
+| 降级到 W3 的程序 | W3 保存注册表时会丢掉自定义的 `auto_snapshot` 配置和快照条目上的三个新字段（`sessions_complete`、`session_id`、`content_mark`）。再升级回来，这些世界回到默认配置（§4.3 的默认值）；被 W3 存过的快照按 W4 之前的条目对待：两个外露字段为 `null`，按时间触发视为需要拍，按会话的快照丢了 `session_id`，会话清单里不再显示为锚点。方向是安全的：快照文件与 kind / reason 都在，仍可回滚，也不会少拍 |
 | zvec 向量后端（默认关闭）向量在 SQLite 之外 | **分片内 fail loud**：`vector_backend=zvec` 时快照/回滚直接拒绝（`snapshot_unsupported_backend`），不做半截快照 |
 | 分叉共用 tenant id → 共用 spool 分区 | 分叉后新世界**暂停摄入**，UI 提示"世界 <name> 与 <parent> 共用摄入分区" |
 | 生产库 97.7% 是 freelist | W2 上线时顺带建议一次 `VACUUM`（离线）；不做成自动，因为 2.4GB 的 VACUUM 需要独占 |

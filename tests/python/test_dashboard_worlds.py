@@ -798,7 +798,8 @@ def test_routes_worldrow_shape_and_stats(tmp_path):
     assert list(rows) == ["default", "sim-1"]
     keys = {"name", "label", "tenant", "created_at", "active", "db_bytes", "live_bytes",
             "statements", "engrams", "snapshots", "snapshot_bytes",
-            "archives", "archive_bytes"}                       # W3 契约新增
+            "archives", "archive_bytes",                       # W3 契约新增
+            "auto_snapshot"}                                   # W4 契约新增
     assert set(rows["default"]) == keys and set(rows["sim-1"]) == keys
     assert rows["default"]["active"] is True and rows["sim-1"]["active"] is False
     assert rows["default"]["engrams"] >= 1 and rows["default"]["db_bytes"] > 0
@@ -811,7 +812,8 @@ def test_routes_snapshot_rows_hide_server_paths_and_sum_bytes(tmp_path):
     app.state.engine = DashboardEngine(app.state.config)
     first = client.post("/api/worlds/default/snapshots", json={"note": "a"}).json()
     second = client.post("/api/worlds/default/snapshots", json={"note": "b"}).json()
-    assert set(first) == {"id", "kind", "reason", "note", "created_at", "world_time", "size_bytes"}
+    assert set(first) == {"id", "kind", "reason", "note", "created_at", "world_time", "size_bytes",
+                          "sessions_complete", "session_id"}           # W4 契约新增
     listed = client.get("/api/worlds/default/snapshots").json()["snapshots"]
     stamps = [s["created_at"] for s in listed]
     assert stamps == sorted(stamps, reverse=True)            # 降序
@@ -3804,3 +3806,447 @@ def test_disable_workers_also_stops_the_scheduler(tmp_path):
     mgr.disable_workers()
     assert mgr.workers_enabled is False
     assert not started[0].is_alive()
+
+
+# ───────────────────────── W4 T3：摄入调用点、路由、lifespan 接线 ─────────────────────────
+
+def _user_line(text: str, ts: str = "2026-10-27T09:00:00.000Z") -> str:
+    return json.dumps({"type": "user", "timestamp": ts,
+                       "message": {"role": "user", "content": text}})
+
+
+def _assistant_line(text: str, ts: str = "2026-10-27T09:00:05.000Z") -> str:
+    return json.dumps({"type": "assistant", "timestamp": ts,
+                       "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}})
+
+
+def _lane_app(tmp_path, *, lane: bool = True):
+    """真实引擎 + create_app 的 WorldManager：左脑 lane 开启时把 stub 嵌入当作标定模型（lane 生效，
+    同 test_ingest_source_lane），spool 在 tmp_path 下（_cfg 的 ingest_spool_path），抽取用假 LLM。
+    挂上会话钩子，并打开默认世界的按会话触发（默认世界默认只按时间）。不进 lifespan，不起线程。"""
+    cfg = _cfg(tmp_path)
+    cfg.source_lane_enabled = lane
+    if lane:
+        cfg.source_lane_model, cfg.source_lane_dim = "stub", 8
+    eng = DashboardEngine(cfg)
+    app = create_app(cfg, engine=eng)
+    mgr = app.state.worlds
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response(_STUB, True, "")
+    eng.llm = fake
+    mgr.attach_hooks(eng)
+    mgr.set_auto_snapshot("default", True, 0)
+    return TestClient(app), app, eng, mgr
+
+
+def _spool_job(tmp_path, eng, job_name: str, session_id: str | None):
+    """往引擎的 spool 分区放一个 transcript 摄入 job，返回 (job 路径, job dict)。"""
+    transcript = tmp_path / f"{job_name}.jsonl"
+    transcript.write_text("\n".join([_user_line(f"{job_name}: Bob owns auth"),
+                                     _assistant_line("noted")]))
+    job = {"transcript_path": str(transcript), "cwd": "/proj/foo", "tenant": eng._cfg.tenant}
+    if session_id is not None:
+        job["session_id"] = session_id
+    spool = eng._ingest_spool
+    spool.mkdir(parents=True, exist_ok=True)
+    path = spool / f"{job_name}.json"
+    path.write_text(json.dumps(job))
+    return path, job
+
+
+def _session_units(db_path: str, session_id: str) -> int:
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM source_unit_meta WHERE session_id=?",
+                           (session_id,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _engine_lock_is_free(eng) -> bool:
+    """在调用它的线程里非阻塞取一次引擎锁：取得到说明别的线程都没持有它。"""
+    if eng._lock.acquire(blocking=False):
+        eng._lock.release()
+        return True
+    return False
+
+
+# ── 摄入端到端 ──
+
+def test_ingest_snapshots_a_new_session_before_writing_it_and_only_once(tmp_path):
+    client, _app, eng, mgr = _lane_app(tmp_path)
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    snaps = _auto_snaps(mgr)
+    assert [(s["kind"], s["reason"], s["session_id"]) for s in snaps] == [("auto", "session", "s-1")]
+    assert _session_units(snaps[0]["path"], "s-1") == 0, "快照必须在这个会话写入之前拍"
+    assert _session_units(eng._db_path, "s-1") == 2              # 写入照常完成
+    assert (eng._ingest_spool / "done" / "job-1.json").exists()
+
+    _spool_job(tmp_path, eng, "job-2", "s-1")                     # 同一会话的第二个 job
+    assert eng._ingest_drain_once() == "done"
+    assert len(_auto_snaps(mgr)) == 1, "同一会话不再拍"
+
+    _spool_job(tmp_path, eng, "job-3", "s-2")                     # 新会话再拍一份
+    assert eng._ingest_drain_once() == "done"
+    newest = _auto_snaps(mgr)[0]
+    assert (newest["reason"], newest["session_id"]) == ("session", "s-2")
+    # s-1 的两个 job 各写了两条话轮；s-2 还没写。
+    assert _session_units(newest["path"], "s-1") == 4 and _session_units(newest["path"], "s-2") == 0
+
+    # 会话清单里的锚点就是这两份快照。
+    rows = {row["session_id"]: row for row in
+            client.get("/api/worlds/default/sessions").json()["sessions"]}
+    assert rows["s-1"]["anchor"]["snapshot_id"] == snaps[0]["id"]
+    assert rows["s-2"]["anchor"]["snapshot_id"] == newest["id"]
+
+
+def test_ingest_calls_the_session_hook_outside_the_engine_lock_and_before_any_write(tmp_path):
+    _client, _app, eng, _mgr = _lane_app(tmp_path)
+    calls = []
+
+    def _spy(session_id):
+        # 在另一个线程里取引擎锁：摄入线程若持着它，这里取不到。
+        _worker, free = _call_in_thread(_engine_lock_is_free, eng)
+        calls.append((session_id, free.get("value"), _session_units(eng._db_path, session_id),
+                      _count(eng._db_path)))
+    eng.session_snapshot_hook = _spy
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    assert calls == [("s-1", True, 0, 0)]
+    # 没有会话 id：不调钩子。这种 job 随后在 retain_source_turns 里失败（session_id 必须非空，
+    # 本任务之前就是如此），走有界重试；这里只钉住钩子没被调。
+    for job_name, session_id in (("job-2", ""), ("job-3", None)):
+        job_path, _job = _spool_job(tmp_path, eng, job_name, session_id)
+        assert eng._ingest_drain_once() == "deferred"
+        job_path.unlink()
+    assert calls == [("s-1", True, 0, 0)]
+
+
+def test_ingest_defers_the_job_without_an_attempt_while_the_manager_lock_is_held(tmp_path):
+    _client, _app, eng, mgr = _lane_app(tmp_path)
+    job_path, job = _spool_job(tmp_path, eng, "job-1", "s-1")
+    holder, release = _hold_manager_lock(mgr)
+    try:
+        drainer, result = _call_in_thread(eng._ingest_drain_once)
+        assert not drainer.is_alive(), "摄入线程在 manager.lock 上等了"
+        assert result == {"value": "deferred"}
+    finally:
+        release.set()
+        holder.join(10)
+    assert json.loads(job_path.read_text()) == job, "放回 spool 的 job 原样不变（不计 attempts）"
+    assert not job_path.with_suffix(".json.processing").exists()
+    assert _session_units(eng._db_path, "s-1") == 0 and _count(eng._db_path) == 0   # 库里没有写入
+    assert _auto_snaps(mgr) == []
+    assert mgr.auto_snapshot_status()["failures"] == 0           # busy 不是失败
+
+    assert eng._ingest_drain_once() == "done"                     # 锁放开后照常拍、照常写
+    snaps = _auto_snaps(mgr)
+    assert [s["session_id"] for s in snaps] == ["s-1"]
+    assert _session_units(snaps[0]["path"], "s-1") == 0
+    assert _session_units(eng._db_path, "s-1") == 2 and _count(eng._db_path) >= 1
+
+
+def test_ingest_continues_when_the_session_snapshot_fails(tmp_path, monkeypatch):
+    client, _app, eng, mgr = _lane_app(tmp_path)
+
+    def _no_space(*_args, **_kwargs):
+        raise _core.WorldStoreError("insufficient_disk: need 3x live bytes")
+    monkeypatch.setattr(_core, "world_take_auto_snapshot", _no_space)
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    assert (eng._ingest_spool / "done" / "job-1.json").exists()
+    assert _session_units(eng._db_path, "s-1") == 2 and _count(eng._db_path) >= 1
+    assert _auto_snaps(mgr) == []
+
+    body = client.get("/api/ingest_status").json()
+    assert body["done"] == 1 and body["failed"] == 0
+    assert body["auto_snapshot_failures"] == 1
+    assert body["auto_snapshot_last_error"] == "insufficient_disk"
+    status = client.get("/api/worlds").json()["auto_snapshot_status"]
+    assert (status["failures"], status["last_error"]) == (1, "insufficient_disk")
+    assert _SECONDS_ISO.fullmatch(status["last_error_at"])
+
+
+def test_ingest_discards_the_job_when_memory_is_cleared_during_the_session_snapshot(tmp_path):
+    """快照可能要几秒：这期间发生的清空让 job 作废，与钩子之前的代数检查同一语义，来源表一行不写。"""
+    _client, _app, eng, mgr = _lane_app(tmp_path)
+    real_hook = eng.session_snapshot_hook
+
+    def _cleared_during_snapshot(session_id):
+        real_hook(session_id)
+        with eng._lock:
+            eng._clear_generation += 1
+    eng.session_snapshot_hook = _cleared_during_snapshot
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    assert (eng._ingest_spool / "discarded" / "job-1.json").exists()
+    assert _session_units(eng._db_path, "s-1") == 0
+    assert len(_auto_snaps(mgr)) == 1
+
+
+def test_ingest_with_the_lane_off_takes_no_session_snapshot(tmp_path):
+    """调用点在来源通道的写入里：lane 关闭就没有会话，也就没有按会话的快照（设计如此）。"""
+    _client, _app, eng, mgr = _lane_app(tmp_path, lane=False)
+    _spool_job(tmp_path, eng, "job-1", "s-1")
+    assert eng._ingest_drain_once() == "done"
+    assert _auto_snaps(mgr) == []
+    assert _count(eng._db_path) >= 1
+
+
+# ── 路由 ──
+
+def test_routes_put_auto_snapshot_writes_and_rejects(tmp_path):
+    client, app = _client(tmp_path)
+    mgr = app.state.worlds
+    r = client.put("/api/worlds/default/auto_snapshot", json={"on_session": True, "interval_hours": 6})
+    assert r.status_code == 200
+    assert r.json() == {"world": "default", "auto_snapshot": {"on_session": True, "interval_hours": 6}}
+    assert mgr.load()["worlds"]["default"]["auto_snapshot"] == {"on_session": True, "interval_hours": 6}
+    row = client.get("/api/worlds").json()["worlds"][0]
+    assert row["auto_snapshot"] == {"on_session": True, "interval_hours": 6}
+
+    before = mgr.load()
+    for hours in (8761, -1, 2 ** 70):
+        r = client.put("/api/worlds/default/auto_snapshot",
+                       json={"on_session": False, "interval_hours": hours})
+        assert (r.status_code, r.json()["detail"]) == (400, "invalid_auto_snapshot"), hours
+    r = client.put("/api/worlds/nope/auto_snapshot", json={"on_session": True, "interval_hours": 0})
+    assert (r.status_code, r.json()["detail"]) == (404, "world_not_found")
+    assert client.put("/api/worlds/default/auto_snapshot", json={"on_session": True}).status_code == 422
+    assert mgr.load() == before
+
+
+def test_routes_create_world_with_and_without_auto_snapshot(tmp_path):
+    client, app = _client(tmp_path)
+    plain = client.post("/api/worlds", json={"name": "sim-1"}).json()
+    assert plain["auto_snapshot"] == {"on_session": True, "interval_hours": 0}     # 新世界默认值
+    custom = client.post("/api/worlds", json={"name": "sim-2", "label": "x",
+                                              "auto_snapshot": {"on_session": False,
+                                                                "interval_hours": 12}}).json()
+    assert custom["auto_snapshot"] == {"on_session": False, "interval_hours": 12}
+    assert app.state.worlds.load()["worlds"]["sim-2"]["auto_snapshot"] == {"on_session": False,
+                                                                           "interval_hours": 12}
+    r = client.post("/api/worlds", json={"name": "sim-3",
+                                         "auto_snapshot": {"on_session": True, "interval_hours": 9000}})
+    assert (r.status_code, r.json()["detail"]) == (400, "invalid_auto_snapshot")
+    assert "sim-3" not in app.state.worlds.load()["worlds"]
+    rows = {w["name"]: w for w in client.get("/api/worlds").json()["worlds"]}
+    assert rows["default"]["auto_snapshot"] == {"on_session": False, "interval_hours": 24}
+    assert rows["sim-1"]["auto_snapshot"] == {"on_session": True, "interval_hours": 0}
+
+
+def test_routes_list_worlds_carries_auto_snapshot_status(tmp_path):
+    client, _app = _client(tmp_path)
+    body = client.get("/api/worlds").json()
+    assert set(body) == {"active", "default", "snapshot_retention", "auto_snapshot_status", "worlds"}
+    assert body["auto_snapshot_status"] == {"failures": 0, "last_error": None, "last_error_at": None}
+
+
+def _sim_world_with_sessions(app) -> dict:
+    """在非活动世界 sim-1 里写三个会话（s-1 先有一份按会话快照作锚点，s-null 的 observed_at 全为
+    NULL），返回锚点快照。非活动世界没有引擎，测试自己开一条写连接再关掉。"""
+    mgr = app.state.worlds
+    mgr.create("sim-1", "")
+    reg = mgr.load()
+    db = reg["worlds"]["sim-1"]["db_path"]
+    adapter = _core.SqliteAdapter.open(db)
+    out = _core.world_take_auto_snapshot(reg, "sim-1", "session", "2026-10-28T08:00:00Z", "s-1")
+    mgr.save(out["registry"])
+    for session_id in ("s-1", "s-2", "s-null"):
+        _retain_session(adapter, "sim-1", session_id)
+    del adapter
+    gc.collect()
+    con = sqlite3.connect(db)
+    try:
+        con.execute("UPDATE source_unit_meta SET observed_at=NULL WHERE session_id='s-null'")
+        con.commit()
+    finally:
+        con.close()
+    return out["snapshot"]
+
+
+def test_routes_sessions_shape_anchor_and_null_times(tmp_path):
+    client, app = _client(tmp_path)
+    anchor = _sim_world_with_sessions(app)
+    r = client.get("/api/worlds/sim-1/sessions")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"world", "source_lane_enabled", "total", "null_observed", "truncated",
+                         "sessions"}
+    assert (body["world"], body["source_lane_enabled"]) == ("sim-1", False)    # _cfg 关着 lane
+    assert (body["total"], body["null_observed"], body["truncated"]) == (3, 2, False)
+    rows = {row["session_id"]: row for row in body["sessions"]}
+    assert rows["s-1"] == {"session_id": "s-1", "units": 2, "speakers": 2,
+                           "first_at": "2026-10-27T09:00:00Z", "last_at": "2026-10-27T09:00:00Z",
+                           "anchor": {"snapshot_id": anchor["id"],
+                                      "created_at": "2026-10-28T08:00:00Z"}}
+    assert rows["s-2"]["anchor"] is None
+    assert (rows["s-null"]["first_at"], rows["s-null"]["last_at"]) == (None, None)
+
+    limited = client.get("/api/worlds/sim-1/sessions", params={"limit": 1}).json()
+    assert (limited["total"], limited["truncated"], len(limited["sessions"])) == (3, True, 1)
+    app.state.config.source_lane_enabled = True                   # 取当前 config，不论哪个世界
+    assert client.get("/api/worlds/sim-1/sessions").json()["source_lane_enabled"] is True
+
+
+def test_routes_sessions_maps_empty_cpp_strings_to_null(tmp_path, monkeypatch):
+    """C++ 的 SessionRow 没有锚点、没有时间时是空串；路由按契约给 null，不依赖绑定已经转好。"""
+    client, _app = _client(tmp_path)
+
+    def _raw(_reg, _world, _limit):
+        return {"total": 1, "null_observed": 2, "truncated": False,
+                "sessions": [{"session_id": "s-x", "units": 2, "speakers": 1, "first_at": "",
+                              "last_at": "", "anchor": {"snapshot_id": "", "created_at": ""},
+                              "extra": "dropped"}]}
+    monkeypatch.setattr(_core, "world_list_sessions", _raw)
+    body = client.get("/api/worlds/default/sessions").json()
+    assert body["sessions"] == [{"session_id": "s-x", "units": 2, "speakers": 1, "first_at": None,
+                                 "last_at": None, "anchor": None}]
+
+
+def test_routes_sessions_limit_404_and_503(tmp_path):
+    client, app = _client(tmp_path)
+    assert client.get("/api/worlds/default/sessions").json()["sessions"] == []
+    assert client.get("/api/worlds/default/sessions", params={"limit": 1000}).status_code == 200
+    for limit in (0, 1001, -5):
+        # FastAPI 在 C++ 之前回 422：越界的 limit 不该显示成「自动快照设置无效」（T4 m2）。
+        assert client.get("/api/worlds/default/sessions",
+                          params={"limit": limit}).status_code == 422, limit
+    r = client.get("/api/worlds/nope/sessions")
+    assert (r.status_code, r.json()["detail"]) == (404, "world_not_found")
+    _force_switching(app.state.worlds, True)
+    try:
+        r = client.get("/api/worlds/default/sessions")
+        assert (r.status_code, r.json()["detail"]) == (503, "world_switching")
+    finally:
+        _force_switching(app.state.worlds, False)
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("get", "/api/worlds/default/sessions", None),
+    ("put", "/api/worlds/default/auto_snapshot", {"on_session": True, "interval_hours": 0}),
+])
+def test_w4_routes_503_when_world_manager_absent(method, path, body):
+    app = create_app(DashboardConfig(db_path=":memory:", token="", tick_interval_s=0))
+    kwargs = {"json": body} if body is not None else {}
+    r = getattr(TestClient(app), method)(path, **kwargs)
+    assert (r.status_code, r.json()["detail"]) == (503, "worlds_unavailable")
+
+
+def test_routes_snapshot_rows_carry_w4_fields_and_never_content_mark(tmp_path):
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    _remember(app.state.engine, "Bob owns auth")                 # 有内容，内容标记才非空
+    mgr = app.state.worlds
+    manual = client.post("/api/worlds/default/snapshots", json={"note": "m"})
+    assert "content_mark" not in manual.text
+    assert (manual.json()["sessions_complete"], manual.json()["session_id"]) == (0, None)
+    mgr.set_auto_snapshot("default", True, 0)
+    assert mgr._make_session_hook()("s-1") is None
+    listed = client.get("/api/worlds/default/snapshots")
+    assert "content_mark" not in listed.text
+    rows = {row["reason"]: row for row in listed.json()["snapshots"]}
+    assert (rows["session"]["kind"], rows["session"]["session_id"]) == ("auto", "s-1")
+    assert rows["session"]["sessions_complete"] == 0
+    assert rows["manual"]["session_id"] is None
+    assert "content_mark" not in client.get("/api/worlds").text
+    assert all("content_mark" in snap for snap in mgr.load()["snapshots"]["default"])   # 只在内部
+
+
+def test_snapshot_row_of_a_pre_w4_entry_has_null_w4_fields(tmp_path):
+    from starling.dashboard.routes.worlds import _snapshot_row
+    legacy = {"id": "20261025T011200Z-a1b2", "kind": "auto", "reason": "session", "note": "",
+              "created_at": "2026-10-25T01:12:00Z", "world_time": "", "size_bytes": 10,
+              "path": str(tmp_path / "gone.db")}
+    row = _snapshot_row(legacy)
+    assert (row["sessions_complete"], row["session_id"]) == (None, None)
+    assert "content_mark" not in row and "path" not in row
+
+
+def test_routes_list_a_pre_w4_snapshot_entry_with_null_w4_fields(tmp_path):
+    """T2 review：注册表 dict 只在字段有值时带 sessions_complete / session_id；W4 之前的条目两个都没有，
+    列表照常列出，两个字段回 null（不能 KeyError 成 500）。"""
+    client, app = _client(tmp_path)
+    app.state.engine = DashboardEngine(app.state.config)
+    mgr = app.state.worlds
+    snap = mgr.take_snapshot("default", "w3")
+    reg = mgr.load()
+    entry = reg["snapshots"]["default"][0]
+    for key in ("sessions_complete", "session_id", "content_mark"):
+        entry.pop(key, None)                                     # 退回 W3 写下的形状
+    mgr.save(reg)
+    stored = mgr.load()["snapshots"]["default"][0]
+    assert "sessions_complete" not in stored and "session_id" not in stored
+    for path in ("/api/worlds/default/snapshots",):
+        r = client.get(path)
+        assert r.status_code == 200
+        (row,) = r.json()["snapshots"]
+        assert row["id"] == snap["id"]
+        assert (row["sessions_complete"], row["session_id"]) == (None, None)
+        assert "content_mark" not in row
+    assert client.get("/api/worlds").status_code == 200
+
+
+def test_ingest_job_without_a_session_id_never_reaches_the_real_hook(tmp_path):
+    """T2 review：空 session_id 交给 C++ 会抛 invalid_auto_snapshot、记成失败；调用点必须先挡掉。"""
+    _client, _app, eng, mgr = _lane_app(tmp_path)
+    for job_name, session_id in (("job-1", ""), ("job-2", None)):
+        job_path, _job = _spool_job(tmp_path, eng, job_name, session_id)
+        eng._ingest_drain_once()
+        job_path.unlink(missing_ok=True)
+    assert mgr.auto_snapshot_status() == {"failures": 0, "last_error": None, "last_error_at": None}
+    assert _auto_snaps(mgr) == []
+
+
+class _IngestOnlyEngine:
+    """只有 ingest_status 的引擎替身（:memory: 没有 WorldManager）。"""
+    def ingest_status(self) -> dict:
+        return {"pending": 0, "processing": 0, "done": 0, "failed": 0, "ingest_remember_ms_total": 0}
+
+
+def test_ingest_status_without_world_manager_reports_zero_failures():
+    app = create_app(DashboardConfig(db_path=":memory:", token="", tick_interval_s=0),
+                     engine=_IngestOnlyEngine())
+    assert app.state.worlds is None
+    body = TestClient(app).get("/api/ingest_status").json()
+    assert body == {"pending": 0, "processing": 0, "done": 0, "failed": 0,
+                    "ingest_remember_ms_total": 0, "auto_snapshot_failures": 0,
+                    "auto_snapshot_last_error": None}
+
+
+# ── lifespan ──
+
+@pytest.mark.parametrize("shape", ["injected", "built_by_lifespan", "no_engine"])
+def test_lifespan_attaches_the_hook_before_ingest_and_runs_the_scheduler(tmp_path, monkeypatch,
+                                                                          shape):
+    cfg = _cfg(tmp_path)
+    cfg.tick_interval_s = 60.0 if shape == "built_by_lifespan" else 0
+    hooks_at_start = []
+    real_start = DashboardEngine.start_ingest_worker
+
+    def _spy_start(self, *args, **kwargs):
+        hooks_at_start.append(self.session_snapshot_hook)
+        return real_start(self, *args, **kwargs)
+    monkeypatch.setattr(DashboardEngine, "start_ingest_worker", _spy_start)
+    app = create_app(cfg, engine=DashboardEngine(cfg) if shape == "injected" else None)
+    before = set(_scheduler_threads())
+    with TestClient(app):
+        started = [t for t in _scheduler_threads() if t not in before]
+        assert len(started) == 1, "调度线程在跑"
+        engine = app.state.engine
+        if shape == "no_engine":
+            assert engine is None and hooks_at_start == []
+        else:
+            assert len(hooks_at_start) == 1 and hooks_at_start[0] is not None, \
+                "摄入线程起来之前钩子就要挂上"
+            assert engine.session_snapshot_hook is not None
+        del engine
+    assert all(not t.is_alive() for t in started), "退出 lifespan 之后调度线程已停"
+
+
+def test_lifespan_without_world_manager_starts_no_scheduler():
+    app = create_app(DashboardConfig(db_path=":memory:", token="", tick_interval_s=0))
+    before = set(_scheduler_threads())
+    with TestClient(app):
+        assert [t for t in _scheduler_threads() if t not in before] == []
