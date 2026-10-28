@@ -36,16 +36,13 @@
 	let selected = $derived(
 		picked && worlds.some((w) => w.name === picked) ? picked : (worldsQ.data?.active ?? '')
 	);
-	let selectedRow = $derived(worlds.find((w) => w.name === selected));
 
 	let sessions = $state<SessionList | null>(null);
 	let sessionsErr = $state('');
-	let sessionsLoading = $state(false);
 	let sessReq = 0; // 防陈旧:切换世界后,只让最新一次的清单落地
 
 	async function loadSessions(name: string) {
 		const mine = ++sessReq;
-		sessionsLoading = true;
 		sessionsErr = '';
 		try {
 			const r = await worldsApi.listSessions(name, SESSION_LIMIT);
@@ -55,8 +52,6 @@
 			if (mine !== sessReq) return;
 			sessions = null;
 			sessionsErr = worldErrorMessage(apiDetail(e));
-		} finally {
-			if (mine === sessReq) sessionsLoading = false;
 		}
 	}
 
@@ -84,6 +79,9 @@
 	let current = $derived(sessions && sessions.world === selected ? sessions : null);
 
 	const fmt = (v: string | null) => (v ? v : '—');
+	// 有锚点 = snapshot_id 非空。C++ 用空串表示无锚点;路由应映射为 null,这里再防一道,
+	// 免得给空 id 渲染回滚按钮。
+	const anchorOf = (s: SessionRow) => (s.anchor?.snapshot_id ? s.anchor : null);
 
 	// ── 回滚到此会话之前 ──────────────────────────────────────────────────
 	let rollbackOpen = $state(false);
@@ -94,17 +92,18 @@
 		return t ? worlds.find((w) => w.name === t.world) : undefined;
 	});
 	let rollbackSnap = $derived.by(() => {
-		const a = rollbackTarget?.session.anchor;
+		const a = rollbackTarget ? anchorOf(rollbackTarget.session) : null;
 		return a ? { id: a.snapshot_id, created_at: a.created_at } : null;
 	});
 	let rollbackSummary = $derived.by(() => {
 		const t = rollbackTarget;
-		if (!t || !t.session.anchor) return '';
-		return `${t.session.anchor.snapshot_id} · ${t.session.anchor.created_at} · 会话 ${t.session.session_id} 开始前`;
+		const a = t ? anchorOf(t.session) : null;
+		if (!t || !a) return '';
+		return `${a.snapshot_id} · ${a.created_at} · 会话 ${t.session.session_id} 开始前`;
 	});
 
 	function askRollback(s: SessionRow) {
-		if (!selected || !s.anchor) return;
+		if (!selected || !anchorOf(s)) return;
 		rollbackTarget = { world: selected, session: s };
 		rollbackOpen = true;
 	}
@@ -112,7 +111,7 @@
 
 <PageHeader
 	title="会话"
-	subtitle="按 session_id 汇总的会话清单。会话只是元数据，不切断召回；要撤掉一个会话的写入，回滚到它开始前的快照。"
+	subtitle="按 session_id 汇总的会话清单。会话只是元数据，不切断召回；要撤掉一个会话及其之后的写入，回滚到它开始前的快照；之后的会话也会一并丢弃。"
 />
 
 {#if worldsQ.error && !worldsQ.data}
@@ -169,6 +168,7 @@
 				</thead>
 				<tbody>
 					{#each rows as s (s.session_id)}
+						{@const anchor = anchorOf(s)}
 						<tr class="border-t border-border/60 align-top">
 							<th scope="row" class="px-3 py-2 text-left font-normal">
 								<span class="font-mono text-xs text-fg" title={s.session_id}
@@ -180,10 +180,10 @@
 							<td class="px-3 py-2 tabular-nums whitespace-nowrap text-muted">{fmt(s.first_at)}</td>
 							<td class="px-3 py-2 tabular-nums whitespace-nowrap text-muted">{fmt(s.last_at)}</td>
 							<td class="px-3 py-2">
-								{#if s.anchor}
+								{#if anchor}
 									<div class="flex flex-wrap items-center gap-2">
-										<span class="font-mono text-xs break-all text-muted" title={s.anchor.created_at}
-											>{s.anchor.snapshot_id}</span
+										<span class="font-mono text-xs break-all text-muted" title={anchor.created_at}
+											>{anchor.snapshot_id}</span
 										>
 										<Button
 											variant="danger"

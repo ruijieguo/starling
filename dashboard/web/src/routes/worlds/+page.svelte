@@ -450,15 +450,18 @@
 					hint="小写字母或数字开头，可含下划线和连字符，最长 32 个字符"
 					error={nameInvalid ? worldErrorMessage('invalid_world_name') : ''}
 				>
-					<Input
-						id="world-name"
-						name="world-name"
-						bind:value={newName}
-						invalid={nameInvalid}
-						placeholder="sim-1"
-						autocomplete="off"
-						class="max-w-64"
-					/>
+					{#snippet children(f)}
+						<Input
+							id="world-name"
+							name="world-name"
+							bind:value={newName}
+							invalid={f.invalid}
+							aria-describedby={f.describedBy}
+							placeholder="sim-1"
+							autocomplete="off"
+							class="max-w-64"
+						/>
+					{/snippet}
 				</Field>
 				<Field label="显示名" for="world-label" hint="可选，只用来在列表里辨认">
 					<Input

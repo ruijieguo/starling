@@ -43,18 +43,21 @@
 		hint="0 表示关闭；距上一份自动快照超过这么多小时、且期间有新写入时拍一份"
 		error={invalid ? worldErrorMessage('invalid_auto_snapshot') : ''}
 	>
-		<Input
-			id={`${idPrefix}-interval`}
-			name={`${idPrefix}-interval`}
-			type="number"
-			min="0"
-			max={MAX_INTERVAL_HOURS}
-			step="1"
-			inputmode="numeric"
-			bind:value={hours}
-			{invalid}
-			autocomplete="off"
-			class="max-w-32"
-		/>
+		{#snippet children(f)}
+			<Input
+				id={`${idPrefix}-interval`}
+				name={`${idPrefix}-interval`}
+				type="number"
+				min="0"
+				max={MAX_INTERVAL_HOURS}
+				step="1"
+				inputmode="numeric"
+				bind:value={hours}
+				invalid={f.invalid}
+				aria-describedby={f.describedBy}
+				autocomplete="off"
+				class="max-w-32"
+			/>
+		{/snippet}
 	</Field>
 </fieldset>

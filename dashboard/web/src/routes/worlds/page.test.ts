@@ -287,6 +287,44 @@ describe('/worlds 新建的错误与 label', () => {
 		expect(container.textContent).toContain('世界名只能用小写字母');
 	});
 
+	it('世界名输入框经 aria-describedby 关联提示；出错时改为关联错误并标 aria-invalid', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		const input = container.querySelector('input[name="world-name"]') as HTMLInputElement;
+		const described = () =>
+			(input.getAttribute('aria-describedby') ?? '')
+				.split(/\s+/)
+				.filter(Boolean)
+				.map((id) => document.getElementById(id)?.textContent?.trim());
+		expect(described()).toEqual(['小写字母或数字开头，可含下划线和连字符，最长 32 个字符']);
+		expect(input.getAttribute('aria-invalid')).toBe('false');
+
+		await fireEvent.input(input, { target: { value: 'Bad Name' } });
+		await tick();
+		expect(described()).toEqual([worldErrorMessage('invalid_world_name')]);
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+
+	it('间隔小时数输入框经 aria-describedby 关联提示；出错时改为关联错误并标 aria-invalid', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		const input = container.querySelector('input[name="world-new-interval"]') as HTMLInputElement;
+		const described = () =>
+			(input.getAttribute('aria-describedby') ?? '')
+				.split(/\s+/)
+				.filter(Boolean)
+				.map((id) => document.getElementById(id)?.textContent?.trim());
+		expect(described()).toEqual([
+			'0 表示关闭；距上一份自动快照超过这么多小时、且期间有新写入时拍一份'
+		]);
+		expect(input.getAttribute('aria-invalid')).toBe('false');
+
+		await fireEvent.input(input, { target: { value: '9000' } });
+		await tick();
+		expect(described()).toEqual([worldErrorMessage('invalid_auto_snapshot')]);
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+
 	it('显示名随名称一起提交,world_exists 走中文 toast', async () => {
 		create.mockRejectedValue(apiErr(409, 'world_exists'));
 		const { container } = render(Worlds);
@@ -548,6 +586,28 @@ describe('/worlds 回滚到快照', () => {
 		expect(rollback).toHaveBeenCalledWith('sim-1', 's-man', 'sim-1');
 	});
 
+	it('输入过确认名后关掉抽屉，重新打开时输入框为空、确认键禁用', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		await openRollback(container, 'sim-1');
+		await fireEvent.input(confirmInput(), { target: { value: 'sim-1' } });
+		await tick();
+		expect(inBody('确认回滚')!.disabled).toBe(false);
+		// 用回滚抽屉自带的关闭键(✕)关掉
+		const dlg = [...document.body.querySelectorAll('[role="dialog"]')].find((d) =>
+			d.textContent?.includes('回滚世界 sim-1')
+		)!;
+		await fireEvent.click(button(dlg as HTMLElement, '✕')!);
+		await settle();
+		expect(confirmInput()).toBeNull();
+
+		await fireEvent.click(byLabel(document.body, `回滚到快照 ${SNAPS[1].created_at}`)!);
+		await settle();
+		expect(confirmInput().value).toBe('');
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+		expect(rollback).not.toHaveBeenCalled();
+	});
+
 	it('函数级守卫:绕过按钮的 disabled 也不会在名称不符时调用 rollback', async () => {
 		const { container } = render(Worlds);
 		await settle();
@@ -778,6 +838,22 @@ const checkbox = (root: ParentNode, name: string) =>
 const field = (root: ParentNode, name: string) =>
 	root.querySelector(`input[name="${name}"]`) as HTMLInputElement;
 
+// 世界行(Card)= 只含这一个世界「设置自动快照」按钮的最外层祖先。
+const worldRow = (root: HTMLElement, name: string) => {
+	let el: HTMLElement | null | undefined = byLabel(root, `设置自动快照 ${name}`);
+	const settingButtons = (n: Element) =>
+		[...n.querySelectorAll('button')].filter((b) =>
+			b.getAttribute('aria-label')?.startsWith('设置自动快照 ')
+		).length;
+	while (el?.parentElement && el.parentElement !== root && settingButtons(el.parentElement) === 1)
+		el = el.parentElement;
+	return el ?? undefined;
+};
+const autoLine = (row: HTMLElement) =>
+	[...row.querySelectorAll('p')]
+		.map((p) => p.textContent?.trim() ?? '')
+		.filter((t) => t.startsWith('自动快照：'));
+
 describe('/worlds 自动快照设置', () => {
 	beforeEach(() => {
 		list.mockReset().mockResolvedValue(DATA);
@@ -800,13 +876,17 @@ describe('/worlds 自动快照设置', () => {
 		});
 		const { container } = render(Worlds);
 		await settle();
-		const text = container.textContent ?? '';
-		expect(text).toContain('自动快照：每 24 小时');
-		expect(text).toContain('自动快照：按会话');
-		expect(text).toContain('自动快照：按会话 · 每 24 小时');
-		expect(text).toContain('自动快照：关闭');
-		for (const n of ['default', 'sim-1', 'sim-2', 'sim-3']) {
-			expect(byLabel(container, `设置自动快照 ${n}`), n).toBeDefined();
+		const expected: Record<string, string> = {
+			default: '自动快照：每 24 小时',
+			'sim-1': '自动快照：按会话',
+			'sim-2': '自动快照：按会话 · 每 24 小时',
+			'sim-3': '自动快照：关闭'
+		};
+		for (const [n, line] of Object.entries(expected)) {
+			// 只在该世界自己那一行里找,别的行的「按会话 · 每 24 小时」不能替 sim-1 过关
+			const row = worldRow(container, n);
+			expect(row, n).toBeDefined();
+			expect(autoLine(row!), n).toEqual([line]); // 恰好一行,且是这一行自己的设置
 		}
 	});
 

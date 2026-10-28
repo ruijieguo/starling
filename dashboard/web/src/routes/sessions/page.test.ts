@@ -58,8 +58,9 @@ const ANCHORED: SessionRow & { anchor: NonNullable<SessionRow['anchor']> } = {
 	first_at: '2026-10-27T19:00:00Z', last_at: '2026-10-27T20:30:00Z',
 	anchor: { snapshot_id: '20261027T185959Z-ab12', created_at: '2026-10-27T18:59:59Z' }
 };
+// 两个夹具的前 12 位不同('sess-2026-10' / 'chat-2026-10'),「前 12 位」的用例才分得出行序。
 const UNANCHORED: SessionRow = {
-	session_id: 'sess-2026-10-26-morning-123456', units: 7, speakers: 1,
+	session_id: 'chat-2026-10-26-morning-123456', units: 7, speakers: 1,
 	first_at: '2026-10-26T08:00:00Z', last_at: '2026-10-26T08:40:00Z', anchor: null
 };
 const sessionsOf = (w: string, rows: SessionRow[] = [ANCHORED, UNANCHORED], extra = {}) => ({
@@ -111,7 +112,7 @@ describe('/sessions 默认世界与切换', () => {
 		await settle();
 		expect(listSessions).toHaveBeenLastCalledWith('sim-1', 200);
 		expect(bodyRows(container).length).toBe(1);
-		expect(container.textContent).toContain('sess-2026-10');
+		expect(cells(bodyRows(container)[0])[0].textContent?.trim()).toBe('chat-2026-10');
 		expect(rollbackButtons(container).length).toBe(0);
 	});
 
@@ -141,6 +142,14 @@ describe('/sessions 默认世界与切换', () => {
 		await fireEvent.click(button(container, '重试')!);
 		await settle();
 		expect(bodyRows(container).length).toBe(2);
+	});
+
+	it('副标题说明回滚会一并丢弃之后的会话', async () => {
+		const { container } = render(Sessions);
+		await settle();
+		expect(container.textContent).toContain(
+			'要撤掉一个会话及其之后的写入，回滚到它开始前的快照；之后的会话也会一并丢弃'
+		);
 	});
 
 	it('世界列表加载失败：显示加载失败', async () => {
@@ -184,7 +193,10 @@ describe('/sessions 表格', () => {
 	it('每行：session_id 前 12 位（悬停看全文、作行表头）、话轮数、说话人数、开始、最近', async () => {
 		const { container } = render(Sessions);
 		await settle();
-		const [first] = bodyRows(container);
+		const [first, second] = bodyRows(container);
+		// 按后端给的顺序渲染
+		expect(cells(second)[0].textContent?.trim()).toBe('chat-2026-10');
+		expect(cells(second)[0].querySelector(`[title="${UNANCHORED.session_id}"]`)).not.toBeNull();
 		const c = cells(first);
 		expect(c[0].tagName).toBe('TH');
 		expect(c[0].getAttribute('scope')).toBe('row');
@@ -213,7 +225,10 @@ describe('/sessions 表格', () => {
 		const a = cells(anchored)[5];
 		expect(a.textContent).toContain('20261027T185959Z-ab12');
 		expect(button(a, '回滚到此会话之前')).toBeDefined();
-		expect(button(a, '回滚到此会话之前')!.getAttribute('aria-label')).toContain('回滚到此会话之前');
+		// aria-label 以可见文字开头,并带上完整 session_id 以区分各行
+		expect(button(a, '回滚到此会话之前')!.getAttribute('aria-label')).toBe(
+			`回滚到此会话之前 ${ANCHORED.session_id}`
+		);
 
 		const b = cells(bare)[5];
 		const hint = '未开启按会话快照、快照失败，或已被保留策略清理';
@@ -224,6 +239,18 @@ describe('/sessions 表格', () => {
 		expect(b.querySelector('.sr-only')?.textContent).toContain(hint);
 		expect(b.querySelector('button')).toBeNull();
 		expect(rollbackButtons(container).length).toBe(1);
+	});
+
+	it('anchor 的 snapshot_id 为空串时当作无锚点：显示「无」，没有回滚按钮', async () => {
+		listSessions.mockResolvedValue(
+			sessionsOf('default', [{ ...ANCHORED, anchor: { snapshot_id: '', created_at: '' } }])
+		);
+		const { container } = render(Sessions);
+		await settle();
+		const c = cells(bodyRows(container)[0])[5];
+		expect(c.querySelector('[title]')!.textContent?.trim()).toBe('无');
+		expect(c.querySelector('button')).toBeNull();
+		expect(rollbackButtons(container).length).toBe(0);
 	});
 
 	it('lane 关闭时表格上方提示；lane 开启时不提示', async () => {
@@ -307,6 +334,14 @@ describe('/sessions 回滚到会话之前', () => {
 		await fireEvent.click(rollbackButtons(container)[0]);
 		await settle();
 	};
+	// 用抽屉自带的关闭键(✕)关掉回滚抽屉。
+	const closeRollback = async () => {
+		const dlg = [...document.body.querySelectorAll('[role="dialog"]')].find((d) =>
+			d.textContent?.includes('回滚世界')
+		)!;
+		await fireEvent.click(button(dlg, '✕')!);
+		await settle();
+	};
 
 	it('点按钮只打开确认，显示目标快照与丢弃说明，不直接回滚', async () => {
 		const { container } = render(Sessions);
@@ -351,6 +386,22 @@ describe('/sessions 回滚到会话之前', () => {
 		// 活动世界:整页刷新,按钮在重载前不复位
 		expect(reload).toHaveBeenCalledTimes(1);
 		expect(inBody('确认回滚')!.disabled).toBe(true);
+	});
+
+	it('输入过确认名后关掉抽屉，重新打开时输入框为空、确认键禁用', async () => {
+		const { container } = render(Sessions);
+		await settle();
+		await openRollback(container);
+		await fireEvent.input(confirmInput(), { target: { value: 'default' } });
+		await tick();
+		expect(inBody('确认回滚')!.disabled).toBe(false);
+		await closeRollback();
+		expect(confirmInput()).toBeNull();
+
+		await openRollback(container);
+		expect(confirmInput().value).toBe('');
+		expect(inBody('确认回滚')!.disabled).toBe(true);
+		expect(rollback).not.toHaveBeenCalled();
 	});
 
 	it('非活动世界回滚成功：toast、关确认、重取清单，不整页刷新', async () => {
