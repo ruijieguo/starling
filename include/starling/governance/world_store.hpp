@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -30,7 +31,8 @@ private:
 };
 // code 取值：invalid_world_name | world_exists | world_not_found | world_protected
 //           | registry_corrupt | invalid_retention | snapshot_not_found
-//           | insufficient_disk | snapshot_failed | invalid_snapshot_kind
+//           | insufficient_disk | snapshot_failed
+//           | invalid_snapshot_kind（take_snapshot：kind 不是 manual / auto，或 kind 与 reason 不配对）
 //           | world_tenant_mismatch（verify_world_tenant：库里有别的租户的行）
 //           | snapshot_unsupported_backend（take_snapshot / rollback_world：vector_backend 不是 sqlite）
 //           | snapshot_corrupt（rollback_world：快照文件缺失、打不开或 integrity_check 不过）
@@ -38,16 +40,34 @@ private:
 //             读过库的闲置连接与开着的读事务都看得见；delete 模式的库（恢复出来、引擎还没打开
 //             过）上只看得见开着的读事务；只打开、没读过的连接两种模式都看不见。探测只是纵深
 //             防御，见 rollback_world）
+//           | invalid_auto_snapshot（W4：interval_hours 越界、session 触发缺 session_id、
+//             now_iso 解析不了（AutoTrigger 与 SnapshotOptions 的都算）、触发类型非法、
+//             list_sessions 的 limit 越界）
 
 struct SnapshotEntry {
     std::string id;           // 20261025T011200Z-a1b2
     std::string path;         // 绝对路径
     std::string kind;         // "auto" | "manual"
-    std::string reason;       // manual 时 "manual"
+    std::string reason;       // manual → "manual"；auto → "session" | "interval"（注册表校验）
     std::string note;
     std::string created_at;   // ISO-8601 UTC 秒精度
     std::string world_time;   // 快照覆盖到的世界时刻水位，可为空
     std::int64_t size_bytes = 0;
+    // 以下三项 W4 新增，读取都是可选的（W2/W3 的条目没有）。
+    // 快照时该世界已有的会话数（source_unit_meta 的 DISTINCT session_id）。缺省时 JSON 不写。
+    std::optional<std::int64_t> sessions_complete;
+    // 触发它的会话（只有 reason="session" 时非空）。为空时 JSON 不写。
+    std::string session_id;
+    // 内容标记（格式见 take_snapshot 第 2a 步）。为空时 JSON 不写；空串也表示「库里没有内容」。
+    std::string content_mark;
+};
+
+// 每个世界的自动快照配置（W4）。JSON：{"on_session": bool, "interval_hours": int}。
+//   on_session：某个 session_id 在该世界第一次写入之前先拍一份；
+//   interval_hours：距上一份自动快照超过这么多小时、且有新写入时拍一份；0 表示关闭，上限 8760。
+struct AutoSnapshotConfig {
+    bool on_session = false;
+    std::int64_t interval_hours = 0;
 };
 
 struct WorldEntry {
@@ -57,6 +77,9 @@ struct WorldEntry {
     std::string snapshot_dir; // 绝对路径
     std::string label;
     std::string created_at;
+    // 注册表里缺这个字段时（W4 之前的注册表），registry_from_json 补默认值：默认世界
+    // {false, 24}，其余世界 {true, 0}。保存时总是写出。
+    AutoSnapshotConfig auto_snapshot;
 };
 
 struct Registry {
@@ -84,13 +107,16 @@ struct Registry {
 //     注册表目录本身可以是符号链接（例如整个 ~/.starling 指到别处）：两侧都解析，比的是同一处。
 //     <registry_dir>/worlds 解析后也必须在 registry_dir 之下；世界目录尚不存在时照常通过。
 //   - 每份快照的 kind 是 manual / auto，path 在字面上位于所属世界的 snapshot_dir 之下；
+//     kind="manual" 时 reason 必须是 "manual"，kind="auto" 时 reason 必须是 "session" 或 "interval"；
+//   - 每个世界的 auto_snapshot（字段存在时）是对象，on_session 是布尔，interval_hours 是 0–8760 的
+//     整数；字段缺失时补默认值（见 WorldEntry::auto_snapshot），不算损坏；
 //   - snapshots 的每个键都是已登记的世界。
 // 违反任一条：load 抛 registry_corrupt；save 同样抛，注册表文件不被覆盖。布局规则 1–3 的消息写明
 // 字段、原路径与解析到的位置，末尾附补救提示（世界目录内的路径不能外链；换盘请整个移动注册表目录）。
 // dashboard 启动时 bootstrap_worlds 就会 load，所以违反布局会让 dashboard 拒绝启动。
 [[nodiscard]] Registry load_registry(const std::filesystem::path& registry_path);
 void save_registry(const std::filesystem::path& registry_path, const Registry& reg);
-// 注册表文件不存在时，创建只含 default 世界的注册表并保存。
+// 注册表文件不存在时，创建只含 default 世界的注册表并保存（default 的 auto_snapshot 为 {false, 24}）。
 // 注册表已存在时，原样返回，不修改 default 的路径。
 [[nodiscard]] Registry ensure_registry(const std::filesystem::path& registry_path,
                                        const std::filesystem::path& default_db_path,
@@ -98,9 +124,12 @@ void save_registry(const std::filesystem::path& registry_path, const Registry& r
 // 新世界目录为 <registry_dir>/worlds/<name>/，库文件为 world.db，快照目录为 snapshots/。
 // 只创建目录和注册项，不创建库文件，库文件留到首次激活时由 SqliteAdapter 建。
 // tenant 固定为 name（新建世界不是分叉，没有来源租户）。
+// auto_snapshot 的 interval_hours 越界时抛 invalid_auto_snapshot（在名字校验之后、建目录之前）。
 WorldEntry create_world(Registry& reg, const std::filesystem::path& registry_dir,
                         const std::string& name, const std::string& label,
-                        std::string_view now_iso);
+                        std::string_view now_iso,
+                        const AutoSnapshotConfig& auto_snapshot = AutoSnapshotConfig{
+                            .on_session = true, .interval_hours = 0,});
 // 拒绝删除 default 和当前活动世界，抛 world_protected。
 // 删除注册项、对应的快照列表，并删除 <registry_dir>/worlds/<name>/ 整个目录。
 // 只删 registry_dir 之下的路径（防止注册表被篡改后删到外部目录）：<registry_dir>/worlds
@@ -112,6 +141,9 @@ WorldEntry create_world(Registry& reg, const std::filesystem::path& registry_dir
 void delete_world(Registry& reg, const std::filesystem::path& registry_dir,
                   const std::string& name);
 void set_active(Registry& reg, const std::string& name);
+// 改一个世界的自动快照配置（只改内存，调用方保存）。世界不存在抛 world_not_found，
+// interval_hours 不在 0–8760 抛 invalid_auto_snapshot；两种情况注册表都不变。
+void set_auto_snapshot(Registry& reg, const std::string& world, const AutoSnapshotConfig& config);
 
 // ---- JSON 文本（绑定层的序列化入口，格式与 worlds.json 逐字一致） -------------
 //
@@ -157,11 +189,22 @@ struct SnapshotOptions {
     std::string vector_backend = "sqlite";
     // 测试注入用：返回可用字节数。为空时用 std::filesystem::space(dir).available。
     std::function<std::int64_t(const std::filesystem::path&)> free_space;
+    // 原样写进条目的 session_id（take_auto_snapshot 的按会话触发填入）。
+    std::string session_id;
+    // 快照时刻，YYYY-MM-DDTHH:MM:SSZ（可注入的时钟）。非空时快照 id 的时间前缀与条目的
+    // created_at 都由它推出，二者描述同一秒；为空时用真实时钟（id 前缀与 created_at 各读一次）。
+    // 形状不对抛 invalid_auto_snapshot，在任何 I/O 之前。take_auto_snapshot 填入触发的 now_iso，
+    // 判断「间隔到没到」、快照 id 与记录用的是同一个时钟。
+    std::string now_iso;
+    // 测试注入用：磁盘守卫与快照 id 都定好之后、VACUUM INTO 之前调用（模拟复制前落下的写入或删除）。
+    // 为空时不调用。
+    std::function<void()> before_vacuum;
 };
 
-// 1. 取世界；不存在抛 world_not_found。kind 非法抛 invalid_snapshot_kind，
-//    vector_backend 不是 "sqlite" 抛 snapshot_unsupported_backend，保留份数非法抛
-//    invalid_retention，三者都在任何文件 I/O 之前。
+// 1. 取世界；不存在抛 world_not_found。kind 与 reason 不是 manual/manual、auto/session、
+//    auto/interval 之一抛 invalid_snapshot_kind；opts.now_iso 非空且形状不对抛
+//    invalid_auto_snapshot；vector_backend 不是 "sqlite" 抛 snapshot_unsupported_backend；保留份数
+//    非法抛 invalid_retention。都在任何文件 I/O 之前：快照目录还没建，源库还没打开。
 // 1b. 清扫 snapshot_dir 里上次崩溃留下的残留：名字形如快照 id 的 <id>.db.partial，
 //    以及没有任何注册项引用的 <id>.db（改名之后、调用方存注册表之前崩溃的产物，没有
 //    元数据，列不出来）。只认快照 id 形状的文件名，别的文件一概不碰；每个删除都经
@@ -170,18 +213,33 @@ struct SnapshotOptions {
 //    还没登记的文件当成残留。
 // 2. 只读打开 db_path，计算 live_bytes；free_space(snapshot_dir) < 3 * live_bytes 时
 //    抛 insufficient_disk（不写任何文件）。恰好 3 倍放行。
-// 3. id = compact_now() + "-" + 4 位随机十六进制；与该世界已有的 id 重复时重新生成。
+// 2a. sessions_complete 与 content_mark（W4）在第 5 步、拍出来的快照文件上算（Codex I-2），所以它们
+//    恰好描述快照里有什么；复制之前落下的插入或删除都如实反映在快照与标记里，两者不会不一致：
+//    sessions_complete = COUNT(DISTINCT session_id) FROM source_unit_meta WHERE tenant_id=?，
+//    表不存在记 0；content_mark = "e<count>:<max_rowid>:<id>|s<count>:<max_rowid>:<id>|
+//    u<count>:<max_rowid>:<id>"，三段依次是 engrams、statements、source_unit_meta，都按 tenant_id
+//    过滤；<id> 是该租户 rowid 最大那一行的主键（engrams.id、statements.id、source_unit_meta 的
+//    engram_ref || ':' || clause_id），计数为 0 时为空（"s0:0:"）。表不存在的那段写 "-"，三张表
+//    的计数都为 0 时取空串。快照的标记直接与源库上算出的当前标记比较（第 3、4 步的 unchanged），
+//    这依赖 VACUUM INTO 保留 rowid：实测成立、由契约测试钉住，SQLite 文档并不承诺（没有
+//    INTEGER PRIMARY KEY 的表允许被重排）。坏了的方向是误判有变化、多拍，不会漏拍。
+//    原地更新（tick 改 activation）不改变标记，插入与删除会改变它；删掉 rowid 最大的一行再插入
+//    （rowid 被复用）、清空租户后重新摄入到相同行数（rowid 从 1 重来）也会改变它（id 不同）。
+// 3. id = <UTC 紧凑时刻> + "-" + 4 位随机十六进制；时刻取 opts.now_iso（非空时）或 compact_now()。
+//    与该世界已有的 id 重复时重新生成（now_iso 固定时只重抽十六进制部分）。
 // 4. 删掉残留的 <id>.db.partial，再用只读连接执行 VACUUM INTO ?（绑定参数）写到 partial。
 // 5. 关闭连接，再用只读连接打开 partial，PRAGMA integrity_check 必须为 "ok"，
-//    否则删掉 partial 并抛 snapshot_failed。
-// 6. fs::rename(partial, <id>.db)，填 size_bytes、world_time、created_at。
+//    否则删掉 partial 并抛 snapshot_failed。在这条连接上算 world_time、sessions_complete、content_mark。
+// 6. fs::rename(partial, <id>.db)，填 size_bytes、created_at（opts.now_iso 非空时就是它，
+//    否则取当前时间），session_id 取 opts.session_id。
 // 7. 插到 reg.snapshots[world] 的开头（最新在前），然后调用 apply_retention。
 //    成功的快照一定返回它的条目：修剪失败（旧快照路径无法解析或删不掉）在这里
 //    被吞掉，不外抛。列表与磁盘仍一致（每个旧快照先删文件再摘注册项），只是
 //    暂时多出几份，下一次 take_snapshot 或显式 apply_retention 会重试。
 // 8. 不负责 save_registry，由调用方保存。
 // opts.kind 不是 "manual" / "auto" 时在写任何文件之前抛 invalid_snapshot_kind
-// （保留策略只认 "auto"，拼错会悄悄丢掉回滚锚点保护）。
+// （保留策略只认 "auto"，拼错会悄悄丢掉回滚锚点保护）；reason 不配对同样在这里拒，
+// 不等到 save_registry 才报 registry_corrupt。
 // fs::space 返回「未知」（uintmax_t(-1)，FUSE / 网络文件系统）时跳过磁盘守卫。
 // 任何 SQLite 错误都转成 snapshot_failed，并保证不留下 partial 文件。
 SnapshotEntry take_snapshot(Registry& reg, const std::string& world,
@@ -205,6 +263,86 @@ void delete_snapshot(Registry& reg, const std::string& world, const std::string&
 // world_not_found / snapshot_not_found，越出 snapshot_dir 抛 snapshot_failed。
 void discard_snapshot_file(const Registry& reg, const std::string& world,
                            const std::string& snapshot_id);
+
+// ---- 自动快照与会话清单（W4） -------------------------------------------------
+//
+// 设计稿 §4.3（触发）、§7（会话清单）；计划 docs/superpowers/plans/2026-10-28-world-w4-sessions.md。
+
+struct AutoTrigger {
+    std::string kind;         // "session" | "interval"
+    std::string session_id;   // kind="session" 时必填
+    std::string now_iso;      // 当前时刻，YYYY-MM-DDTHH:MM:SSZ（调用方的时钟，可注入）
+};
+
+struct AutoSnapshotResult {
+    std::optional<SnapshotEntry> taken;   // 拍了快照时是它的条目
+    // 没拍时的原因：disabled | known_session | not_due | unchanged | empty | unsupported_backend。
+    // unchanged 两种触发都会给（按会话：同一会话已有内容相同的按会话快照）。拍了快照时为空。
+    std::string skipped;
+    // 修剪卡住、拒绝拍时的原因（第 5 步，Codex I-3 / r2 R2-2），以 "retention cannot prune" 开头，
+    // 附修剪的错误。非空时 taken 为空、skipped 为空，reg 可能已被部分修剪：调用方必须保存 reg，
+    // 并把这次当作失败（码 snapshot_failed）。
+    std::string refused;
+};
+
+// 按触发判断要不要拍一份自动快照，要拍就走 take_snapshot（kind="auto"）。只改内存，调用方保存。
+// 顺序：
+//   1. 世界不存在抛 world_not_found；trigger.kind 不是 session / interval、now_iso 解析不了抛
+//      invalid_auto_snapshot。
+//   2. base.vector_backend 不是 "sqlite" → skipped="unsupported_backend"，不抛、不写盘。
+//   3. 按会话：on_session 为 false → disabled；session_id 为空抛 invalid_auto_snapshot；库里已有
+//      这个会话（只读查 source_unit_meta，表或库文件不存在算没有）→ known_session；
+//      注册表里已有一份 kind="auto"、reason="session"、session_id 相同、content_mark 与当前相同
+//      （两个空串也算相同）的快照 → unchanged（任意一份都算，不只看最新的 auto：两次重试之间拍了
+//      按时间的快照也不重复拍）。调用方在写入之前触发，写入反复失败时会话一直是新的，这一条防止
+//      每次重试都拍一份一样的快照、把更早的锚点挤出保留策略；
+//      否则拍一份，reason="session"，session_id 填入。
+//   4. 按时间：interval_hours 为 0 → disabled；当前 content_mark 为空（库文件不存在也算）→ empty；
+//      取该世界 created_at 最新的一份 auto 快照（任意 reason）作为 last：
+//        last 的 created_at 能解析、不晚于 now、且 now - created_at < interval_hours 小时 → not_due；
+//        last 带 content_mark 且与当前相同 → unchanged；
+//      否则拍一份，reason="interval"。没有 last、last 的 created_at 解析不了、last 晚于 now（时钟
+//      回拨，或那份快照的时间来自跳到未来的时钟）、last 没有 content_mark（W4 之前的条目），对应
+//      那一项都按「需要拍」处理。manual 快照不参与判断。
+//   5. 决定要拍之后、拍之前（Codex I-3）：先跑一次 apply_retention（异常接住）；之后该世界的快照数
+//      仍 >= snapshot_retention 就返回 refused（原因点名 retention 与修剪的错误），不拍、不写新文件、
+//      不抛。否则修剪卡住（最旧的 auto 路径越界或删不掉）时，每次触发都会多登记一份，无人值守地
+//      一直涨到磁盘守卫。拒绝时 reg 保留部分修剪的结果：卡住条目之前排着的正常 victim 已删文件、
+//      已摘注册项（r2 R2-2），调用方必须保存 reg 并计为失败，否则注册表里留下文件已不在的条目。
+//      修剪成功或本来就少于保留份数时照常拍，新快照让总数至多到保留份数。手动 take_snapshot 不做
+//      这一步（W2 语义：有人在场，修剪失败只是暂时多一份），所以封顶只约束自动触发。
+// 拍出来的条目 created_at 与 id 的时间前缀都取 trigger.now_iso（经 SnapshotOptions::now_iso）。
+// base 的 free_space / before_vacuum / note 照传，kind / reason / session_id / now_iso 由这里决定。
+// take_snapshot 的磁盘守卫与保留策略照常生效，失败照常抛出。第 5 步的修剪若删掉了旧条目，reg 已
+// 改动；随后拍快照抛错时这些删除已落盘（文件先删、注册项后摘），而调用方拿不到 reg：注册表里留下
+// 文件已不在的条目，下一次成功的修剪会把它们摘掉（remove_within 对不存在的文件照常返回）。
+AutoSnapshotResult take_auto_snapshot(Registry& reg, const std::string& world,
+                                      const AutoTrigger& trigger, const SnapshotOptions& base);
+
+struct SessionRow {
+    std::string session_id;
+    std::int64_t units = 0;
+    std::int64_t speakers = 0;
+    std::string first_at;            // MIN(observed_at)；全为 NULL 时为空
+    std::string last_at;             // MAX(observed_at)；全为 NULL 时为空
+    std::string anchor_snapshot_id;  // 该会话最新一份 auto/session 快照；没有时为空
+    std::string anchor_created_at;
+};
+
+struct SessionList {
+    std::vector<SessionRow> rows;
+    std::int64_t total = 0;          // 会话总数（不受 limit 影响）
+    std::int64_t null_observed = 0;  // observed_at IS NULL 的 unit 数
+    bool truncated = false;          // total > limit
+};
+
+// 会话清单（设计稿 §7）：只读打开该世界的库，按 session_id 汇总 source_unit_meta（按 tenant
+// 过滤），按 first_at DESC 排序（first_at 为空的排最后，同值按 session_id 升序），取前 limit 行。
+// 锚点取注册表里 kind="auto"、reason="session"、session_id 相同的快照中 created_at 最新的一份。
+// 世界不存在抛 world_not_found；limit 不在 1–1000 抛 invalid_auto_snapshot；库文件或表不存在
+// 返回空清单（total=0）；库读不出抛 snapshot_failed。
+[[nodiscard]] SessionList list_sessions(const Registry& reg, const std::string& world,
+                                        std::int64_t limit);
 
 // ---- 回滚与归档（W3） ------------------------------------------------------
 //

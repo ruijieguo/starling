@@ -253,9 +253,16 @@ def build_inspect_router(require_token) -> APIRouter:
         # dogfood 子项 A(Task 3):spool 队列深度 —— 引擎内存态(remember 累计
         # 耗时计数器 ingest_remember_ms_total),无引擎则无可读(同
         # runtime_health 的能力探测模式)。
+        # W4：合并自动快照的失败计数与最近一次错误码（失败照常摄入，只在这里和 GET /api/worlds
+        # 外露）。没有 WorldManager（:memory: 等）时没有自动快照，给 0 / None。
         with _leased_engine(request) as eng:
             if eng is None:
                 raise HTTPException(status_code=503, detail="engine not initialized")
-            return eng.ingest_status()
+            status = dict(eng.ingest_status())
+        worlds = getattr(request.app.state, "worlds", None)
+        auto = worlds.auto_snapshot_status() if worlds is not None else None
+        status["auto_snapshot_failures"] = auto["failures"] if auto else 0
+        status["auto_snapshot_last_error"] = auto["last_error"] if auto else None
+        return status
 
     return router

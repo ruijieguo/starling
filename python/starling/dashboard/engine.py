@@ -163,6 +163,13 @@ class ClearConfirmMismatch(ValueError):
     """clear_memory 的 confirm 与当前租户名不符:零写入,路由回 400。"""
 
 
+class SessionSnapshotDeferred(Exception):
+    """按会话的自动快照这一轮没拿到管理锁（WorldManager 的会话钩子抛出，W4）。
+
+    钩子在写入之前调用，所以抛出时这个摄入 job 还什么都没写：摄入 worker 把它放回 spool，
+    不计重试次数，下一轮再来。快照失败不抛这个（照常摄入，只记录失败）。"""
+
+
 class DashboardEngine:
     def __init__(self, config) -> None:
         # Embedded facade runs the reduced capability set (testing_helper_marker
@@ -225,6 +232,10 @@ class DashboardEngine:
             config.ingest_spool_root(), config.tenant)
         self._ingest_thread: threading.Thread | None = None
         self._ingest_stop: threading.Event | None = None
+        # W4 按会话的自动快照：hook(session_id)，某个会话第一次写入之前调用。由 WorldManager 在
+        # 起摄入线程之前挂上（_start_workers）；没有世界管理（:memory: 等）时保持 None。
+        # 返回即可继续写入；抛 SessionSnapshotDeferred 表示这一轮没拿到管理锁、job 要放回 spool。
+        self.session_snapshot_hook = None
         # 最近一次 quiesce() 没停下的线程名（"ingest" / "tick"），供调用方在
         # ingest_busy 里点名；每次 quiesce 开头重置，所以不会读到上一轮的陈旧值。
         self.quiesce_stuck: tuple[str, ...] = ()
@@ -471,6 +482,13 @@ class DashboardEngine:
             return _build_chat_adapter(cfg)
         return self._core.llm
 
+    def _check_clear_generation(self, generation: int) -> None:
+        """代数过期（claim 之后发生了 clear_memory）抛 _TenantCleared。短暂持 self._lock 读代数。"""
+        with self._lock:
+            if generation != self._clear_generation:
+                raise _TenantCleared(
+                    "tenant memory was cleared after this job was claimed")
+
     def _retain_transcript_turns(self, lines, *, job: dict, project: str,
                                  generation: int) -> int:
         """把 transcript 的逐话轮写进左脑来源通道（形态 S §6.3）。
@@ -483,19 +501,35 @@ class DashboardEngine:
         在场集合与右脑抽取的语句归属对不上，可见性会被静默放宽或收窄。
 
         返回写入的 engram 数；clear 语义与 remember 一致：代数过期即作废。
+
+        代数检查与 ``retain_source_turns`` 在同一个 ``with self._lock:`` 块里（Codex C1，W4 之前就有的
+        竞态）：clear_memory 也持这把锁清库、前移代数，所以它要么在检查之前（代数过期 →
+        _TenantCleared，一行不写），要么在写入之后（清空把刚写的来源行一并删掉）。检查与写入之间
+        放开锁，清空就可能落在两者之间，清空前的 transcript 会在清空之后写回库里。
+        ``retain_source_turns`` 只做本地校验与写行（向量行写 pending，嵌入线程之后再补），没有网络
+        调用，持锁的代价与 remember 的 prepare/commit 段相同。
+
+        按会话的自动快照（W4，设计稿 §4.3）：第一次代数检查通过之后、上面那个持锁块之前调
+        ``session_snapshot_hook(session_id)``，此时这个 job 还什么都没写，快照里没有这个会话。钩子
+        抛 ``SessionSnapshotDeferred`` 时原样外抛，``_ingest_drain_once`` 把 job 放回 spool。只有
+        lane 开启时才走到这里，所以 lane 关闭时没有按会话的快照（设计如此）。
         """
         turns = clean_turns_ts(lines)
         if not turns:
             return 0
-        with self._lock:
-            if generation != self._clear_generation:
-                raise _TenantCleared(
-                    "tenant memory was cleared after this job was claimed")
+        session_id = job.get("session_id") or ""
+        hook = self.session_snapshot_hook
+        if hook is not None and session_id:
+            # 提前查一次：钩子之前已经清空过，就不必为一个注定作废的 job 拍快照。持锁块里那次
+            # 才是权威的检查。
+            self._check_clear_generation(generation)
+            # 锁顺序：钩子（非阻塞）取 manager.lock，它排在 engine._lock 之前，所以调钩子时不得持有
+            # self._lock——上面的提前检查已经放开了它，下面的持锁块在钩子返回之后才取锁。
+            hook(session_id)
 
         speaker_of = {"user": self._cfg.agent or "self",
                       "assistant": f"claude-code:{project}"}
         listeners = sorted(set(speaker_of.values()))
-        session_id = job.get("session_id") or ""
         payload = [
             {"speaker": speaker_of.get(role, role),
              "text": text,
@@ -507,10 +541,14 @@ class DashboardEngine:
              "observed_at": event_time}
             for role, text, event_time, turn_index in turns
         ]
-        out = _core.retain_source_turns(
-            self._rt.adapter, self._cfg.tenant, listeners,
-            json.dumps(payload, ensure_ascii=False),
-            payload[0]["observed_at"])
+        turns_json = json.dumps(payload, ensure_ascii=False)
+        # 代数检查与写入同一把锁、中间不放开（见 docstring）。快照可能要几秒（VACUUM INTO），这期间的
+        # 清空也由这次检查让 job 作废。
+        with self._lock:
+            self._check_clear_generation(generation)   # RLock：同一线程重入
+            out = _core.retain_source_turns(
+                self._rt.adapter, self._cfg.tenant, listeners, turns_json,
+                payload[0]["observed_at"])
         return len(json.loads(out).get("engram_refs") or ())
 
     def remember(self, text: str, *, holder=None, interlocutor=None, now=None,
@@ -892,6 +930,31 @@ class DashboardEngine:
             moved += 1
         return moved
 
+    def _requeue_unless_cleared(self, claimed: Path, job_path: Path, generation: int,
+                                job: dict | None = None) -> str:
+        """把已 claim 的 job 放回 spool 根，除非 claim 之后发生过 clear_memory（整支审查 I-1）。
+
+        _ingest_discard_pending 只看 spool 根下的 ``*.json``，看不到正在处理的 ``.processing``。
+        claim 之后、放回之前若有一次清空，原样放回就会让下一轮 drain 用新代数重新 claim，把清空前
+        的 transcript 再写进库。所以比较代数与放回都在 ``self._lock`` 内做：clear_memory 也在这把锁内
+        前移代数、丢弃 pending job，两者因此互斥——要么清空在先（代数过期 → 移进 discarded/，与
+        _TenantCleared 同一归宿，返回 "done"），要么放回在先（job 回到 spool 根，清空随即把它当
+        pending 丢弃）。
+
+        ``job`` 给出时（通用重试分支，attempts 已 +1）先把它写回再放回；推迟分支不传，job 原样不变。
+        只在 drain 的 except 分支里调用，此时不持别的锁、钩子已经返回，短暂取 ``self._lock`` 与 claim
+        时取它的方式一致，不跨任何钩子调用。"""
+        sp = self._ingest_spool
+        with self._lock:
+            if generation != self._clear_generation:
+                (sp / "discarded").mkdir(exist_ok=True)
+                claimed.rename(sp / "discarded" / job_path.name)
+                return "done"
+            if job is not None:
+                claimed.write_text(json.dumps(job))
+            claimed.rename(job_path)
+            return "deferred"
+
     def _ingest_drain_once(self) -> str:
         """Drain ONE spool job: claim (atomic rename to .json.processing) ->
         read transcript -> clean/chunk -> self.remember() each chunk -> done/
@@ -1007,6 +1070,11 @@ class DashboardEngine:
             (sp / "done").mkdir(exist_ok=True)
             claimed.rename(sp / "done" / job_path.name)
             return "done"
+        except SessionSnapshotDeferred:
+            # 按会话的自动快照这一轮没拿到 manager.lock（切换、回滚、手动快照正持着它）。钩子在任何
+            # 写入之前调用，这个 job 什么都没写：原样放回 spool，不计 attempts（不是失败），下一轮再来。
+            # 钩子期间若发生了清空，放回就会把清空前的会话重新灌回来：改进 discarded/（整支审查 I-1）。
+            return self._requeue_unless_cleared(claimed, job_path, generation)
         except _TenantCleared:
             # 清空发生在本 job claim 之后:不重试、不进 failed/,与清空时尚未 claim 的
             # job 一样归档到 discarded/(手动移回 spool 根即可重新摄入)。清空前已提交的
@@ -1018,9 +1086,9 @@ class DashboardEngine:
             attempts = int(job.get("attempts") or 0) + 1
             if attempts < self._ingest_max_attempts:
                 job["attempts"] = attempts
-                claimed.write_text(json.dumps(job))
-                claimed.rename(job_path)            # 留 spool,下轮重扫自动重试(本次不 hot-reclaim)
-                return "deferred"
+                # 留 spool,下轮重扫自动重试(本次不 hot-reclaim);claim 之后发生过清空则改进
+                # discarded/、不写回 attempts(整支审查 I-1,W4 之前就有的同类缺口)。
+                return self._requeue_unless_cleared(claimed, job_path, generation, job)
             (sp / "failed").mkdir(exist_ok=True)
             claimed.rename(sp / "failed" / job_path.name)
             (sp / "failed" / (job_path.name + ".error")).write_text(str(exc)[:1000])

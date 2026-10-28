@@ -29,8 +29,9 @@
      rollback / purge_archives，以及 lifespan 关停。可能被占几秒到几十秒（VACUUM、复制快照、
      等租约），所以事件循环上的代码从不拿它。C++ 要求按世界串行化回滚，rollback 全程持它
      即满足。
-  2. manager._gate（Lock，短）：只保护 switching 标志和租约计数，持有期间不做任何 I/O、
-     不建引擎、不拿别的锁。_drained 是建在它上面的 Condition：切换等租约归零时 wait 会
+  2. manager._gate（Lock，短）：只保护 switching 标志、租约计数、自动快照的失败计数与调度线程
+     句柄，持有期间不做任何 I/O、不建引擎、不拿别的锁（start_scheduler 的 Thread.start() 在它
+     之内，只等新线程起来）。_drained 是建在它上面的 Condition：切换等租约归零时 wait 会
      放开 _gate，所以「等租约」从不持着 _gate。
   3. manager._build_lock（Lock）：惰性建引擎（engine 还是 None 时第一条请求来建），以及失败
      路径丢过引擎之后为新建的引擎补起后台线程。由已拿到租约的请求在放开 _gate 之后持有；
@@ -44,6 +45,17 @@
   即 manager.lock → _gate → _build_lock → engine._lock → supervisor。
   持租约的代码不得去拿 manager.lock：切换持着 manager.lock 等租约归零，反过来就是死锁
   （超时后 ingest_busy）。
+
+自动快照（W4）
+--------------
+两种触发共用 _auto_snapshot，要不要拍、拍什么全由 C++ take_auto_snapshot 判，这里只取锁、存注册表、
+记失败。后台调用方（摄入线程上的会话钩子、调度线程 starling-auto-snapshot）只用非阻塞方式取
+manager.lock，取不到就是 "busy"，从不等：切换、回滚持着 manager.lock 停摄入线程、等租约，摄入线程
+若在这里等锁，quiesce 就要等满 5 秒报 ingest_busy。摄入线程调钩子时不持 engine._lock（T3 的调用点
+保证），所以不会出现 engine._lock → manager.lock 的反向边。会话钩子取锁之前先不加锁读一次注册表
+（worlds.json 原子替换），活动世界按会话关着就直接返回，不取锁，摄入不会因无关的管理操作被推迟；
+开着才走持锁路径，在锁内重新判。失败（C++ 错误、存注册表失败）只计数、记日志，不往外抛（用户裁定：
+照常摄入）；钩子另有最外层兜底，除 SessionSnapshotDeferred 外的任何异常都只记日志。
 """
 from __future__ import annotations
 
@@ -58,7 +70,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from starling import _core
-from starling.dashboard.engine import DashboardEngine
+from starling.dashboard.engine import DashboardEngine, SessionSnapshotDeferred
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +138,16 @@ def _same_db(left: str, right: str) -> bool:
 
 
 def _now_iso() -> str:
+    """秒精度 UTC（YYYY-MM-DDTHH:MM:SSZ）。C++ 的 now_iso 只认这个形状：engine.py 与
+    routes/commands.py 里 isoformat 的版本带微秒，交给自动快照会一律 invalid_auto_snapshot。"""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# 调度线程：首轮之前的等待与每轮间隔（秒）。按时间的间隔以小时计，10 分钟一轮足够；首轮推迟
+# 一分钟，不与启动时的首屏请求、tick 抢 VACUUM 的 I/O。
+_SCHEDULER_POLL_S = 600.0
+_SCHEDULER_FIRST_DELAY_S = 60.0
+_SCHEDULER_THREAD = "starling-auto-snapshot"
 
 
 class EngineLease:
@@ -171,7 +192,7 @@ def engine_lease(state, *, build=None) -> EngineLease:
 
 
 class WorldManager:
-    def __init__(self, app_state, registry_path: str) -> None:
+    def __init__(self, app_state, registry_path: str, *, clock=None) -> None:
         self._state = app_state
         self.registry_path = registry_path
         self.registry_dir = os.path.dirname(os.path.abspath(registry_path))
@@ -199,6 +220,16 @@ class WorldManager:
         # SQLite 发现主文件已被换掉，不做 checkpoint、不删文件，恢复出来的库不受影响（实测）。
         # rollback 据此拒绝。只在 manager.lock 内读写。
         self._leaked_runtimes: list[tuple[str, weakref.ref]] = []
+        # 自动快照（W4）。clock() 返回秒精度 UTC 字符串；测试注入固定或可推进的时钟。
+        self._clock = clock or _now_iso
+        # 失败计数与最近一次错误（错误码与时刻）。只在 _gate 下读写（短，不做 I/O）。
+        self._auto_failures = 0
+        self._auto_last_error: str | None = None
+        self._auto_last_error_at: str | None = None
+        # 按时间的调度线程与它的停止事件。start/stop 只在 lifespan（启动、关停）与测试里调用，
+        # 在 _gate 下交换句柄；join 在任何锁之外。
+        self._scheduler: threading.Thread | None = None
+        self._scheduler_stop: threading.Event | None = None
 
     def load(self) -> dict:
         return _core.world_load_registry(self.registry_path)
@@ -272,10 +303,15 @@ class WorldManager:
         self._workers_lost = False
 
     def disable_workers(self) -> None:
-        """lifespan 关停段调用：此后任何路径都不再起后台线程。按锁序先取 manager.lock（等进行中
-        的切换、回滚收尾），再取 _build_lock（等进行中的惰性构建连同补起线程收尾），然后关
-        workers_enabled。返回之前写回的引擎都在 app.state.engine 上，由关停段停掉它的线程；
-        返回之后的惰性构建看到的是 False，不再起线程。"""
+        """lifespan 关停段调用：此后任何路径都不再起后台线程。先在任何锁之外停掉按时间的调度
+        线程（W4），再按锁序取 manager.lock（等进行中的切换、回滚收尾）、_build_lock（等进行中的
+        惰性构建连同补起线程收尾），然后关 workers_enabled。返回之前写回的引擎都在 app.state.engine
+        上，由关停段停掉它的线程；返回之后的惰性构建看到的是 False，不再起线程。"""
+        # 调度线程先停：关停一开始就不再开新一轮。放在锁块之后的话，它的 poll 若恰好在锁放开之后、
+        # stop 之前到期，就会再拍一份，join 要等这一份拍完（库大时会活过关停）。调度线程不经
+        # _start_workers，workers_enabled 管不到它，所以不必等开关关掉再停。join 在锁外：调度线程
+        # 只做非阻塞取锁，从不等我们，最多等它进行中的那一份拍完，之后它看到停止事件就退出。
+        self.stop_scheduler()
         with self.lock, self._build_lock:
             self.workers_enabled = False
 
@@ -312,6 +348,9 @@ class WorldManager:
     def _start_workers(self, engine, cfg) -> None:
         if not self.workers_enabled:
             return
+        # 每个起摄入线程的引擎都经这里（切换、回滚、失败后惰性重建）。钩子在线程起来之前挂上：
+        # 摄入线程的第一个 job 就要看到它。lifespan 启动时的引擎由 T3 经 attach_hooks 挂。
+        self.attach_hooks(engine)
         if cfg.tick_interval_s > 0:
             engine.start_background_tick(cfg.tick_interval_s, self.on_tick)
         engine.start_ingest_worker()
@@ -493,10 +532,13 @@ class WorldManager:
         self._workers_lost = False
         raise WorldSwitchError("world_open_failed", detail) from cause
 
-    def create(self, name: str, label: str) -> dict:
+    def create(self, name: str, label: str, auto_snapshot: dict | None = None) -> dict:
+        """auto_snapshot：None 用新世界的默认值（按会话开、按时间关），否则
+        {"on_session": bool, "interval_hours": int}，由 C++ 校验（invalid_auto_snapshot）。"""
         with self.lock:
             reg = self.load()
-            out = _core.world_create(reg, self.registry_dir, name, label, _now_iso())
+            out = _core.world_create(reg, self.registry_dir, name, label, _now_iso(),
+                                     auto_snapshot=auto_snapshot)
             self.save(out["registry"])
             entry = dict(out["world"])
             entry["name"] = name
@@ -541,6 +583,182 @@ class WorldManager:
         with self.lock:
             reg = self.load()
             self.save(_core.world_delete_snapshot(reg, name, snapshot_id))
+
+    # ---- 自动快照（W4，设计稿 §4.3） ----
+
+    def set_auto_snapshot(self, name: str, on_session: bool, interval_hours: int) -> dict:
+        """改一个世界的自动快照配置并落盘，返回新配置 {"on_session", "interval_hours"}。
+        world_not_found / invalid_auto_snapshot 由 C++ 抛（_core.WorldStoreError），注册表不动。"""
+        with self.lock:
+            reg = _core.world_set_auto_snapshot(self.load(), name, on_session, interval_hours)
+            self.save(reg)
+            return dict(reg["worlds"][name]["auto_snapshot"])
+
+    def auto_snapshot_status(self) -> dict:
+        """{"failures", "last_error", "last_error_at"}：自 manager 建起以来的失败次数、最近一次
+        失败的错误码与时刻。busy 与跳过不算失败。"""
+        with self._gate:
+            return {"failures": self._auto_failures, "last_error": self._auto_last_error,
+                    "last_error_at": self._auto_last_error_at}
+
+    def attach_hooks(self, engine) -> None:
+        """给引擎挂上按会话的自动快照钩子（在它起摄入线程之前）。"""
+        engine.session_snapshot_hook = self._make_session_hook()
+
+    def _make_session_hook(self):
+        def hook(session_id: str) -> None:
+            # 摄入线程上、写入之前、不持 engine._lock 时调用。busy → 放回 spool（T3 的
+            # _ingest_drain_once 接住）；拍了、跳过、失败都照常返回，摄入继续。
+            # 最外层兜底：只有 SessionSnapshotDeferred 往外抛。其余异常（记失败本身出错、日志 handler
+            # 抛异常之类的 bug）记 exception 后照常返回，钩子坏了不能变成摄入 job 的失败（用户裁定：
+            # 快照失败照常摄入）。
+            try:
+                if self._session_trigger_off():
+                    return
+                if self._auto_snapshot("session", session_id) == "busy":
+                    raise SessionSnapshotDeferred(session_id)
+            except SessionSnapshotDeferred:
+                raise
+            except Exception:  # noqa: BLE001 — 后台路径：只记录，不外抛
+                try:
+                    logger.exception("session auto snapshot hook failed (%s)", session_id)
+                except Exception:  # noqa: BLE001 — 日志本身也坏了：照样不能连带摄入
+                    pass
+        return hook
+
+    def _session_trigger_off(self) -> bool:
+        """钩子的提前退出：不取 manager.lock 读一次注册表，活动世界的 auto_snapshot.on_session 为
+        False 时返回 True，钩子直接返回，不取锁也不推迟摄入。默认世界只按时间，没有这一步的话，它的
+        每个摄入 job 都会因为无关的管理操作（手动快照、删除、清理归档、非活动世界的回滚、调度线程自己
+        的按时间快照）持着 manager.lock 而被放回 spool。
+
+        锁外读是安全的：worlds.json 是 tmp + rename 原子替换的，读到的不是旧文件就是新文件。这里只
+        决定「肯定不用拍」；读到开着就走持锁路径，在锁内重新 load 再判（配置在这之间被关掉时 C++ 回
+        disabled）。读失败（registry_corrupt、瞬时读错）返回 False，也走持锁路径：不算失败、不跳过，
+        由持锁路径去拍或记失败。"""
+        try:
+            reg = self.load()
+            return not reg["worlds"][reg["active"]]["auto_snapshot"]["on_session"]
+        except Exception:  # noqa: BLE001 — 提前退出读不到不是失败，交给持锁路径
+            return False
+
+    def _auto_snapshot(self, trigger_kind: str, session_id: str = "", *,
+                       blocking: bool = False) -> str:
+        """两种触发共用的核心，返回 "taken:<id>" | "skipped:<原因>" | "busy" | "failed"。
+
+        后台调用方用默认的 blocking=False：manager.lock 被占（切换、回滚、手动快照）就返回
+        "busy"，从不等。取到锁之后确认 live config 写的库就是注册表里活动世界的库（不一致是
+        切换或回滚失败路径留下的分叉，拍了也是给错的世界拍，跳过 world_moved），再交给 C++。
+        拍了就存注册表；存失败删掉新文件（同 take_snapshot）。修剪卡住时 C++ 不拍、返回 refused 与
+        部分修剪后的注册表（Codex I-3 / r2 R2-2）：先存下它（已删文件的条目随之摘掉），再按
+        snapshot_failed 计一次失败，返回 "failed"。任何异常都计为失败、记 warning、返回 "failed"，
+        不往外抛：这是后台线程，失败不能连带摄入或调度线程。"""
+        if not self.lock.acquire(blocking=blocking):
+            return "busy"
+        now = None
+        try:
+            now = self._clock()
+            reg = self.load()
+            active = reg["active"]
+            if not self._live_db_is(reg["worlds"][active]["db_path"]):
+                return "skipped:world_moved"
+            backend = getattr(self._state.config, "vector_backend", "sqlite")
+            out = _core.world_take_auto_snapshot(reg, active, trigger_kind, now, session_id,
+                                                 vector_backend=backend)
+            refused = out.get("refused")
+            if refused:
+                # 卡住的条目之前排着的 victim 文件已删、注册项已摘：不存就会在 worlds.json 里留下文件
+                # 已不在的条目，且每次触发都重演一遍。没有写新快照文件，存失败也无需补偿（外层照记失败）。
+                self.save(out["registry"])
+                logger.warning("auto snapshot (%s) refused: %s", trigger_kind, refused)
+                self._count_auto_failure("snapshot_failed", now)
+                return "failed"
+            snap = out["snapshot"]
+            if snap is None:
+                return f"skipped:{out['skipped']}"
+            try:
+                self.save(out["registry"])
+            except Exception:
+                try:
+                    _core.world_discard_snapshot_file(out["registry"], active, snap["id"])
+                except Exception:  # noqa: BLE001 — 补偿失败不能盖掉原始错误
+                    logger.exception("cannot discard unregistered auto snapshot %s", snap["id"])
+                raise
+            return f"taken:{snap['id']}"
+        except Exception as exc:  # noqa: BLE001 — 后台路径：只记录，不外抛（用户裁定）
+            self._record_auto_failure(trigger_kind, exc, now)
+            return "failed"
+        finally:
+            self.lock.release()
+
+    def _live_db_is(self, db_path: str) -> bool:
+        """live config 指着的库、以及引擎（在的话）正在写的库，都是 db_path。调用方持 manager.lock：
+        引擎只在 manager.lock 内被换掉（切换、回滚），或在它为 None 时由惰性构建写回。"""
+        engine_db = getattr(self._state.engine, "_db_path", None)
+        live = [self._state.config.db_path] + ([engine_db] if engine_db else [])
+        return all(_same_db(path, db_path) for path in live)
+
+    def _record_auto_failure(self, trigger_kind: str, exc: Exception, now: str | None) -> None:
+        # 错误码进状态（GET /api/worlds、/api/ingest_status 外露），全文只进日志：C++ 的 detail 里有
+        # 服务器路径。非 WorldStoreError（存注册表的 OSError 等）按 internal_error 记，与路由一致。
+        domain = isinstance(exc, _core.WorldStoreError)
+        code = _core.world_store_error_code(exc) if domain else "internal_error"
+        # 领域错误的文本已说清原因；其余（OSError、Bug）带上回溯。
+        logger.warning("auto snapshot (%s) failed: %s", trigger_kind, exc, exc_info=not domain)
+        self._count_auto_failure(code, now)
+
+    def _count_auto_failure(self, code: str, now: str | None) -> None:
+        """失败计数、最近一次错误码与时刻（GET /api/worlds、/api/ingest_status 外露的只有码）。"""
+        if now is None:
+            now = _now_iso()        # 注入的时钟本身抛了：时刻退回真实时钟
+        with self._gate:
+            self._auto_failures += 1
+            self._auto_last_error = code
+            self._auto_last_error_at = now
+
+    def start_scheduler(self, poll_s: float = _SCHEDULER_POLL_S,
+                        first_delay_s: float = _SCHEDULER_FIRST_DELAY_S) -> None:
+        """起按时间的调度线程（daemon，名为 starling-auto-snapshot）：先等 first_delay_s，此后每
+        poll_s 秒调一次 _auto_snapshot("interval")。要不要拍由 C++ 判（间隔、内容标记），busy 就等
+        下一轮。等待一律用 Event.wait，stop_scheduler 立刻唤醒。已在跑时是 no-op。"""
+        # 在 _gate 内 start 再挂句柄：stop_scheduler 拿到的句柄一定是已启动的线程（join 一个没启动的
+        # 线程会抛 RuntimeError），并发的两次 start 也只有一个线程。Thread.start() 只等线程起来，
+        # 新线程起来之前不碰 _gate（先 Event.wait），所以这里不会卡住。
+        with self._gate:
+            if self._scheduler is not None:
+                return
+            stop = threading.Event()
+            thread = threading.Thread(target=self._scheduler_loop, args=(stop, poll_s, first_delay_s),
+                                      name=_SCHEDULER_THREAD, daemon=True)
+            thread.start()
+            self._scheduler, self._scheduler_stop = thread, stop
+
+    def stop_scheduler(self, timeout_s: float = 5.0) -> None:
+        """停调度线程并 join（任何锁之外）。没在跑时是 no-op。线程只非阻塞取 manager.lock，
+        最坏情况是正赶上一份 VACUUM：join 等到 timeout_s 仍未退出就记 warning（它是 daemon，
+        拍完这一份就看到停止事件退出）。"""
+        with self._gate:
+            thread, stop = self._scheduler, self._scheduler_stop
+            self._scheduler = self._scheduler_stop = None
+        if thread is None:
+            return
+        stop.set()
+        thread.join(timeout_s)
+        if thread.is_alive():
+            logger.warning("auto snapshot scheduler did not stop within %.1fs", timeout_s)
+
+    def _scheduler_loop(self, stop: threading.Event, poll_s: float, first_delay_s: float) -> None:
+        if stop.wait(first_delay_s):
+            return
+        while True:
+            # _auto_snapshot 自己吞掉快照的异常；busy 什么都不做，等下一轮。外层的 except 只是保活
+            # （记失败本身出错之类的 bug），单轮出错不终结调度。
+            try:
+                self._auto_snapshot("interval")
+            except Exception:  # noqa: BLE001 — 保活
+                logger.exception("auto snapshot scheduler round failed")
+            if stop.wait(poll_s):
+                return
 
     # ---- 回滚语义 A 与归档（W3，spec §5.1） ----
 

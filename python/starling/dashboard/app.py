@@ -110,6 +110,10 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
         # 既有行为一致,不额外建引擎。
         eng = app.state.engine
         if eng is not None and hasattr(eng, "start_ingest_worker"):
+            # W4：按会话的自动快照钩子要在摄入线程起来之前挂上（lifespan 自己建的或外部注入的
+            # 引擎都是）；此后切换、回滚、惰性重建的引擎由 WorldManager._start_workers 挂。
+            if app.state.worlds is not None:
+                app.state.worlds.attach_hooks(eng)
             eng.start_ingest_worker()
         # lifespan 在 yield 处挂起期间，它的局部变量一直活着。eng 若还指着启动时的引擎，
         # 第一次切换就丢不掉旧 Runtime（C++ 写连接留下，切回该世界即同库两条写连接），
@@ -119,6 +123,9 @@ def create_app(config: DashboardConfig, *, engine: object | None = None) -> Fast
             # 线程已起：此后切换世界才需要为新引擎重启它们。无 lifespan 的
             # TestClient(app) 不会走到这里，切换也就不会凭空起线程。
             app.state.worlds.workers_enabled = True
+            # W4 按时间的自动快照调度线程（与引擎无关，跟着 WorldManager 走）。关停段的
+            # disable_workers() 会停掉它。
+            app.state.worlds.start_scheduler()
         yield
         if app.state.worlds is not None:
             # 等进行中的切换、回滚与惰性构建（含失败后补起线程）收尾，并禁止此后再起线程；

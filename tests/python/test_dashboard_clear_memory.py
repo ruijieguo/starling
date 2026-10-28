@@ -148,6 +148,52 @@ def test_job_in_flight_during_clear_is_discarded_not_written(tmp_path):
     assert _count(eng, "SELECT COUNT(*) FROM engrams") == 0
 
 
+def test_retried_job_is_discarded_not_requeued_when_cleared_after_its_last_chunk(tmp_path):
+    """整支审查 I-1（通用重试分支，W4 之前就有的同类缺口）：最后一块抽取失败，而清空恰好落在这块
+    commit 之后、job 放回 spool 之前。clear_memory 看不到 `.processing` 的 job；重试分支若照常写回
+    attempts+1 并放回，下一轮就把清空前的会话重新灌回来。必须改进 discarded/，且不写回 attempts。
+    lane 开启（stub 嵌入当标定模型），来源表与语句同样不得复活。"""
+    cfg = DashboardConfig(db_path=str(tmp_path / "clear.db"), token="",
+                          source_lane_model="stub", source_lane_dim=8)
+    eng = DashboardEngine(cfg)
+    spool = eng._ingest_spool = tmp_path / "spool"
+    fake = _core.FakeLLMAdapter()
+    fake.set_default_response("not json", False, "boom")   # 抽取失败 → extraction_failed=True
+    eng.llm = fake
+    tp = tmp_path / "s1.jsonl"
+    tp.write_text("\n".join(json.dumps(line) for line in (
+        {"type": "user", "timestamp": "2026-10-27T09:00:00.000Z",
+         "message": {"role": "user", "content": "Bob owns auth"}},
+        {"type": "assistant", "timestamp": "2026-10-27T09:00:05.000Z",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "noted"}]}})))
+    spool.mkdir(parents=True)
+    job_path = spool / "s1.json"
+    job = {"session_id": "s1", "transcript_path": str(tp), "cwd": "/proj/foo", "tenant": "default"}
+    job_path.write_text(json.dumps(job))
+
+    real_remember = eng.remember
+    remembered = []
+
+    def _remember_then_clear(*args, **kwargs):
+        out = real_remember(*args, **kwargs)
+        remembered.append(out)
+        eng.clear_memory(confirm="default")    # 落在这块 commit 之后、重试分支放回之前
+        return out
+    eng.remember = _remember_then_clear
+
+    assert eng._ingest_drain_once() == "done"
+    assert len(remembered) == 1 and remembered[0]["extraction_failed"] is True   # 确实走到了重试分支
+    assert (spool / "discarded" / "s1.json").exists()
+    assert json.loads((spool / "discarded" / "s1.json").read_text()) == job, "不写回 attempts"
+    assert not job_path.exists() and not list(spool.glob("*.processing"))
+    assert not (spool / "failed").exists()
+
+    eng.remember = real_remember
+    assert eng._ingest_drain_once() == "empty"
+    for table in ("statements", "engrams", "source_unit_meta"):
+        assert _count(eng, f"SELECT COUNT(*) FROM {table}") == 0, table
+
+
 def _seed_ledger(eng, batch_id, tenant):
     conn = sqlite3.connect(eng._db_path)
     try:
