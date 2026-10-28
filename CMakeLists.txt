@@ -163,6 +163,7 @@ target_sources(starling_core PRIVATE
     src/hippocampus/working_set.cpp
     src/memory/memory_ops.cpp
     src/memory/memory_events.cpp
+    src/memory/memory_digest.cpp
     src/projection/projection_maintainer.cpp
     src/bus/subscriber_pump.cpp
     src/vector/vector_math.cpp

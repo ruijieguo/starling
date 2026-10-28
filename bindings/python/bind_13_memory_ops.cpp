@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "starling/extractor/statement_validator.hpp"
+#include "starling/memory/memory_digest.hpp"
 #include "starling/memory/memory_events.hpp"
 #include "starling/memory/memory_ops.hpp"
 #include "starling/persistence/connection.hpp"
@@ -762,6 +763,24 @@ void bind_13_memory_ops(pybind11::module_& m) {
               }
           },
           py::arg("adapter"), py::arg("tenant"), py::arg("key"));
+
+    // library 的逻辑摘要与语句的内容 id(memoryops::digest / content_ids)。规范化与
+    // 哈希都在 C++,这里只转发。纯本地 SQLite 读,无网络,不放 GIL。
+    //
+    // memory_content_ids 收一批 id 一次查完:召回命中补 content_id 走它,逐条查会把
+    // 一次召回变成 k 次 SQL。
+    m.def("memory_digest",
+          [](starling::persistence::Connection& conn, const std::string& tenant) {
+              return starling::memoryops::digest(conn, tenant);
+          },
+          py::arg("connection"), py::arg("tenant"));
+
+    m.def("memory_content_ids",
+          [](starling::persistence::Connection& conn, const std::string& tenant,
+             const std::vector<std::string>& stmt_ids) {
+              return starling::memoryops::content_ids(conn, tenant, stmt_ids);
+          },
+          py::arg("connection"), py::arg("tenant"), py::arg("statement_ids"));
 }
 
 }  // namespace starling::bindings

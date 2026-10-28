@@ -232,6 +232,10 @@ class Memory:
         at the cost of possible near-duplicates. Widens only the consolidation
         state; the review guard and holder/perspective predicates are unchanged.
         include_volatile=True with mode="completion" raises ValueError.
+
+        Every hit carries `content_id` alongside `row` and `score`: the row's
+        content id (64 lowercase hex chars), which is the same in every library
+        holding that statement, unlike `row.id`.
         """
         return self._core.recall(query, perspective=perspective, k=k, mode=mode,
                                  holder=holder, strict=strict,
@@ -295,6 +299,32 @@ class Memory:
         counted in `EmbedStats.failed`, not raised.
         """
         return EmbedStats(**self._core.embed_pending(now))
+
+    def digest(self) -> str:
+        """This library's logical digest: 64 lowercase hex characters.
+
+        Two libraries holding the same content give the same digest, and any
+        content change gives a different one. Row ids are UUIDs and differ
+        between libraries, so the digest normalizes the `statements`,
+        `statement_vectors` and `events` rows first — bookkeeping columns
+        (counters, wall clocks, batch ids) are dropped, and every id is
+        replaced by the content it points at. Every row counts, including rows
+        recall cannot see (volatile, pending_review, archived, forgotten).
+
+        An empty library's digest is a fixed constant.
+        """
+        return self._core.digest()
+
+    def content_ids(self, statement_ids: list[str]) -> dict[str, str]:
+        """Map statement UUIDs to their content ids (64 lowercase hex chars).
+
+        The content id is what `recall` reports as a hit's `content_id` and
+        what the digest keys rows by: the same statement content gives the same
+        content id in every library. An id this library does not hold maps to
+        `"missing"`, the same marker the digest uses for a reference it cannot
+        resolve, so a caller need not pre-check membership.
+        """
+        return self._core.content_ids(statement_ids)
 
     def next_seq(self) -> int:
         """Next free event sequence number for this tenant.

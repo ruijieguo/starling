@@ -287,14 +287,43 @@ class MemoryCore:
             res = self.completor.complete(_core.PatternCompletionParams(
                 tenant_id=self.tenant, holder_id=holder_id,
                 holder_perspective=perspective, cue_text=query, result_k=k))
-            return [{"row": s.row, "score": s.activation} for s in res.rows]
+            return self._with_content_ids(
+                [{"row": s.row, "score": s.activation} for s in res.rows])
         res = self.semantic.vector_recall(_core.SemanticRetrieverParams(
             tenant_id=self.tenant, holder_id=holder_id,
             holder_perspective=perspective, query_text=query, k=k,
             include_volatile=include_volatile))
         if strict and res.degraded:
             raise RecallDegradedError("query embedding failed")
-        return [{"row": s.row, "score": s.score} for s in res.rows]
+        hits = [{"row": s.row, "score": s.score} for s in res.rows]
+        return self._with_content_ids(hits)
+
+    def _with_content_ids(self, hits: list) -> list:
+        """给每个命中补 `content_id`(行的内容 id,库与库之间可比)。
+
+        一次 `memory_content_ids` 批量查完,不按命中逐条查:k=10 的召回会变成 10 次
+        SQL,而内容 id 的规范化不便宜(每行要解析几个 JSON 列)。"""
+        if not hits:
+            return hits
+        mapping = _core.memory_content_ids(
+            self.conn, self.tenant, [h["row"].id for h in hits])
+        for hit in hits:
+            hit["content_id"] = mapping[hit["row"].id]
+        return hits
+
+    def digest(self) -> str:
+        """本租户 library 的逻辑摘要(64 位小写十六进制)。
+
+        内容相同的两个库给同一个值,内容一变就变:行 id 是 UUID、库与库之间必然
+        不同,所以摘要把身份换成内容再哈希。规范化与哈希都在 C++
+        `memoryops::digest`,这里只是绑定转发。"""
+        return _core.memory_digest(self.conn, self.tenant)
+
+    def content_ids(self, statement_ids: list[str]) -> dict:
+        """语句 UUID → 内容 id;本租户没有的 id 映射成 "missing"(与摘要里的约定
+        一致)。一次查完,查询在 C++ `memoryops::content_ids`。"""
+        return _core.memory_content_ids(self.conn, self.tenant,
+                                        [str(i) for i in statement_ids])
 
     def plan_query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
                    perspective: Optional[str] = None, target: Optional[str] = None,
