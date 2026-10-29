@@ -77,3 +77,28 @@ def test_extractor_run_releases_gil(tmp_path):
     mem.close()
     assert progress >= 5, (
         f"Extractor.run 阻塞 C++ 期间主线程仅推进 {progress} 步——GIL 未释放")
+
+
+def test_memory_recall_releases_gil_while_embedding_the_query(tmp_path, monkeypatch):
+    # 生产入口:Memory.recall(mode="semantic")→ SemanticRetriever.vector_recall(bind_10),
+    # C++ 里先同步嵌入查询词。阻塞窗口:嵌入器指向一个只接受连接、从不回包的本机端口,
+    # timeout_ms=700、不重试,embed 阻塞到超时后降级(degraded,不抛)。零外网。
+    import socket
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(8)                                  # 内核完成握手,没人 accept、没人回
+    port = silent.getsockname()[1]
+    emb = starling.make_openai_embedder(model="silent", base_url=f"http://127.0.0.1:{port}/v1",
+                                        dim=8, timeout_ms=700, max_retries=0)
+    mem = starling.Memory.open(str(tmp_path / "gil3.db"), agent="alice",
+                               llm=starling.make_stub_llm(default_response=CANNED_JSON),
+                               embedder=emb)
+    try:
+        progress = _progress_while(lambda: mem.recall("auth", k=3))
+    finally:
+        mem.close()
+        silent.close()
+    assert progress >= 5, (
+        f"vector_recall 嵌入查询词期间主线程仅推进 {progress} 步——GIL 未释放")

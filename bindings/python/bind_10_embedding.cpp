@@ -186,12 +186,15 @@ void bind_10_embedding(pybind11::module_& m) {
                       starling::vector::VectorIndex&>(),
              py::keep_alive<1, 2>(), py::keep_alive<1, 3>(), py::keep_alive<1, 4>(),
              py::arg("adapter"), py::arg("embedder"), py::arg("index"))
+        // vector_recall 先在 C++ 里同步嵌入查询词(真嵌入器是一次网络调用),所以和
+        // embed、tick_one_batch 一样释放 GIL;参数与结果都是 C++ 值,lambda 里不碰 Python 对象。
         .def("vector_recall",
              [](starling::retrieval::SemanticRetriever& s,
                 const starling::retrieval::SemanticRetrieverParams& p) {
                  return s.vector_recall(s.connection(), p);
              },
-             py::arg("params"));
+             py::arg("params"),
+             py::call_guard<py::gil_scoped_release>());
 
     // ── P2.d: Pattern Completion ──────────────────────────────────────────
     py::class_<starling::retrieval::PatternCompletionParams>(

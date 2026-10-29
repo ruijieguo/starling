@@ -121,6 +121,39 @@ def test_content_ids_maps_statement_uuids_and_marks_unknown_ones_missing(tmp_pat
     assert sorted(got[i] for i in ids_a) == sorted(b.content_ids(ids_b).values())   # UUID 不同,内容 id 相同
 
 
+def test_lifecycle_columns_change_the_digest_but_not_the_content_id(tmp_path):
+    # 写入之后后台还会改的列(在线回放巩固、复核、置信度修正、显著性继承、巩固摘要):
+    # 语句本身没变,所以内容 id 不变——召回的 id 写进调用方的 prompt 与轨迹,同一条语句
+    # 前后必须是同一个 id;但它们影响召回与排序,所以照旧进摘要。
+    a = _db(tmp_path, "a.db"); _fill(a)
+    (sid,) = a.remember_event("e#0", "bob:我负责鉴权模块", interlocutor="bob").statement_ids
+    c0, d0 = a.content_ids([sid])[sid], a.digest()
+    for sql in ("UPDATE statements SET consolidation_state='consolidated'",
+                "UPDATE statements SET review_status='pending_review'",
+                "UPDATE statements SET confidence=0.31, confidence_history_json='[0.7,0.31]'",
+                "UPDATE statements SET salience=0.9, affect_json='{\"arousal\":0.8}'",
+                "UPDATE statements SET consolidation_summary='gist'"):
+        _sql(tmp_path, "a.db", sql)
+        assert a.content_ids([sid])[sid] == c0, sql
+        d1 = a.digest()
+        assert d1 != d0, sql
+        d0 = d1
+
+
+def test_content_id_survives_online_replay_consolidation(tmp_path):
+    # 端到端:第三次写入触发在线回放(kOnlineTrigger=3),把早先的 volatile 语句巩固。
+    # 修复前,第一条语句的内容 id 在这一步变了,召回给出的 id 与写入时返回的对不上。
+    a = _db(tmp_path, "a.db")
+    (sid,) = a.remember_event("e#0", "bob:我负责鉴权模块", interlocutor="bob").statement_ids
+    before = a.content_ids([sid])[sid]
+    for i, text in enumerate(("bob:我负责账单", "bob:我负责部署"), start=1):
+        a.remember_event(f"e#{i}", text, interlocutor="bob")
+    with sqlite3.connect(str(tmp_path / "a.db")) as c:
+        (state,) = c.execute("SELECT consolidation_state FROM statements WHERE id=?", (sid,)).fetchone()
+    assert state == "consolidated"                    # 前提:真的被巩固了
+    assert a.content_ids([sid])[sid] == before
+
+
 def test_recall_hits_carry_same_content_id_across_libraries(tmp_path):
     a, b = _db(tmp_path, "a.db"), _db(tmp_path, "b.db")
     _fill(a); _fill(b)

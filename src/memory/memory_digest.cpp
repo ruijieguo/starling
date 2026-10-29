@@ -63,6 +63,20 @@ const NameSet& reference_columns() {
     return columns;
 }
 
+// 生命周期列:语句写下之后后台还会改的状态——在线回放巩固(consolidation_state)、复核
+// (review_status)、置信度修正(confidence 与它的历史)、显著性继承(salience、affect_json)、
+// 巩固摘要。语句说的事没变,所以不进内容 id:内容 id 会写进调用方的 prompt 与轨迹,同一条
+// 语句巩固前后必须是同一个 id(否则第三次写入触发在线回放后,召回给出的 id 就与写入时返回的
+// 对不上)。但它们影响召回与排序,所以照旧进摘要,由摘要那一层与引用列一起加回来。
+// 只有这些列被单列;没列到的列默认仍进内容 id,与排除清单「漏一列宁可过敏」同一口径。
+const NameSet& lifecycle_columns() {
+    static const NameSet columns = {
+        "consolidation_state", "review_status", "confidence", "confidence_history_json",
+        "salience", "affect_json", "consolidation_summary",
+    };
+    return columns;
+}
+
 bool in_set(const NameSet& columns, std::string_view name) {
     return columns.contains(name);
 }
@@ -209,13 +223,15 @@ Json normalize_cell(sqlite3_stmt* stmt, int col, std::string_view name, EngramRe
     return parsed;
 }
 
-// 一条语句行的规范化结果。content 不含引用列,它的 dump 的 sha256 就是内容 id;
-// refs 是引用列的原值(UUID 还没映射),等全部内容 id 都算出来后由摘要层映射。
+// 一条语句行的规范化结果。content 不含引用列与生命周期列,它的 dump 的 sha256 就是
+// 内容 id;refs 是引用列的原值(UUID 还没映射),等全部内容 id 都算出来后由摘要层映射;
+// lifecycle 是生命周期列的规范化值,摘要层原样并回行里。
 struct StatementNorm {
     std::string id;
     std::string content_id;
-    Json content = Json::object();
-    Json refs    = Json::object();
+    Json content   = Json::object();
+    Json refs      = Json::object();
+    Json lifecycle = Json::object();
 };
 
 // 本租户的语句行规范化。ids 为空 optional 表示全表;给了就只读这些 id(召回命中补
@@ -257,6 +273,11 @@ std::vector<StatementNorm> read_statements(persistence::Connection& conn,
             }
             if (in_set(reference_columns(), name)) {
                 set_field(row.refs, std::string(name), cell_to_json(stmt.raw(), col));
+                continue;
+            }
+            if (in_set(lifecycle_columns(), name)) {
+                set_field(row.lifecycle, std::string(name),
+                          normalize_cell(stmt.raw(), col, name, refs));
                 continue;
             }
             set_field(row.content, std::string(name),
@@ -330,7 +351,7 @@ std::string digest(persistence::Connection& conn, std::string_view tenant) {
         content_by_id.emplace(row.id, row.content_id);
     }
 
-    // ② 语句行 = 内容 id 的规范化行 + 引用列(UUID → 被指向行的内容 id)。
+    // ② 语句行 = 内容 id 的规范化行 + 引用列(UUID → 被指向行的内容 id)+ 生命周期列。
     SortedRows statement_rows;
     for (auto& row : statements) {
         Json entry = std::move(row.content);
@@ -339,6 +360,9 @@ std::string digest(persistence::Connection& conn, std::string_view tenant) {
                       item.key() == "derived_from_json"
                           ? map_statement_ref_array(item.value(), content_by_id)
                           : map_statement_ref(item.value(), content_by_id));
+        }
+        for (const auto& item : row.lifecycle.items()) {
+            set_field(entry, item.key(), item.value());
         }
         append(statement_rows, row.content_id, std::move(entry));
     }
