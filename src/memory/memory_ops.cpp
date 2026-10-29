@@ -982,6 +982,13 @@ namespace {
 // 只读打开 path,跑 PRAGMA integrity_check。完好的库只回一行 "ok";有问题时第一行就是
 // 问题描述,所以只看第一行。
 //
+// 已知盲区:只读连接上的 integrity_check 不检查 CHECK 约束,读写连接才检查(sqlite 3.51.3
+// 与 3.54.0 都实测如此)。库里若有绕过约束写进去的 CHECK 违例行(PRAGMA
+// ignore_check_constraints),这里照样报 "ok",VACUUM INTO 也会把它原样带进副本。
+// NOT NULL 违例、索引与表对不上这类损坏只读连接报得出来,见 tests/cpp/test_memory_ops.cpp
+// 的 BackupTo.IntegrityCheckFailure...。这里照 world_store 的做法只读打开;要补上这个盲区,
+// 得改成读写打开 partial(它是 delete 模式的独立文件,读写打开不改变内容)。
+//
 // 用裸文件名而不是 file: URI 打开:调用方传进来的是绝对路径(以 "/" 开头),不会被
 // 当成 URI,也就不用对 % ? # 做转义。
 bool integrity_ok(const std::filesystem::path& path) {

@@ -892,6 +892,10 @@ TEST(BackupTo, IntegrityCheckFailureRemovesPartialAndLeavesNoDestination) {
     // 与 sqlite_master 里的新定义不一致,VACUUM INTO 就不走整页直拷(两边表定义相同才走),
     // 改成真的逐行插入,在插入时撞上 NOT NULL 约束,抛 SqliteError 而不是走到完整性检查。
     // 也不用改索引定义的办法:VACUUM INTO 按改过的定义重建索引,副本反而自洽。
+    //
+    // 也不用 CHECK 约束违例:只读连接上的 integrity_check 看不见它(读写连接才报
+    // "CHECK constraint failed"),backup_to 的只读完整性检查对这一类违例是盲的,见
+    // memory_ops.cpp 里 integrity_ok 的注释。NOT NULL 违例两种连接都报得出来。
     const BackupDir dir;
     const auto src = dir.path() / "src.db";
     { auto seed = open_file_adapter(src); }   // 建库、跑完迁移,然后关掉
