@@ -319,6 +319,14 @@ class MemoryCore:
         `memoryops::digest`,这里只是绑定转发。"""
         return _core.memory_digest(self.conn, self.tenant)
 
+    def backup_to(self, path) -> None:
+        """给整个 library 文件留一份自洽的单文件副本(`VACUUM INTO`)。
+
+        目标已存在抛 `FileExistsError`,不碰它;其余失败(上级目录不存在、
+        `integrity_check` 不过)抛 `RuntimeError`,都不留半成品。VACUUM、完整性检查与改名都在 C++
+        `memoryops::backup_to`,这里只把 `str | os.PathLike` 归一成 `str`。"""
+        _core.memory_backup_to(self.rt.adapter, os.fspath(path))
+
     def content_ids(self, statement_ids: list[str]) -> dict:
         """语句 UUID → 内容 id;本租户没有的 id 映射成 "missing"(与摘要里的约定
         一致)。一次查完,查询在 C++ `memoryops::content_ids`。"""

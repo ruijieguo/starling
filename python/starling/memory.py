@@ -14,6 +14,7 @@ real `_core.OpenAIAdapter`; its API key is sourced from the environment only
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -314,6 +315,28 @@ class Memory:
         An empty library's digest is a fixed constant.
         """
         return self._core.digest()
+
+    def backup_to(self, path: "str | os.PathLike[str]") -> None:
+        """Write a self-contained single-file copy of this library to `path`.
+
+        The copy is made with SQLite's `VACUUM INTO`: one file in rollback-journal
+        mode, no `-wal` / `-shm` beside it, so copying that one file is enough to
+        carry the whole library. It is first written to `<path>.partial`, checked
+        with `PRAGMA integrity_check`, and only then renamed to `path` — `path`
+        either does not exist or holds a complete, verified copy. Opening the copy
+        with `Memory.open` gives a library whose `digest()` equals this one's.
+
+        The copy holds every tenant in the database file, not just this
+        `Memory`'s tenant.
+
+        `path`'s parent directory must already exist; it is not created.
+
+        Raises `FileExistsError` when `path` already exists (it is left
+        untouched). Any other failure (a missing parent directory, a copy that
+        fails `integrity_check`) raises `RuntimeError`. No `.partial` file is
+        left behind on any failure.
+        """
+        self._core.backup_to(path)
 
     def content_ids(self, statement_ids: list[str]) -> dict[str, str]:
         """Map statement UUIDs to their content ids (64 lowercase hex chars).

@@ -8,9 +8,12 @@
 #include "bind_common.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "starling/extractor/statement_validator.hpp"
@@ -781,6 +784,44 @@ void bind_13_memory_ops(pybind11::module_& m) {
               return starling::memoryops::content_ids(conn, tenant, stmt_ids);
           },
           py::arg("connection"), py::arg("tenant"), py::arg("statement_ids"));
+
+    // 给 library 留一份自洽的单文件副本(memoryops::backup_to,VACUUM INTO)。VACUUM INTO
+    // 随库大小线性变长,所以跑的时候放掉 GIL;释放期间只执行纯 C++,不触碰 Python 对象。
+    //
+    // 目标已存在时 C++ 抛 std::filesystem::filesystem_error(errc::file_exists)。pybind11
+    // 把它当 std::exception 译成 RuntimeError,调用方想要的是 FileExistsError,所以在这里
+    // 译:先在释放 GIL 的块里把错误抓成 (errno, 路径),块结束 GIL 回来之后再构造 Python
+    // 异常。这就是为什么不用 call_guard:call_guard 在整个 lambda 期间不持 GIL,而构造
+    // Python 异常必须持 GIL。
+    //
+    // 异常按 errno 构造 OSError(errno, strerror, filename):CPython 的 OSError 构造器按
+    // errno 选子类(EEXIST → FileExistsError,EACCES → PermissionError ...),并带上
+    // .errno 与 .filename。
+    // 只译 filesystem_error;完整性检查失败(runtime_error)与 SQLite 层错误
+    // (persistence::SqliteError,runtime_error 的子类)照常走默认的 RuntimeError。
+    m.def("memory_backup_to",
+          [](starling::persistence::SqliteAdapter& adapter, const std::string& dest) {
+              struct FsFailure {
+                  std::error_code code;
+                  std::string path;
+              };
+              std::optional<FsFailure> failure;
+              {
+                  py::gil_scoped_release release;
+                  try {
+                      starling::memoryops::backup_to(adapter, dest);
+                  } catch (const std::filesystem::filesystem_error& e) {
+                      failure = FsFailure{e.code(), e.path1().string()};
+                  }
+              }
+              if (failure) {
+                  const py::object exc = py::reinterpret_borrow<py::object>(PyExc_OSError)(
+                      failure->code.value(), failure->code.message(), failure->path);
+                  py::set_error(py::type::of(exc), exc);
+                  throw py::error_already_set();
+              }
+          },
+          py::arg("adapter"), py::arg("dest"));
 }
 
 }  // namespace starling::bindings

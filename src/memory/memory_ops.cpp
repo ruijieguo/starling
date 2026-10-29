@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <filesystem>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <system_error>
 #include <variant>
+
+#include <sqlite3.h>
 
 #include <nlohmann/json.hpp>
 
@@ -971,6 +975,78 @@ std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
     writer.append(evt);
     txn.commit();
     return evt.event_id;
+}
+
+namespace {
+
+// 只读打开 path,跑 PRAGMA integrity_check。完好的库只回一行 "ok";有问题时第一行就是
+// 问题描述,所以只看第一行。
+//
+// 用裸文件名而不是 file: URI 打开:调用方传进来的是绝对路径(以 "/" 开头),不会被
+// 当成 URI,也就不用对 % ? # 做转义。
+bool integrity_ok(const std::filesystem::path& path) {
+    sqlite3* raw = nullptr;
+    const int code = sqlite3_open_v2(path.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
+    persistence::SqliteHandle handle(raw);
+    if (code != SQLITE_OK) {
+        throw persistence::SqliteError(
+            "backup: cannot open " + path.string() + " read-only: " +
+                (raw != nullptr ? sqlite3_errmsg(raw) : "alloc failure"),
+            code);
+    }
+    persistence::Stmt check(handle.get(), "PRAGMA integrity_check");
+    if (!check.step_row()) { return false; }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(check.raw(), 0));
+    return text != nullptr && std::string_view(text) == "ok";
+}
+
+// 悬空符号链接也算占着名字:rename 会越过它去写链接指向的位置,VACUUM INTO 同理。
+bool path_occupied(const std::filesystem::path& path) {
+    std::error_code ignore;
+    return std::filesystem::exists(std::filesystem::symlink_status(path, ignore));
+}
+
+[[noreturn]] void throw_destination_exists(const std::filesystem::path& dest) {
+    throw std::filesystem::filesystem_error(
+        "backup_to: destination already exists", dest,
+        std::make_error_code(std::errc::file_exists));
+}
+
+}  // namespace
+
+void backup_to(persistence::SqliteAdapter& adapter, const std::filesystem::path& dest) {
+    namespace fs = std::filesystem;
+    if (dest.empty()) {
+        throw std::invalid_argument("backup_to: destination path is empty");
+    }
+    const fs::path target = fs::absolute(dest);
+    const fs::path partial = target.string() + ".partial";
+
+    // 目标已存在:不碰它,也不碰 .partial(那可能是别的备份正在写的)。
+    if (path_occupied(target)) { throw_destination_exists(target); }
+
+    try {
+        {
+            std::error_code ignore;
+            fs::remove(partial, ignore);   // 上次崩溃留下的残片
+        }
+        {
+            persistence::Stmt vacuum(adapter.connection().raw(), "VACUUM INTO ?1");
+            vacuum.bind(partial.string());
+            vacuum.step_done();
+        }
+        if (!integrity_ok(partial)) {
+            throw std::runtime_error("backup integrity_check failed");
+        }
+        // VACUUM INTO 可能跑了很久,期间有人在目标位置建了东西:rename 会静默覆盖它。
+        if (path_occupied(target)) { throw_destination_exists(target); }
+        fs::rename(partial, target);
+    } catch (...) {
+        std::error_code ignore;
+        fs::remove(partial, ignore);
+        throw;
+    }
 }
 
 }  // namespace starling::memoryops
