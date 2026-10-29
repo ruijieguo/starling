@@ -142,7 +142,8 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
         ")"
         "   AND (? = '' OR s.holder_id = ?)"
         "   AND (? = '' OR s.holder_perspective = ?)"
-        "   AND (? = 0 OR (s.consolidation_state IN ('consolidated','archived')"
+        "   AND (? = 0 OR ((s.consolidation_state IN ('consolidated','archived')"
+        "                   OR (? = 1 AND s.consolidation_state = 'volatile'))"
         "                  AND s.review_status NOT IN ('rejected','pending_review')))";
 
     sqlite3_stmt* raw = nullptr;
@@ -160,6 +161,7 @@ std::vector<ScoredId> ZvecVectorIndex::search_topk(persistence::Connection& conn
     bind_sv(h.get(), idx++, persp);
     bind_sv(h.get(), idx++, persp);
     sqlite3_bind_int(h.get(), idx++, scope.visible_only ? 1 : 0);
+    sqlite3_bind_int(h.get(), idx++, scope.include_volatile ? 1 : 0);
 
     std::unordered_set<std::string> passed;
     while (sqlite3_step(h.get()) == SQLITE_ROW) {

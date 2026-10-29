@@ -31,7 +31,19 @@ public:
     void set_write_admit(std::function<bool()> hook) { write_admit_ = std::move(hook); }
     [[nodiscard]] bool write_admitted() const { return !write_admit_ || write_admit_(); }
 
-    Connection& connection() noexcept { return conn_; }
+    // Throws std::logic_error("adapter closed") after close().
+    Connection& connection();
+
+    // Merges the WAL into the main file (PRAGMA wal_checkpoint(TRUNCATE)) and
+    // releases the sqlite handle. Idempotent. If the checkpoint throws, the
+    // handle is still released and the error propagates (the WAL stays on disk
+    // and is recovered by the next open). Not a write, and not thread-safe
+    // against concurrent users of connection(): the host must have no call in
+    // flight and no further call to make (starling.Memory.close does this).
+    // The checkpoint cannot truncate the WAL while another connection to the
+    // same file holds a read transaction; SQLite then leaves the WAL for the
+    // last connection to close (or the next open) to merge.
+    void close();
     const std::filesystem::path& db_path() const noexcept { return db_path_; }
 
 private:

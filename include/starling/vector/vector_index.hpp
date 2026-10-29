@@ -15,6 +15,10 @@ struct SearchScope {
     std::optional<std::string> holder_id;
     std::optional<std::string> holder_perspective;
     bool visible_only = true;  // consolidation_state IN(consolidated,archived) + review_status 过滤
+    // 仅在 visible_only 时生效:巩固状态那一段额外放进 'volatile'(只嵌入、未经
+    // tick 回放的语句)。volatile 是巩固状态,不是隐私状态:review_status 守卫与
+    // holder/perspective 谓词不受它影响,照旧收紧。默认 false,既有调用方不变。
+    bool include_volatile = false;
 };
 
 class VectorIndex {

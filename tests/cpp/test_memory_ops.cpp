@@ -14,13 +14,20 @@
 #include "starling/vector/vector_index.hpp"
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace starling::memoryops {
@@ -381,6 +388,128 @@ TEST(MemoryOps, TickAllUnreadySkipsAllStages) {
     EXPECT_EQ(t.embedded, 0);
 }
 
+// ── embed_pending:只跑嵌入阶段,循环排空待嵌入语句 ───────────────────────────
+// 钉:积压超过一批(WorkerConfig::batch_size=32)时一次调用排空;某批嵌入 0 条即停,
+// 只剩失败行时不在同一次调用里反复重试;一批里有成功有失败仍继续下一批。
+
+namespace {
+
+std::string many_claims_json(int count) {
+    std::string json = "[";
+    for (int idx = 0; idx < count; ++idx) {
+        if (idx > 0) json += ",";
+        json += R"({"holder":"self","holder_perspective":"FIRST_PERSON","subject":"Sub)" +
+                std::to_string(idx) +
+                R"(","predicate":"responsible_for","object":"area)" + std::to_string(idx) +
+                R"(","modality":"BELIEVES","polarity":"POS","nesting_depth":0})";
+    }
+    return json + "]";
+}
+
+// 一次 remember、抽取响应带 count 条互不相同的主张 → count 条待嵌入语句。
+void seed_pending_statements(persistence::SqliteAdapter& adapter, int count) {
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(
+        extractor::LLMResponse{.raw_xml = many_claims_json(count), .ok = true});
+    const auto result = remember(adapter, llm, "", params("many claims"));
+    ASSERT_EQ(result.outcome, "accepted");
+    ASSERT_EQ(result.statement_ids.size(), static_cast<std::size_t>(count));
+}
+
+// 失败脚本嵌入器。AlwaysDown:批量与逐行都抛可重试错误(端点整体不可用)。
+// OneRowFails:第一次批量调用抛永久错误,逼 worker 退到逐行,逐行的第一条抛错,
+// 其余成功;之后的批量调用都成功。与 SQLite 扫描顺序无关。
+class ScriptedEmbedder final : public embedding::EmbeddingAdapter {
+public:
+    enum class Mode { AlwaysDown, OneRowFails };
+    explicit ScriptedEmbedder(Mode mode) : mode_(mode) {}
+
+    embedding::EmbeddingResult embed(std::string_view text) override {
+        if (mode_ == Mode::AlwaysDown) throw embedding::EmbeddingError("down");
+        if (!row_failed_) {
+            row_failed_ = true;
+            throw embedding::EmbeddingError("one bad row");
+        }
+        return inner_.embed(text);
+    }
+    std::vector<embedding::EmbeddingResult> embed_batch(
+            const std::vector<std::string>& texts) override {
+        ++batch_calls;
+        if (mode_ == Mode::AlwaysDown) throw embedding::EmbeddingError("down");
+        if (batch_calls == 1) throw std::runtime_error("permanent_batch");
+        std::vector<embedding::EmbeddingResult> out;
+        for (const auto& text : texts) out.push_back(inner_.embed(text));
+        return out;
+    }
+    int dim() const override { return inner_.dim(); }
+    std::string model() const override { return inner_.model(); }
+
+    int batch_calls = 0;
+
+private:
+    Mode mode_;
+    bool row_failed_ = false;
+    embedding::StubEmbeddingAdapter inner_{8};
+};
+
+}  // namespace
+
+TEST(MemoryOps, EmbedPendingDrainsAllBatches) {
+    auto a = make_adapter();
+    constexpr int kStatements = 40;   // 超过 WorkerConfig::batch_size 默认 32
+    ASSERT_GT(kStatements, embedding::WorkerConfig().batch_size);
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, kStatements));
+
+    embedding::StubEmbeddingAdapter emb(8);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, kStatements);
+    EXPECT_EQ(out.failed, 0);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statement_vectors WHERE status='embedded'"), kStatements);
+
+    // 排空后再调是空操作。
+    const auto again = embed_pending(*a, worker, "2026-06-11T10:05:01Z");
+    EXPECT_EQ(again.embedded, 0);
+    EXPECT_EQ(again.failed, 0);
+}
+
+TEST(MemoryOps, EmbedPendingStopsAfterOneBatchWhenNothingEmbeds) {
+    auto a = make_adapter();
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, 40));
+
+    ScriptedEmbedder emb(ScriptedEmbedder::Mode::AlwaysDown);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, 0);
+    EXPECT_EQ(out.failed, embedding::WorkerConfig().batch_size);   // 只有第一批
+    EXPECT_EQ(emb.batch_calls, 1);                                 // 没有再扫第二批
+    // 失败行只被尝试一次:本次调用没有在同一次里重试它们。
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT MAX(retry_count) FROM statement_vectors WHERE status='failed'"), 1);
+}
+
+TEST(MemoryOps, EmbedPendingContinuesPastBatchWithPartialFailure) {
+    auto a = make_adapter();
+    ASSERT_NO_FATAL_FAILURE(seed_pending_statements(*a, 40));
+
+    ScriptedEmbedder emb(ScriptedEmbedder::Mode::OneRowFails);
+    vector::SqliteBlobVectorIndex idx;
+    embedding::EmbeddingWorker worker(*a, emb, idx);
+
+    // 第一批 31 成功 1 失败(embedded>0,继续);第二批把剩余 8 条与那条失败行一起嵌完;
+    // 第三批无事可做(embedded==0,停)。
+    const auto out = embed_pending(*a, worker, "2026-06-11T10:05:00Z");
+    EXPECT_EQ(out.embedded, 40);
+    EXPECT_EQ(out.failed, 1);
+    EXPECT_EQ(row_count(a->connection(),
+        "SELECT COUNT(*) FROM statement_vectors WHERE status='embedded'"), 40);
+}
+
 // ── 设置页「危险区」:clear_tenant ───────────────────────────────────────────
 // 钉:单租户物理清空(保留 self 认知体)、其他租户零影响、无悬空外键、写门、
 // 新增租户作用域表必须纳入删除清单、清空后同文本重新 remember 是全新 accepted。
@@ -576,6 +705,255 @@ TEST(ClearTenant, RememberStartsFreshAfterClear) {
     EXPECT_FALSE(again.statement_ids.empty());
     EXPECT_GE(count_rows(adapter->connection(),
         "SELECT COUNT(*) FROM statements WHERE tenant_id='default'"), 1);
+}
+
+// ── backup_to:VACUUM INTO 加只读 integrity_check ────────────────────────────
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// 每个用例一个独立的临时目录,析构时删除。
+class BackupDir {
+public:
+    BackupDir() {
+        static std::atomic<int> seq{0};
+        path_ = fs::temp_directory_path() /
+                ("starling-backup-" + std::to_string(::getpid()) + "-" + std::to_string(++seq));
+        fs::remove_all(path_);
+        fs::create_directories(path_);
+    }
+    ~BackupDir() { std::error_code err; fs::remove_all(path_, err); }
+    BackupDir(const BackupDir&) = delete;
+    BackupDir& operator=(const BackupDir&) = delete;
+    BackupDir(BackupDir&&) = delete;
+    BackupDir& operator=(BackupDir&&) = delete;
+    [[nodiscard]] const fs::path& path() const { return path_; }
+private:
+    fs::path path_;
+};
+
+std::unique_ptr<persistence::SqliteAdapter> open_file_adapter(const fs::path& file) {
+    auto a = persistence::SqliteAdapter::open(file);
+    persistence::MigrationRunner(a->connection().raw()).migrate_to_latest();
+    return a;
+}
+
+// 只读打开一个库文件,取第一行第一列的文本。副本不带 -wal,所以必须用只读连接看:
+// 读写连接会把 journal_mode 改回 WAL,还会在旁边建 -wal/-shm。
+std::string read_only_scalar(const fs::path& file, const char* sql) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(file.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr),
+              SQLITE_OK);
+    persistence::SqliteHandle handle(raw);
+    persistence::Stmt query(handle.get(), sql);
+    if (!query.step_row()) { return {}; }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(query.raw(), 0));
+    return text != nullptr ? text : "";
+}
+
+std::string slurp(const fs::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+void spit(const fs::path& file, std::string_view bytes) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+void remember_bob(persistence::SqliteAdapter& a, extractor::FakeLLMAdapter& llm,
+                  std::string_view text) {
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    ASSERT_EQ(remember(a, llm, "", params(text)).outcome, "accepted");
+}
+
+}  // namespace
+
+TEST(BackupTo, CopyHoldsWalContentAndIsSelfContained) {
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    extractor::FakeLLMAdapter llm;
+    remember_bob(*a, llm, "Bob owns auth");
+    // 源库是 WAL 模式、连接还开着:新写的内容可能只在 -wal 里,副本必须把它带上。
+    ASSERT_TRUE(fs::exists(dir.path() / "src.db-wal"));
+
+    backup_to(*a, dir.path() / "copy.db");
+
+    const auto copy = dir.path() / "copy.db";
+    EXPECT_EQ(read_only_scalar(copy, "PRAGMA integrity_check"), "ok");
+    EXPECT_EQ(read_only_scalar(copy, "PRAGMA journal_mode"), "delete");   // 不是 wal
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db-wal"));
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db-shm"));
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+    EXPECT_EQ(read_only_scalar(copy, "SELECT COUNT(*) FROM statements"),
+              std::to_string(row_count(a->connection(), "SELECT COUNT(*) FROM statements")));
+    EXPECT_EQ(read_only_scalar(copy, "SELECT COUNT(*) FROM engrams"), "1");
+    EXPECT_EQ(read_only_scalar(copy, "SELECT COUNT(*) FROM schema_migrations"),
+              std::to_string(row_count(a->connection(), "SELECT COUNT(*) FROM schema_migrations")));
+
+    // 备份是只读副本操作:源库照常可写。
+    remember_bob(*a, llm, "Carol owns billing");
+    EXPECT_EQ(row_count(a->connection(), "SELECT COUNT(*) FROM engrams"), 2);
+    EXPECT_EQ(read_only_scalar(copy, "SELECT COUNT(*) FROM engrams"), "1");   // 副本不跟着变
+}
+
+TEST(BackupTo, WorksOnInMemoryLibrary) {
+    const BackupDir dir;
+    auto a = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    remember_bob(*a, llm, "Bob owns auth");
+
+    backup_to(*a, dir.path() / "mem-copy.db");
+
+    EXPECT_EQ(read_only_scalar(dir.path() / "mem-copy.db", "PRAGMA integrity_check"), "ok");
+    EXPECT_EQ(read_only_scalar(dir.path() / "mem-copy.db", "SELECT COUNT(*) FROM engrams"), "1");
+}
+
+TEST(BackupTo, RefusesExistingDestinationAndTouchesNothing) {
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    const auto dest = dir.path() / "copy.db";
+    spit(dest, "x");
+
+    try {
+        backup_to(*a, dest);
+        FAIL() << "expected filesystem_error";
+    } catch (const fs::filesystem_error& e) {
+        EXPECT_EQ(e.code(), std::errc::file_exists);
+        EXPECT_EQ(e.path1(), dest);
+    }
+    EXPECT_EQ(slurp(dest), "x");
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+}
+
+TEST(BackupTo, DanglingSymlinkCountsAsExistingDestination) {
+    // exists() 会跟着链接走,悬空链接上得到 false;rename 却会越过链接写到它指向的位置。
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    const auto dest = dir.path() / "copy.db";
+    fs::create_symlink(dir.path() / "nowhere.db", dest);
+
+    EXPECT_THROW(backup_to(*a, dest), fs::filesystem_error);
+    EXPECT_TRUE(fs::is_symlink(dest));
+    EXPECT_FALSE(fs::exists(dir.path() / "nowhere.db"));
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+}
+
+TEST(BackupTo, ReplacesStalePartialLeftByAnEarlierCrash) {
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    const auto dest = dir.path() / "copy.db";
+    spit(dir.path() / "copy.db.partial", "garbage from a crashed backup");
+
+    backup_to(*a, dest);
+
+    EXPECT_EQ(read_only_scalar(dest, "PRAGMA integrity_check"), "ok");
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+}
+
+TEST(BackupTo, MissingParentDirectoryFailsAndCreatesNothing) {
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+
+    EXPECT_THROW(backup_to(*a, dir.path() / "nope" / "copy.db"), persistence::SqliteError);
+    EXPECT_FALSE(fs::exists(dir.path() / "nope"));   // 不代建上级目录
+}
+
+TEST(BackupTo, RejectsEmptyPath) {
+    auto a = make_adapter();
+    EXPECT_THROW(backup_to(*a, fs::path{}), std::invalid_argument);
+}
+
+TEST(BackupTo, OpenTransactionFailsWithoutLeavingPartial) {
+    // VACUUM 不能在事务里跑。调用方持着写事务时备份要失败,而不是写出半截副本。
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    const auto dest = dir.path() / "copy.db";
+
+    {
+        persistence::TransactionGuard txn(a->connection());
+        EXPECT_THROW(backup_to(*a, dest), persistence::SqliteError);
+    }
+    EXPECT_FALSE(fs::exists(dest));
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+
+    backup_to(*a, dest);   // 事务结束后同一个目标可以再试
+    EXPECT_EQ(read_only_scalar(dest, "PRAGMA integrity_check"), "ok");
+}
+
+TEST(BackupTo, IntegrityCheckFailureRemovesPartialAndLeavesNoDestination) {
+    // 造一份"打得开、能 VACUUM INTO、但 integrity_check 不通过"的源库:先在表里塞一行 NULL,
+    // 再把 sqlite_master 里的列定义改成 NOT NULL。违例要靠副本上的 PRAGMA integrity_check
+    // 才报得出来("NULL value in side.val")。
+    //
+    // 造完必须关掉这条连接、让 adapter 重新打开:同一条连接的内存里还是改之前的表定义,
+    // 与 sqlite_master 里的新定义不一致,VACUUM INTO 就不走整页直拷(两边表定义相同才走),
+    // 改成真的逐行插入,在插入时撞上 NOT NULL 约束,抛 SqliteError 而不是走到完整性检查。
+    // 也不用改索引定义的办法:VACUUM INTO 按改过的定义重建索引,副本反而自洽。
+    //
+    // 也不用 CHECK 约束违例:只读连接上的 integrity_check 看不见它(读写连接才报
+    // "CHECK constraint failed"),backup_to 的只读完整性检查对这一类违例是盲的,见
+    // memory_ops.cpp 里 integrity_ok 的注释。NOT NULL 违例两种连接都报得出来。
+    const BackupDir dir;
+    const auto src = dir.path() / "src.db";
+    { auto seed = open_file_adapter(src); }   // 建库、跑完迁移,然后关掉
+    {
+        sqlite3* raw = nullptr;
+        ASSERT_EQ(sqlite3_open(src.string().c_str(), &raw), SQLITE_OK);
+        const persistence::SqliteHandle handle(raw);
+        sqlite3_db_config(raw, SQLITE_DBCONFIG_DEFENSIVE, 0, nullptr);
+        char* err = nullptr;
+        ASSERT_EQ(sqlite3_exec(
+                      raw,
+                      "CREATE TABLE side(id INTEGER PRIMARY KEY, val TEXT);"
+                      "INSERT INTO side(val) VALUES (NULL);"
+                      "PRAGMA writable_schema=ON;"
+                      "UPDATE sqlite_master SET sql="
+                      "'CREATE TABLE side(id INTEGER PRIMARY KEY, val TEXT NOT NULL)' "
+                      "WHERE name='side';",
+                      nullptr, nullptr, &err),
+                  SQLITE_OK) << (err != nullptr ? err : "");
+        sqlite3_free(err);
+    }
+    auto a = open_file_adapter(src);
+    ASSERT_EQ(read_only_scalar(src, "SELECT COUNT(*) FROM pragma_integrity_check "
+                                    "WHERE integrity_check='ok'"), "0")
+        << "要的是 integrity_check 不通过的源库";
+    const auto dest = dir.path() / "copy.db";
+
+    try {
+        backup_to(*a, dest);
+        FAIL() << "expected runtime_error";
+    } catch (const persistence::SqliteError& e) {
+        FAIL() << "VACUUM INTO itself failed, the integrity_check branch was not reached: "
+               << e.what();
+    } catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(), "backup integrity_check failed");
+    }
+    EXPECT_FALSE(fs::exists(dest));
+    EXPECT_FALSE(fs::exists(dir.path() / "copy.db.partial"));
+    // 源库不受影响:仍可读。
+    EXPECT_EQ(row_count(a->connection(), "SELECT COUNT(*) FROM side"), 1);
+}
+
+TEST(BackupTo, CopyOfCopyIsStable) {
+    // 副本再备份一次:内容(行数、迁移记录)不漂,便于 rise 把起点副本当新起点用。
+    const BackupDir dir;
+    auto a = open_file_adapter(dir.path() / "src.db");
+    extractor::FakeLLMAdapter llm;
+    remember_bob(*a, llm, "Bob owns auth");
+    backup_to(*a, dir.path() / "copy1.db");
+
+    auto b = open_file_adapter(dir.path() / "copy1.db");
+    backup_to(*b, dir.path() / "copy2.db");
+
+    for (const char* sql : {"SELECT COUNT(*) FROM engrams", "SELECT COUNT(*) FROM statements",
+                            "SELECT COUNT(*) FROM schema_migrations"}) {
+        EXPECT_EQ(read_only_scalar(dir.path() / "copy1.db", sql),
+                  read_only_scalar(dir.path() / "copy2.db", sql)) << sql;
+    }
 }
 
 }  // namespace starling::memoryops

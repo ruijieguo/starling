@@ -42,6 +42,9 @@ SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
                                    ? std::nullopt
                                    : std::optional<std::string>(params.holder_perspective);
     scope.visible_only = true;  // privacy-first: NEVER widen
+    // include_volatile 只放宽巩固状态(volatile 是巩固状态,不是隐私状态);
+    // 上面的 holder/perspective 与 review 守卫照旧,不受它影响。
+    scope.include_volatile = params.include_volatile;
 
     // Step 3: top-k search (visibility/privacy predicate pushed into search).
     auto scored = index_.search_topk(conn, q, params.k, scope);
@@ -50,7 +53,13 @@ SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
     // query_statements 的默认守卫(state IN(consolidated,archived) + review
     // NOT IN(rejected,pending_review))即原 kSelectByIdSql 的 visibility 二次
     // 校验(spec §7);删/状态变 → 空结果 → skip(原 SQLITE_DONE 路径)。
+    // include_volatile 时状态集显式加上 volatile,与 search_topk 一致;
+    // default_review_guard 不动。
     store::SqliteMetaStore meta(conn);
+    const std::vector<std::string> states =
+        params.include_volatile
+            ? std::vector<std::string>{"volatile", "consolidated", "archived"}
+            : std::vector<std::string>{};   // 空 = MetaStore 默认 {consolidated,archived}
     SemanticResult result;
     result.degraded = false;
     result.receipt.trace_id = params.trace_id;
@@ -59,6 +68,7 @@ SemanticResult SemanticRetriever::vector_recall(persistence::Connection& conn,
         store::StatementFilter f;
         f.tenant_id = params.tenant_id;
         f.id_in = {s.stmt_id};
+        f.consolidation_states = states;
         const auto rows = meta.query_statements(f);
         if (rows.empty()) continue;
         ++result.receipt.candidate_counts.fetched;

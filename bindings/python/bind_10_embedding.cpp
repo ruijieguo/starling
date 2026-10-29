@@ -141,15 +141,17 @@ void bind_10_embedding(pybind11::module_& m) {
             m, "SemanticRetrieverParams")
         .def(py::init([](std::string tenant_id, std::string holder_id,
                          std::string holder_perspective, std::string query_text,
-                         int k, std::string trace_id, std::string query_id) {
+                         int top_k, std::string trace_id, std::string query_id,
+                         bool include_volatile) {
             starling::retrieval::SemanticRetrieverParams p;
             p.tenant_id = std::move(tenant_id);
             p.holder_id = std::move(holder_id);
             p.holder_perspective = std::move(holder_perspective);
             p.query_text = std::move(query_text);
-            p.k = k;
+            p.k = top_k;
             p.trace_id = std::move(trace_id);
             p.query_id = std::move(query_id);
+            p.include_volatile = include_volatile;
             return p;
         }),
         py::arg("tenant_id") = "",
@@ -158,14 +160,16 @@ void bind_10_embedding(pybind11::module_& m) {
         py::arg("query_text") = "",
         py::arg("k") = 10,
         py::arg("trace_id") = "",
-        py::arg("query_id") = "")
+        py::arg("query_id") = "",
+        py::arg("include_volatile") = false)
         .def_readwrite("tenant_id",          &starling::retrieval::SemanticRetrieverParams::tenant_id)
         .def_readwrite("holder_id",          &starling::retrieval::SemanticRetrieverParams::holder_id)
         .def_readwrite("holder_perspective", &starling::retrieval::SemanticRetrieverParams::holder_perspective)
         .def_readwrite("query_text",         &starling::retrieval::SemanticRetrieverParams::query_text)
         .def_readwrite("k",                  &starling::retrieval::SemanticRetrieverParams::k)
         .def_readwrite("trace_id",           &starling::retrieval::SemanticRetrieverParams::trace_id)
-        .def_readwrite("query_id",           &starling::retrieval::SemanticRetrieverParams::query_id);
+        .def_readwrite("query_id",           &starling::retrieval::SemanticRetrieverParams::query_id)
+        .def_readwrite("include_volatile",   &starling::retrieval::SemanticRetrieverParams::include_volatile);
 
     py::class_<starling::retrieval::SemanticScored>(m, "SemanticScored")
         .def_readonly("row",   &starling::retrieval::SemanticScored::row)

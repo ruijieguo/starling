@@ -54,6 +54,11 @@ class LLMNotConfigured(RuntimeError):
     make_anthropic_llm, or the dashboard provider factory)."""
 
 
+class RecallDegradedError(RuntimeError):
+    """recall(strict=True) 时查询词嵌入失败:语义召回退化成只剩词法结果,
+    调用方不能把它当成"没有相关记忆"。信息里不带端点与密钥。"""
+
+
 def parse_now(now: "Optional[str | datetime]") -> datetime:
     """Coerce an optional ISO-8601 string (or an already-resolved datetime)
     into a tz-aware datetime.
@@ -248,14 +253,31 @@ class MemoryCore:
             policy=_build_policy(self._extraction))
 
     def recall(self, query: str, *, perspective: str = "first_person",
-               k: int = 10, mode: str = "semantic", holder: str | None = None) -> list:
+               k: int = 10, mode: str = "semantic", holder: str | None = None,
+               strict: bool = False, include_volatile: bool = False) -> list:
         """mode="semantic" — vector cosine via SemanticRetriever.vector_recall;
         mode="completion" — associative spreading via PatternCompletor.
 
         holder overrides the recall holder dimension (default self.agent). A
         caller that wrote statements under a non-default holder MUST recall with
         the same holder, else the candidate SQL's `s.holder_id = ?` predicate
-        excludes them (P3.b2: OpenClaw plugin holder must round-trip)."""
+        excludes them (P3.b2: OpenClaw plugin holder must round-trip).
+
+        strict=True: 语义模式下查询词嵌入失败(SemanticResult.degraded)时抛
+        RecallDegradedError,而不是静默返回只剩词法的结果。completion 模式没有
+        degraded 信号,strict=True 直接抛 ValueError。
+
+        include_volatile=True:语义召回额外接受 consolidation_state='volatile'
+        的语句(只 embed_pending、未经 tick 回放),可能带来近重复。只放宽巩固
+        状态,review 守卫与 holder/视角谓词不变;放宽在 C++ 里做。completion
+        模式不支持,直接抛 ValueError。"""
+        if strict and mode == "completion":
+            raise ValueError(
+                "strict=True is not supported with mode='completion': "
+                "pattern completion has no degraded signal")
+        if include_volatile and mode == "completion":
+            raise ValueError(
+                "include_volatile=True is not supported with mode='completion'")
         holder_id = holder or self.agent
         # holder_perspective is stored lowercase (extractor normalizes the enum);
         # normalize the query perspective so a caller passing "FIRST_PERSON" still
@@ -265,11 +287,51 @@ class MemoryCore:
             res = self.completor.complete(_core.PatternCompletionParams(
                 tenant_id=self.tenant, holder_id=holder_id,
                 holder_perspective=perspective, cue_text=query, result_k=k))
-            return [{"row": s.row, "score": s.activation} for s in res.rows]
+            return self._with_content_ids(
+                [{"row": s.row, "score": s.activation} for s in res.rows])
         res = self.semantic.vector_recall(_core.SemanticRetrieverParams(
             tenant_id=self.tenant, holder_id=holder_id,
-            holder_perspective=perspective, query_text=query, k=k))
-        return [{"row": s.row, "score": s.score} for s in res.rows]
+            holder_perspective=perspective, query_text=query, k=k,
+            include_volatile=include_volatile))
+        if strict and res.degraded:
+            raise RecallDegradedError("query embedding failed")
+        hits = [{"row": s.row, "score": s.score} for s in res.rows]
+        return self._with_content_ids(hits)
+
+    def _with_content_ids(self, hits: list) -> list:
+        """给每个命中补 `content_id`(行的内容 id,库与库之间可比)。
+
+        一次 `memory_content_ids` 批量查完,不按命中逐条查:k=10 的召回会变成 10 次
+        SQL,而内容 id 的规范化不便宜(每行要解析几个 JSON 列)。"""
+        if not hits:
+            return hits
+        mapping = _core.memory_content_ids(
+            self.conn, self.tenant, [h["row"].id for h in hits])
+        for hit in hits:
+            hit["content_id"] = mapping[hit["row"].id]
+        return hits
+
+    def digest(self) -> str:
+        """本租户 library 的逻辑摘要(64 位小写十六进制)。
+
+        内容相同的两个库给同一个值,内容一变就变:行 id 是 UUID、库与库之间必然
+        不同,所以摘要把身份换成内容再哈希。规范化与哈希都在 C++
+        `memoryops::digest`,这里只是绑定转发。"""
+        return _core.memory_digest(self.conn, self.tenant)
+
+    def backup_to(self, path) -> None:
+        """给整个 library 文件留一份自洽的单文件副本(`VACUUM INTO`)。
+
+        目标已存在抛 `FileExistsError`,不碰它;其余失败(上级目录不存在、
+        `integrity_check` 不过)抛 `RuntimeError`,都不留半成品。VACUUM、完整性检查与改名都在 C++
+        `memoryops::backup_to`,这里只把 `str | os.PathLike` 归一成 `str`。"""
+        _core.memory_backup_to(self.rt.adapter, os.fspath(path))
+
+    def content_ids(self, statement_ids: list[str]) -> dict:
+        """语句 UUID → 内容 id;本租户没有的 id 映射成 "missing"(与摘要里的约定
+        一致)。一次查完,查询在 C++ `memoryops::content_ids`。"""
+        return _core.memory_content_ids(self.conn, self.tenant,
+                                        [str(i) for i in statement_ids])
 
     def plan_query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
                    perspective: Optional[str] = None, target: Optional[str] = None,
@@ -376,6 +438,14 @@ class MemoryCore:
         return _core.memory_tick_all(
             self.rt.adapter, self.worker, self.policy, now, self.rt.health())
 
+    def embed_pending(self, now: str) -> dict:
+        """Run ONLY the embedding stage until the backlog is drained (no
+        commitments / replay / projection / outbox, no health gating). Returns
+        {"embedded": int, "failed": int}; embedding failures are counted, not
+        raised. The loop lives in C++ `memoryops::embed_pending` (GIL released
+        during the embedder calls); this is a binding forward."""
+        return _core.memory_embed_pending(self.rt.adapter, self.worker, now)
+
     def build_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000,
                           holder: str | None = None):
         """Assemble the prompt-ready ContextBlock (P2.e): persona /
@@ -398,6 +468,43 @@ class MemoryCore:
         (地面真值「当前所在」),无事件返回 ""。薄转发到核心层
         `EpisodicEventStore::latest_event_location`(纯本地 SQLite 读)。"""
         return _core.latest_event_location(self.conn, self.tenant, theme)
+
+    def next_seq(self) -> int:
+        """本租户 events 表的下一个序号(空库为 0,含 abandoned 行,只增不复用)。
+        查询在 C++ `memoryops::next_seq`,这里只是绑定转发。"""
+        return _core.memory_next_seq(self.conn, self.tenant)
+
+    def pending_events(self) -> list[dict]:
+        """本租户 state='pending' 的 events 行,按 seq 升序。查询在 C++
+        `memoryops::pending_events`,这里原样返回 dict 列表,由门面包成 PendingEvent。"""
+        return _core.memory_pending_events(self.conn, self.tenant)
+
+    def remember_event(self, key: str, text: str, *, interlocutor=None,
+                       epoch: str = "2026-01-01T00:00:00Z") -> dict:
+        """按调用方给的稳定 key 记一次写入,崩溃安全、可重放。三段状态机在 C++
+        `memoryops::remember_event`,这里只做 fail-fast 与绑定转发。
+
+        `epoch` 是时钟原点:engram 的 created_at 是 epoch + 事件行 seq 秒。时刻必须
+        由 seq 推出(seq 在第 1 段才分配,调用方事先拿不到),所以这里不收 `now`。"""
+        if self.llm is None:   # 与 remember 一致:第 1 段会写 pending 行,故在写前查
+            raise LLMNotConfigured(
+                "remember_event requires an llm adapter "
+                "(make_stub_llm / make_openai_llm / make_anthropic_llm)")
+        return _core.memory_remember_event(
+            self.rt.adapter, self.llm,
+            self._extraction.belief_prompt,
+            self._extraction.episodic_prompt,
+            self._extraction.general_fact_prompt,
+            tenant_id=self.tenant, holder_id=self.agent,
+            interlocutor=interlocutor or "", adapter_name=self.adapter_name,
+            source_prefix=self.source_prefix, key=key, text=text,
+            epoch_iso=epoch, policy=_build_policy(self._extraction))
+
+    def abandon_event(self, key: str) -> None:
+        """把 pending 事件改成终态 abandoned。状态机在 C++
+        `memoryops::abandon_event`(committed 抛 EventConflict,未知 key 抛 KeyError,
+        已 abandoned 幂等),这里只是绑定转发。"""
+        _core.memory_abandon_event(self.rt.adapter, self.tenant, key)
 
     def forget(self, ids: list[str], *, now=None) -> dict:
         """逻辑删除(→forgotten):核心 `memoryops::forget`,这里只签名归一。

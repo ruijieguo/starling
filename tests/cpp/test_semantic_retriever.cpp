@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <set>
 #include <string>
 
 using starling::embedding::EmbeddingWorker;
@@ -197,4 +198,46 @@ TEST(SemanticRetriever, CarriesAffectJson) {
     auto res = sr.vector_recall(conn, p);
     ASSERT_GE(res.rows.size(), 1u);
     EXPECT_EQ(res.rows[0].row.affect_json, "{\"valence\":0.7}");
+}
+
+// include_volatile 同时放宽 search_topk 的 scope 与二次校验的 StatementFilter:
+// 默认不见 volatile,放宽后见(且行的 consolidation_state 就是 volatile);
+// pending_review 的 volatile 行两种都不见。
+TEST(SemanticRetriever, IncludeVolatileWidensBothPassesButKeepsReviewGuard) {
+    auto adapter = SqliteAdapter::open(":memory:");
+    Connection& conn = adapter->connection();
+    sqlite3* db = conn.raw();
+    seed_stmt(db, "con", "cats", "consolidated", "approved");
+    seed_stmt(db, "vol", "cats", "volatile", "approved");
+    seed_stmt(db, "vol_pending", "cats", "volatile", "pending_review");
+
+    StubEmbeddingAdapter emb(8);
+    SqliteBlobVectorIndex idx;
+    EmbeddingWorker(*adapter, emb, idx).tick_one_batch(conn, "2026-06-10T10:00:00Z");
+    SemanticRetriever sr(*adapter, emb, idx);
+
+    SemanticRetrieverParams p;
+    p.tenant_id  = "default";
+    p.holder_id  = "alice";
+    p.k          = 10;
+    p.query_text = "bob knows cats";
+    EXPECT_FALSE(p.include_volatile);   // 默认关
+
+    auto ids = [](const starling::retrieval::SemanticResult& r) {
+        std::set<std::string> s;
+        for (const auto& row : r.rows) s.insert(row.row.id);
+        return s;
+    };
+
+    const auto narrow = sr.vector_recall(conn, p);
+    EXPECT_FALSE(narrow.degraded);
+    EXPECT_EQ(ids(narrow), (std::set<std::string>{"con"}));
+
+    p.include_volatile = true;
+    const auto wide = sr.vector_recall(conn, p);
+    EXPECT_FALSE(wide.degraded);
+    EXPECT_EQ(ids(wide), (std::set<std::string>{"con", "vol"}));
+    for (const auto& row : wide.rows) {
+        if (row.row.id == "vol") EXPECT_EQ(row.row.consolidation_state, "volatile");
+    }
 }

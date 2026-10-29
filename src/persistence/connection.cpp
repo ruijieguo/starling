@@ -1,6 +1,7 @@
 #include "starling/persistence/connection.hpp"
 
 #include <atomic>
+#include <stdexcept>
 
 namespace starling::persistence {
 
@@ -27,6 +28,9 @@ Connection Connection::open(const std::filesystem::path& db_path) {
 }
 
 void Connection::exec(std::string_view sql) {
+    if (!handle_) {
+        throw SqliteError("exec failed: connection closed", SQLITE_MISUSE);
+    }
     char* err = nullptr;
     if (sqlite3_exec(handle_.get(), std::string(sql).c_str(),
                      nullptr, nullptr, &err) != SQLITE_OK) {
@@ -39,14 +43,26 @@ void Connection::exec(std::string_view sql) {
 void Connection::begin_immediate() { exec("BEGIN IMMEDIATE"); }
 void Connection::commit()          { exec("COMMIT"); }
 void Connection::rollback() noexcept {
+    if (!handle_) {
+        return;
+    }
     sqlite3_exec(handle_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
 }
 
 int64_t Connection::last_insert_rowid() const noexcept {
+    if (!handle_) {
+        return 0;
+    }
     return sqlite3_last_insert_rowid(handle_.get());
 }
 
 TransactionGuard::TransactionGuard(Connection& c) : conn_(c) {
+    // raw() is nullptr after Connection::close(), and sqlite3_get_autocommit
+    // dereferences its argument unless SQLITE_ENABLE_API_ARMOR is built in
+    // (it is not). Fail with an exception instead of a segfault.
+    if (!conn_.is_open()) {
+        throw std::logic_error("connection closed");
+    }
     if (sqlite3_get_autocommit(conn_.raw()) != 0) {
         outer_ = true;
         conn_.begin_immediate();

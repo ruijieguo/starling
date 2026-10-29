@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <filesystem>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <system_error>
 #include <variant>
+
+#include <sqlite3.h>
 
 #include <nlohmann/json.hpp>
 
@@ -787,6 +791,23 @@ TickOutcome tick_all(persistence::SqliteAdapter& adapter,
     return t;
 }
 
+EmbedPendingOutcome embed_pending(persistence::SqliteAdapter& adapter,
+                                  embedding::EmbeddingWorker& worker,
+                                  std::string_view now_iso) {
+    auto& conn = adapter.connection();
+    EmbedPendingOutcome out;
+    // 每个继续循环的批次至少把一行永久置为 embedded(不再被扫描),积压有限,所以必然终止。
+    while (true) {
+        const auto stats = worker.tick_one_batch(conn, now_iso);
+        out.embedded += stats.embedded;
+        out.failed += stats.failed;
+        if (stats.embedded == 0) {
+            break;
+        }
+    }
+    return out;
+}
+
 int forget(persistence::SqliteAdapter& adapter, std::string_view tenant,
            const std::vector<std::string>& ids, std::string_view now_iso) {
     governance::require_write_admission(adapter);   // 门前抛 = 零 DB 写
@@ -816,6 +837,8 @@ ClearTenantOutcome clear_tenant(persistence::SqliteAdapter& adapter,
     static constexpr std::array kSteps{
         Step{.table = "episodic_events", .sql = "DELETE FROM episodic_events WHERE tenant_id=?1"},
         Step{.table = "source_documents", .sql = "DELETE FROM source_documents WHERE tenant_id=?1"},
+        // 0038:写入收据。engram_ref 只是文本列,无外键,排在哪里都不影响删除顺序。
+        Step{.table = "events", .sql = "DELETE FROM events WHERE tenant_id=?1"},
         // 0037：左脑原文元数据与派生向量，均引用 engrams 故必须排在它之前。
         Step{.table = "source_unit_vectors",
              .sql = "DELETE FROM source_unit_vectors WHERE tenant_id=?1",},
@@ -954,6 +977,85 @@ std::string request_reconsolidation(persistence::SqliteAdapter& adapter,
     writer.append(evt);
     txn.commit();
     return evt.event_id;
+}
+
+namespace {
+
+// 只读打开 path,跑 PRAGMA integrity_check。完好的库只回一行 "ok";有问题时第一行就是
+// 问题描述,所以只看第一行。
+//
+// 已知盲区:只读连接上的 integrity_check 不检查 CHECK 约束,读写连接才检查(sqlite 3.51.3
+// 与 3.54.0 都实测如此)。库里若有绕过约束写进去的 CHECK 违例行(PRAGMA
+// ignore_check_constraints),这里照样报 "ok",VACUUM INTO 也会把它原样带进副本。
+// NOT NULL 违例、索引与表对不上这类损坏只读连接报得出来,见 tests/cpp/test_memory_ops.cpp
+// 的 BackupTo.IntegrityCheckFailure...。这里照 world_store 的做法只读打开;要补上这个盲区,
+// 得改成读写打开 partial(它是 delete 模式的独立文件,读写打开不改变内容)。
+//
+// 用裸文件名而不是 file: URI 打开:调用方传进来的是绝对路径(以 "/" 开头),不会被
+// 当成 URI,也就不用对 % ? # 做转义。
+bool integrity_ok(const std::filesystem::path& path) {
+    sqlite3* raw = nullptr;
+    const int code = sqlite3_open_v2(path.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
+    persistence::SqliteHandle handle(raw);
+    if (code != SQLITE_OK) {
+        throw persistence::SqliteError(
+            "backup: cannot open " + path.string() + " read-only: " +
+                (raw != nullptr ? sqlite3_errmsg(raw) : "alloc failure"),
+            code);
+    }
+    persistence::Stmt check(handle.get(), "PRAGMA integrity_check");
+    if (!check.step_row()) { return false; }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(check.raw(), 0));
+    return text != nullptr && std::string_view(text) == "ok";
+}
+
+// 悬空符号链接也算占着名字:rename 会越过它去写链接指向的位置,VACUUM INTO 同理。
+bool path_occupied(const std::filesystem::path& path) {
+    std::error_code ignore;
+    return std::filesystem::exists(std::filesystem::symlink_status(path, ignore));
+}
+
+[[noreturn]] void throw_destination_exists(const std::filesystem::path& dest) {
+    throw std::filesystem::filesystem_error(
+        "backup_to: destination already exists", dest,
+        std::make_error_code(std::errc::file_exists));
+}
+
+}  // namespace
+
+void backup_to(persistence::SqliteAdapter& adapter, const std::filesystem::path& dest) {
+    namespace fs = std::filesystem;
+    if (dest.empty()) {
+        throw std::invalid_argument("backup_to: destination path is empty");
+    }
+    const fs::path target = fs::absolute(dest);
+    const fs::path partial = target.string() + ".partial";
+
+    // 目标已存在:不碰它,也不碰 .partial(那可能是别的备份正在写的)。
+    if (path_occupied(target)) { throw_destination_exists(target); }
+
+    try {
+        {
+            std::error_code ignore;
+            fs::remove(partial, ignore);   // 上次崩溃留下的残片
+        }
+        {
+            persistence::Stmt vacuum(adapter.connection().raw(), "VACUUM INTO ?1");
+            vacuum.bind(partial.string());
+            vacuum.step_done();
+        }
+        if (!integrity_ok(partial)) {
+            throw std::runtime_error("backup integrity_check failed");
+        }
+        // VACUUM INTO 可能跑了很久,期间有人在目标位置建了东西:rename 会静默覆盖它。
+        if (path_occupied(target)) { throw_destination_exists(target); }
+        fs::rename(partial, target);
+    } catch (...) {
+        std::error_code ignore;
+        fs::remove(partial, ignore);
+        throw;
+    }
 }
 
 }  // namespace starling::memoryops

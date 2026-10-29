@@ -795,6 +795,17 @@ ExtractionRunResult Extractor::persist(
     bool all_failed     = true;
     bool result_partial = false;
 
+    // observed_at 取来源 engram 的 created_at,不取解析层的墙钟:同一逻辑时刻写入的同一句话
+    // 要得到同样的语句行(observed_at 还参与检索规划的时间排序,摘要排除不了它)。engram 在
+    // 一次 persist 内固定,取一次。语义声明路径上面已设成同一个值,这里对它是同值覆盖。
+    // engram 不在或 created_at 为空时 engram_observed_at 留空,循环里保持解析层的值:旧路径
+    // 今天不要求 engram 存在。
+    std::string engram_observed_at;
+    if (const auto source_engram = evidence::EngramStore::get(engram_ref_id, holder_tenant_id, conn_);
+        source_engram && !source_engram->created_at_iso8601.empty()) {
+        engram_observed_at = source_engram->created_at_iso8601;
+    }
+
     int persisted_attempt_index = 0;
     for (const auto& rec : checked.attempts) {
         ++persisted_attempt_index;
@@ -871,6 +882,7 @@ ExtractionRunResult Extractor::persist(
         for (auto& stmt : parsed.statements) {
             stmt.holder_tenant_id = std::string(holder_tenant_id);
             stmt.chunk_index      = chunk_index;
+            if (!engram_observed_at.empty()) { stmt.observed_at = engram_observed_at; }
             if (stmt.source_hash.empty()) {
                 stmt.source_hash = "chunk-" + std::to_string(chunk_index);
             }

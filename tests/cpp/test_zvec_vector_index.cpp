@@ -142,6 +142,51 @@ TEST(ZvecVectorIndex, ParityScopeHolderFilter) {
     std::filesystem::remove_all(coll);
 }
 
+// include_volatile parity:默认不见 volatile,放宽后见;pending_review 的
+// volatile 行与别的 holder 的 volatile 行两种都不见(只放宽巩固状态)。
+// holder 与 include_volatile 两个绑定都在场,钉住 zvec 精过滤 SQL 的位置参数顺序。
+TEST(ZvecVectorIndex, ParityIncludeVolatileWidensOnlyConsolidationState) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_stmt(conn, "con", "cog-self", "consolidated");
+    seed_stmt(conn, "vol", "cog-self", "volatile");
+    seed_stmt(conn, "vol_pending", "cog-self", "volatile", "pending_review");
+    seed_stmt(conn, "vol_other", "cog-bob", "volatile");
+
+    SqliteBlobVectorIndex sqlite_idx;
+    const std::string coll = temp_coll("include_volatile");
+    std::filesystem::remove_all(coll);
+    auto zvp = std::make_unique<ZvecVectorIndex>(coll, 4);
+    auto& zvec_idx = *zvp;
+
+    const std::vector<float> v{1.0f, 0.0f, 0.0f, 0.0f};
+    for (VectorIndex* idx : {static_cast<VectorIndex*>(&sqlite_idx),
+                             static_cast<VectorIndex*>(&zvec_idx)}) {
+        for (const char* id : {"con", "vol", "vol_pending", "vol_other"})
+            idx->insert(conn, id, "default", v);
+    }
+
+    SearchScope scope;
+    scope.tenant_id = "default";
+    scope.holder_id = "cog-self";
+    scope.visible_only = true;
+    EXPECT_FALSE(scope.include_volatile);  // 默认关
+
+    auto sq = sqlite_idx.search_topk(conn, v, 10, scope);
+    auto zv = zvec_idx.search_topk(conn, v, 10, scope);
+    EXPECT_EQ(id_set(sq), id_set(zv));
+    EXPECT_EQ(id_set(zv), (std::set<std::string>{"con"}));
+
+    scope.include_volatile = true;
+    sq = sqlite_idx.search_topk(conn, v, 10, scope);
+    zv = zvec_idx.search_topk(conn, v, 10, scope);
+    EXPECT_EQ(id_set(sq), id_set(zv));
+    EXPECT_EQ(id_set(zv), (std::set<std::string>{"con", "vol"}));
+
+    zvp.reset();  // 先析构(flush rocksdb)再删目录,避免 flush-after-delete 噪音
+    std::filesystem::remove_all(coll);
+}
+
 // remove parity:删除后两后端都查不到。
 TEST(ZvecVectorIndex, ParityRemove) {
     auto a = make_adapter();

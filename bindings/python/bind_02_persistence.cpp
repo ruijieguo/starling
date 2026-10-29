@@ -87,6 +87,11 @@ void bind_02_persistence(pybind11::module_& m) {
             w.append(ev);
             g.commit();
         }, py::arg("event"))
+        .def("close", &starling::persistence::SqliteAdapter::close,
+             py::call_guard<py::gil_scoped_release>(),
+             "Merge the WAL into the main file and release the sqlite handle. "
+             "Idempotent. connection() raises RuntimeError afterwards. The caller "
+             "must have no call in flight (starling.Memory.close ensures this).")
         .def("write_admitted",
              &starling::persistence::SqliteAdapter::write_admitted,
              "Returns True when the adapter's write gate allows writes "

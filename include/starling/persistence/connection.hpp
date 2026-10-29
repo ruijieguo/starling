@@ -22,7 +22,15 @@ public:
     // path is a real file.
     static Connection open(const std::filesystem::path& db_path);
 
+    // nullptr once close() has run.
     sqlite3* raw() noexcept { return handle_.get(); }
+
+    // Releases the sqlite handle. Idempotent. After close(), raw() is nullptr,
+    // exec() throws SqliteError, and the transaction helpers are no-ops. The
+    // caller must have finalized (or be done with) every statement first: a
+    // statement still alive keeps the database file open (sqlite3_close_v2).
+    void close() noexcept { handle_.reset(); }
+    [[nodiscard]] bool is_open() const noexcept { return handle_ != nullptr; }
 
     // Executes SQL with no parameters. Throws SqliteError on failure.
     void exec(std::string_view sql);

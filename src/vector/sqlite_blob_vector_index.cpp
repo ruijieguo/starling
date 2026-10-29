@@ -64,7 +64,8 @@ std::vector<ScoredId> SqliteBlobVectorIndex::search_topk(
         " WHERE v.tenant_id = ?1 AND v.status = 'embedded'"
         "   AND (?2 = '' OR s.holder_id = ?2)"
         "   AND (?3 = '' OR s.holder_perspective = ?3)"
-        "   AND (?4 = 0 OR (s.consolidation_state IN ('consolidated','archived')"
+        "   AND (?4 = 0 OR ((s.consolidation_state IN ('consolidated','archived')"
+        "                    OR (?5 = 1 AND s.consolidation_state = 'volatile'))"
         "                   AND s.review_status NOT IN ('rejected','pending_review')))";
 
     sqlite3_stmt* raw = nullptr;
@@ -81,6 +82,7 @@ std::vector<ScoredId> SqliteBlobVectorIndex::search_topk(
     bind_sv(h.get(), 3, perspective);
 
     sqlite3_bind_int(h.get(), 4, scope.visible_only ? 1 : 0);
+    sqlite3_bind_int(h.get(), 5, scope.include_volatile ? 1 : 0);
 
     std::vector<ScoredId> results;
     while (sqlite3_step(h.get()) == SQLITE_ROW) {

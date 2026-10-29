@@ -422,4 +422,42 @@ TEST(ExtractorOrchestrator, NonDesireModalityNotReattributedWhenFlagOn) {
     EXPECT_EQ(single_holder_id(conn), "narrator");
 }
 
+// 旧抽取路径的 observed_at 取来源 engram 的 created_at,不取墙钟:同一逻辑时刻写入的
+// 语句行要可复现(observed_at 还参与检索规划的时间排序,不能从摘要里排除)。
+TEST(ExtractorOrchestrator, OldPathObservedAtFollowsEngramCreatedAtNotWallClock) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");   // created_at = 2026-05-23T10:00:00Z
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{.raw_xml = kSuccessJson, .ok = true});
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    ASSERT_EQ(r.accepted_statement_ids.size(), 1u);
+    EXPECT_EQ(row_count(conn, "statements"), 1);
+    EXPECT_EQ(row_count(conn, "statements", "observed_at='2026-05-23T10:00:00Z'"), 1);
+}
+
+// engram 不存在时保留解析层的墙钟值:旧路径今天不要求 engram 存在(与语义声明路径
+// 「engram 缺失则失败」不同),这里钉住该回退,别让它被误改成失败。
+TEST(ExtractorOrchestrator, OldPathObservedAtKeepsParserValueWhenEngramMissing) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    // 不 seed engram。
+
+    FakeLLMAdapter llm;
+    Extractor ex(conn, llm);
+    llm.set_default_response(LLMResponse{.raw_xml = kSuccessJson, .ok = true});
+
+    auto r = ex.run("engram-absent", {1,2,3}, "cog-self", "default", {});
+    // 旧路径不要求 engram 存在:语句照常写入,observed_at 保留解析层的墙钟值(非空、
+    // 秒级 UTC ISO 形如 YYYY-MM-DDTHH:MM:SSZ,不是别处 engram 的时间)。
+    ASSERT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    ASSERT_EQ(r.accepted_statement_ids.size(), 1u);
+    EXPECT_EQ(row_count(conn, "statements", "observed_at IS NOT NULL AND length(observed_at)=20 AND observed_at LIKE '____-__-__T__:__:__Z'"), 1);
+    EXPECT_EQ(row_count(conn, "statements", "observed_at='2026-05-23T10:00:00Z'"), 0);
+}
+
 }  // namespace starling::extractor
