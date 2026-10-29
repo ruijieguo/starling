@@ -252,7 +252,7 @@ def test_failed_teardown_can_be_retried_and_then_merges_the_wal(tmp_path, monkey
     if where == "adapter_close":
         flaky = _FlakyAdapter(mem._rt.adapter, exc)
         monkeypatch.setattr(mem._rt, "adapter", flaky)
-        adapter_close_calls = lambda: flaky.close_calls   # noqa: E731
+        teardown_attempts = lambda: flaky.close_calls   # noqa: E731
     else:
         real_core_close = mem._core.close
         core_calls = []
@@ -263,7 +263,10 @@ def test_failed_teardown_can_be_retried_and_then_merges_the_wal(tmp_path, monkey
                 raise exc
             real_core_close()
         monkeypatch.setattr(mem._core, "close", flaky_core_close)
-        adapter_close_calls = lambda: len(core_calls)    # noqa: E731
+        # 这一支数的是 _core.close 的次数,不是适配器的:首次失败时适配器根本没被调到,
+        # 所以"适配器被调两次"在这一支不成立。两支共用的断言意思是「拆除被重做了一次,
+        # 关完之后不再重做」;真正钉住 WAL 有没有合并的是 _wal_bytes。
+        teardown_attempts = lambda: len(core_calls)      # noqa: E731
 
     with pytest.raises(type(exc)):
         mem.close()
@@ -277,11 +280,11 @@ def test_failed_teardown_can_be_retried_and_then_merges_the_wal(tmp_path, monkey
     mem.close()                                       # 重试:补上检查点
     assert mem._released is True
     assert _wal_bytes(tmp_path) == 0
-    assert adapter_close_calls() == 2
+    assert teardown_attempts() == 2
     with pytest.raises(starling.MemoryClosed):
         mem.next_seq()
     mem.close()                                       # 关完之后再关:无操作,不再碰适配器
-    assert adapter_close_calls() == 2
+    assert teardown_attempts() == 2
 
     again = _db(tmp_path, "m.db")
     assert again.next_seq() == 1 and again.pending_events() == []

@@ -492,14 +492,20 @@ class Memory:
           in-flight calls. Nothing was torn down; the library stays open, the
           facade accepts calls again, and `close()` can be retried.
         * "another close() is in progress": a different `close()` is already
-          closing the library and this one gave up waiting for it. The library
-          is closing or already closed (calls raise `MemoryClosed`); it does
-          not reopen.
+          closing the library and this one gave up waiting for it. Calls raise
+          `MemoryClosed` for as long as that `close()` runs. It usually ends in
+          a closed library, but if it is still draining in-flight calls and
+          then times out itself, the library reopens.
 
-        If closing itself fails after the in-flight calls have returned (the
-        checkpoint raises, or the call is interrupted), the exception
-        propagates and the library stays closed to new calls. Calling `close()`
-        again repeats the teardown; the WAL is merged then if it was not before.
+        If closing itself fails after the in-flight calls have returned, the
+        exception propagates and the library stays closed to new calls, and
+        calling `close()` again repeats the teardown (both steps are
+        idempotent). Whether that retry still merges the WAL depends on where
+        the failure was: `MemoryCore.close()` raising, or an interrupt between
+        the two steps, leaves the handle open, so the retry does merge it. A
+        raising checkpoint does not, because `SqliteAdapter::close()` releases
+        the handle before rethrowing — the retry then early-returns and the
+        WAL is left on disk.
 
         Closing is not a write, so it takes no write gate. Calling `close` from
         inside one of this `Memory`'s own calls (for instance from an llm
