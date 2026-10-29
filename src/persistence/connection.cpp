@@ -1,6 +1,7 @@
 #include "starling/persistence/connection.hpp"
 
 #include <atomic>
+#include <stdexcept>
 
 namespace starling::persistence {
 
@@ -50,6 +51,10 @@ int64_t Connection::last_insert_rowid() const noexcept {
 }
 
 TransactionGuard::TransactionGuard(Connection& c) : conn_(c) {
+    // raw() is nullptr after Connection::close(), and sqlite3_get_autocommit
+    // dereferences its argument unless SQLITE_ENABLE_API_ARMOR is built in
+    // (it is not). Fail with an exception instead of a segfault.
+    if (!conn_.is_open()) throw std::logic_error("connection closed");
     if (sqlite3_get_autocommit(conn_.raw()) != 0) {
         outer_ = true;
         conn_.begin_immediate();

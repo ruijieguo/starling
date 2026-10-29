@@ -158,6 +158,20 @@ TEST(ConnectionClose, ReleasesHandleAndIsIdempotent) {
     EXPECT_FALSE(c.is_open());
 }
 
+TEST(ConnectionClose, TransactionGuardOnClosedConnectionThrowsInsteadOfCrashing) {
+    auto c = Connection::open(":memory:");
+    c.exec("CREATE TABLE g (id INTEGER PRIMARY KEY)");
+    {
+        // 开着的连接上 guard 照常工作(提交后写入可见)。
+        starling::persistence::TransactionGuard ok(c);
+        c.exec("INSERT INTO g DEFAULT VALUES");
+        ok.commit();
+    }
+    c.close();
+    // 关后 raw() 为 nullptr:不加守卫时 sqlite3_get_autocommit(nullptr) 会解引用崩溃。
+    EXPECT_THROW(starling::persistence::TransactionGuard bad(c), std::logic_error);
+}
+
 TEST(SqliteAdapterClose, MergesWalReleasesHandleAndConnectionThrowsAfterwards) {
     CloseDir dir;
     const auto db = dir.path() / "a.db";

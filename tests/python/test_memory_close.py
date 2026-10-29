@@ -189,6 +189,11 @@ def test_concurrent_closes_close_once(tmp_path):
     for c in closers:
         c.join(timeout=5)
     t.join(timeout=5)
+    # join(timeout) returns silently on a hung thread, so check liveness
+    # explicitly: a closer stuck in the state machine must fail the test, not
+    # hang the suite at interpreter exit.
+    assert not any(c.is_alive() for c in closers)
+    assert not t.is_alive()
     assert errors == []
     assert "r" in out
     with pytest.raises(starling.MemoryClosed):
@@ -207,3 +212,103 @@ def test_failed_call_still_leaves_the_count_balanced(tmp_path):
     with pytest.raises(KeyError):
         mem.abandon_event("never-recorded")          # 方法抛错,在途数也要减回去
     mem.close(timeout=1)                             # 计数没泄漏,不会超时
+
+
+# ── 关库中途失败:不能留下"永久半关" ─────────────────────────────────────────
+
+class _FlakyAdapter:
+    """包住真适配器:第一次 close() 在真正关库之前就抛,第二次起转发给真适配器。
+
+    模拟"检查点没跑成、句柄没释放"的失败(例如 close 刚进入就被打断)。其余属性原样转发。"""
+
+    def __init__(self, real, exc):
+        self._real = real
+        self._exc = exc
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_calls == 1:
+            raise self._exc
+        self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _wal_bytes(tmp_path):
+    wal = tmp_path / "m.db-wal"
+    return wal.stat().st_size if wal.exists() else 0
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("checkpoint failed"), KeyboardInterrupt()],
+                         ids=["runtime_error", "keyboard_interrupt"])
+@pytest.mark.parametrize("where", ["adapter_close", "core_close"])
+def test_failed_teardown_can_be_retried_and_then_merges_the_wal(tmp_path, monkeypatch, where, exc):
+    mem = _db(tmp_path, "m.db")
+    mem.remember_event("e#0", "bob:hi", interlocutor="bob")
+    assert _wal_bytes(tmp_path) > 0                   # 前提:WAL 里有未合并的写入
+
+    if where == "adapter_close":
+        flaky = _FlakyAdapter(mem._rt.adapter, exc)
+        monkeypatch.setattr(mem._rt, "adapter", flaky)
+        adapter_close_calls = lambda: flaky.close_calls   # noqa: E731
+    else:
+        real_core_close = mem._core.close
+        core_calls = []
+
+        def flaky_core_close():
+            core_calls.append(1)
+            if len(core_calls) == 1:
+                raise exc
+            real_core_close()
+        monkeypatch.setattr(mem._core, "close", flaky_core_close)
+        adapter_close_calls = lambda: len(core_calls)    # noqa: E731
+
+    with pytest.raises(type(exc)):
+        mem.close()
+    # 句柄没释放、WAL 没合并;库不是"关完"状态,对外仍是已关(拒绝新调用)。
+    assert mem._released is False
+    assert mem._closing is False                      # 没有谁还占着 close
+    assert _wal_bytes(tmp_path) > 0
+    with pytest.raises(starling.MemoryClosed):
+        mem.next_seq()
+
+    mem.close()                                       # 重试:补上检查点
+    assert mem._released is True
+    assert _wal_bytes(tmp_path) == 0
+    assert adapter_close_calls() == 2
+    with pytest.raises(starling.MemoryClosed):
+        mem.next_seq()
+    mem.close()                                       # 关完之后再关:无操作,不再碰适配器
+    assert adapter_close_calls() == 2
+
+    again = _db(tmp_path, "m.db")
+    assert again.next_seq() == 1 and again.pending_events() == []
+    again.close()
+
+
+def test_the_two_timeouts_are_told_apart_by_message(tmp_path):
+    llm = starling.make_stub_llm(default_response=CANNED_JSON); llm.set_delay_ms(600)
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=llm)
+    out = {}
+    t = _remember_in_thread(mem, "e#0", out)
+    time.sleep(0.1)
+
+    # 第一个 close 排空超时:什么都没拆,库保持打开。
+    with pytest.raises(TimeoutError, match="still in flight"):
+        mem.close(timeout=0.05)
+    assert isinstance(mem.next_seq(), int)
+
+    # 第二个 close 在别的 close 排空时等它超时:库正在关或已关,不会重开。
+    closer = threading.Thread(target=mem.close)
+    closer.start(); time.sleep(0.1)                   # 这个 close 已置位、正等 remember_event
+    with pytest.raises(TimeoutError, match="another close\\(\\) is in progress"):
+        mem.close(timeout=0.05)
+    with pytest.raises(starling.MemoryClosed):
+        mem.next_seq()                                # 第二个超时没有让库重开
+
+    closer.join(timeout=5); t.join(timeout=5)
+    assert not closer.is_alive() and not t.is_alive()
+    assert "r" in out
+    mem.close()                                       # 已关:无操作

@@ -220,13 +220,24 @@ class Memory:
         # built from the same instance.
         self._core.set_embedder(
             _core.StubEmbeddingAdapter(8) if embedder is None else embedder)
-        # Close protocol. `_closed` rejects new calls (set while `close()` waits
-        # for in-flight ones, and left set afterwards); `_released` is set once
-        # the database is actually closed. All three fields are guarded by
-        # `_cond`.
+        # Close protocol; every field is guarded by `_cond`.
+        #   _closed     new calls are rejected with MemoryClosed. Set when a
+        #               close() starts; cleared again only if that close() gives
+        #               up before tearing anything down (timeout, interrupt).
+        #   _closing    some close() is running right now (draining or tearing
+        #               down). Other close() calls wait for it.
+        #   _torn_down  teardown has started, so `MemoryCore.conn` is (about to
+        #               be) None and the handle is (about to be) released: the
+        #               facade can no longer be reopened.
+        #   _released   teardown ran to the end: WAL merged, handle released.
+        # A teardown that fails leaves _closed/_torn_down set and _released
+        # clear, with nobody closing: calls keep raising MemoryClosed, and the
+        # next close() repeats the (idempotent) teardown.
         self._cond = threading.Condition()
         self._in_flight = 0
         self._closed = False
+        self._closing = False
+        self._torn_down = False
         self._released = False
 
     @contextlib.contextmanager
@@ -474,8 +485,21 @@ class Memory:
         raises `MemoryClosed`, and a further `close()` does nothing.
 
         `timeout` (seconds, default: wait as long as it takes) bounds the wait.
-        When it runs out, `TimeoutError` is raised and the library stays open:
-        the facade accepts calls again and `close()` can be retried.
+        `TimeoutError` means one of two different things, told apart by its
+        message:
+
+        * "... call(s) still in flight": this `close()` gave up waiting for
+          in-flight calls. Nothing was torn down; the library stays open, the
+          facade accepts calls again, and `close()` can be retried.
+        * "another close() is in progress": a different `close()` is already
+          closing the library and this one gave up waiting for it. The library
+          is closing or already closed (calls raise `MemoryClosed`); it does
+          not reopen.
+
+        If closing itself fails after the in-flight calls have returned (the
+        checkpoint raises, or the call is interrupted), the exception
+        propagates and the library stays closed to new calls. Calling `close()`
+        again repeats the teardown; the WAL is merged then if it was not before.
 
         Closing is not a write, so it takes no write gate. Calling `close` from
         inside one of this `Memory`'s own calls (for instance from an llm
@@ -486,42 +510,52 @@ class Memory:
         def remaining() -> float | None:
             return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-        with self._cond:
-            while True:
-                if self._released:
-                    return
-                if not self._closed:
-                    break
-                # Another close() is waiting out in-flight calls: wait for it to
-                # finish (or to give up and reopen the library).
-                if not self._cond.wait_for(
-                        lambda: self._released or not self._closed, remaining()):
-                    raise TimeoutError(
-                        f"Memory.close: another close() did not finish within {timeout}s")
-            self._closed = True
-            try:
-                drained = self._cond.wait_for(lambda: self._in_flight == 0, remaining())
-            except BaseException:
-                # e.g. KeyboardInterrupt while waiting: reopen, so a retry of
-                # close() does not wait forever for a closer that is gone.
-                self._closed = False
-                self._cond.notify_all()
-                raise
-            if not drained:
-                self._closed = False
-                self._cond.notify_all()
-                raise TimeoutError(
-                    f"Memory.close: {self._in_flight} call(s) still in flight "
-                    f"after {timeout}s; the library stays open")
-        # No call is in flight and new ones are rejected, so nothing touches the
-        # connection from here on. Order matters: `_core.close()` drops its
-        # `conn` reference before the adapter releases the handle behind it.
-        # The library counts as closed even if the checkpoint raises: the C++
-        # side releases the handle either way.
+        # One try/finally covers everything from the moment this call becomes
+        # the closer, so an interrupt (KeyboardInterrupt) at any point cannot
+        # leave `_closing` set with nobody closing.
+        claimed = False
+        finished = False
         try:
+            with self._cond:
+                while True:
+                    if self._released:
+                        return
+                    if not self._closing:
+                        break
+                    # Another close() is draining or tearing down: wait for it
+                    # to finish (released) or to give up / fail (not closing).
+                    if not self._cond.wait_for(
+                            lambda: self._released or not self._closing, remaining()):
+                        raise TimeoutError(
+                            f"Memory.close: another close() is in progress and did "
+                            f"not finish within {timeout}s; the library is closing "
+                            f"or already closed")
+                claimed = True
+                self._closing = True
+                self._closed = True
+                if not self._cond.wait_for(lambda: self._in_flight == 0, remaining()):
+                    raise TimeoutError(
+                        f"Memory.close: {self._in_flight} call(s) still in flight "
+                        f"after {timeout}s; the library stays open")
+                self._torn_down = True
+            # No call is in flight and new ones are rejected, so nothing touches
+            # the connection from here on. Order matters: `_core.close()` drops
+            # its `conn` reference before the adapter releases the handle behind
+            # it. Both steps are idempotent, which is what makes a retry after a
+            # failure safe. `finished` is set only when both ran to the end: if
+            # `_core.close()` raised or the call was interrupted before
+            # `adapter.close()`, the handle is still open and the WAL unmerged.
             self._core.close()
             self._rt.adapter.close()
+            finished = True
         finally:
-            with self._cond:
-                self._released = True
-                self._cond.notify_all()
+            if claimed:
+                with self._cond:
+                    self._closing = False
+                    if finished:
+                        self._released = True
+                    elif not self._torn_down:
+                        # Gave up before tearing anything down (timeout or
+                        # interrupt while draining): serve calls again.
+                        self._closed = False
+                    self._cond.notify_all()
