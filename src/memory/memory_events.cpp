@@ -40,30 +40,36 @@ struct EventRow {
 
 EventRow read_event(persistence::Connection& conn, std::string_view tenant,
                     std::string_view key) {
-    persistence::Stmt q(conn.raw(),
-                        "SELECT state, text, text_sha256, COALESCE(engram_ref,''), "
-                        "statement_ids_json, seq, interlocutor "
-                        "FROM events WHERE tenant_id=?1 AND key=?2");
-    q.bind(tenant, key);
+    persistence::Stmt stmt(conn.raw(),
+                           "SELECT state, text, text_sha256, COALESCE(engram_ref,''), "
+                           "statement_ids_json, seq, interlocutor "
+                           "FROM events WHERE tenant_id=?1 AND key=?2");
+    stmt.bind(tenant, key);
     EventRow row;
-    if (!q.step_row()) return row;
+    if (!stmt.step_row()) {
+        return row;
+    }
     row.found              = true;
-    row.state              = column_string(q.raw(), 0);
-    row.text               = column_string(q.raw(), 1);
-    row.text_sha256        = column_string(q.raw(), 2);
-    row.engram_ref         = column_string(q.raw(), 3);
-    row.statement_ids_json = column_string(q.raw(), 4);
-    row.seq                = sqlite3_column_int64(q.raw(), 5);
-    row.interlocutor       = column_string(q.raw(), 6);
+    row.state              = column_string(stmt.raw(), 0);
+    row.text               = column_string(stmt.raw(), 1);
+    row.text_sha256        = column_string(stmt.raw(), 2);
+    row.engram_ref         = column_string(stmt.raw(), 3);
+    row.statement_ids_json = column_string(stmt.raw(), 4);
+    row.seq                = sqlite3_column_int64(stmt.raw(), 5);
+    row.interlocutor       = column_string(stmt.raw(), 6);
     return row;
 }
 
 std::vector<std::string> parse_statement_ids(const std::string& json_text) {
     std::vector<std::string> ids;
     const auto parsed = nlohmann::json::parse(json_text, nullptr, /*allow_exceptions=*/false);
-    if (!parsed.is_array()) return ids;   // 列被外部写坏时当空,不崩
+    if (!parsed.is_array()) {
+        return ids;   // 列被外部写坏时当空,不崩
+    }
     for (const auto& item : parsed) {
-        if (item.is_string()) ids.push_back(item.get<std::string>());
+        if (item.is_string()) {
+            ids.push_back(item.get<std::string>());
+        }
     }
     return ids;
 }
@@ -71,16 +77,30 @@ std::vector<std::string> parse_statement_ids(const std::string& json_text) {
 // 事件时钟:epoch_iso 加 seq 秒(设计源 4.3——时刻由事件行的 seq 推出,
 // 所以同一 key 重试时时戳不漂移)。解析不出来就原样返回,坏时戳不致崩。
 std::string add_seconds_to_iso(std::string_view epoch_iso, std::int64_t seconds) {
-    const std::string iso(epoch_iso);
-    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
-    // NOLINTNEXTLINE(cert-err34-c)
-    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%dZ", &y, &mo, &d, &h, &mi, &s) != 6) {
+    // 非 const:const 的串在 return 时无法自动移动(performance-no-automatic-move)。
+    std::string iso(epoch_iso);
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    // 有意用 sscanf 且不改 strtol:返回值 != 6 即解析失败,失败就原样返回坏时戳(见上方
+    // 注释),字段在失败时保持初值 0、不被使用,所以「不报转换错误」在这里不是缺陷。
+    // 换成 strtol 要手写分隔符与逐段范围校验,会动这个有意的容错行为。
+    // NOLINTNEXTLINE(cert-err34-c,bugprone-unchecked-string-to-number-conversion,cppcoreguidelines-pro-type-vararg)
+    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &minute,
+                    &second) != 6) {
         return iso;
     }
-    std::tm tm{};
-    tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
-    tm.tm_hour = h;        tm.tm_min = mi;     tm.tm_sec = s;
-    const std::time_t epoch = timegm(&tm) + static_cast<std::time_t>(seconds);
+    std::tm parts{};
+    parts.tm_year = year - 1900;
+    parts.tm_mon = month - 1;
+    parts.tm_mday = day;
+    parts.tm_hour = hour;
+    parts.tm_min = minute;
+    parts.tm_sec = second;
+    const std::time_t epoch = timegm(&parts) + static_cast<std::time_t>(seconds);
     std::tm out{};
     gmtime_r(&epoch, &out);
     return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
@@ -93,12 +113,14 @@ std::string add_seconds_to_iso(std::string_view epoch_iso, std::int64_t seconds)
 std::vector<std::string> engrams_with_content_hash(persistence::Connection& conn,
                                                    std::string_view tenant,
                                                    std::string_view content_hash) {
-    persistence::Stmt q(conn.raw(),
-                        "SELECT id FROM engrams WHERE tenant_id=?1 AND content_hash=?2 "
-                        "ORDER BY rowid ASC");
-    q.bind(tenant, content_hash);
+    persistence::Stmt stmt(conn.raw(),
+                           "SELECT id FROM engrams WHERE tenant_id=?1 AND content_hash=?2 "
+                           "ORDER BY rowid ASC");
+    stmt.bind(tenant, content_hash);
     std::vector<std::string> ids;
-    while (q.step_row()) ids.push_back(column_string(q.raw(), 0));
+    while (stmt.step_row()) {
+        ids.push_back(column_string(stmt.raw(), 0));
+    }
     return ids;
 }
 
@@ -108,14 +130,16 @@ std::vector<std::string> statements_for_engram(persistence::Connection& conn,
                                                std::string_view tenant,
                                                std::string_view holder,
                                                std::string_view engram_id) {
-    persistence::Stmt q(conn.raw(),
-                        "SELECT id FROM statements WHERE tenant_id=?1 AND holder_id=?2 "
-                        "AND evidence_json LIKE ?3 ORDER BY rowid ASC");
+    persistence::Stmt stmt(conn.raw(),
+                           "SELECT id FROM statements WHERE tenant_id=?1 AND holder_id=?2 "
+                           "AND evidence_json LIKE ?3 ORDER BY rowid ASC");
     const std::string like_pat =
-        std::string("%\"engram_ref\":\"") + std::string(engram_id) + "\"%";
-    q.bind(tenant, holder, like_pat);
+        std::string(R"(%"engram_ref":")") + std::string(engram_id) + "\"%";
+    stmt.bind(tenant, holder, like_pat);
     std::vector<std::string> ids;
-    while (q.step_row()) ids.push_back(column_string(q.raw(), 0));
+    while (stmt.step_row()) {
+        ids.push_back(column_string(stmt.raw(), 0));
+    }
     return ids;
 }
 
@@ -130,7 +154,9 @@ std::vector<std::string> statements_for_engram(persistence::Connection& conn,
 // 受影响行数照全仓既有写法取 sqlite3_changes(连接):见 pipeline_run_store.cpp 的
 // claim、pipeline_ledger.cpp 的 record_attempt、commitment_engine.cpp。
 void require_pending_row_updated(persistence::Connection& conn, std::string_view key) {
-    if (sqlite3_changes(conn.raw()) != 0) return;
+    if (sqlite3_changes(conn.raw()) != 0) {
+        return;
+    }
     throw EventConflict(
         "remember_event: key was abandoned or removed while the write was in flight; "
         "statements may already be stored (key=" + std::string(key) + ")");
@@ -139,27 +165,27 @@ void require_pending_row_updated(persistence::Connection& conn, std::string_view
 }  // namespace
 
 std::int64_t next_seq(persistence::Connection& conn, std::string_view tenant) {
-    persistence::Stmt q(conn.raw(),
-                        "SELECT COALESCE(MAX(seq) + 1, 0) FROM events WHERE tenant_id=?1");
-    q.bind(tenant);
-    q.step_row();
-    return sqlite3_column_int64(q.raw(), 0);
+    persistence::Stmt stmt(conn.raw(),
+                           "SELECT COALESCE(MAX(seq) + 1, 0) FROM events WHERE tenant_id=?1");
+    stmt.bind(tenant);
+    stmt.step_row();
+    return sqlite3_column_int64(stmt.raw(), 0);
 }
 
 std::vector<PendingEventRow> pending_events(persistence::Connection& conn,
                                             std::string_view tenant) {
-    persistence::Stmt q(conn.raw(),
-                        "SELECT key, text, interlocutor, seq, failure_category FROM events "
-                        "WHERE tenant_id=?1 AND state='pending' ORDER BY seq ASC");
-    q.bind(tenant);
+    persistence::Stmt stmt(conn.raw(),
+                           "SELECT key, text, interlocutor, seq, failure_category FROM events "
+                           "WHERE tenant_id=?1 AND state='pending' ORDER BY seq ASC");
+    stmt.bind(tenant);
     std::vector<PendingEventRow> rows;
-    while (q.step_row()) {
+    while (stmt.step_row()) {
         PendingEventRow row;
-        row.key = column_string(q.raw(), 0);
-        row.text = column_string(q.raw(), 1);
-        row.interlocutor = column_string(q.raw(), 2);
-        row.seq = sqlite3_column_int64(q.raw(), 3);
-        row.failure_category = column_string(q.raw(), 4);
+        row.key = column_string(stmt.raw(), 0);
+        row.text = column_string(stmt.raw(), 1);
+        row.interlocutor = column_string(stmt.raw(), 2);
+        row.seq = sqlite3_column_int64(stmt.raw(), 3);
+        row.failure_category = column_string(stmt.raw(), 4);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -258,7 +284,9 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
         for (const auto& engram_id :
                  engrams_with_content_hash(conn, base.tenant_id, content_hash)) {
             auto ids = statements_for_engram(conn, base.tenant_id, base.holder_id, engram_id);
-            if (ids.empty()) continue;
+            if (ids.empty()) {
+                continue;
+            }
             result.holder_id     = base.holder_id;
             result.engram_ref    = engram_id;
             result.statement_ids = std::move(ids);
@@ -296,7 +324,9 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
             // 返回值也带上这个原因:未入库时 remember_all 的 failure_category 是空的
             // (那条路径不填),只记进行里会让调用方拿到一个空原因——又是一种静默。
             // 行里记什么就返回什么,与抽取失败那一支的既有不变式一致。
-            if (result.failure_category.empty()) result.failure_category = category;
+            if (result.failure_category.empty()) {
+                result.failure_category = category;
+            }
             persistence::Stmt upd(conn.raw(),
                                   "UPDATE events SET failure_category=?1, "
                                   "engram_ref=COALESCE(NULLIF(?2,''), engram_ref) "
