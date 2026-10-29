@@ -128,3 +128,12 @@ def test_recall_hits_carry_same_content_id_across_libraries(tmp_path):
     hb = b.recall("我负责鉴权模块", include_volatile=True)
     assert ha and [h["content_id"] for h in ha] == [h["content_id"] for h in hb]
     assert ha[0]["row"].id != hb[0]["row"].id
+
+def test_tenant_name_is_not_content(tmp_path):
+    # tenant 已由 WHERE tenant_id=?1 划定作用域,名字不是内容:同内容、不同 tenant 名,摘要相同。
+    a = starling.Memory.open(str(tmp_path / "a.db"), agent="alice", tenant_id="alpha",
+                             llm=starling.make_stub_llm(default_response=CANNED_JSON))
+    b = starling.Memory.open(str(tmp_path / "b.db"), agent="alice", tenant_id="beta",
+                             llm=starling.make_stub_llm(default_response=CANNED_JSON))
+    _fill(a); _fill(b)
+    assert a.digest() == b.digest() != EMPTY

@@ -24,12 +24,14 @@ using Json = nlohmann::json;
 
 // 簿记列:同一段内容在两个库里这些列必然不同(自增计数、墙钟、批次 id),或者是
 // 行身份本身(id / stmt_id——身份正是摘要要换掉的东西)。设计源 4.5 节的清单。
+// tenant_id 也排除:查询已用 WHERE tenant_id=?1 划定了作用域,若再把它折进每一行,
+// 摘要就绑在 tenant 的名字上,同一段内容换个 tenant 名就成了另一个摘要。
 // 排除是白名单的反面:这里没列到的列一律进摘要,包括将来新加的列。漏算一列会让
 // 两个不同的库共用一个 config_hash;多算一列只会多判一次「不是同一个实验」。
 const std::set<std::string, std::less<>> kExcludedColumns = {
     "id", "stmt_id", "created_at", "updated_at", "last_accessed", "access_count",
     "last_replayed", "replay_count", "last_replay_batch_id", "retry_count",
-    "last_attempt_at", "embedded_at", "inferred_at",
+    "last_attempt_at", "embedded_at", "inferred_at", "tenant_id",
 };
 
 // 内容里嵌了 engram UUID 的语句列。键为 engram_ref / evidence_engram_ref 的值要换成
