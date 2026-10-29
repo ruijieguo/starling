@@ -3,6 +3,8 @@
 #include "starling/persistence/migration_runner.hpp"
 #include "starling/persistence/stmt.hpp"
 
+#include <stdexcept>
+
 namespace starling::persistence {
 
 std::unique_ptr<SqliteAdapter> SqliteAdapter::open(
@@ -13,6 +15,22 @@ std::unique_ptr<SqliteAdapter> SqliteAdapter::open(
     // std::make_unique can't reach a private ctor without a friend declaration.
     return std::unique_ptr<SqliteAdapter>(
         new SqliteAdapter(std::move(conn), db_path));
+}
+
+Connection& SqliteAdapter::connection() {
+    if (!conn_.is_open()) throw std::logic_error("adapter closed");
+    return conn_;
+}
+
+void SqliteAdapter::close() {
+    if (!conn_.is_open()) return;
+    try {
+        conn_.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch (...) {
+        conn_.close();
+        throw;
+    }
+    conn_.close();
 }
 
 starling::ProfileCapability SqliteAdapter::declare_capability() const {
@@ -44,7 +62,7 @@ bool SqliteAdapter::check_final_query(const std::string& sql) const {
 bool SqliteAdapter::has_index(std::string_view name) {
     // Non-const to match the persistence/bus store convention (e.g. ConsumerCheckpoint
     // read methods): Connection::raw() is the only handle accessor and is non-const.
-    Stmt stmt(conn_.raw(), "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1");
+    Stmt stmt(connection().raw(), "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1");
     stmt.bind(name);
     return stmt.step_row();
 }

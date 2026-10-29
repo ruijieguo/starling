@@ -27,6 +27,7 @@ Connection Connection::open(const std::filesystem::path& db_path) {
 }
 
 void Connection::exec(std::string_view sql) {
+    if (!handle_) throw SqliteError("exec failed: connection closed", SQLITE_MISUSE);
     char* err = nullptr;
     if (sqlite3_exec(handle_.get(), std::string(sql).c_str(),
                      nullptr, nullptr, &err) != SQLITE_OK) {
@@ -39,10 +40,12 @@ void Connection::exec(std::string_view sql) {
 void Connection::begin_immediate() { exec("BEGIN IMMEDIATE"); }
 void Connection::commit()          { exec("COMMIT"); }
 void Connection::rollback() noexcept {
+    if (!handle_) return;
     sqlite3_exec(handle_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
 }
 
 int64_t Connection::last_insert_rowid() const noexcept {
+    if (!handle_) return 0;
     return sqlite3_last_insert_rowid(handle_.get());
 }
 

@@ -1,6 +1,6 @@
 """Starling Memory public API."""
 from starling import _core
-from starling.memory import (EmbedStats, Memory, PendingEvent,
+from starling.memory import (EmbedStats, Memory, MemoryClosed, PendingEvent,
                              RecallDegradedError,
                              make_anthropic_llm, make_openai_embedder,
                              make_openai_llm, make_stub_llm, RememberResult,
@@ -14,5 +14,5 @@ EventConflict = _core.EventConflict
 __all__ = ["_core", "Memory", "make_stub_llm", "make_openai_llm",
            "make_anthropic_llm", "make_openai_embedder", "RememberResult",
            "TickStats", "EmbedStats", "ExtractionConfig", "RecallDegradedError",
-           "PendingEvent", "EventConflict"]
+           "PendingEvent", "EventConflict", "MemoryClosed"]
 __version__ = "0.0.1"

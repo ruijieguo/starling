@@ -14,7 +14,11 @@ real `_core.OpenAIAdapter`; its API key is sourced from the environment only
 """
 from __future__ import annotations
 
+import contextlib
+import functools
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -178,8 +182,29 @@ class EmbedStats:
     failed: int = 0
 
 
+class MemoryClosed(RuntimeError):
+    """A public `Memory` method was called after `Memory.close()` (or while a
+    `close()` is waiting for in-flight calls to return)."""
+
+
+def _guarded(method):
+    """Run a public `Memory` method as one in-flight call (see `Memory.close`)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._in_flight_call():
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Memory:
-    """Public facade over the Starling write path."""
+    """Public facade over the Starling write path.
+
+    Thread-safety of the close protocol: every public method counts itself in
+    and out; `close()` waits for the count to reach zero before it touches the
+    database. The facade starts no threads of its own, so "in flight" means a
+    call running on another Python thread (extraction and embedding release the
+    GIL inside C++). Concurrent calls are otherwise not serialized here.
+    """
 
     def __init__(self, rt, *, agent: str, tenant_id: str, llm, extraction=None,
                  embedder=None):
@@ -195,6 +220,27 @@ class Memory:
         # built from the same instance.
         self._core.set_embedder(
             _core.StubEmbeddingAdapter(8) if embedder is None else embedder)
+        # Close protocol. `_closed` rejects new calls (set while `close()` waits
+        # for in-flight ones, and left set afterwards); `_released` is set once
+        # the database is actually closed. All three fields are guarded by
+        # `_cond`.
+        self._cond = threading.Condition()
+        self._in_flight = 0
+        self._closed = False
+        self._released = False
+
+    @contextlib.contextmanager
+    def _in_flight_call(self):
+        with self._cond:
+            if self._closed:
+                raise MemoryClosed("Memory is closed")
+            self._in_flight += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._in_flight -= 1
+                self._cond.notify_all()
 
     @classmethod
     def open(cls, db_path, *, agent: str = "self", tenant_id: str = "default",
@@ -209,12 +255,14 @@ class Memory:
         return cls(rt, agent=agent, tenant_id=tenant_id, llm=llm,
                    extraction=extraction, embedder=embedder)
 
+    @_guarded
     def remember(self, text: str, *, holder: Optional[str] = None,
                  interlocutor: Optional[str] = None,
                  now: Optional[str] = None) -> RememberResult:
         return RememberResult(**self._core.remember(
             text, holder=holder, interlocutor=interlocutor, now=now))
 
+    @_guarded
     def recall(self, query: str, *, perspective: str = "first_person",
                k: int = 10, mode: str = "semantic", holder: str | None = None,
                strict: bool = False, include_volatile: bool = False) -> list:
@@ -242,6 +290,7 @@ class Memory:
                                  holder=holder, strict=strict,
                                  include_volatile=include_volatile)
 
+    @_guarded
     def query(self, text: str = "", *, intent: str = "FACT_LOOKUP",
               perspective: str | None = None, target: str | None = None,
               subject: str | None = None, predicate: str | None = None,
@@ -279,6 +328,7 @@ class Memory:
             "receipt": r.receipt,
         }
 
+    @_guarded
     def latest_event_location(self, theme: str) -> str:
         """Ground-truth current location of `theme` (sub-project A, episodic).
 
@@ -288,10 +338,12 @@ class Memory:
         """
         return self._core.latest_event_location(theme)
 
+    @_guarded
     def tick(self, now: str = "2026-06-01T10:00:00Z") -> TickStats:
         """Advance background workers: embed pending statements + fire due commitments."""
         return TickStats(**self._core.tick(now))
 
+    @_guarded
     def embed_pending(self, now: str) -> EmbedStats:
         """Run only the embedding stage so new statements become recallable.
 
@@ -301,6 +353,7 @@ class Memory:
         """
         return EmbedStats(**self._core.embed_pending(now))
 
+    @_guarded
     def digest(self) -> str:
         """This library's logical digest: 64 lowercase hex characters.
 
@@ -316,6 +369,7 @@ class Memory:
         """
         return self._core.digest()
 
+    @_guarded
     def backup_to(self, path: "str | os.PathLike[str]") -> None:
         """Write a self-contained single-file copy of this library to `path`.
 
@@ -338,6 +392,7 @@ class Memory:
         """
         self._core.backup_to(path)
 
+    @_guarded
     def content_ids(self, statement_ids: list[str]) -> dict[str, str]:
         """Map statement UUIDs to their content ids (64 lowercase hex chars).
 
@@ -349,6 +404,7 @@ class Memory:
         """
         return self._core.content_ids(statement_ids)
 
+    @_guarded
     def next_seq(self) -> int:
         """Next free event sequence number for this tenant.
 
@@ -357,10 +413,12 @@ class Memory:
         """
         return self._core.next_seq()
 
+    @_guarded
     def pending_events(self) -> list[PendingEvent]:
         """Events recorded in state 'pending', ordered by `seq` ascending."""
         return [PendingEvent(**row) for row in self._core.pending_events()]
 
+    @_guarded
     def remember_event(self, key: str, text: str, *, interlocutor: str,
                        epoch: str = "2026-01-01T00:00:00Z") -> RememberResult:
         """Remember `text` once under the caller's stable `key`, idempotently.
@@ -380,6 +438,7 @@ class Memory:
         return RememberResult(**self._core.remember_event(
             key, text, interlocutor=interlocutor, epoch=epoch))
 
+    @_guarded
     def abandon_event(self, key: str) -> None:
         """Abandon the event recorded under `key`: it will never be written.
 
@@ -394,6 +453,7 @@ class Memory:
         """
         self._core.abandon_event(key)
 
+    @_guarded
     def render_working_set(self, interlocutor, *, goal=None, token_budget: int = 2000):
         """Assemble a prompt-ready ContextBlock from memory (P2.e).
 
@@ -404,5 +464,64 @@ class Memory:
         return self._core.build_working_set(interlocutor, goal=goal,
                                             token_budget=token_budget)
 
-    def close(self) -> None:
-        self._core.close()
+    def close(self, timeout: float | None = None) -> None:
+        """Wait for in-flight calls to return, then close the database.
+
+        From the moment `close` starts, new calls raise `MemoryClosed`. Once the
+        in-flight calls have returned, the WAL is merged into the main file
+        (`PRAGMA wal_checkpoint(TRUNCATE)`) and the connection is closed, so the
+        library is one self-contained file. Afterwards every public method
+        raises `MemoryClosed`, and a further `close()` does nothing.
+
+        `timeout` (seconds, default: wait as long as it takes) bounds the wait.
+        When it runs out, `TimeoutError` is raised and the library stays open:
+        the facade accepts calls again and `close()` can be retried.
+
+        Closing is not a write, so it takes no write gate. Calling `close` from
+        inside one of this `Memory`'s own calls (for instance from an llm
+        callback) waits for itself; pass a `timeout` there.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def remaining() -> float | None:
+            return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+        with self._cond:
+            while True:
+                if self._released:
+                    return
+                if not self._closed:
+                    break
+                # Another close() is waiting out in-flight calls: wait for it to
+                # finish (or to give up and reopen the library).
+                if not self._cond.wait_for(
+                        lambda: self._released or not self._closed, remaining()):
+                    raise TimeoutError(
+                        f"Memory.close: another close() did not finish within {timeout}s")
+            self._closed = True
+            try:
+                drained = self._cond.wait_for(lambda: self._in_flight == 0, remaining())
+            except BaseException:
+                # e.g. KeyboardInterrupt while waiting: reopen, so a retry of
+                # close() does not wait forever for a closer that is gone.
+                self._closed = False
+                self._cond.notify_all()
+                raise
+            if not drained:
+                self._closed = False
+                self._cond.notify_all()
+                raise TimeoutError(
+                    f"Memory.close: {self._in_flight} call(s) still in flight "
+                    f"after {timeout}s; the library stays open")
+        # No call is in flight and new ones are rejected, so nothing touches the
+        # connection from here on. Order matters: `_core.close()` drops its
+        # `conn` reference before the adapter releases the handle behind it.
+        # The library counts as closed even if the checkpoint raises: the C++
+        # side releases the handle either way.
+        try:
+            self._core.close()
+            self._rt.adapter.close()
+        finally:
+            with self._cond:
+                self._released = True
+                self._cond.notify_all()
