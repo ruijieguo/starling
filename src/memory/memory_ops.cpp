@@ -801,7 +801,9 @@ EmbedPendingOutcome embed_pending(persistence::SqliteAdapter& adapter,
         const auto stats = worker.tick_one_batch(conn, now_iso);
         out.embedded += stats.embedded;
         out.failed += stats.failed;
-        if (stats.embedded == 0) break;
+        if (stats.embedded == 0) {
+            break;
+        }
     }
     return out;
 }

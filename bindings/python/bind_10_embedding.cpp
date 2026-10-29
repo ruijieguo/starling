@@ -141,14 +141,14 @@ void bind_10_embedding(pybind11::module_& m) {
             m, "SemanticRetrieverParams")
         .def(py::init([](std::string tenant_id, std::string holder_id,
                          std::string holder_perspective, std::string query_text,
-                         int k, std::string trace_id, std::string query_id,
+                         int top_k, std::string trace_id, std::string query_id,
                          bool include_volatile) {
             starling::retrieval::SemanticRetrieverParams p;
             p.tenant_id = std::move(tenant_id);
             p.holder_id = std::move(holder_id);
             p.holder_perspective = std::move(holder_perspective);
             p.query_text = std::move(query_text);
-            p.k = k;
+            p.k = top_k;
             p.trace_id = std::move(trace_id);
             p.query_id = std::move(query_id);
             p.include_volatile = include_volatile;

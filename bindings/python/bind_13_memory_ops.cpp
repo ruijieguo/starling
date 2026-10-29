@@ -618,8 +618,10 @@ void bind_13_memory_ops(pybind11::module_& m) {
              starling::embedding::EmbeddingWorker& worker,
              const std::string& now_iso) {
               const auto out = starling::memoryops::embed_pending(adapter, worker, now_iso);
-              return std::map<std::string, int>{{"embedded", out.embedded},
-                                                {"failed", out.failed}};
+              return std::map<std::string, int>{
+                  {"embedded", out.embedded},
+                  {"failed", out.failed},
+              };
           },
           py::arg("adapter"), py::arg("worker"), py::arg("now_iso"),
           py::call_guard<py::gil_scoped_release>());
@@ -727,7 +729,10 @@ void bind_13_memory_ops(pybind11::module_& m) {
               // payload 与 created_at_iso8601 由 remember_event 从 key+text 与
               // epoch+seq 推出,这里不填。
               const starling::memoryops::RememberPrompts prompts{
-                  belief_prompt, episodic_prompt, general_fact_prompt};
+                  .belief = belief_prompt,
+                  .episodic = episodic_prompt,
+                  .general_fact = general_fact_prompt,
+              };
               starling::memoryops::RememberOutcome result;
               {
                   py::gil_scoped_release release;
@@ -812,7 +817,7 @@ void bind_13_memory_ops(pybind11::module_& m) {
                   try {
                       starling::memoryops::backup_to(adapter, dest);
                   } catch (const std::filesystem::filesystem_error& e) {
-                      failure = FsFailure{e.code(), e.path1().string()};
+                      failure = FsFailure{.code = e.code(), .path = e.path1().string()};
                   }
               }
               if (failure) {

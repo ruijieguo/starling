@@ -18,12 +18,16 @@ std::unique_ptr<SqliteAdapter> SqliteAdapter::open(
 }
 
 Connection& SqliteAdapter::connection() {
-    if (!conn_.is_open()) throw std::logic_error("adapter closed");
+    if (!conn_.is_open()) {
+        throw std::logic_error("adapter closed");
+    }
     return conn_;
 }
 
 void SqliteAdapter::close() {
-    if (!conn_.is_open()) return;
+    if (!conn_.is_open()) {
+        return;
+    }
     try {
         conn_.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch (...) {
