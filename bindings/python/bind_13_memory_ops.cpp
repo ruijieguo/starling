@@ -700,7 +700,8 @@ void bind_13_memory_ops(pybind11::module_& m) {
           },
           py::arg("connection"), py::arg("tenant"));
 
-    // 同一个 key 要写另一段文本,或该 key 已 abandoned → starling.EventConflict。
+    // 同一个 key 要写另一段文本、重试 pending 行时换了 interlocutor,或该 key 已
+    // abandoned → starling.EventConflict(三种情形的消息各不相同)。
     py::register_exception<starling::memoryops::EventConflict>(
         m, "EventConflict", PyExc_RuntimeError);
 

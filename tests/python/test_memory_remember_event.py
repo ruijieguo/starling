@@ -68,6 +68,65 @@ def test_same_key_different_text_conflicts(tmp_path):
         mem.remember_event(KEY, "bob:bye", interlocutor="bob")
 
 
+def test_pending_retry_with_different_interlocutor_conflicts_and_leaves_row_untouched(tmp_path):
+    # 同 key 同 text、换说话对象重试:语句会落进另一个 scope_parties,key 的契约是
+    # "标识一次写入",所以拒绝而不是静默沿用任何一边。重入时 interlocutor 来自会话上下文,
+    # 不是从库里读的,不靠并发就会遇到。
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    assert mem.remember_event(KEY, "bob:hi", interlocutor="bob").extraction_failed
+    mem._core.llm = starling.make_stub_llm(default_response=CANNED_JSON)
+    with pytest.raises(starling.EventConflict, match="different interlocutor"):
+        mem.remember_event(KEY, "bob:hi", interlocutor="carol")
+    [p] = mem.pending_events()                       # 行没被改:仍是 bob、仍 pending、没另分配 seq
+    assert (p.key, p.text, p.interlocutor, p.seq) == (KEY, "bob:hi", "bob", 0)
+    assert mem.next_seq() == 1
+    assert _count(tmp_path, "SELECT COUNT(*) FROM statements") == 0     # 被拒的重试没抽取
+
+
+def test_pending_retry_with_same_interlocutor_still_commits_under_that_interlocutor(tmp_path):
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    mem._core.llm = starling.make_stub_llm(default_response=CANNED_JSON)
+    with pytest.raises(starling.EventConflict):      # 先被拒一次,再用对的说话对象补齐
+        mem.remember_event(KEY, "bob:hi", interlocutor="carol")
+    ok = mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    assert not ok.extraction_failed and ok.statement_ids
+    assert mem.pending_events() == []
+    assert _count(tmp_path, "SELECT COUNT(*) FROM events WHERE state='committed'") == 1
+    n = len(ok.statement_ids)
+    assert _count(tmp_path, "SELECT COUNT(*) FROM statements "
+                            "WHERE scope_parties_json LIKE '%bob%'") == n
+    assert _count(tmp_path, "SELECT COUNT(*) FROM statements "
+                            "WHERE scope_parties_json LIKE '%carol%'") == 0
+
+
+def test_event_conflict_messages_tell_the_three_causes_apart(tmp_path):
+    mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
+    mem.remember_event("k-text", "bob:hi", interlocutor="bob")
+    mem.remember_event("k-abandon", "bob:hi", interlocutor="bob")
+    mem.abandon_event("k-abandon")
+
+    def message(*args, **kw):
+        with pytest.raises(starling.EventConflict) as e:
+            mem.remember_event(*args, **kw)
+        return str(e.value)
+
+    different_text = message("k-text", "bob:bye", interlocutor="bob")
+    different_interlocutor = message("k-text", "bob:hi", interlocutor="carol")
+    abandoned = message("k-abandon", "bob:hi", interlocutor="bob")
+    assert "different text" in different_text and "interlocutor" not in different_text
+    assert "different interlocutor" in different_interlocutor
+    assert "already abandoned" in abandoned and "different" not in abandoned
+
+
+def test_committed_key_returns_stored_result_whatever_the_interlocutor(tmp_path):
+    # 已提交的行不抽取,说话对象对结果没有影响,所以不比对:取行里存的结果。
+    mem = _mem(tmp_path)
+    first = mem.remember_event(KEY, "bob:hi", interlocutor="bob")
+    again = mem.remember_event(KEY, "bob:hi", interlocutor="carol")
+    assert again.statement_ids == first.statement_ids
+
+
 def test_extraction_failure_leaves_pending_with_category_then_retry_commits(tmp_path):
     mem = starling.Memory.open(str(tmp_path / "m.db"), agent="alice", llm=_failing_llm())
     res = mem.remember_event(KEY, "bob:hi", interlocutor="bob")

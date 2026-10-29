@@ -35,13 +35,15 @@ struct EventRow {
     std::string engram_ref;              // 列可空,NULL 读成空串
     std::string statement_ids_json = "[]";
     std::int64_t seq = 0;
+    std::string interlocutor;            // 首次写入时的说话对象;重试以它为准
 };
 
 EventRow read_event(persistence::Connection& conn, std::string_view tenant,
                     std::string_view key) {
     persistence::Stmt q(conn.raw(),
                         "SELECT state, text, text_sha256, COALESCE(engram_ref,''), "
-                        "statement_ids_json, seq FROM events WHERE tenant_id=?1 AND key=?2");
+                        "statement_ids_json, seq, interlocutor "
+                        "FROM events WHERE tenant_id=?1 AND key=?2");
     q.bind(tenant, key);
     EventRow row;
     if (!q.step_row()) return row;
@@ -52,6 +54,7 @@ EventRow read_event(persistence::Connection& conn, std::string_view tenant,
     row.engram_ref         = column_string(q.raw(), 3);
     row.statement_ids_json = column_string(q.raw(), 4);
     row.seq                = sqlite3_column_int64(q.raw(), 5);
+    row.interlocutor       = column_string(q.raw(), 6);
     return row;
 }
 
@@ -203,19 +206,30 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
                 txn.commit();
                 return done;
             }
-            // state == "pending":重试,用行里原来的 seq 与原文,不另分配序号。
+            // state == "pending":重试,用行里原来的 seq、原文与说话对象,不另分配序号。
+            // interlocutor 决定抽取出的语句落在哪个 scope_parties 下,而 key 的契约是
+            // 「标识一次写入」:同 key 换了说话对象是调用方的 bug(重入时说话对象来自当时
+            // 的会话上下文,不是从库里读的),静默沿用任何一边都会把它藏起来。与 text 不一致
+            // 同一口径:拒绝,并让消息一眼能和文本不一致、已放弃区分开。
+            if (row.interlocutor != base.interlocutor) {
+                throw EventConflict(
+                    "remember_event: key already records a different interlocutor "
+                    "(key=" + std::string(key) + ", stored=\"" + row.interlocutor +
+                    "\", given=\"" + base.interlocutor + "\")");
+            }
             retrying_pending = true;
         } else {
-            row.found       = true;
-            row.state       = "pending";
-            row.text        = std::string(text);
-            row.text_sha256 = text_sha;
-            row.seq         = next_seq(conn, base.tenant_id);
+            row.found        = true;
+            row.state        = "pending";
+            row.text         = std::string(text);
+            row.interlocutor = base.interlocutor;
+            row.text_sha256  = text_sha;
+            row.seq          = next_seq(conn, base.tenant_id);
             persistence::Stmt ins(
                 conn.raw(),
                 "INSERT INTO events(tenant_id,key,text,interlocutor,text_sha256,seq,state) "
                 "VALUES(?1,?2,?3,?4,?5,?6,'pending')");
-            ins.bind(base.tenant_id, key, row.text, base.interlocutor, text_sha, row.seq);
+            ins.bind(base.tenant_id, key, row.text, row.interlocutor, text_sha, row.seq);
             ins.step_done();
         }
         txn.commit();
@@ -223,8 +237,12 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
 
     // ── 第 2 段:事务外。抽取要走网络,这里绝不持写事务。 ──
     // payload 用行里存的原文(重试时与首次一致),key 作为前缀(设计源 4.3)。
+    // interlocutor 同样取行里的值,而不是 base 的:此刻两者必然相等(不等的重试已在第 1
+    // 段抛了),显式取行里的,是让「重试沿用首次写入的说话对象」这件事不依赖那个前提,
+    // 以后谁改了上面的比对,这里也不会悄悄退回到用本次调用的值。
     const std::string payload_text = "[" + std::string(key) + "] " + row.text;
     RememberParams params = base;
+    params.interlocutor = row.interlocutor;
     params.payload.assign(payload_text.begin(), payload_text.end());
     params.created_at_iso8601 = add_seconds_to_iso(epoch_iso, row.seq);
 

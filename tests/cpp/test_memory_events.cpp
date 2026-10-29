@@ -235,6 +235,103 @@ TEST(MemoryEvents, RememberEventSameKeyDifferentTextThrowsEventConflict) {
                  EventConflict);
 }
 
+namespace {
+
+// 事件行里存的 interlocutor。
+std::string stored_interlocutor(persistence::Connection& conn, std::string_view key) {
+    persistence::Stmt q(conn.raw(),
+                        "SELECT interlocutor FROM events WHERE tenant_id='default' AND key=?1");
+    q.bind(key);
+    if (!q.step_row()) return {};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(q.raw(), 0));
+    return text != nullptr ? std::string(text) : std::string();
+}
+
+// 抛出的 EventConflict 的消息;没抛则返回空串(调用方随后断言非空)。
+template <typename Fn>
+std::string conflict_message(Fn&& fn) {
+    try {
+        fn();
+    } catch (const EventConflict& e) {
+        return e.what();
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST(MemoryEvents, RememberEventRetryWithDifferentInterlocutorThrowsAndLeavesRowUntouched) {
+    auto adapter = make_adapter();
+    // 首次抽取失败 → 行以 interlocutor=bob 留 pending。
+    AlwaysFailingLLMAdapter failing;
+    ASSERT_TRUE(remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                               "r1/turn#3", "bob:hi", kEpoch).extraction_failed);
+
+    // 同 key 同 text,换成 carol 重试:拒绝,不抽取、不改行。
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto carol = event_params();
+    carol.interlocutor = "carol";
+    const auto msg = conflict_message([&] {
+        remember_event(*adapter, llm, carol, RememberPrompts{}, "r1/turn#3", "bob:hi", kEpoch);
+    });
+    ASSERT_FALSE(msg.empty()) << "expected EventConflict";
+    EXPECT_NE(msg.find("different interlocutor"), std::string::npos) << msg;
+    EXPECT_EQ(msg.find("different text"), std::string::npos) << msg;   // 与文本不一致可区分
+    EXPECT_EQ(msg.find("abandoned"), std::string::npos) << msg;        // 与已放弃可区分
+    EXPECT_EQ(event_state(adapter->connection(), "r1/turn#3"), "pending");
+    EXPECT_EQ(stored_interlocutor(adapter->connection(), "r1/turn#3"), "bob");
+    EXPECT_EQ(row_count(adapter->connection(), "SELECT COUNT(*) FROM statements"), 0);
+    EXPECT_EQ(next_seq(adapter->connection(), "default"), 1);          // 没另分配 seq
+
+    // 说话对象改回 bob 的重试照常补齐成 committed,语句落在 bob 的 scope_parties 下。
+    const auto ok = remember_event(*adapter, llm, event_params(), RememberPrompts{},
+                                   "r1/turn#3", "bob:hi", kEpoch);
+    EXPECT_FALSE(ok.extraction_failed);
+    EXPECT_FALSE(ok.statement_ids.empty());
+    EXPECT_EQ(event_state(adapter->connection(), "r1/turn#3"), "committed");
+    EXPECT_EQ(row_count(adapter->connection(),
+                        "SELECT COUNT(*) FROM statements WHERE scope_parties_json LIKE '%bob%'"),
+              static_cast<int>(ok.statement_ids.size()));
+    EXPECT_EQ(row_count(adapter->connection(),
+                        "SELECT COUNT(*) FROM statements WHERE scope_parties_json LIKE '%carol%'"),
+              0);
+}
+
+TEST(MemoryEvents, RememberEventConflictMessagesTellTheThreeCausesApart) {
+    auto adapter = make_adapter();
+    AlwaysFailingLLMAdapter failing;
+    ASSERT_TRUE(remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                               "k-text", "bob:hi", kEpoch).extraction_failed);
+    ASSERT_TRUE(remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                               "k-abandon", "bob:hi", kEpoch).extraction_failed);
+    abandon_event(*adapter, "default", "k-abandon");
+    auto carol = event_params();
+    carol.interlocutor = "carol";
+
+    const auto different_text = conflict_message([&] {
+        remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                       "k-text", "bob:bye", kEpoch);
+    });
+    const auto different_interlocutor = conflict_message([&] {
+        remember_event(*adapter, failing, carol, RememberPrompts{}, "k-text", "bob:hi", kEpoch);
+    });
+    const auto abandoned = conflict_message([&] {
+        remember_event(*adapter, failing, event_params(), RememberPrompts{},
+                       "k-abandon", "bob:hi", kEpoch);
+    });
+    ASSERT_FALSE(different_text.empty());
+    ASSERT_FALSE(different_interlocutor.empty());
+    ASSERT_FALSE(abandoned.empty());
+    EXPECT_NE(different_text.find("different text"), std::string::npos) << different_text;
+    EXPECT_NE(different_interlocutor.find("different interlocutor"), std::string::npos)
+        << different_interlocutor;
+    EXPECT_NE(abandoned.find("already abandoned"), std::string::npos) << abandoned;
+    EXPECT_EQ(different_text.find("interlocutor"), std::string::npos) << different_text;
+    EXPECT_EQ(abandoned.find("different"), std::string::npos) << abandoned;
+}
+
 TEST(MemoryEvents, RememberEventCompletesFromEngramWithoutReextracting) {
     auto adapter = make_adapter();
     // ① 抽取失败 → 行留 pending、无语句。

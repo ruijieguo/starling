@@ -443,8 +443,11 @@ class Memory:
         `epoch` is the clock origin — the engram's `created_at` is `epoch` plus
         the event's `seq` seconds, so a retry keeps the timestamp it first got.
 
-        Raises `EventConflict` when the key already records a different text, or
-        when it was abandoned.
+        Raises `EventConflict` when the key already records a different text,
+        when it was abandoned, or when a still-pending event is retried with a
+        different `interlocutor` than the one it was first recorded with (the
+        message says which). A committed event is returned as stored without
+        extracting, so its `interlocutor` is not compared.
         """
         return RememberResult(**self._core.remember_event(
             key, text, interlocutor=interlocutor, epoch=epoch))

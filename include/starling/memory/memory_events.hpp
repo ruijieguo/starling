@@ -21,8 +21,10 @@
 
 namespace starling::memoryops {
 
-// 同一个 key 被用来写另一段文本,或该 key 已被放弃(state='abandoned')。收据行是
-// 「这个 key 写的是这段文本」的承诺,改文本会让幂等失去意义,所以这里不静默覆盖。
+// 同一个 key 被用来写另一段文本、重试 pending 行时换了说话对象,或该 key 已被放弃
+// (state='abandoned')。收据行是「这个 key 写的是这段文本、对着这位说话对象」的承诺,
+// 改文本会让幂等失去意义,换说话对象会让语句落进另一个 scope_parties,所以这里不静默
+// 覆盖。三种情形的消息各不相同(different text / different interlocutor / abandoned)。
 // std::runtime_error 子类 → pybind register_exception → starling.EventConflict。
 class EventConflict : public std::runtime_error {
 public:
@@ -51,8 +53,10 @@ struct PendingEventRow {
 // ① 短事务:按 (tenant_id, key) 读行。无行 → seq = next_seq,插 state='pending' 的行
 //    (text、interlocutor、text_sha256)后提交。有行且 state='abandoned',或
 //    text_sha256 与本次文本不同 → 抛 EventConflict。state='committed' → 直接返回
-//    outcome="idempotent" 与行里存的 engram_ref / statement_ids,一次 LLM 都不调。
-//    state='pending' → 进补齐分支。
+//    outcome="idempotent" 与行里存的 engram_ref / statement_ids,一次 LLM 都不调(不抽取,
+//    所以不比对 interlocutor)。state='pending' → 本次的 interlocutor 必须与行里存的相同,
+//    不同则抛 EventConflict(同 key 换说话对象是调用方的 bug,语句会落进另一个
+//    scope_parties,不静默纠正);相同则进补齐分支,抽取用行里存的 interlocutor。
 // ② 事务外(抽取要走网络,绝不持写事务):payload 是 "[" + key + "] " + text
 //    (key 作为前缀写进 Starling 的文本,设计源 4.3),时刻是 epoch_iso + seq 秒。
 //    补齐分支先按该 payload 的 engram content_hash 找 engrams 行,找到且有语句的
@@ -74,7 +78,7 @@ struct PendingEventRow {
 //
 // base 提供 tenant_id / holder_id / interlocutor / adapter_name / source_prefix;
 // base 的 payload 与 created_at_iso8601 被忽略(由 key+text 与 epoch+seq 推出)。
-// 重试 pending 行时用行里原来的 seq,时钟不漂移,也不另分配序号。
+// 重试 pending 行时用行里原来的 seq、text 与 interlocutor,时钟不漂移,也不另分配序号。
 // 走 SqliteAdapter(而非裸 Connection)以便经过写准入门。
 RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
                                extractor::LLMAdapter& llm,
