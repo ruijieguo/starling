@@ -904,8 +904,7 @@ gov::CleanupPlan cleanup_plan_in(const py::dict& plan) {
     out.skip = cleanup_list_in<gov::CleanupSkip>(plan, "skip", [](const py::dict& item) {
         return gov::CleanupSkip{.world = cleanup_text_in(item, "world", "skip item"),
                                 .reason = cleanup_text_in(item, "reason", "skip item"),
-                                .group = cleanup_text_in(item, "group", "skip item"),
-                                .detail = cleanup_text_in(item, "detail", "skip item"),};
+                                .group = cleanup_text_in(item, "group", "skip item"),};
     });
     out.archives = cleanup_list_in<gov::CleanupArchive>(plan, "archives", [](const py::dict& item) {
         return gov::CleanupArchive{.world = cleanup_text_in(item, "world", "archive item"),
@@ -925,14 +924,22 @@ py::dict cleanup_plan_out(const gov::CleanupPlan& plan) {
     for (const auto& item : plan.remove) { remove.append(candidate_out(item)); }
     py::list skip;
     for (const auto& item : plan.skip) {
-        skip.append(py::dict("world"_a = item.world, "reason"_a = item.reason, "group"_a = item.group,
-                             "detail"_a = item.detail));
+        skip.append(py::dict("world"_a = item.world, "reason"_a = item.reason, "group"_a = item.group));
     }
     py::list archives;
     for (const auto& item : plan.archives) {
         archives.append(py::dict("world"_a = item.world, "dir_id"_a = item.dir_id, "name"_a = item.name));
     }
     return py::dict("remove"_a = remove, "skip"_a = skip, "archives"_a = archives);
+}
+
+// 三个配置项（Python int，bool 不算）→ CleanupConfig；取值范围由 C++ 校验。plan 与 execute 用同一组关键字参数，
+// execute 按它重算规则（裁定 R70），调用方（Task 6.2）两次传同一份配置。
+gov::CleanupConfig cleanup_config_in(const py::object& keep_per_group, const py::object& max_age_days,
+                                     const py::object& archive_max_age_days) {
+    return gov::CleanupConfig{.keep_per_group = cleanup_int_in(keep_per_group, "keep_per_group"),
+                              .max_age_days = cleanup_int_in(max_age_days, "max_age_days"),
+                              .archive_max_age_days = cleanup_int_in(archive_max_age_days, "archive_max_age_days"),};
 }
 
 // 开着的世界名：任意可迭代的 str（list、set、tuple）。单个 str 不行（会被拆成字符），元素不是 str 也不行
@@ -963,10 +970,7 @@ void bind_world_cleanup(pybind11::module_& m) {
           [](const gov::RegistryDb& reg, const std::string& now_iso, const py::iterable& open_worlds,
              const py::object& keep_per_group, const py::object& max_age_days,
              const py::object& archive_max_age_days, int test_sleep_ms) {
-              gov::CleanupConfig cfg;
-              cfg.keep_per_group = cleanup_int_in(keep_per_group, "keep_per_group");
-              cfg.max_age_days = cleanup_int_in(max_age_days, "max_age_days");
-              cfg.archive_max_age_days = cleanup_int_in(archive_max_age_days, "archive_max_age_days");
+              const gov::CleanupConfig cfg = cleanup_config_in(keep_per_group, max_age_days, archive_max_age_days);
               const std::set<std::string> open = open_worlds_in(open_worlds);
               gov::CleanupPlan plan;
               {
@@ -981,21 +985,29 @@ void bind_world_cleanup(pybind11::module_& m) {
           py::arg("archive_max_age_days") = gov::CleanupConfig{}.archive_max_age_days,
           py::arg("_test_sleep_ms") = 0);
 
-    // 删除 plan 里的世界与归档并写 cleanup_log（C++ execute_cleanup：注册表锁内重新核对每个世界，先记录并摘注册项、
-    // 再删目录）。调用方（Task 6.2）在世界锁下确认引擎已关之后调用。返回真正删掉的世界（与 plan["remove"] 同形）。
+    // 删除 plan 里的世界与归档并写 cleanup_log（C++ execute_cleanup：plan 只是提名，注册表锁内按配置重算规则并重新核对
+    // 每个世界，先记录并摘注册项、再删目录）。配置关键字与 world_cleanup_plan 相同，两次传同一份。调用方（Task 6.2）在
+    // 世界锁下确认引擎已关之后调用。返回真正删掉的世界（与 plan["remove"] 同形，reason 是重算的）。
     m.def("world_cleanup_execute",
-          [](gov::RegistryDb& reg, const py::dict& plan, const std::string& now_iso, int test_sleep_ms) {
+          [](gov::RegistryDb& reg, const py::dict& plan, const std::string& now_iso,
+             const py::object& keep_per_group, const py::object& max_age_days,
+             const py::object& archive_max_age_days, int test_sleep_ms) {
+              const gov::CleanupConfig cfg = cleanup_config_in(keep_per_group, max_age_days, archive_max_age_days);
               const gov::CleanupPlan parsed = cleanup_plan_in(plan);
               std::vector<gov::CleanupCandidate> removed;
               {
                   const py::gil_scoped_release release;
                   test_sleep(test_sleep_ms);
-                  removed = gov::execute_cleanup(reg, parsed, now_iso);
+                  removed = gov::execute_cleanup(reg, parsed, cfg, now_iso);
               }
               py::list out;
               for (const auto& item : removed) { out.append(candidate_out(item)); }
               return out;
-          }, py::arg("registry"), py::arg("plan"), py::arg("now"), py::kw_only(), py::arg("_test_sleep_ms") = 0);
+          }, py::arg("registry"), py::arg("plan"), py::arg("now"), py::kw_only(),
+          py::arg("keep_per_group") = gov::CleanupConfig{}.keep_per_group,
+          py::arg("max_age_days") = gov::CleanupConfig{}.max_age_days,
+          py::arg("archive_max_age_days") = gov::CleanupConfig{}.archive_max_age_days,
+          py::arg("_test_sleep_ms") = 0);
 
     // 最近的清理记录，最新在前；limit 1–500（C++ 校验，越界 invalid_world_query）。
     m.def("world_cleanup_log",

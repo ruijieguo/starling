@@ -650,7 +650,7 @@ TEST(Cleanup, CleanupLogRecordsEachRemoval) {
     const auto plan = plan_cleanup(reg, CleanupConfig{.keep_per_group = 2}, kNow, {});
     ASSERT_EQ(names_of(plan.remove), (std::vector<std::string>{"old-a", "old-b", "run1-w0"}));
 
-    const auto removed = execute_cleanup(reg, plan, kNow);
+    const auto removed = execute_cleanup(reg, plan, CleanupConfig{.keep_per_group = 2}, kNow);
     EXPECT_EQ(names_of(removed), names_of(plan.remove));
     for (const auto& [name, dir_id] : homes) {
         EXPECT_EQ(code_of([&] { (void)reg.get(name); }), "world_not_found") << name;
@@ -678,7 +678,7 @@ TEST(Cleanup, CleanupLogRecordsEachRemoval) {
 
     // 再跑一轮：没有可删的，什么都不写。
     EXPECT_TRUE(execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{.keep_per_group = 2}, kNow, {}),
-                                kNow).empty());
+                                CleanupConfig{.keep_per_group = 2}, kNow).empty());
     EXPECT_EQ(cleanup_log(reg, 50).size(), 3U);
 }
 
@@ -693,7 +693,7 @@ TEST(Cleanup, SkipsWorldWithHeldSnapshotAndLogsReason) {
     // plan 之后、execute 之前 rise 拍了一份 held：重新核对时跳过。
     put_held(reg, "late-held", "20261119T000000Z-bbbb");
 
-    EXPECT_TRUE(execute_cleanup(reg, plan, kNow).empty());
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
     for (const auto& name : {"kept-by-rise", "late-held"}) {
         EXPECT_NO_THROW((void)reg.get(name)) << name;
         EXPECT_TRUE(fs::exists(home_of(tmp, reg.get(name).dir_id))) << name;
@@ -708,18 +708,18 @@ TEST(Cleanup, SkipsWorldWithHeldSnapshotAndLogsReason) {
         EXPECT_EQ(entry.at, kNow);
     }
     // 每 10 分钟再跑一轮：同一世界同一原因不重复记。
-    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), kNow);
-    (void)execute_cleanup(reg, plan, kNow);
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    (void)execute_cleanup(reg, plan, CleanupConfig{}, kNow);
     EXPECT_EQ(cleanup_log(reg, 50).size(), 2U);
     // 原因变了（rise 删了快照、世界此刻开着）才再记一条。
     reg.drop_snapshot("kept-by-rise", "20261119T000000Z-aaaa");
-    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {"kept-by-rise"}), kNow);
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {"kept-by-rise"}), CleanupConfig{}, kNow);
     log = cleanup_log(reg, 50);
     ASSERT_EQ(log.size(), 3U);
     EXPECT_EQ(log.front().world, "kept-by-rise");
     EXPECT_EQ(log.front().reason, "open");
     // 关掉之后删掉，记 removed。
-    const auto removed = execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), kNow);
+    const auto removed = execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
     EXPECT_EQ(names_of(removed), std::vector<std::string>{"kept-by-rise"});
     EXPECT_EQ(cleanup_log(reg, 1).front().action, "removed");
 }
@@ -742,7 +742,7 @@ TEST(Cleanup, ExecuteRechecksEachWorldUnderTheRegistryLock) {
     forged.remove.push_back(CleanupCandidate{.world = "default", .group = "", .reason = "over_age",
                                              .dir_id = "default"});
 
-    EXPECT_TRUE(execute_cleanup(reg, forged, kNow).empty());
+    EXPECT_TRUE(execute_cleanup(reg, forged, CleanupConfig{}, kNow).empty());
     EXPECT_TRUE(fs::exists(home_of(tmp, reg.get("recreated").dir_id)));
     EXPECT_TRUE(fs::exists(home_of(tmp, reg.get("deploy").dir_id)));
     EXPECT_NO_THROW((void)reg.get("default"));
@@ -770,7 +770,7 @@ TEST(Cleanup, ExecuteSkipsAWorldWhoseHomeFailsTheLayoutCheck) {
     const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
     ASSERT_EQ(names_of(plan.remove), std::vector<std::string>{"tampered"});
 
-    EXPECT_TRUE(execute_cleanup(reg, plan, kNow).empty());
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
     EXPECT_NO_THROW((void)reg.get("tampered"));
     EXPECT_TRUE(fs::is_symlink(home));
     EXPECT_TRUE(fs::exists(sibling_home / "marker"));
@@ -791,7 +791,7 @@ TEST(Cleanup, NextRunFinishesADirectoryLeftPendingByACrash) {
     std::ofstream(home_of(tmp, dir_id) / "world.db") << "x";
     simulate_crash_after_unregister(tmp, "half-done", dir_id);
     auto reopened = open_db(tmp);
-    EXPECT_TRUE(execute_cleanup(reopened, CleanupPlan{}, kNow).empty());
+    EXPECT_TRUE(execute_cleanup(reopened, CleanupPlan{}, CleanupConfig{}, kNow).empty());
     EXPECT_FALSE(fs::exists(home_of(tmp, dir_id)));
     EXPECT_EQ(log_count(tmp, "pending_dir = 1"), "0");
     EXPECT_EQ(log_count(tmp, "action = 'removed'"), "1");   // 补删不另记
@@ -807,13 +807,13 @@ TEST(Cleanup, DirectoryRemovalFailureStaysPendingAndIsRetried) {
     const fs::path locked = home_of(tmp, dir_id) / "snapshots";
     std::ofstream(locked / "file") << "x";
     fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
-    const auto removed = execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), kNow);
+    const auto removed = execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
     EXPECT_EQ(names_of(removed), std::vector<std::string>{"stubborn"});
     EXPECT_EQ(code_of([&] { (void)reg.get("stubborn"); }), "world_not_found");
     EXPECT_TRUE(fs::exists(locked / "file"));
     EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = '" + dir_id + "'"), "1");
     fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
-    EXPECT_TRUE(execute_cleanup(reg, CleanupPlan{}, kNow).empty());
+    EXPECT_TRUE(execute_cleanup(reg, CleanupPlan{}, CleanupConfig{}, kNow).empty());
     EXPECT_FALSE(fs::exists(home_of(tmp, dir_id)));
     EXPECT_EQ(log_count(tmp, "pending_dir = 1"), "0");
 }
@@ -840,7 +840,7 @@ TEST(Cleanup, PendingSweepOnlyRemovesUnregisteredPendingDirectories) {
              outside.path().filename().string() + "', 1),"
              "('2026-11-19T00:00:00Z', 'evil2', 'removed', 'over_age', '..', 1)");
     auto reopened = open_db(tmp);
-    (void)execute_cleanup(reopened, CleanupPlan{}, kNow);
+    (void)execute_cleanup(reopened, CleanupPlan{}, CleanupConfig{}, kNow);
     EXPECT_FALSE(fs::exists(home_of(tmp, gone_dir)));
     EXPECT_TRUE(fs::exists(stray / "readme"));
     EXPECT_TRUE(fs::exists(home_of(tmp, alive_dir)));
@@ -901,7 +901,7 @@ TEST(Cleanup, ArchivesOfNonReclaimableWorldsAgeOut) {
     const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
     ASSERT_EQ(plan.archives.size(), 2U);
 
-    EXPECT_TRUE(execute_cleanup(reg, plan, kNow).empty());   // 返回的是删掉的世界：没有
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());   // 返回的是删掉的世界：没有
     EXPECT_FALSE(fs::exists(old_deploy));
     EXPECT_FALSE(fs::exists(old_default));
     EXPECT_TRUE(fs::exists(fresh_deploy));
@@ -918,7 +918,7 @@ TEST(Cleanup, ArchivesOfNonReclaimableWorldsAgeOut) {
     EXPECT_EQ(got, (std::set<std::string>{"default||" + old_default.filename().string(),
                                           "deploy|prod|" + old_deploy.filename().string()}));
     // 同一份 plan 再执行：归档已不在，什么都不删、不记。
-    (void)execute_cleanup(reg, plan, kNow);
+    (void)execute_cleanup(reg, plan, CleanupConfig{}, kNow);
     EXPECT_EQ(cleanup_log(reg, 50).size(), 2U);
 }
 
@@ -933,7 +933,7 @@ TEST(Cleanup, ArchiveRemovalRechecksTheWorld) {
     reg.remove("deploy");
     reg.create("deploy", "", {}, "{}", kStale);
     const fs::path same_name = put_archive(reg, "deploy", "20261101T000000Z");
-    (void)execute_cleanup(reg, plan, kNow);
+    (void)execute_cleanup(reg, plan, CleanupConfig{}, kNow);
     EXPECT_TRUE(fs::exists(same_name));
     EXPECT_TRUE(cleanup_log(reg, 50).empty());
 }
@@ -944,7 +944,143 @@ TEST(Cleanup, ExecuteRejectsBadNowBeforeTouchingAnything) {
     reclaimable(reg, "old", "g", kStale);
     const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
     ASSERT_EQ(plan.remove.size(), 1U);
-    EXPECT_EQ(code_of([&] { (void)execute_cleanup(reg, plan, "now"); }), "invalid_settings");
+    EXPECT_EQ(code_of([&] { (void)execute_cleanup(reg, plan, CleanupConfig{}, "now"); }), "invalid_settings");
     EXPECT_NO_THROW((void)reg.get("old"));
     EXPECT_TRUE(cleanup_log(reg, 50).empty());
+}
+
+// ---- 裁定 R70：execute_cleanup 的入参只是提名，规则在注册表锁内重算 ----
+
+// 伪造的候选：1 天前的可回收世界不到期，不删，记 no_longer_due；真正到期的世界照删，记录与返回值里的 reason 是重算出来的
+// （入参里的 reason 文本被忽略）。plan.skip 里不认识的原因也不写进记录。
+TEST(Cleanup, ExecuteIgnoresAForgedFreshCandidateAndForgedReasons) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    const auto fresh = reclaimable(reg, "fresh", "g", kFresh);
+    const auto stale = reclaimable(reg, "stale", "g", kStale);
+    CleanupPlan forged;
+    forged.remove.push_back(CleanupCandidate{.world = "fresh", .group = "g", .reason = "over_age",
+                                             .dir_id = fresh.dir_id});
+    forged.remove.push_back(CleanupCandidate{.world = "stale", .group = "forged-group", .reason = "bogus",
+                                             .dir_id = stale.dir_id});
+    forged.skip.push_back(CleanupSkip{.world = "stale", .reason = "made-up", .group = "g"});
+
+    const auto removed = execute_cleanup(reg, forged, CleanupConfig{}, kNow);
+    ASSERT_EQ(names_of(removed), std::vector<std::string>{"stale"});
+    EXPECT_EQ(removed.front().reason, "over_age");
+    EXPECT_EQ(removed.front().group, "g");
+    EXPECT_NO_THROW((void)reg.get("fresh"));
+    EXPECT_TRUE(fs::exists(home_of(tmp, fresh.dir_id)));
+    const auto log = cleanup_log(reg, 50);
+    ASSERT_EQ(log.size(), 2U);
+    EXPECT_EQ(log.at(1).world, "fresh");
+    EXPECT_EQ(log.at(1).action, "skipped");
+    EXPECT_EQ(log.at(1).reason, "no_longer_due");
+    EXPECT_EQ(log.at(0).world, "stale");
+    EXPECT_EQ(log.at(0).action, "removed");
+    EXPECT_EQ(log.at(0).reason, "over_age");
+    EXPECT_EQ(log.at(0).group, "g");
+}
+
+// 伪造的归档：不可回收世界 1 天前的回滚归档不到期，不删，记 no_longer_due（detail 是归档名）。
+TEST(Cleanup, ExecuteIgnoresAForgedFreshArchive) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reg.create("deploy", "", {}, "{}", kStale);
+    const fs::path fresh_archive = put_archive(reg, "deploy", "20261119T000000Z");
+    CleanupPlan forged;
+    forged.archives.push_back(CleanupArchive{.world = "deploy", .dir_id = reg.get("deploy").dir_id,
+                                             .name = fresh_archive.filename().string()});
+    EXPECT_TRUE(execute_cleanup(reg, forged, CleanupConfig{}, kNow).empty());
+    EXPECT_TRUE(fs::exists(fresh_archive));
+    const auto log = cleanup_log(reg, 50);
+    ASSERT_EQ(log.size(), 1U);
+    EXPECT_EQ(log.front().world, "deploy");
+    EXPECT_EQ(log.front().action, "skipped");
+    EXPECT_EQ(log.front().reason, "no_longer_due");
+    EXPECT_EQ(log.front().detail, fresh_archive.filename().string());
+    // 天数放宽之后，同一份按名字已到期的归档也不删（规则用 execute 的配置重算）。
+    const fs::path aged = put_archive(reg, "deploy", "20261101T000000Z");
+    const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
+    ASSERT_EQ(plan.archives.size(), 1U);
+    (void)execute_cleanup(reg, plan, CleanupConfig{.archive_max_age_days = 60}, kNow);
+    EXPECT_TRUE(fs::exists(aged));
+}
+
+// 过时的计划：plan 之后、execute 之前同组里较新的一个世界被删了，原来排在名额之外的世界又排进了名额，不删。
+TEST(Cleanup, ExecuteSkipsAWorldAStalePlanStillNames) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    for (int index = 0; index < 3; ++index) {
+        reclaimable(reg, "w" + std::to_string(index), "g", minute_stamp(index));
+    }
+    const CleanupConfig cfg{.keep_per_group = 2};
+    const auto plan = plan_cleanup(reg, cfg, kNow, {});
+    ASSERT_EQ(names_of(plan.remove), std::vector<std::string>{"w0"});
+    reg.remove("w2");   // 较新的成员没了：w0 现在排第 2，在名额之内
+    EXPECT_TRUE(execute_cleanup(reg, plan, cfg, kNow).empty());
+    EXPECT_NO_THROW((void)reg.get("w0"));
+    const auto log = cleanup_log(reg, 50);
+    ASSERT_EQ(log.size(), 1U);
+    EXPECT_EQ(log.front().world, "w0");
+    EXPECT_EQ(log.front().reason, "no_longer_due");
+    // 规则用 execute 拿到的配置：份数放宽到默认 200，原计划里到期的世界也不删。
+    reclaimable(reg, "w3", "g", minute_stamp(3));
+    const auto again = plan_cleanup(reg, cfg, kNow, {});
+    ASSERT_EQ(names_of(again.remove), std::vector<std::string>{"w0"});
+    EXPECT_TRUE(execute_cleanup(reg, again, CleanupConfig{}, kNow).empty());
+    EXPECT_NO_THROW((void)reg.get("w0"));
+}
+
+// 裁定 R72 M7：同名重建出一个仍可回收、仍到期的新世界，plan 指的是旧的那个：不删，记 world_changed。
+TEST(Cleanup, SameNameRecreatedAsReclaimableIsNotRemoved) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reclaimable(reg, "rollout", "g", kStale);
+    const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
+    ASSERT_EQ(names_of(plan.remove), std::vector<std::string>{"rollout"});
+    reg.remove("rollout");
+    const auto reborn = reclaimable(reg, "rollout", "g", kStale);
+    ASSERT_NE(reborn.dir_id, plan.remove.front().dir_id);
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
+    EXPECT_EQ(reg.get("rollout").dir_id, reborn.dir_id);
+    EXPECT_TRUE(fs::exists(home_of(tmp, reborn.dir_id)));
+    const auto log = cleanup_log(reg, 50);
+    ASSERT_EQ(log.size(), 1U);
+    EXPECT_EQ(log.front().reason, "world_changed");
+}
+
+// 裁定 R72 M1：跳过记录带 dir_id；去重按 (dir_id, action, reason, detail)：同名重建之后的新世界、detail 不同的
+// failed 都另记一条。
+TEST(Cleanup, SkipRowsCarryDirIdAndDedupPerIncarnation) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    const auto first = reclaimable(reg, "kept", "g", kStale);
+    put_held(reg, "kept", "20261119T000000Z-aaaa");
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    EXPECT_EQ(log_count(tmp, "action = 'skipped' AND dir_id = '" + first.dir_id + "'"), "1");
+    reg.remove("kept");
+    const auto second = reclaimable(reg, "kept", "g", kStale);
+    put_held(reg, "kept", "20261119T000000Z-bbbb");
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    EXPECT_EQ(log_count(tmp, "action = 'skipped' AND dir_id = '" + second.dir_id + "'"), "1");
+    EXPECT_EQ(log_count(tmp, "action = 'skipped' AND world = 'kept'"), "2");
+
+    // failed：detail 相同不重复记，不同另记。
+    const auto broken = reclaimable(reg, "broken", "g", kStale);
+    const fs::path home = home_of(tmp, broken.dir_id);
+    const TempDir outside_a;
+    const TempDir outside_b;
+    fs::remove_all(home);
+    fs::create_directory_symlink(outside_a.path(), home);
+    for (int round = 0; round < 2; ++round) {
+        (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    }
+    EXPECT_EQ(log_count(tmp, "reason = 'failed' AND world = 'broken'"), "1");
+    fs::remove(home);
+    fs::create_directory_symlink(outside_b.path(), home);
+    (void)execute_cleanup(reg, plan_cleanup(reg, CleanupConfig{}, kNow, {}), CleanupConfig{}, kNow);
+    EXPECT_EQ(log_count(tmp, "reason = 'failed' AND world = 'broken'"), "2");
+    EXPECT_EQ(log_count(tmp, "reason = 'failed' AND dir_id = '" + broken.dir_id + "'"), "2");
 }

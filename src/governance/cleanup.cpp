@@ -2,6 +2,7 @@
 
 #include "starling/governance/cleanup.hpp"
 
+#include "cleanup_internal.hpp"
 #include "world_store_internal.hpp"
 
 #include "starling/governance/registry_db.hpp"
@@ -35,22 +36,6 @@ constexpr std::int64_t kMaxLogLimit = 500;
     throw WorldStoreError("invalid_settings", detail);
 }
 
-Seconds require_now(std::string_view now_iso) {
-    const auto now = internal::parse_utc_seconds(now_iso);
-    if (!now) { invalid("now is not YYYY-MM-DDTHH:MM:SSZ: '" + std::string(now_iso) + "'"); }
-    return *now;
-}
-
-void require_config(const CleanupConfig& cfg) {
-    const std::array<std::pair<const char*, std::int64_t>, 3> fields{{
-        {"keep_per_group", cfg.keep_per_group},
-        {"max_age_days", cfg.max_age_days},
-        {"archive_max_age_days", cfg.archive_max_age_days},
-    },};
-    for (const auto& [field, value] : fields) {
-        if (value < 1) { invalid(std::string("cleanup ") + field + " must be >= 1"); }
-    }
-}
 
 // now - stamp 严格大于 days 天。stamp 晚于 now（时钟回拨）不算。不溢出：只做除法。
 bool older_than(Seconds stamp, Seconds now, std::int64_t days) {
@@ -87,31 +72,33 @@ bool newer_first(const Ranked& lhs, const Ranked& rhs) {
 
 }  // namespace
 
-std::vector<CleanupLogEntry> cleanup_log(const RegistryDb& reg, std::int64_t limit) {
-    if (limit < 1 || limit > kMaxLogLimit) {
-        throw WorldStoreError("invalid_world_query",
-                              "cleanup_log limit must be 1-500 (got " + std::to_string(limit) + ")");
+namespace internal {
+
+void require_cleanup_config(const CleanupConfig& cfg) {
+    const std::array<std::pair<const char*, std::int64_t>, 3> fields{{
+        {"keep_per_group", cfg.keep_per_group},
+        {"max_age_days", cfg.max_age_days},
+        {"archive_max_age_days", cfg.archive_max_age_days},
+    },};
+    for (const auto& [field, value] : fields) {
+        if (value < 1) { invalid(std::string("cleanup ") + field + " must be >= 1"); }
     }
-    return reg.read_cleanup_log(limit);
 }
 
-bool cleanup_eligible(const WorldRecord& rec, bool is_default) {
-    return rec.reclaimable && !rec.seed && !is_default;
+Seconds require_cleanup_now(std::string_view now_iso) {
+    const auto now = parse_utc_seconds(now_iso);
+    if (!now) { invalid("now is not YYYY-MM-DDTHH:MM:SSZ: '" + std::string(now_iso) + "'"); }
+    return *now;
 }
 
-CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::string_view now_iso,
-                         const std::set<std::string>& open_worlds) {
-    require_config(cfg);
-    const Seconds now = require_now(now_iso);
-    const std::vector<CleanupCensusRow> census = reg.cleanup_census();
-
-    // 每个世界选中的原因（空 = 不选）。
-    std::vector<std::string> reason(census.size());
+std::vector<std::string> cleanup_due_reasons(const std::vector<CleanupCensusRow>& rows,
+                                             const CleanupConfig& cfg, Seconds now) {
+    std::vector<std::string> reason(rows.size());
     std::map<std::string, std::vector<Ranked>> groups;
-    for (std::size_t pos = 0; pos < census.size(); ++pos) {
-        const CleanupCensusRow& row = census.at(pos);
+    for (std::size_t pos = 0; pos < rows.size(); ++pos) {
+        const CleanupCensusRow& row = rows.at(pos);
         if (!cleanup_eligible(row.record, row.is_default)) { continue; }
-        const auto created = internal::parse_utc_seconds(row.record.created_at);
+        const auto created = parse_utc_seconds(row.record.created_at);
         if (created && older_than(*created, now, cfg.max_age_days)) { reason.at(pos) = "over_age"; }
         if (!row.record.retention_group.empty()) {
             groups[row.record.retention_group].push_back(Ranked{.pos = pos, .created = created});
@@ -127,6 +114,35 @@ CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::s
             if (why.empty()) { why = "over_count"; }
         }
     }
+    return reason;
+}
+
+bool cleanup_archive_due(std::string_view name, const CleanupConfig& cfg, Seconds now) {
+    const auto stamp = archive_stamp(name);
+    return stamp && older_than(*stamp, now, cfg.archive_max_age_days);
+}
+
+}  // namespace internal
+
+std::vector<CleanupLogEntry> cleanup_log(const RegistryDb& reg, std::int64_t limit) {
+    if (limit < 1 || limit > kMaxLogLimit) {
+        throw WorldStoreError("invalid_world_query",
+                              "cleanup_log limit must be 1-500 (got " + std::to_string(limit) + ")");
+    }
+    return reg.read_cleanup_log(limit);
+}
+
+bool cleanup_eligible(const WorldRecord& rec, bool is_default) {
+    return rec.reclaimable && !rec.seed && !is_default;
+}
+
+CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::string_view now_iso,
+                         const std::set<std::string>& open_worlds) {
+    internal::require_cleanup_config(cfg);
+    const Seconds now = internal::require_cleanup_now(now_iso);
+    const std::vector<CleanupCensusRow> census = reg.cleanup_census();
+    // 每个世界选中的原因（空 = 不选）。execute_cleanup 在注册表锁内用同一个函数重算（裁定 R70）。
+    const std::vector<std::string> reason = internal::cleanup_due_reasons(census, cfg, now);
 
     CleanupPlan plan;
     for (std::size_t pos = 0; pos < census.size(); ++pos) {
@@ -135,10 +151,10 @@ CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::s
         const WorldRecord& rec = census.at(pos).record;
         if (census.at(pos).has_held) {
             plan.skip.push_back(CleanupSkip{.world = rec.name, .reason = "held_snapshot",
-                                            .group = rec.retention_group, .detail = {},});
+                                            .group = rec.retention_group,});
         } else if (open_worlds.contains(rec.name)) {
             plan.skip.push_back(CleanupSkip{.world = rec.name, .reason = "open",
-                                            .group = rec.retention_group, .detail = {},});
+                                            .group = rec.retention_group,});
         } else {
             plan.remove.push_back(CleanupCandidate{.world = rec.name, .group = rec.retention_group,
                                                    .reason = why, .dir_id = rec.dir_id,});
@@ -157,8 +173,7 @@ CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::s
             continue;
         }
         for (const ArchiveEntry& item : listed) {
-            const auto stamp = archive_stamp(item.name);
-            if (!stamp || !older_than(*stamp, now, cfg.archive_max_age_days)) { continue; }
+            if (!internal::cleanup_archive_due(item.name, cfg, now)) { continue; }
             plan.archives.push_back(CleanupArchive{.world = row.record.name,
                                                    .dir_id = row.record.dir_id,
                                                    .name = item.name,});
@@ -201,8 +216,8 @@ void finish_pending_dirs(RegistryDb& reg) {
     }
 }
 
-// 第 3 步的重新核对：世界还在、dir_id 相同、仍不归清理管、这份归档仍被 list_rollback_archives 列出。
-bool archive_still_due(const RegistryDb& reg, const CleanupArchive& item, WorldRecord& rec) {
+// 第 3 步的重新核对（天数另算）：世界还在、dir_id 相同、仍不归清理管、这份归档仍被 list_rollback_archives 列出。
+bool archive_still_listed(const RegistryDb& reg, const CleanupArchive& item, WorldRecord& rec) {
     try {
         rec = reg.get(item.world);
     } catch (const WorldStoreError&) {
@@ -214,17 +229,23 @@ bool archive_still_due(const RegistryDb& reg, const CleanupArchive& item, WorldR
     return std::ranges::any_of(listed, [&item](const ArchiveEntry& entry) { return entry.name == item.name; });
 }
 
-void remove_archive(RegistryDb& reg, const CleanupArchive& item, std::string_view now_iso) {
+void remove_archive(RegistryDb& reg, const CleanupArchive& item, const CleanupConfig& cfg, Seconds now,
+                    std::string_view now_iso) {
     try {
         WorldRecord rec;
-        if (!archive_still_due(reg, item, rec)) { return; }
+        if (!archive_still_listed(reg, item, rec)) { return; }
+        // 裁定 R70：天数按名字里的时刻与本次的 cfg、now 重算，不信入参。
+        if (!internal::cleanup_archive_due(item.name, cfg, now)) {
+            reg.record_archive_skip(rec, item.name, now_iso);
+            return;
+        }
         const fs::path dir = reg.data_dir() / "worlds" / rec.dir_id / "archive";
         if (!internal::remove_within(dir, dir / item.name)) {
             std::cerr << "[cleanup] archive " << item.name << " of '" << item.world
                       << "' resolves outside its archive directory; not removed\n";
             return;
         }
-        reg.append_archive_removed(item.world, rec.retention_group, item.name, now_iso);
+        reg.append_archive_removed(rec, item.name, now_iso);
     } catch (const std::exception& err) {
         std::cerr << "[cleanup] cannot remove archive " << item.name << " of '" << item.world
                   << "': " << err.what() << "\n";
@@ -234,34 +255,37 @@ void remove_archive(RegistryDb& reg, const CleanupArchive& item, std::string_vie
 }  // namespace
 
 std::vector<CleanupCandidate> execute_cleanup(RegistryDb& reg, const CleanupPlan& plan,
-                                              std::string_view now_iso) {
-    (void)require_now(now_iso);   // 任何改动之前
+                                              const CleanupConfig& cfg, std::string_view now_iso) {
+    internal::require_cleanup_config(cfg);   // 任何改动之前
+    const Seconds now = internal::require_cleanup_now(now_iso);
     finish_pending_dirs(reg);
 
     std::vector<CleanupCandidate> removed;
-    for (const CleanupCandidate& candidate : plan.remove) {
-        RegistryDb::UnregisterOutcome outcome;
+    for (const CleanupCandidate& nominee : plan.remove) {
+        RegistryDb::CleanupDecision decision;
         try {
-            outcome = reg.unregister_for_cleanup(candidate, now_iso);
+            decision = reg.unregister_for_cleanup(nominee.world, nominee.dir_id, cfg, now_iso);
         } catch (const std::exception& err) {
-            std::cerr << "[cleanup] cannot unregister '" << candidate.world << "': " << err.what() << "\n";
+            std::cerr << "[cleanup] cannot unregister '" << nominee.world << "': " << err.what() << "\n";
             continue;
         }
-        if (!outcome.skipped.empty()) { continue; }
-        removed.push_back(candidate);
+        if (!decision.removed) { continue; }
+        // 返回与记录的都是锁内读到、重算出来的值（裁定 R70、R72 M6），不是入参。
+        removed.push_back(CleanupCandidate{.world = nominee.world, .group = decision.group,
+                                           .reason = decision.reason, .dir_id = decision.dir_id,});
         // 注册项已摘、记录已带待删标记：目录删不掉时留着标记，下一轮第 0 步再删。
-        if (remove_world_home(reg.data_dir(), candidate.dir_id, candidate.world)) {
-            reg.clear_cleanup_pending(candidate.dir_id);
+        if (remove_world_home(reg.data_dir(), decision.dir_id, nominee.world)) {
+            reg.clear_cleanup_pending(decision.dir_id);
         }
     }
     for (const CleanupSkip& skip : plan.skip) {
         try {
-            (void)reg.append_cleanup_skip(skip, now_iso);
+            reg.record_cleanup_skip(skip.world, skip.reason, cfg, now_iso);
         } catch (const std::exception& err) {
             std::cerr << "[cleanup] cannot record skip of '" << skip.world << "': " << err.what() << "\n";
         }
     }
-    for (const CleanupArchive& item : plan.archives) { remove_archive(reg, item, now_iso); }
+    for (const CleanupArchive& item : plan.archives) { remove_archive(reg, item, cfg, now, now_iso); }
     return removed;
 }
 

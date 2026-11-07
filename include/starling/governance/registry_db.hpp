@@ -186,20 +186,25 @@ public:
     [[nodiscard]] std::vector<CleanupCensusRow> cleanup_census() const;
     // cleanup_log 表最新的 limit 条（调用方已校验 limit），最新在前。
     [[nodiscard]] std::vector<CleanupLogEntry> read_cleanup_log(std::int64_t limit) const;
-    // execute_cleanup 第 1 步的 a（见 cleanup.hpp）：持锁重新读记录与快照，按 cleanup.hpp 的顺序判定；通过时在一个事务
-    // 里写 removed 记录（pending_dir=1）并摘掉注册项，返回 {"", 世界目录}；不通过时写 skipped 记录（同 append_cleanup_skip
-    // 的去重），返回 {原因, {}}；世界已不在返回 {"gone", {}}，什么都不写。不删文件。
-    struct UnregisterOutcome {
-        std::string skipped;            // 空 = 已摘掉注册项
-        std::filesystem::path home;     // 摘掉时：worlds/<dir_id>（未解析符号链接）
-        std::int64_t log_id = 0;        // 摘掉时：那条 removed 记录的 id
+    // execute_cleanup 第 1 步的 a（见 cleanup.hpp）。持锁、在一个 BEGIN IMMEDIATE 里重新读记录、快照与该世界所在分组的全部
+    // 世界，按 cleanup.hpp 的顺序判定，并按 cfg、now_iso 重算「是否仍到期」（裁定 R70，与 plan_cleanup 同一份规则代码）。
+    // 通过时写 removed 记录（pending_dir=1，reason 是重算出来的）并摘掉注册项；不通过时写 skipped 记录（去重同
+    // record_cleanup_skip）；世界已不在时什么都不写。不删文件。
+    struct CleanupDecision {
+        bool removed = false;
+        std::string reason;    // removed：重算出来的 over_age / over_count；否则跳过的原因（世界不在时为空）
+        std::string group;     // 锁内读到的 retention_group
+        std::string dir_id;    // 锁内读到的 dir_id（removed 时就是要删的目录名）
     };
-    UnregisterOutcome unregister_for_cleanup(const CleanupCandidate& candidate, std::string_view now_iso);
-    // 写一条 skipped 记录；该世界最新一条记录的 (action, reason) 与这次相同时不写。返回写没写。
-    bool append_cleanup_skip(const CleanupSkip& skip, std::string_view now_iso);
-    // 写一条 archive_removed 记录（detail = 归档名）。
-    void append_archive_removed(const std::string& world, const std::string& group,
-                                const std::string& archive_name, std::string_view now_iso);
+    CleanupDecision unregister_for_cleanup(const std::string& world, const std::string& planned_dir_id,
+                                           const CleanupConfig& cfg, std::string_view now_iso);
+    // plan.skip 的一项（held_snapshot / open）：持锁重新读这个世界，世界不在、或不在 cleanup.hpp 认的跳过原因里时不写；
+    // 写的 group、dir_id 取锁内读到的值。去重见 cleanup.hpp。
+    void record_cleanup_skip(const std::string& world, const std::string& reason, const CleanupConfig& cfg,
+                             std::string_view now_iso);
+    // 归档的记录：删掉一份（archive_removed）或重算后不到期（skipped no_longer_due），detail 都是归档名。
+    void append_archive_removed(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
+    void record_archive_skip(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
     // 待删目录：cleanup_log 里 pending_dir=1、且 worlds 表里没有这个 dir_id 的不同 dir_id（裁定 R56 补充 1）。
     [[nodiscard]] std::vector<std::string> pending_cleanup_dirs() const;
     // 清掉某个 dir_id 的全部待删标记（目录已删完或本来就不在）。

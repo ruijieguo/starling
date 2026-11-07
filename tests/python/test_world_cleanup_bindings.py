@@ -42,7 +42,7 @@ def test_plan_execute_and_log_roundtrip(tmp_path):
     assert set(plan) == {"remove", "skip", "archives"}
     assert plan["remove"] == [{"world": "rollout-old", "group": "run1", "reason": "over_age",
                                "dir_id": old["dir_id"]}]
-    assert plan["skip"] == [{"world": "rollout-open", "reason": "open", "group": "run1", "detail": ""}]
+    assert plan["skip"] == [{"world": "rollout-open", "reason": "open", "group": "run1"}]
     assert plan["archives"] == []
 
     removed = _core.world_cleanup_execute(reg, plan, NOW)
@@ -70,6 +70,11 @@ def test_config_keys_and_defaults(tmp_path):
     plan = _core.world_cleanup_plan(reg, NOW, [], keep_per_group=2, max_age_days=1,
                                     archive_max_age_days=30)
     assert [i["world"] for i in plan["remove"]] == ["w0"]
+    # execute 用自己拿到的配置重算规则（裁定 R70）：份数放宽到默认 200，计划里的 w0 不再到期，不删。
+    assert _core.world_cleanup_execute(reg, plan, NOW) == []
+    assert _core.world_cleanup_log(reg, 1)[0]["reason"] == "no_longer_due"
+    removed = _core.world_cleanup_execute(reg, plan, NOW, keep_per_group=2)
+    assert [(i["world"], i["reason"]) for i in removed] == [("w0", "over_count")]
 
 
 @pytest.mark.parametrize("call, code", [
@@ -78,6 +83,7 @@ def test_config_keys_and_defaults(tmp_path):
     (lambda reg: _core.world_cleanup_plan(reg, NOW, [], max_age_days=-1), "invalid_settings"),
     (lambda reg: _core.world_cleanup_execute(reg, {"remove": [], "skip": [], "archives": []}, "x"),
      "invalid_settings"),
+    (lambda reg: _core.world_cleanup_execute(reg, {}, NOW, keep_per_group=0), "invalid_settings"),
     (lambda reg: _core.world_cleanup_log(reg, 0), "invalid_world_query"),
     (lambda reg: _core.world_cleanup_log(reg, 501), "invalid_world_query"),
 ])
