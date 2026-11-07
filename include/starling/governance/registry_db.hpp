@@ -13,6 +13,7 @@
 // （原 WorldManager 的管理锁，见 world_store.hpp 文件头）。
 // 错误一律抛 WorldStoreError（code 见 world_store.hpp）。
 
+#include "starling/governance/cleanup.hpp"
 #include "starling/governance/world_settings.hpp"
 #include "starling/governance/world_store.hpp"
 #include "starling/persistence/connection.hpp"
@@ -176,6 +177,11 @@ public:
     void drop_snapshot(const std::string& world, const std::string& snapshot_id);
     [[nodiscard]] int snapshot_retention() const;                   // 默认 5
     [[nodiscard]] const std::filesystem::path& data_dir() const;
+
+    // ---- 自动清理（第 6 期，cleanup.hpp） ----
+    // 全部世界（不带标签）与各自「有没有 held 快照」「是不是默认世界」，一次持锁读出，按登记顺序（rowid）。
+    // plan_cleanup 用它，规则不在这里。
+    [[nodiscard]] std::vector<CleanupCensusRow> cleanup_census() const;
 
 private:
     struct Impl;

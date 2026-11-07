@@ -2189,6 +2189,9 @@ ForkResult upgrade_seed(RegistryDb& reg, const std::string& source, const std::s
 namespace internal {
 
 std::string random_hex() { return governance::random_hex(); }
+std::optional<std::chrono::sys_seconds> parse_utc_seconds(std::string_view text) {
+    return governance::parse_utc_seconds(text);
+}
 std::string iso_now() { return governance::iso_now(); }
 std::string compact_now() { return governance::compact_now(); }
 bool remove_within(const fs::path& base, const fs::path& target) {

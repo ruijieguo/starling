@@ -781,6 +781,28 @@ int RegistryDb::snapshot_retention() const {
 
 const fs::path& RegistryDb::data_dir() const { return impl_->data_dir; }
 
+// ---- 自动清理（第 6 期，cleanup.hpp） ----
+
+std::vector<CleanupCensusRow> RegistryDb::cleanup_census() const {
+    const std::scoped_lock lock(impl_->mutex);
+    const std::string dflt = impl_->default_name();
+    const std::string sql =
+        std::string("SELECT ") + kWorldColumns +
+        ", EXISTS (SELECT 1 FROM snapshots s WHERE s.world = w.name AND s.kind = 'held') "
+        "FROM worlds w ORDER BY w.rowid ASC";
+    pst::Stmt stmt(impl_->db(), sql.c_str());
+    std::vector<CleanupCensusRow> out;
+    constexpr int kHeldColumn = 18;   // kWorldColumns 之后的那一列
+    while (stmt.step_row()) {
+        CleanupCensusRow row;
+        row.record = read_world(stmt.raw());
+        row.has_held = sqlite3_column_int(stmt.raw(), kHeldColumn) != 0;
+        row.is_default = row.record.name == dflt;
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
 namespace internal {
 
 void write_fresh_registry(const fs::path& file, const std::string& default_world,

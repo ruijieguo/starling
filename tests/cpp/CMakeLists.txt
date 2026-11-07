@@ -214,6 +214,7 @@ add_executable(starling_tests
     test_world_settings.cpp
     test_build_info.cpp
     test_world_fork.cpp
+    test_cleanup.cpp
 )
 target_include_directories(starling_tests BEFORE PRIVATE
     "${gtest_SOURCE_DIR}/include"
