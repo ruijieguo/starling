@@ -90,4 +90,30 @@ struct CleanupLogEntry {
                                        std::string_view now_iso,
                                        const std::set<std::string>& open_worlds);
 
+// 删除 plan 里的世界与归档，写 cleanup_log，返回真正删掉（摘掉注册项）的世界。now_iso 同 plan_cleanup（解析不了抛
+// invalid_settings，什么都不动）；记录的 at 就是它。
+//
+// 0. 先补删上一轮留下的待删目录（见下面的删除顺序）：只删 worlds/<dir_id>，而且这个 dir_id 必须在 cleanup_log 里
+//    标成待删、在 worlds 表里已经没有（裁定 R56 补充 1）。dir_id 形状不对（空、"."、".."、含 '/' 或 '\\'）、
+//    解析后不是 worlds/<dir_id> 本身（符号链接外链）的记录不删，只记 stderr。删完（或目录本来就不在）清掉标记；
+//    删不掉的留着标记，下一轮再试。worlds/ 下别的东西一概不碰。
+// 1. 对 plan.remove 的每个世界，在注册表锁内重新读它的记录与快照列表再判定（Review Focus 第 5 条）：
+//      世界已不在 → 什么都不记；dir_id 与 plan 时不同 → skip world_changed；不再满足 cleanup_eligible
+//      → skip not_reclaimable；有 held 快照 → skip held_snapshot；布局校验不过（dir_id 形状、worlds/ 外链、
+//      世界目录解析后不是 worlds/<dir_id>）→ skip failed（detail 写原因）。
+//    「此刻开着」的判定由调用方负责：Task 6.2 在世界锁下确认引擎已关、再把这个世界放进 plan 调用（open_worlds 在
+//    plan_cleanup 时传入）；6.1 只保证上面这些在注册表锁内重新读取。
+//    通过时的删除顺序（崩溃时只可能留下「注册项已摘、目录还在、有记录」，下一轮第 0 步补删）：
+//      a. 注册表锁内、一个事务：写 removed 记录（dir_id、pending_dir=1），摘掉 worlds 行、标签、快照条目；
+//      b. 锁外：remove_within(worlds/, worlds/<dir_id>) 删掉整个世界目录（库、快照、归档一起）；
+//      c. 删完清掉这条记录的待删标记。b 失败（权限等）只记 stderr，标记留着，世界仍算删掉（注册项已摘）。
+// 2. plan.skip 的每一项照写 skipped 记录。
+// 3. 对 plan.archives 的每一份：世界还在、dir_id 相同、仍不 cleanup_eligible、这份归档仍出现在
+//    list_rollback_archives 里，才经 remove_within(archive/, …) 删掉并写 archive_removed 记录（detail 是归档名）。
+//    不满足或删不掉的跳过（不记）。调用方在该世界的世界锁下调用（与看板清理归档同一把锁）。
+// skipped 记录去重：这个世界最新一条记录的 (action, reason) 与这次相同时不再写，所以每 10 分钟一轮不会刷屏。
+// 一个世界失败不影响别的世界。
+std::vector<CleanupCandidate> execute_cleanup(RegistryDb& reg, const CleanupPlan& plan,
+                                              std::string_view now_iso);
+
 }  // namespace starling::governance

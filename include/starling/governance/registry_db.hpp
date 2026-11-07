@@ -186,6 +186,26 @@ public:
     [[nodiscard]] std::vector<CleanupCensusRow> cleanup_census() const;
     // cleanup_log 表最新的 limit 条（调用方已校验 limit），最新在前。
     [[nodiscard]] std::vector<CleanupLogEntry> read_cleanup_log(std::int64_t limit) const;
+    // execute_cleanup 第 1 步的 a（见 cleanup.hpp）：持锁重新读记录与快照，按 cleanup.hpp 的顺序判定；通过时在一个事务
+    // 里写 removed 记录（pending_dir=1）并摘掉注册项，返回 {"", 世界目录}；不通过时写 skipped 记录（同 append_cleanup_skip
+    // 的去重），返回 {原因, {}}；世界已不在返回 {"gone", {}}，什么都不写。不删文件。
+    struct UnregisterOutcome {
+        std::string skipped;            // 空 = 已摘掉注册项
+        std::filesystem::path home;     // 摘掉时：worlds/<dir_id>（未解析符号链接）
+        std::int64_t log_id = 0;        // 摘掉时：那条 removed 记录的 id
+    };
+    UnregisterOutcome unregister_for_cleanup(const CleanupCandidate& candidate, std::string_view now_iso);
+    // 写一条 skipped 记录；该世界最新一条记录的 (action, reason) 与这次相同时不写。返回写没写。
+    bool append_cleanup_skip(const CleanupSkip& skip, std::string_view now_iso);
+    // 写一条 archive_removed 记录（detail = 归档名）。
+    void append_archive_removed(const std::string& world, const std::string& group,
+                                const std::string& archive_name, std::string_view now_iso);
+    // 待删目录：cleanup_log 里 pending_dir=1、且 worlds 表里没有这个 dir_id 的不同 dir_id（裁定 R56 补充 1）。
+    [[nodiscard]] std::vector<std::string> pending_cleanup_dirs() const;
+    // 清掉某个 dir_id 的全部待删标记（目录已删完或本来就不在）。
+    void clear_cleanup_pending(const std::string& dir_id);
+    // 仅测试用（裁定 R58）：替换 reserve_home 抽 dir_id 的随机源；空函数恢复真随机。生产不调用。
+    void set_dir_id_source_for_test(std::function<std::string()> source);
 
 private:
     struct Impl;

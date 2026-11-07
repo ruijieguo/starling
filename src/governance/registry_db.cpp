@@ -240,6 +240,8 @@ struct RegistryDb::Impl {
     fs::path data_dir;
     mutable std::mutex mutex;
     mutable std::unique_ptr<pst::Connection> conn;
+    // 仅测试用（裁定 R58，set_dir_id_source_for_test）：为空时 reserve_home 用 internal::random_hex。持锁读写。
+    std::function<std::string()> dir_id_source;
 
     [[nodiscard]] sqlite3* db() const { return conn->raw(); }
 
@@ -277,6 +279,18 @@ struct RegistryDb::Impl {
         return stmt.step_row();
     }
 
+    // 裁定 R58：清理摘掉注册项、还没删完目录的 dir_id（cleanup_log 待删标记）不能分给新世界，否则下一轮补删会删掉新世界。
+    // 目录已经不在、标记还没清的那一刻，光看 fs::exists 挡不住。
+    [[nodiscard]] bool dir_id_pending(const std::string& dir_id) const {
+        pst::Stmt stmt(db(), "SELECT 1 FROM cleanup_log WHERE dir_id = ? AND pending_dir = 1");
+        stmt.bind(dir_id);
+        return stmt.step_row();
+    }
+
+    [[nodiscard]] std::string next_dir_id() const {
+        return dir_id_source ? dir_id_source() : internal::random_hex();
+    }
+
     // 调用方已持锁。
     [[nodiscard]] std::string default_name() const {
         pst::Stmt stmt(db(), "SELECT value FROM meta WHERE key = 'default_world'");
@@ -294,14 +308,15 @@ struct RegistryDb::Impl {
     }
 
     // 调用方已持锁，且 name 已过 is_valid_world_name。名字已被占用抛 world_exists；否则选一个注册表与
-    // 磁盘上都没有的 dir_id，建 worlds/<dir_id>/ 与 snapshots/，返回世界目录（还没有注册项）。
+    // 磁盘上都没有、也不在 cleanup_log 待删标记里的 dir_id（裁定 R58），建 worlds/<dir_id>/ 与 snapshots/，
+    // 返回世界目录（还没有注册项）。
     [[nodiscard]] fs::path reserve_home(const std::string& name) const {
         if (find(name)) { throw WorldStoreError("world_exists", "world '" + name + "' exists"); }
         const fs::path worlds_root = data_dir / "worlds";
         internal::require_worlds_root_inside(data_dir, worlds_root);
-        std::string dir_id = internal::random_hex();
-        while (dir_id_taken(dir_id) || fs::exists(worlds_root / dir_id)) {
-            dir_id = internal::random_hex();
+        std::string dir_id = next_dir_id();
+        while (dir_id_taken(dir_id) || dir_id_pending(dir_id) || fs::exists(worlds_root / dir_id)) {
+            dir_id = next_dir_id();
         }
         const fs::path home = worlds_root / dir_id;
         std::error_code mkdir_err;
@@ -852,6 +867,138 @@ std::vector<CleanupLogEntry> RegistryDb::read_cleanup_log(std::int64_t limit) co
                                       .detail = text_col(raw, 6),});
     }
     return out;
+}
+
+namespace {
+
+// 调用方已持锁、在事务里。写一条清理记录，返回它的 id。
+std::int64_t insert_cleanup_row(sqlite3* dbh, std::string_view now_iso, const std::string& world,
+                                const std::string& group, const char* action, const std::string& reason,
+                                const std::string& detail, const std::string& dir_id, bool pending) {
+    pst::Stmt stmt(dbh,
+                   "INSERT INTO cleanup_log (at, world, retention_group, action, reason, detail, dir_id, "
+                   "pending_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(now_iso, world, group, action, reason, detail, dir_id, static_cast<int>(pending));
+    stmt.step_done();
+    return sqlite3_last_insert_rowid(dbh);
+}
+
+// 调用方已持锁。该世界最新一条记录是不是 (action, reason)。
+bool latest_cleanup_row_is(sqlite3* dbh, const std::string& world, const char* action,
+                           const std::string& reason) {
+    pst::Stmt stmt(dbh, "SELECT action, reason FROM cleanup_log WHERE world = ? ORDER BY id DESC LIMIT 1");
+    stmt.bind(world);
+    return stmt.step_row() && text_col(stmt.raw(), 0) == action && text_col(stmt.raw(), 1) == reason;
+}
+
+// 布局检查（与 RegistryDb::remove 同一组）：dir_id 是单独一级路径、worlds/ 在数据目录之下、世界目录解析后恰好是
+// worlds/<dir_id>。不通过抛 snapshot_failed。返回世界目录（未解析符号链接）。
+fs::path checked_cleanup_home(const fs::path& data_dir, const WorldRecord& rec) {
+    internal::require_plain_dir_id(rec.dir_id, rec.name, "snapshot_failed");
+    const fs::path worlds_root = data_dir / "worlds";
+    try {
+        internal::require_worlds_root_inside(data_dir, worlds_root);
+    } catch (const WorldStoreError& err) {
+        throw WorldStoreError("snapshot_failed", err.what());
+    }
+    internal::require_resolved_home(worlds_root, rec.dir_id, "snapshot_failed", rec.name);
+    return worlds_root / rec.dir_id;
+}
+
+}  // namespace
+
+RegistryDb::UnregisterOutcome RegistryDb::unregister_for_cleanup(const CleanupCandidate& candidate,
+                                                                std::string_view now_iso) {
+    const std::scoped_lock lock(impl_->mutex);
+    const auto rec = impl_->find(candidate.world);
+    if (!rec) { return {.skipped = "gone", .home = {}, .log_id = 0}; }
+    std::string skipped;
+    std::string detail;
+    fs::path home;
+    bool has_held = false;
+    {
+        pst::Stmt stmt(impl_->db(), "SELECT 1 FROM snapshots WHERE world = ? AND kind = 'held' LIMIT 1");
+        stmt.bind(candidate.world);
+        has_held = stmt.step_row();
+    }
+    if (rec->dir_id != candidate.dir_id) {
+        skipped = "world_changed";
+    } else if (!cleanup_eligible(*rec, rec->name == impl_->default_name())) {
+        skipped = "not_reclaimable";
+    } else if (has_held) {
+        skipped = "held_snapshot";
+    } else {
+        try {
+            home = checked_cleanup_home(impl_->data_dir, *rec);
+        } catch (const WorldStoreError& err) {
+            skipped = "failed";
+            detail = err.what();
+        }
+    }
+    pst::TransactionGuard guard(*impl_->conn);
+    if (!skipped.empty()) {
+        if (!latest_cleanup_row_is(impl_->db(), rec->name, "skipped", skipped)) {
+            insert_cleanup_row(impl_->db(), now_iso, rec->name, rec->retention_group, "skipped", skipped,
+                               detail, "", false);
+        }
+        guard.commit();
+        return {.skipped = skipped, .home = {}, .log_id = 0};
+    }
+    // 先记录（带待删标记）、再摘注册项，同一个事务：提交之后注册项一定不在、记录一定在。
+    const std::int64_t log_id = insert_cleanup_row(impl_->db(), now_iso, rec->name, rec->retention_group,
+                                                   "removed", candidate.reason, "", rec->dir_id, true);
+    for (const char* sql : {"DELETE FROM world_labels WHERE name = ?",
+                            "DELETE FROM snapshots WHERE world = ?",
+                            "DELETE FROM worlds WHERE name = ?",}) {
+        pst::Stmt stmt(impl_->db(), sql);
+        stmt.bind(rec->name);
+        stmt.step_done();
+    }
+    guard.commit();
+    return {.skipped = {}, .home = home, .log_id = log_id};
+}
+
+bool RegistryDb::append_cleanup_skip(const CleanupSkip& skip, std::string_view now_iso) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    if (latest_cleanup_row_is(impl_->db(), skip.world, "skipped", skip.reason)) { return false; }
+    insert_cleanup_row(impl_->db(), now_iso, skip.world, skip.group, "skipped", skip.reason, skip.detail, "",
+                       false);
+    guard.commit();
+    return true;
+}
+
+void RegistryDb::append_archive_removed(const std::string& world, const std::string& group,
+                                        const std::string& archive_name, std::string_view now_iso) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    insert_cleanup_row(impl_->db(), now_iso, world, group, "archive_removed", "over_age", archive_name, "",
+                       false);
+    guard.commit();
+}
+
+std::vector<std::string> RegistryDb::pending_cleanup_dirs() const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(),
+                   "SELECT DISTINCT c.dir_id FROM cleanup_log c WHERE c.pending_dir = 1 AND c.dir_id <> '' "
+                   "AND NOT EXISTS (SELECT 1 FROM worlds w WHERE w.dir_id = c.dir_id) ORDER BY c.dir_id");
+    std::vector<std::string> out;
+    while (stmt.step_row()) { out.push_back(text_col(stmt.raw(), 0)); }
+    return out;
+}
+
+void RegistryDb::clear_cleanup_pending(const std::string& dir_id) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    pst::Stmt stmt(impl_->db(), "UPDATE cleanup_log SET pending_dir = 0 WHERE dir_id = ? AND pending_dir = 1");
+    stmt.bind(dir_id);
+    stmt.step_done();
+    guard.commit();
+}
+
+void RegistryDb::set_dir_id_source_for_test(std::function<std::string()> source) {
+    const std::scoped_lock lock(impl_->mutex);
+    impl_->dir_id_source = std::move(source);
 }
 
 namespace internal {

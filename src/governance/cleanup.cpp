@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -164,6 +165,104 @@ CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::s
         }
     }
     return plan;
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// 删掉 worlds/<dir_id>（经 remove_within，不出 worlds/）。目录本来就不在算删完。返回删完没有；失败只记 stderr。
+// 删除目标由 dir_id 推出，dir_id 必须是单独一级路径，且 worlds/<dir_id> 解析后恰好是它自己（不是外链）。
+bool remove_world_home(const fs::path& data_dir, const std::string& dir_id, const std::string& label) {
+    try {
+        internal::require_plain_dir_id(dir_id, label, "snapshot_failed");
+        const fs::path worlds_root = data_dir / "worlds";
+        internal::require_worlds_root_inside(data_dir, worlds_root);
+        const fs::path home = worlds_root / dir_id;
+        std::error_code err;
+        if (!fs::exists(fs::symlink_status(home, err))) { return true; }
+        internal::require_resolved_home(worlds_root, dir_id, "snapshot_failed", label);
+        if (!internal::remove_within(worlds_root, home)) {
+            std::cerr << "[cleanup] " << home.string() << " resolves outside " << worlds_root.string()
+                      << "; not removed\n";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& err) {
+        std::cerr << "[cleanup] cannot remove world directory of '" << label << "': " << err.what() << "\n";
+        return false;
+    }
+}
+
+// 第 0 步：补删上一轮留下的待删目录（裁定 R56 补充 1）。只删 cleanup_log 标成待删、worlds 表里已经没有的 dir_id。
+void finish_pending_dirs(RegistryDb& reg) {
+    for (const std::string& dir_id : reg.pending_cleanup_dirs()) {
+        if (remove_world_home(reg.data_dir(), dir_id, dir_id)) { reg.clear_cleanup_pending(dir_id); }
+    }
+}
+
+// 第 3 步的重新核对：世界还在、dir_id 相同、仍不归清理管、这份归档仍被 list_rollback_archives 列出。
+bool archive_still_due(const RegistryDb& reg, const CleanupArchive& item, WorldRecord& rec) {
+    try {
+        rec = reg.get(item.world);
+    } catch (const WorldStoreError&) {
+        return false;
+    }
+    if (rec.dir_id != item.dir_id) { return false; }
+    if (cleanup_eligible(rec, rec.name == reg.default_world())) { return false; }
+    const auto listed = list_rollback_archives(reg, item.world);
+    return std::ranges::any_of(listed, [&item](const ArchiveEntry& entry) { return entry.name == item.name; });
+}
+
+void remove_archive(RegistryDb& reg, const CleanupArchive& item, std::string_view now_iso) {
+    try {
+        WorldRecord rec;
+        if (!archive_still_due(reg, item, rec)) { return; }
+        const fs::path dir = reg.data_dir() / "worlds" / rec.dir_id / "archive";
+        if (!internal::remove_within(dir, dir / item.name)) {
+            std::cerr << "[cleanup] archive " << item.name << " of '" << item.world
+                      << "' resolves outside its archive directory; not removed\n";
+            return;
+        }
+        reg.append_archive_removed(item.world, rec.retention_group, item.name, now_iso);
+    } catch (const std::exception& err) {
+        std::cerr << "[cleanup] cannot remove archive " << item.name << " of '" << item.world
+                  << "': " << err.what() << "\n";
+    }
+}
+
+}  // namespace
+
+std::vector<CleanupCandidate> execute_cleanup(RegistryDb& reg, const CleanupPlan& plan,
+                                              std::string_view now_iso) {
+    (void)require_now(now_iso);   // 任何改动之前
+    finish_pending_dirs(reg);
+
+    std::vector<CleanupCandidate> removed;
+    for (const CleanupCandidate& candidate : plan.remove) {
+        RegistryDb::UnregisterOutcome outcome;
+        try {
+            outcome = reg.unregister_for_cleanup(candidate, now_iso);
+        } catch (const std::exception& err) {
+            std::cerr << "[cleanup] cannot unregister '" << candidate.world << "': " << err.what() << "\n";
+            continue;
+        }
+        if (!outcome.skipped.empty()) { continue; }
+        removed.push_back(candidate);
+        // 注册项已摘、记录已带待删标记：目录删不掉时留着标记，下一轮第 0 步再删。
+        if (remove_world_home(reg.data_dir(), candidate.dir_id, candidate.world)) {
+            reg.clear_cleanup_pending(candidate.dir_id);
+        }
+    }
+    for (const CleanupSkip& skip : plan.skip) {
+        try {
+            (void)reg.append_cleanup_skip(skip, now_iso);
+        } catch (const std::exception& err) {
+            std::cerr << "[cleanup] cannot record skip of '" << skip.world << "': " << err.what() << "\n";
+        }
+    }
+    for (const CleanupArchive& item : plan.archives) { remove_archive(reg, item, now_iso); }
+    return removed;
 }
 
 }  // namespace starling::governance
