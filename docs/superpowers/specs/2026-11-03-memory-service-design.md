@@ -119,6 +119,18 @@ rise 同时把对应关系改成「一个模拟世界一个 Starling 世界，�
 4. 删掉 `registry.db`、`registry.db-wal`、`registry.db-shm`。
 5. 用旧版本启动。升级后新建的世界与新拍的快照旧版本都不认识，需要时按第 2 步移走的文件手工处理。
 
+**降级到第 6 期之前（第 1–5 期）的版本：先把注册表改回 1 版（裁定 R45）。** 第 6 期把注册表的 `schema_version` 从 1 升到 2（加了 `cleanup_log` 表，§9）。旧版本只认 1，打开 2 版注册表会报 `registry_corrupt "unsupported registry schema_version '2'"`，整个服务起不来。步骤：
+
+1. 停服务（注册表此时不能有别的连接）。
+2. 对 `registry.db` 执行：
+   ```sql
+   DROP TABLE cleanup_log; UPDATE meta SET value='1' WHERE key='schema_version';
+   ```
+   之后注册表与第 6 期之前建出来的逐表相同，其余数据（世界、标签、快照条目）不变。清理记录随表一起丢掉。
+3. 用旧版本启动。再升级回第 6 期时，打开会自动重建空的 `cleanup_log` 并改回 2。
+
+`cleanup_log` 里还记着「注册项已摘、目录待删」的世界（清理删到一半时停了服务，下一轮清理本会补删）：表删掉之后没人再去删这些 `worlds/<dir_id>/` 目录。它们不在注册表里，旧版本不会打开或复用，只占磁盘，没有危害；要回收空间就手工删。降级前想找出它们，可以先执行 `SELECT world, dir_id FROM cleanup_log WHERE pending_dir = 1;`。
+
 ### 5.5 统计缓存
 
 - 不在每次提交时写 `registry.db`：那样所有世界的提交都要抢注册表的写锁，违背「引擎间没有共享锁」。

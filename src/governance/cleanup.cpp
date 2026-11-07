@@ -28,6 +28,7 @@ using Seconds = std::chrono::sys_seconds;
 constexpr std::int64_t kSecondsPerDay = 86'400;
 constexpr std::string_view kPreRollback = ".pre-rollback-";
 constexpr std::size_t kCompactStampLength = 16;   // 20261101T000000Z
+constexpr std::int64_t kMaxLogLimit = 500;
 
 [[noreturn]] void invalid(const std::string& detail) {
     throw WorldStoreError("invalid_settings", detail);
@@ -84,6 +85,14 @@ bool newer_first(const Ranked& lhs, const Ranked& rhs) {
 }
 
 }  // namespace
+
+std::vector<CleanupLogEntry> cleanup_log(const RegistryDb& reg, std::int64_t limit) {
+    if (limit < 1 || limit > kMaxLogLimit) {
+        throw WorldStoreError("invalid_world_query",
+                              "cleanup_log limit must be 1-500 (got " + std::to_string(limit) + ")");
+    }
+    return reg.read_cleanup_log(limit);
+}
 
 bool cleanup_eligible(const WorldRecord& rec, bool is_default) {
     return rec.reclaimable && !rec.seed && !is_default;

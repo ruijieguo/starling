@@ -32,7 +32,8 @@ namespace pst = starling::persistence;
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+// 2：第 6 期加 cleanup_log 表。旧二进制（认 1）打开 2 版注册表会报 registry_corrupt，降级步骤见 spec §5.4（裁定 R45）。
+constexpr int kSchemaVersion = 2;
 constexpr int kDefaultRetention = 5;
 constexpr std::int64_t kMaxPageLimit = 500;
 
@@ -87,6 +88,32 @@ CREATE TABLE IF NOT EXISTS snapshots (
     PRIMARY KEY (world, id)
 );
 )sql";
+
+// 注册表 schema 2（第 6 期）：自动清理的记录（cleanup.hpp CleanupLogEntry）。在 RegistryDb::open 的 BEGIN IMMEDIATE
+// 之内、版本检查之后建（新库、v1 升级、v2 都执行，IF NOT EXISTS 幂等），所以版本不认识时它不会被建出来。
+// 不在 kSchemaSql 里：v1 的建表语句保持逐字不变，spec §5.4 的降级 SQL（DROP TABLE cleanup_log + schema_version
+// 改回 1）之后，库的形状与第 6 期之前完全相同（测试 RegistryV2DowngradesToV1WithTheDocumentedSql）。
+// id 是 INTEGER PRIMARY KEY（rowid），不用 AUTOINCREMENT：那会多出 sqlite_sequence 表，降级 SQL 删不掉。记录从不
+// 删除，id 不会被复用。dir_id + pending_dir=1：世界的注册项已摘、目录还没删完（execute_cleanup 的删除顺序）；
+// 删完目录后清成 0。
+constexpr const char* kCleanupLogSql = R"sql(
+CREATE TABLE IF NOT EXISTS cleanup_log (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    world TEXT NOT NULL,
+    retention_group TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    dir_id TEXT NOT NULL DEFAULT '',
+    pending_dir INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cleanup_log_world ON cleanup_log (world, id);
+CREATE INDEX IF NOT EXISTS idx_cleanup_log_pending ON cleanup_log (dir_id) WHERE pending_dir = 1;
+)sql";
+
+// 第 6 期之前的注册表版本：打开时就地升到 kSchemaVersion（建 cleanup_log、改 meta，同一个事务）。
+constexpr std::string_view kRegistryV1 = "1";
 
 // 第 3 期给 snapshots 加了 digest 列，schema_version 仍是 1：之前建的注册表（含用户 8787 的
 // ~/.starling/registry.db）在 CREATE TABLE IF NOT EXISTS 之后还是旧形状，打开时就地补列。只加一列、
@@ -418,10 +445,17 @@ RegistryDb RegistryDb::open(const fs::path& data_dir, const fs::path& default_db
             world.bind(default_tenant, fs::absolute(default_db_path).string(),
                        (home / "snapshots").string(), "主世界", now);
             world.step_done();
+        } else if (*version == kRegistryV1) {
+            // v1 → v2（第 6 期）：与下面建 cleanup_log 同在这个 BEGIN IMMEDIATE 里，要么都成、要么都不成；两个进程
+            // 同时第一次打开时，后到的一个看见的已是 2。
+            pst::Stmt bump(impl->db(), "UPDATE meta SET value = ? WHERE key = 'schema_version'");
+            bump.bind(std::to_string(kSchemaVersion));
+            bump.step_done();
         } else if (*version != std::to_string(kSchemaVersion)) {
             registry_corrupt("unsupported registry schema_version '" + *version + "' in " +
                              file.string());
         }
+        impl->conn->exec(kCleanupLogSql);   // 版本已确认是 2（或刚升到 2）；IF NOT EXISTS，幂等
         guard.commit();
         // 默认世界必须在册（手改过库的话在此暴露）。
         if (!impl->find("default")) { registry_corrupt("default world missing in " + file.string()); }
@@ -803,6 +837,23 @@ std::vector<CleanupCensusRow> RegistryDb::cleanup_census() const {
     return out;
 }
 
+std::vector<CleanupLogEntry> RegistryDb::read_cleanup_log(std::int64_t limit) const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(),
+                   "SELECT id, at, world, retention_group, action, reason, detail FROM cleanup_log "
+                   "ORDER BY id DESC LIMIT ?");
+    sqlite3_bind_int64(stmt.raw(), 1, limit);
+    std::vector<CleanupLogEntry> out;
+    while (stmt.step_row()) {
+        sqlite3_stmt* raw = stmt.raw();
+        out.push_back(CleanupLogEntry{.id = sqlite3_column_int64(raw, 0), .at = text_col(raw, 1),
+                                      .world = text_col(raw, 2), .group = text_col(raw, 3),
+                                      .action = text_col(raw, 4), .reason = text_col(raw, 5),
+                                      .detail = text_col(raw, 6),});
+    }
+    return out;
+}
+
 namespace internal {
 
 void write_fresh_registry(const fs::path& file, const std::string& default_world,
@@ -810,6 +861,7 @@ void write_fresh_registry(const fs::path& file, const std::string& default_world
     try {
         auto conn = pst::Connection::open(file);
         conn.exec(kSchemaSql);
+        conn.exec(kCleanupLogSql);   // 新建的注册表直接是 kSchemaVersion（2）的形状
         {
             pst::TransactionGuard guard(conn);
             sqlite3* dbh = conn.raw();

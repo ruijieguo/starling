@@ -60,6 +60,18 @@ struct CleanupCensusRow {
 // 自动清理只碰的世界：reclaimable=1、不是种子、不是默认世界。种子即使标了 reclaimable 也不碰（spec §6.2）。
 [[nodiscard]] bool cleanup_eligible(const WorldRecord& rec, bool is_default);
 
+// 一条清理记录（registry.db 的 cleanup_log 表，注册表 schema 2）。
+//   action："removed"（删了一个世界）| "skipped"（跳过，reason 同 CleanupSkip）| "archive_removed"（删了一份
+//   回滚归档，detail 是归档名）。reason：removed 是 over_count / over_age；archive_removed 是 over_age。
+//   at 是 execute_cleanup 的 now_iso；group 是世界的 retention_group（可空）。
+struct CleanupLogEntry {
+    std::int64_t id = 0;   // 递增，越大越新
+    std::string at, world, group, action, reason, detail;
+};
+
+// 最近的清理记录，最新在前，至多 limit 条。limit 不在 1–500 抛 invalid_world_query（与 RegistryDb::list 同一个码）。
+[[nodiscard]] std::vector<CleanupLogEntry> cleanup_log(const RegistryDb& reg, std::int64_t limit);
+
 // 选出该删的世界与到期的归档，只读（不写注册表、不删文件）。cfg 不合法或 now_iso 不是 YYYY-MM-DDTHH:MM:SSZ
 // 抛 invalid_settings。规则（spec §9，裁定 R56）：
 //   - 只看 cleanup_eligible 的世界。

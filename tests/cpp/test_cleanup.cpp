@@ -125,6 +125,114 @@ fs::path put_archive(const RegistryDb& reg, const std::string& world, const std:
     return file;
 }
 
+
+// 第 6 期之前（schema_version 1，47474ca）的注册表建表 SQL，逐字照抄 registry_db.cpp 的 kSchemaSql。降级验证用：
+// 按 spec §5.4 的两条 SQL 改回之后，库的形状必须与它建出来的完全相同，旧二进制的打开逻辑（执行这段 SQL、
+// 读 schema_version 必须是 "1"）才会通过。
+constexpr const char* kV1SchemaSql = R"sql(
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS worlds (
+    name TEXT PRIMARY KEY,
+    dir_id TEXT NOT NULL UNIQUE,
+    tenant TEXT NOT NULL,
+    db_path TEXT NOT NULL,
+    snapshot_dir TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    seed INTEGER NOT NULL DEFAULT 0,
+    read_only INTEGER NOT NULL DEFAULT 0,
+    reclaimable INTEGER NOT NULL DEFAULT 0,
+    retention_group TEXT NOT NULL DEFAULT '',
+    fork_of_world TEXT NOT NULL DEFAULT '',
+    fork_of_snapshot TEXT NOT NULL DEFAULT '',
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    holders INTEGER NOT NULL DEFAULT 0,
+    statements INTEGER NOT NULL DEFAULT 0,
+    last_write_at TEXT NOT NULL DEFAULT '',
+    stats_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS world_labels (
+    name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (name, key)
+);
+CREATE INDEX IF NOT EXISTS idx_world_labels_kv ON world_labels (key, value);
+CREATE TABLE IF NOT EXISTS snapshots (
+    world TEXT NOT NULL,
+    id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    world_time TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    sessions_complete INTEGER,
+    session_id TEXT NOT NULL DEFAULT '',
+    content_mark TEXT NOT NULL DEFAULT '',
+    seq INTEGER NOT NULL,
+    digest TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (world, id)
+);
+)sql";
+
+// spec §5.4 写给用户的降级 SQL（裁定 R45），逐字。
+constexpr const char* kDowngradeSql =
+    "DROP TABLE cleanup_log; UPDATE meta SET value='1' WHERE key='schema_version';";
+
+// sqlite_master 的全部行（type|name|tbl_name|sql），按 name 排。
+std::vector<std::string> master_rows(const fs::path& db_file) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open(db_file.string().c_str(), &raw), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(raw,
+                                 "SELECT type || '|' || name || '|' || tbl_name || '|' || "
+                                 "COALESCE(sql, '') FROM sqlite_master ORDER BY name",
+                                 -1, &stmt, nullptr),
+              SQLITE_OK);
+    std::vector<std::string> out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        out.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return out;
+}
+
+// 单个值的查询（没有行返回 "<none>"）。
+std::string scalar(const fs::path& db_file, const std::string& sql) {
+    sqlite3* raw = nullptr;
+    EXPECT_EQ(sqlite3_open(db_file.string().c_str(), &raw), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(raw, sql.c_str(), -1, &stmt, nullptr), SQLITE_OK) << sql;
+    std::string out = "<none>";
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* text = sqlite3_column_text(stmt, 0);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        out = text == nullptr ? std::string("<null>") : std::string(reinterpret_cast<const char*>(text));
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return out;
+}
+
+std::string schema_version_of(const fs::path& registry) {
+    return scalar(registry, "SELECT value FROM meta WHERE key = 'schema_version'");
+}
+
+bool has_table(const fs::path& db_file, const std::string& table) {
+    return scalar(db_file, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '" + table +
+                               "'") == table;
+}
+
+// 旧二进制（kSchemaVersion = 1）打开注册表时做的事：执行它的建表 SQL（IF NOT EXISTS），读 schema_version，
+// 必须是 "1"。返回能不能通过。
+bool v1_open_logic_accepts(const fs::path& registry) {
+    sql_exec(registry, kV1SchemaSql);
+    return schema_version_of(registry) == "1";
+}
 }  // namespace
 
 // ---- plan_cleanup：选世界的规则 ----
@@ -368,4 +476,139 @@ TEST(Cleanup, PlanToleratesAWorldWhoseArchivesCannotBeListed) {
     ASSERT_EQ(plan.archives.size(), 1U);
     EXPECT_EQ(plan.archives.front().world, "deploy");
     EXPECT_EQ(plan.archives.front().name, aged.filename().string());
+}
+
+// ---- 注册表 v2：cleanup_log 表、v1 就地升级、降级（裁定 R45） ----
+
+TEST(Cleanup, FreshRegistryIsV2WithCleanupLog) {
+    const TempDir tmp;
+    { auto reg = open_db(tmp); }
+    const fs::path file = tmp.path() / "registry.db";
+    EXPECT_EQ(schema_version_of(file), "2");
+    EXPECT_TRUE(has_table(file, "cleanup_log"));
+    auto reg = open_db(tmp);
+    EXPECT_TRUE(cleanup_log(reg, 50).empty());
+}
+
+TEST(Cleanup, RegistryV1UpgradesToV2WithCleanupLog) {
+    const TempDir tmp;
+    const fs::path file = tmp.path() / "registry.db";
+    {
+        auto reg = open_db(tmp);
+        reclaimable(reg, "rollout", "g", kFresh);
+        put_held(reg, "rollout", "20261119T000000Z-aaaa");
+    }
+    sql_exec(file, kDowngradeSql);   // 造出第 6 期之前的 v1 注册表
+    ASSERT_EQ(schema_version_of(file), "1");
+    ASSERT_FALSE(has_table(file, "cleanup_log"));
+    for (int round = 0; round < 2; ++round) {   // 第二次打开时已是 v2：幂等
+        auto reg = open_db(tmp);
+        EXPECT_EQ(schema_version_of(file), "2") << round;
+        EXPECT_TRUE(has_table(file, "cleanup_log")) << round;
+        EXPECT_TRUE(cleanup_log(reg, 50).empty());
+        EXPECT_TRUE(reg.get("rollout").reclaimable);   // 原有的行原样
+        ASSERT_EQ(reg.snapshots("rollout").size(), 1U);
+        EXPECT_EQ(reg.snapshots("rollout").front().kind, "held");
+    }
+}
+
+// CREATE TABLE IF NOT EXISTS：v1 注册表里已有一张 cleanup_log（例如手工建过）时照样升级，不报错。
+TEST(Cleanup, RegistryV1UpgradeToleratesAnExistingCleanupLogTable) {
+    const TempDir tmp;
+    const fs::path file = tmp.path() / "registry.db";
+    { auto reg = open_db(tmp); }
+    sql_exec(file, "UPDATE meta SET value='1' WHERE key='schema_version'");
+    ASSERT_TRUE(has_table(file, "cleanup_log"));
+    { auto reg = open_db(tmp); }
+    EXPECT_EQ(schema_version_of(file), "2");
+}
+
+// 不认识的版本照旧拒绝，而且拒绝时什么都没改（升级与版本检查在同一个事务里，回滚）。
+TEST(Cleanup, UnsupportedRegistryVersionIsRejectedUntouched) {
+    const TempDir tmp;
+    const fs::path file = tmp.path() / "registry.db";
+    { auto reg = open_db(tmp); }
+    sql_exec(file, std::string(kDowngradeSql) + "UPDATE meta SET value='3' WHERE key='schema_version';");
+    EXPECT_EQ(code_of([&] { (void)open_db(tmp); }), "registry_corrupt");
+    EXPECT_EQ(schema_version_of(file), "3");
+    EXPECT_FALSE(has_table(file, "cleanup_log"));
+}
+
+// 裁定 R45：v2 注册表按 spec §5.4 的两条 SQL 改回之后，形状与第 6 期之前的 v1 注册表完全相同，旧二进制的
+// 打开逻辑能通过；改回之前它会拒绝（schema_version 是 "2"）。之后再用本版本打开，又升回 v2。
+TEST(Cleanup, RegistryV2DowngradesToV1WithTheDocumentedSql) {
+    const TempDir tmp;
+    const TempDir reference;
+    const fs::path file = tmp.path() / "registry.db";
+    {
+        auto reg = open_db(tmp);
+        reg.create("deploy", "部署", {{"env", "prod"}}, "{}", kFresh);
+        reclaimable(reg, "rollout", "g", kFresh);
+        put_held(reg, "rollout", "20261119T000000Z-aaaa");
+    }
+    sql_exec(file, "INSERT INTO cleanup_log (at, world, retention_group, action, reason) "
+                   "VALUES ('2026-11-19T00:00:00Z', 'gone', 'g', 'removed', 'over_age')");
+    EXPECT_FALSE(v1_open_logic_accepts(file));   // 改回之前：旧二进制拒绝
+
+    sql_exec(file, kDowngradeSql);
+    const fs::path v1_file = reference.path() / "v1.db";
+    sql_exec(v1_file, kV1SchemaSql);
+    EXPECT_EQ(master_rows(file), master_rows(v1_file));   // 表、索引、建表语句逐行相同
+    EXPECT_TRUE(v1_open_logic_accepts(file));
+    EXPECT_EQ(master_rows(file), master_rows(v1_file));   // 旧逻辑打开时也没建出别的东西
+    EXPECT_EQ(scalar(file, "SELECT COUNT(*) FROM worlds"), "3");
+    EXPECT_EQ(scalar(file, "SELECT kind FROM snapshots WHERE world = 'rollout'"), "held");
+
+    auto reg = open_db(tmp);   // 再升级回来
+    EXPECT_EQ(schema_version_of(file), "2");
+    EXPECT_TRUE(cleanup_log(reg, 50).empty());   // 降级丢掉了旧记录
+    EXPECT_EQ(reg.get("deploy").labels.at("env"), "prod");
+}
+
+// 导入 worlds.json 建出来的注册表同样是 v2、带 cleanup_log。
+TEST(Cleanup, ImportedRegistryIsV2) {
+    const TempDir tmp;
+    const std::string body = std::string(R"({"version":1,"default":"default","snapshot_retention":5,)") +
+                             R"("worlds":{"default":{"tenant":"default","db_path":")" +
+                             (tmp.path() / "dashboard.db").string() + R"(","snapshot_dir":")" +
+                             (tmp.path() / "worlds" / "default" / "snapshots").string() +
+                             R"(","label":"主世界","created_at":"2026-10-25T00:00:00Z"}},)" +
+                             R"("snapshots":{}})";
+    std::ofstream(tmp.path() / "worlds.json") << body;
+    import_worlds_json(tmp.path());
+    const fs::path file = tmp.path() / "registry.db";
+    EXPECT_EQ(schema_version_of(file), "2");
+    EXPECT_TRUE(has_table(file, "cleanup_log"));
+    auto reg = open_db(tmp);
+    EXPECT_EQ(reg.default_world(), "default");
+}
+
+TEST(Cleanup, CleanupLogReadsNewestFirstWithinLimit) {
+    const TempDir tmp;
+    { auto reg = open_db(tmp); }
+    const fs::path file = tmp.path() / "registry.db";
+    sql_exec(file,
+             "INSERT INTO cleanup_log (at, world, retention_group, action, reason, detail) VALUES "
+             "('2026-11-19T00:00:00Z', 'w1', 'g', 'removed', 'over_count', ''),"
+             "('2026-11-19T00:10:00Z', 'w2', '', 'skipped', 'held_snapshot', ''),"
+             "('2026-11-19T00:20:00Z', 'deploy', '', 'archive_removed', 'over_age', "
+             "'world.db.pre-rollback-20261101T000000Z-abcd')");
+    auto reg = open_db(tmp);
+    const auto all = cleanup_log(reg, 50);
+    ASSERT_EQ(all.size(), 3U);
+    EXPECT_EQ(all.at(0).world, "deploy");
+    EXPECT_EQ(all.at(0).action, "archive_removed");
+    EXPECT_EQ(all.at(0).detail, "world.db.pre-rollback-20261101T000000Z-abcd");
+    EXPECT_EQ(all.at(1).world, "w2");
+    EXPECT_EQ(all.at(1).reason, "held_snapshot");
+    EXPECT_EQ(all.at(2).world, "w1");
+    EXPECT_EQ(all.at(2).group, "g");
+    EXPECT_EQ(all.at(2).at, "2026-11-19T00:00:00Z");
+    EXPECT_GT(all.at(0).id, all.at(1).id);
+    const auto newest = cleanup_log(reg, 1);
+    ASSERT_EQ(newest.size(), 1U);
+    EXPECT_EQ(newest.front().world, "deploy");
+    EXPECT_EQ(code_of([&] { (void)cleanup_log(reg, 0); }), "invalid_world_query");
+    EXPECT_EQ(code_of([&] { (void)cleanup_log(reg, 501); }), "invalid_world_query");
+    EXPECT_EQ(cleanup_log(reg, 500).size(), 3U);
 }

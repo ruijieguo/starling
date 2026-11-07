@@ -81,6 +81,8 @@ public:
     // 文件打不开或不是合法的注册表：registry_corrupt。
     // snapshots 表没有 digest 列（第 3 期之前建的注册表，schema_version 仍是 1）时就地
     // ALTER TABLE ... ADD COLUMN digest TEXT NOT NULL DEFAULT ''：旧条目的 digest 为空串。幂等。
+    // 注册表 schema 2（第 6 期）：schema_version 为 "1" 时在同一个 BEGIN IMMEDIATE 里建 cleanup_log 表并改成 "2"，
+    // 幂等；其余不认识的版本照旧 registry_corrupt，什么都不改。降级回 1 版见 spec §5.4（裁定 R45）。
     static RegistryDb open(const std::filesystem::path& data_dir,
                            const std::filesystem::path& default_db_path,
                            const std::string& default_tenant);
@@ -182,6 +184,8 @@ public:
     // 全部世界（不带标签）与各自「有没有 held 快照」「是不是默认世界」，一次持锁读出，按登记顺序（rowid）。
     // plan_cleanup 用它，规则不在这里。
     [[nodiscard]] std::vector<CleanupCensusRow> cleanup_census() const;
+    // cleanup_log 表最新的 limit 条（调用方已校验 limit），最新在前。
+    [[nodiscard]] std::vector<CleanupLogEntry> read_cleanup_log(std::int64_t limit) const;
 
 private:
     struct Impl;
