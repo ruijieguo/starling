@@ -1084,3 +1084,105 @@ TEST(Cleanup, SkipRowsCarryDirIdAndDedupPerIncarnation) {
     EXPECT_EQ(log_count(tmp, "reason = 'failed' AND world = 'broken'"), "2");
     EXPECT_EQ(log_count(tmp, "reason = 'failed' AND dir_id = '" + broken.dir_id + "'"), "2");
 }
+
+// ---- 裁定 R71：lstat 出错不算「目录不在」 ----
+
+// 恢复一个目录的权限（析构时），测试中途失败也能让 TempDir 清理掉。
+class PermissionRestorer {
+public:
+    explicit PermissionRestorer(fs::path dir) : dir_(std::move(dir)) {}
+    ~PermissionRestorer() {
+        std::error_code err;
+        fs::permissions(dir_, fs::perms::owner_all, fs::perm_options::replace, err);
+    }
+    PermissionRestorer(const PermissionRestorer&) = delete;
+    PermissionRestorer& operator=(const PermissionRestorer&) = delete;
+private:
+    fs::path dir_;
+};
+
+// worlds/ 是 chmod 0：补删 lstat 世界目录得到 EACCES，不能当成「已经不在」清掉待删标记（那样目录就成了永久孤儿）。
+// 标记留着；权限恢复之后下一轮删掉目录、清掉标记。
+TEST(Cleanup, PendingSweepKeepsTheMarkerWhenTheDirectoryCannotBeStatted) {
+    if (::geteuid() == 0) { GTEST_SKIP() << "root 不受目录权限限制"; }
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reclaimable(reg, "half-done", "g", kStale);
+    const std::string dir_id = reg.get("half-done").dir_id;
+    std::ofstream(home_of(tmp, dir_id) / "world.db") << "x";
+    simulate_crash_after_unregister(tmp, "half-done", dir_id);
+    const fs::path worlds_root = tmp.path() / "worlds";
+    {
+        const PermissionRestorer restore(worlds_root);
+        fs::permissions(worlds_root, fs::perms::none, fs::perm_options::replace);
+        auto reopened = open_db(tmp);
+        EXPECT_TRUE(execute_cleanup(reopened, CleanupPlan{}, CleanupConfig{}, kNow).empty());
+        EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = '" + dir_id + "'"), "1");
+    }
+    EXPECT_TRUE(fs::exists(home_of(tmp, dir_id) / "world.db"));   // 权限恢复了：目录还在
+    auto reopened = open_db(tmp);
+    EXPECT_TRUE(execute_cleanup(reopened, CleanupPlan{}, CleanupConfig{}, kNow).empty());
+    EXPECT_FALSE(fs::exists(home_of(tmp, dir_id)));
+    EXPECT_EQ(log_count(tmp, "pending_dir = 1"), "0");
+}
+
+// worlds/ 不可读时整轮清理都不删、不清标记：锁内的布局核对 lstat 世界目录得到 EACCES → 跳过记 failed（注册项不动）；
+// 已经摘掉注册项、等着删目录的那个（第 b 步与补删是同一个删除助手，裁定 R72 M8）标记留着。权限恢复后两者都正常收尾。
+TEST(Cleanup, UnreadableWorldsDirectoryNeitherRemovesNorClearsMarkers) {
+    if (::geteuid() == 0) { GTEST_SKIP() << "root 不受目录权限限制"; }
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    const auto pending = reclaimable(reg, "pending", "g", kStale);
+    const auto due = reclaimable(reg, "due", "g", kStale);
+    const auto decision = reg.unregister_for_cleanup("pending", pending.dir_id, CleanupConfig{}, kNow);
+    ASSERT_TRUE(decision.removed);   // 第 a 步已做：注册项已摘、标记在，目录还没删
+    const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
+    ASSERT_EQ(names_of(plan.remove), std::vector<std::string>{"due"});
+    const fs::path worlds_root = tmp.path() / "worlds";
+    {
+        const PermissionRestorer restore(worlds_root);
+        fs::permissions(worlds_root, fs::perms::none, fs::perm_options::replace);
+        EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
+        EXPECT_NO_THROW((void)reg.get("due"));
+        EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = '" + pending.dir_id + "'"), "1");
+        EXPECT_EQ(log_count(tmp, "world = 'due' AND reason = 'failed'"), "1");
+    }
+    EXPECT_TRUE(fs::exists(home_of(tmp, pending.dir_id)));
+    EXPECT_TRUE(fs::exists(home_of(tmp, due.dir_id)));
+    const auto removed = execute_cleanup(reg, plan, CleanupConfig{}, kNow);
+    EXPECT_EQ(names_of(removed), std::vector<std::string>{"due"});
+    EXPECT_FALSE(fs::exists(home_of(tmp, pending.dir_id)));
+    EXPECT_FALSE(fs::exists(home_of(tmp, due.dir_id)));
+    EXPECT_EQ(log_count(tmp, "pending_dir = 1"), "0");
+}
+
+// ---- 裁定 R72 M2：补删只认 reserve_home 生成的 dir_id 形状（16 位小写十六进制） ----
+
+TEST(Cleanup, PendingSweepOnlyRemovesGeneratedDirIds) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    // 导入的旧世界保留原目录名作为 dir_id（spec §5.3）：形状合法、但不是生成的。待删记录指向这样的目录时不删。
+    const fs::path legacy = tmp.path() / "worlds" / "sim-1";
+    const fs::path upper = tmp.path() / "worlds" / "ABCDEF0123456789";
+    const fs::path short_hex = tmp.path() / "worlds" / "abcdef";
+    for (const auto& dir : {legacy, upper, short_hex}) {
+        fs::create_directories(dir);
+        std::ofstream(dir / "keep") << "x";
+    }
+    const std::string generated(16, 'c');
+    fs::create_directories(tmp.path() / "worlds" / generated);
+    sql_exec(tmp.path() / "registry.db",
+             "INSERT INTO cleanup_log (at, world, action, reason, dir_id, pending_dir) VALUES "
+             "('2026-11-19T00:00:00Z', 'a', 'removed', 'over_age', 'sim-1', 1),"
+             "('2026-11-19T00:00:00Z', 'b', 'removed', 'over_age', 'ABCDEF0123456789', 1),"
+             "('2026-11-19T00:00:00Z', 'c', 'removed', 'over_age', 'abcdef', 1),"
+             "('2026-11-19T00:00:00Z', 'd', 'removed', 'over_age', '" + generated + "', 1)");
+    auto reopened = open_db(tmp);
+    (void)execute_cleanup(reopened, CleanupPlan{}, CleanupConfig{}, kNow);
+    for (const auto& dir : {legacy, upper, short_hex}) {
+        EXPECT_TRUE(fs::exists(dir / "keep")) << dir;
+    }
+    EXPECT_FALSE(fs::exists(tmp.path() / "worlds" / generated));
+    EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = '" + generated + "'"), "0");
+    EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = 'sim-1'"), "1");   // 标记留着，供人工处理
+}

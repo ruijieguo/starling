@@ -6,6 +6,7 @@
 #include "starling/governance/cleanup.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +27,16 @@ void require_cleanup_config(const CleanupConfig& cfg);
 [[nodiscard]] inline bool is_cleanup_due(std::string_view reason) {
     return reason == "over_age" || reason == "over_count";
 }
+
+// 清理删世界目录之前的布局检查（裁定 R72 M8：注册表锁内的核对与锁外的删除共用这一份）：dir_id 是单独一级路径、
+// <data_dir>/worlds 解析后仍在数据目录之下、worlds/<dir_id> 解析后恰好是它自己（不是指到别处的符号链接；还不存在时
+// 照常通过）。规则与 RegistryDb::remove 相同。不通过（含解析出错，例如 EACCES）抛 snapshot_failed，消息点名 label。
+// 返回 worlds/<dir_id>（未解析符号链接）。
+[[nodiscard]] std::filesystem::path checked_cleanup_home(const std::filesystem::path& data_dir,
+                                                         const std::string& dir_id, const std::string& label);
+
+// reserve_home 生成的 dir_id 形状：16 位小写十六进制（裁定 R72 M2，补删只认这种）。
+[[nodiscard]] bool is_generated_dir_id(std::string_view dir_id);
 
 // 一份回滚归档按名字里的时刻（"<库文件名>.pre-rollback-<YYYYMMDDTHHMMSSZ>-<4 hex>"）距 now 严格大于
 // archive_max_age_days 天。名字的形状或日期不对返回 false。

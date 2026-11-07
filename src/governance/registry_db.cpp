@@ -889,19 +889,6 @@ void insert_skip_deduped(sqlite3* dbh, std::string_view now_iso, const WorldReco
     insert_cleanup_row(dbh, now_iso, rec.name, rec.retention_group, "skipped", reason, detail, rec.dir_id, false);
 }
 
-// 布局检查（与 RegistryDb::remove 同一组）：dir_id 是单独一级路径、worlds/ 在数据目录之下、世界目录解析后恰好是
-// worlds/<dir_id>。不通过抛 snapshot_failed。
-void check_cleanup_home(const fs::path& data_dir, const WorldRecord& rec) {
-    internal::require_plain_dir_id(rec.dir_id, rec.name, "snapshot_failed");
-    const fs::path worlds_root = data_dir / "worlds";
-    try {
-        internal::require_worlds_root_inside(data_dir, worlds_root);
-    } catch (const WorldStoreError& err) {
-        throw WorldStoreError("snapshot_failed", err.what());
-    }
-    internal::require_resolved_home(worlds_root, rec.dir_id, "snapshot_failed", rec.name);
-}
-
 }  // namespace
 
 std::vector<CleanupCensusRow> RegistryDb::cleanup_census() const {
@@ -964,7 +951,7 @@ RegistryDb::CleanupDecision RegistryDb::unregister_for_cleanup(const std::string
             decision.reason = "no_longer_due";
         } else {
             try {
-                check_cleanup_home(impl_->data_dir, rec);
+                (void)internal::checked_cleanup_home(impl_->data_dir, rec.dir_id, rec.name);
                 decision.reason = due;
                 decision.removed = true;
             } catch (const WorldStoreError& err) {

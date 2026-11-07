@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <system_error>
 #include <optional>
 #include <string>
 #include <utility>
@@ -25,6 +26,7 @@ namespace starling::governance {
 
 namespace {
 
+namespace fs = std::filesystem;
 using Seconds = std::chrono::sys_seconds;
 
 constexpr std::int64_t kSecondsPerDay = 86'400;
@@ -117,6 +119,25 @@ std::vector<std::string> cleanup_due_reasons(const std::vector<CleanupCensusRow>
     return reason;
 }
 
+fs::path checked_cleanup_home(const fs::path& data_dir, const std::string& dir_id, const std::string& label) {
+    require_plain_dir_id(dir_id, label, "snapshot_failed");
+    const fs::path worlds_root = data_dir / "worlds";
+    try {
+        require_worlds_root_inside(data_dir, worlds_root);
+    } catch (const WorldStoreError& err) {
+        throw WorldStoreError("snapshot_failed", err.what());
+    }
+    require_resolved_home(worlds_root, dir_id, "snapshot_failed", label);
+    return worlds_root / dir_id;
+}
+
+bool is_generated_dir_id(std::string_view dir_id) {
+    constexpr std::size_t kGeneratedLength = 16;   // random_hex() 的长度
+    return dir_id.size() == kGeneratedLength && std::ranges::all_of(dir_id, [](char chr) {
+               return (chr >= '0' && chr <= '9') || (chr >= 'a' && chr <= 'f');
+           });
+}
+
 bool cleanup_archive_due(std::string_view name, const CleanupConfig& cfg, Seconds now) {
     const auto stamp = archive_stamp(name);
     return stamp && older_than(*stamp, now, cfg.archive_max_age_days);
@@ -184,19 +205,21 @@ CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::s
 
 namespace {
 
-namespace fs = std::filesystem;
-
-// 删掉 worlds/<dir_id>（经 remove_within，不出 worlds/）。目录本来就不在算删完。返回删完没有；失败只记 stderr。
-// 删除目标由 dir_id 推出，dir_id 必须是单独一级路径，且 worlds/<dir_id> 解析后恰好是它自己（不是外链）。
+// 删掉 worlds/<dir_id>（经 remove_within，不出 worlds/）。返回删完没有（目录本来就不在算删完）；失败只记 stderr，
+// 调用方据此留着待删标记。布局检查与注册表锁内的核对是同一个助手（裁定 R72 M8）。
+// 裁定 R71：lstat 出错（EACCES 等，不是 not_found）不当成「目录不在」，返回 false，标记留着。
 bool remove_world_home(const fs::path& data_dir, const std::string& dir_id, const std::string& label) {
     try {
-        internal::require_plain_dir_id(dir_id, label, "snapshot_failed");
-        const fs::path worlds_root = data_dir / "worlds";
-        internal::require_worlds_root_inside(data_dir, worlds_root);
-        const fs::path home = worlds_root / dir_id;
+        const fs::path home = internal::checked_cleanup_home(data_dir, dir_id, label);
         std::error_code err;
-        if (!fs::exists(fs::symlink_status(home, err))) { return true; }
-        internal::require_resolved_home(worlds_root, dir_id, "snapshot_failed", label);
+        const fs::file_status status = fs::symlink_status(home, err);
+        if (err && status.type() != fs::file_type::not_found) {
+            std::cerr << "[cleanup] cannot stat " << home.string() << ": " << err.message()
+                      << "; kept pending\n";
+            return false;
+        }
+        if (status.type() == fs::file_type::not_found) { return true; }
+        const fs::path worlds_root = home.parent_path();
         if (!internal::remove_within(worlds_root, home)) {
             std::cerr << "[cleanup] " << home.string() << " resolves outside " << worlds_root.string()
                       << "; not removed\n";
@@ -209,9 +232,15 @@ bool remove_world_home(const fs::path& data_dir, const std::string& dir_id, cons
     }
 }
 
-// 第 0 步：补删上一轮留下的待删目录（裁定 R56 补充 1）。只删 cleanup_log 标成待删、worlds 表里已经没有的 dir_id。
+// 第 0 步：补删上一轮留下的待删目录（裁定 R56 补充 1）。只删 cleanup_log 标成待删、worlds 表里已经没有的 dir_id，
+// 而且 dir_id 必须是 reserve_home 生成的形状（裁定 R72 M2）：清理只删过生成的 dir_id，别的形状（导入的旧目录名、被篡改
+// 的记录）不删，标记留着，记 stderr。
 void finish_pending_dirs(RegistryDb& reg) {
     for (const std::string& dir_id : reg.pending_cleanup_dirs()) {
+        if (!internal::is_generated_dir_id(dir_id)) {
+            std::cerr << "[cleanup] pending dir_id '" << dir_id << "' is not a generated id; not removed\n";
+            continue;
+        }
         if (remove_world_home(reg.data_dir(), dir_id, dir_id)) { reg.clear_cleanup_pending(dir_id); }
     }
 }
