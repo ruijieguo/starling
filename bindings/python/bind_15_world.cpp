@@ -28,6 +28,12 @@
 #include "starling/governance/world_store.hpp"
 #include "starling/persistence/connection.hpp"
 
+#include "starling/governance/cleanup.hpp"   // 自动清理（第 6 期，见文件末尾的区块）
+
+#include <functional>
+#include <set>
+#include <string>
+
 namespace starling::bindings {
 
 namespace {
@@ -177,6 +183,9 @@ gov::AutoSnapshotConfig auto_config_in(const py::handle& on_session, const py::h
 }
 
 }  // namespace
+
+// 自动清理的绑定（第 6 期，定义在本文件末尾的区块里，裁定 R44）。
+void bind_world_cleanup(pybind11::module_& m);   // NOLINT(readability-identifier-length)
 
 // NOLINTNEXTLINE(readability-identifier-length) — `m` matches all sibling bind_NN units
 void bind_15_world(pybind11::module_& m) {
@@ -820,6 +829,190 @@ void bind_15_world(pybind11::module_& m) {
               gov::require_writable(rec, for_client_write, held_by_other);
           }, py::arg("record"), py::arg("for_client_write") = false,
           py::arg("held_by_other") = false);
+
+    bind_world_cleanup(m);
+}
+
+
+// ---- 自动清理（第 6 期 Task 6.1，cleanup.hpp）：只做类型归一与转发，规则全在 C++ ----
+// 裁定 R44：新绑定集中在文件末尾这一块（与第 4 期并行改同一个文件，合并时冲突小）。
+
+namespace {
+
+namespace gov = starling::governance;
+using namespace pybind11::literals;
+
+
+[[noreturn]] void invalid_cleanup(const std::string& detail) {
+    throw gov::WorldStoreError("invalid_settings", detail);
+}
+
+// Python int（bool 不算）→ int64；类型不对 invalid_settings。取值范围由 C++ plan_cleanup 校验。
+std::int64_t cleanup_int_in(const py::handle& value, const char* field) {
+    if (!py::isinstance<py::int_>(value) || py::isinstance<py::bool_>(value)) {
+        invalid_cleanup(std::string(field) + " must be an integer");
+    }
+    int overflow = 0;
+    const auto number = PyLong_AsLongLongAndOverflow(value.ptr(), &overflow);
+    if (overflow != 0) { invalid_cleanup(std::string(field) + " is out of range"); }
+    if (PyErr_Occurred() != nullptr) { throw py::error_already_set(); }
+    return static_cast<std::int64_t>(number);
+}
+
+// dict 里的必填字符串字段；缺或不是 str → invalid_settings。
+std::string cleanup_text_in(const py::dict& item, const char* key, const char* what) {
+    const py::object value = item.attr("get")(key);
+    if (!py::isinstance<py::str>(value)) {
+        invalid_cleanup(std::string(what) + " needs a string '" + key + "'");
+    }
+    return value.cast<std::string>();
+}
+
+// 一个列表键：缺 → 空；不是 list 或元素不是 dict → invalid_settings。
+template <typename Item>
+std::vector<Item> cleanup_list_in(const py::dict& plan, const char* key,
+                                  const std::function<Item(const py::dict&)>& convert) {
+    std::vector<Item> out;
+    if (!plan.contains(key)) { return out; }
+    const py::object value = plan.attr("get")(key);
+    if (!py::isinstance<py::list>(value)) { invalid_cleanup(std::string("plan '") + key + "' must be a list"); }
+    for (const auto& element : value.cast<py::list>()) {
+        if (!py::isinstance<py::dict>(element)) {
+            invalid_cleanup(std::string("plan '") + key + "' items must be dicts");
+        }
+        out.push_back(convert(py::reinterpret_borrow<py::dict>(element)));
+    }
+    return out;
+}
+
+// world_cleanup_plan 返回的 dict → CleanupPlan（只做类型归一，持 GIL）。顶层只认 remove / skip / archives。
+gov::CleanupPlan cleanup_plan_in(const py::dict& plan) {
+    for (const auto& [raw_key, value] : plan) {
+        (void)value;
+        const auto key = py::str(raw_key).cast<std::string>();
+        if (key != "remove" && key != "skip" && key != "archives") {
+            invalid_cleanup("unknown cleanup plan key '" + key + "'");
+        }
+    }
+    gov::CleanupPlan out;
+    out.remove = cleanup_list_in<gov::CleanupCandidate>(plan, "remove", [](const py::dict& item) {
+        return gov::CleanupCandidate{.world = cleanup_text_in(item, "world", "remove item"),
+                                     .group = cleanup_text_in(item, "group", "remove item"),
+                                     .reason = cleanup_text_in(item, "reason", "remove item"),
+                                     .dir_id = cleanup_text_in(item, "dir_id", "remove item"),};
+    });
+    out.skip = cleanup_list_in<gov::CleanupSkip>(plan, "skip", [](const py::dict& item) {
+        return gov::CleanupSkip{.world = cleanup_text_in(item, "world", "skip item"),
+                                .reason = cleanup_text_in(item, "reason", "skip item"),
+                                .group = cleanup_text_in(item, "group", "skip item"),
+                                .detail = cleanup_text_in(item, "detail", "skip item"),};
+    });
+    out.archives = cleanup_list_in<gov::CleanupArchive>(plan, "archives", [](const py::dict& item) {
+        return gov::CleanupArchive{.world = cleanup_text_in(item, "world", "archive item"),
+                                   .dir_id = cleanup_text_in(item, "dir_id", "archive item"),
+                                   .name = cleanup_text_in(item, "name", "archive item"),};
+    });
+    return out;
+}
+
+py::dict candidate_out(const gov::CleanupCandidate& item) {
+    return py::dict("world"_a = item.world, "group"_a = item.group, "reason"_a = item.reason,
+                    "dir_id"_a = item.dir_id);
+}
+
+py::dict cleanup_plan_out(const gov::CleanupPlan& plan) {
+    py::list remove;
+    for (const auto& item : plan.remove) { remove.append(candidate_out(item)); }
+    py::list skip;
+    for (const auto& item : plan.skip) {
+        skip.append(py::dict("world"_a = item.world, "reason"_a = item.reason, "group"_a = item.group,
+                             "detail"_a = item.detail));
+    }
+    py::list archives;
+    for (const auto& item : plan.archives) {
+        archives.append(py::dict("world"_a = item.world, "dir_id"_a = item.dir_id, "name"_a = item.name));
+    }
+    return py::dict("remove"_a = remove, "skip"_a = skip, "archives"_a = archives);
+}
+
+// 开着的世界名：任意可迭代的 str（list、set、tuple）。单个 str 不行（会被拆成字符），元素不是 str 也不行
+// → invalid_settings。
+std::set<std::string> open_worlds_in(const py::iterable& names) {
+    if (py::isinstance<py::str>(names)) { invalid_cleanup("open_worlds must be a collection of names, not a str"); }
+    std::set<std::string> out;
+    for (const auto& name : names) {
+        if (!py::isinstance<py::str>(name)) { invalid_cleanup("open_worlds items must be str"); }
+        out.insert(name.cast<std::string>());
+    }
+    return out;
+}
+
+// 仅测试用：在放开 GIL 之后睡一会儿，造出确定的阻塞窗口（与 _test_before_vacuum_sleep_ms 同一用法）。
+void test_sleep(int sleep_ms) {
+    if (sleep_ms > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms)); }
+}
+
+}  // namespace
+
+// NOLINTNEXTLINE(readability-identifier-length) — `m` matches all sibling bind_NN units
+void bind_world_cleanup(pybind11::module_& m) {
+    // 选出该删的世界与到期的归档（C++ plan_cleanup，只读）。open_worlds：开着的世界名（Task 6.2 从引擎池取）。
+    // 配置项默认值与 C++ CleanupConfig 相同（200 份、14 天、归档 14 天）。返回 {"remove", "skip", "archives"}，
+    // 原样交给 world_cleanup_execute。
+    m.def("world_cleanup_plan",
+          [](const gov::RegistryDb& reg, const std::string& now_iso, const py::iterable& open_worlds,
+             const py::object& keep_per_group, const py::object& max_age_days,
+             const py::object& archive_max_age_days, int test_sleep_ms) {
+              gov::CleanupConfig cfg;
+              cfg.keep_per_group = cleanup_int_in(keep_per_group, "keep_per_group");
+              cfg.max_age_days = cleanup_int_in(max_age_days, "max_age_days");
+              cfg.archive_max_age_days = cleanup_int_in(archive_max_age_days, "archive_max_age_days");
+              const std::set<std::string> open = open_worlds_in(open_worlds);
+              gov::CleanupPlan plan;
+              {
+                  const py::gil_scoped_release release;
+                  test_sleep(test_sleep_ms);
+                  plan = gov::plan_cleanup(reg, cfg, now_iso, open);
+              }
+              return cleanup_plan_out(plan);
+          }, py::arg("registry"), py::arg("now"), py::arg("open_worlds"), py::kw_only(),
+          py::arg("keep_per_group") = gov::CleanupConfig{}.keep_per_group,
+          py::arg("max_age_days") = gov::CleanupConfig{}.max_age_days,
+          py::arg("archive_max_age_days") = gov::CleanupConfig{}.archive_max_age_days,
+          py::arg("_test_sleep_ms") = 0);
+
+    // 删除 plan 里的世界与归档并写 cleanup_log（C++ execute_cleanup：注册表锁内重新核对每个世界，先记录并摘注册项、
+    // 再删目录）。调用方（Task 6.2）在世界锁下确认引擎已关之后调用。返回真正删掉的世界（与 plan["remove"] 同形）。
+    m.def("world_cleanup_execute",
+          [](gov::RegistryDb& reg, const py::dict& plan, const std::string& now_iso, int test_sleep_ms) {
+              const gov::CleanupPlan parsed = cleanup_plan_in(plan);
+              std::vector<gov::CleanupCandidate> removed;
+              {
+                  const py::gil_scoped_release release;
+                  test_sleep(test_sleep_ms);
+                  removed = gov::execute_cleanup(reg, parsed, now_iso);
+              }
+              py::list out;
+              for (const auto& item : removed) { out.append(candidate_out(item)); }
+              return out;
+          }, py::arg("registry"), py::arg("plan"), py::arg("now"), py::kw_only(), py::arg("_test_sleep_ms") = 0);
+
+    // 最近的清理记录，最新在前；limit 1–500（C++ 校验，越界 invalid_world_query）。
+    m.def("world_cleanup_log",
+          [](const gov::RegistryDb& reg, std::int64_t limit) {
+              std::vector<gov::CleanupLogEntry> log;
+              {
+                  const py::gil_scoped_release release;
+                  log = gov::cleanup_log(reg, limit);
+              }
+              py::list out;
+              for (const auto& entry : log) {
+                  out.append(py::dict("id"_a = entry.id, "at"_a = entry.at, "world"_a = entry.world,
+                                      "group"_a = entry.group, "action"_a = entry.action,
+                                      "reason"_a = entry.reason, "detail"_a = entry.detail));
+              }
+              return out;
+          }, py::arg("registry"), py::arg("limit") = 50);
 }
 
 }  // namespace starling::bindings
