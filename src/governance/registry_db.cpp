@@ -113,6 +113,11 @@ CREATE INDEX IF NOT EXISTS idx_cleanup_log_world ON cleanup_log (world, id);
 CREATE INDEX IF NOT EXISTS idx_cleanup_log_pending ON cleanup_log (dir_id) WHERE pending_dir = 1;
 )sql";
 
+// 注册表连接一律 synchronous=FULL（裁定 R72 M3）。Connection::open 给的是 NORMAL（世界库要写入吞吐，不改）：WAL 下
+// NORMAL 的提交在下一次 checkpoint 之前断电可能丢，而清理在提交（摘注册项）之后紧接着在锁外删世界目录，目录删了回不来，
+// 丢掉的提交会让注册项指向一个已经没了的目录。注册表写得少，FULL 的代价可以忽略。
+constexpr const char* kRegistrySynchronous = "PRAGMA synchronous = FULL";
+
 // 第 6 期之前的注册表版本：打开时就地升到 kSchemaVersion（建 cleanup_log、改 meta，同一个事务）。
 constexpr std::string_view kRegistryV1 = "1";
 
@@ -432,6 +437,7 @@ RegistryDb RegistryDb::open(const fs::path& data_dir, const fs::path& default_db
         std::error_code mkdir_err;
         fs::create_directories(impl->data_dir, mkdir_err);
         impl->conn = std::make_unique<pst::Connection>(pst::Connection::open(file));
+        impl->conn->exec(kRegistrySynchronous);
         impl->conn->exec(kSchemaSql);
         pst::TransactionGuard guard(*impl->conn);
         // 在 BEGIN IMMEDIATE 之内查列、补列：两个进程同时第一次打开旧注册表时，后到的一个等前一个提交，
@@ -1034,12 +1040,19 @@ void RegistryDb::set_dir_id_source_for_test(std::function<std::string()> source)
     impl_->dir_id_source = std::move(source);
 }
 
+int RegistryDb::synchronous_for_test() const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(), "PRAGMA synchronous");
+    return stmt.step_row() ? sqlite3_column_int(stmt.raw(), 0) : -1;
+}
+
 namespace internal {
 
 void write_fresh_registry(const fs::path& file, const std::string& default_world,
                           int snapshot_retention, const std::vector<ImportedWorld>& worlds) {
     try {
         auto conn = pst::Connection::open(file);
+        conn.exec(kRegistrySynchronous);
         conn.exec(kSchemaSql);
         conn.exec(kCleanupLogSql);   // 新建的注册表直接是 kSchemaVersion（2）的形状
         {

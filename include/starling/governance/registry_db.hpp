@@ -211,6 +211,8 @@ public:
     void clear_cleanup_pending(const std::string& dir_id);
     // 仅测试用（裁定 R58）：替换 reserve_home 抽 dir_id 的随机源；空函数恢复真随机。生产不调用。
     void set_dir_id_source_for_test(std::function<std::string()> source);
+    // 仅测试用（裁定 R72 M3）：注册表连接此刻的 PRAGMA synchronous（0 OFF、1 NORMAL、2 FULL、3 EXTRA）。
+    [[nodiscard]] int synchronous_for_test() const;
 
 private:
     struct Impl;

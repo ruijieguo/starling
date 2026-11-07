@@ -2,6 +2,7 @@
 // 时间一律注入（kNow），不读墙钟。
 #include "starling/governance/cleanup.hpp"
 #include "starling/governance/registry_db.hpp"
+#include "starling/persistence/connection.hpp"
 
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -55,11 +56,11 @@ void sql_exec(const fs::path& db_file, const std::string& sql) {
     sqlite3* raw = nullptr;
     ASSERT_EQ(sqlite3_open(db_file.string().c_str(), &raw), SQLITE_OK);
     char* err = nullptr;
-    const int rc = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, &err);
+    const int status = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, &err);
     const std::string message = err == nullptr ? std::string() : std::string(err);
     if (err != nullptr) { sqlite3_free(err); }
     sqlite3_close(raw);
-    ASSERT_EQ(rc, SQLITE_OK) << message;
+    ASSERT_EQ(status, SQLITE_OK) << message;
 }
 
 constexpr const char* kNow = "2026-11-20T00:00:00Z";
@@ -1185,4 +1186,21 @@ TEST(Cleanup, PendingSweepOnlyRemovesGeneratedDirIds) {
     EXPECT_FALSE(fs::exists(tmp.path() / "worlds" / generated));
     EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = '" + generated + "'"), "0");
     EXPECT_EQ(log_count(tmp, "pending_dir = 1 AND dir_id = 'sim-1'"), "1");   // 标记留着，供人工处理
+}
+
+// ---- 裁定 R72 M3：注册表连接 synchronous=FULL（世界库不动） ----
+
+// 注册表是 WAL：synchronous=NORMAL 下，提交（摘注册项）之后、下一次 checkpoint 之前断电，提交可能丢；而随后锁外删掉的
+// 世界目录不会回来，注册项就指向一个没了的目录。FULL 让每次提交都落盘。世界库的连接（Connection::open）仍是 NORMAL。
+TEST(Cleanup, RegistryConnectionIsSynchronousFull) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    EXPECT_EQ(reg.synchronous_for_test(), 2);   // 2 = FULL
+    const auto world = reg.create_world("plain", "", {}, "{}", kFresh);
+    const auto conn = starling::persistence::Connection::open(world.db_path);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(conn.raw(), "PRAGMA synchronous", -1, &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);   // 世界库：NORMAL，不受影响
+    sqlite3_finalize(stmt);
 }
