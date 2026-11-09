@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from starling import _core
 from starling.dashboard.auth import make_require_token
-from starling.dashboard.config import DashboardConfig
+from starling.dashboard.config import DashboardConfig, check_cleanup_interval
 from starling.dashboard.routes.world_scope import lease_off_loop
 from starling.dashboard.world_manager import EngineFactory, WorldPool, WorldSwitchError
 
@@ -182,6 +182,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         raise ValueError("deferred_open cannot take an injected engine")
     if cleanup_interval_s is None:
         cleanup_interval_s = config.cleanup_interval_s
+    # 裁定 R105 F2：间隔不合法在这里就拒绝（不开池、不起线程），不等到 start_background 里才抛。直接构造的配置不经 load。
+    check_cleanup_interval(cleanup_interval_s)
     pool = None
     if not deferred_open:
         pool = _open_pool(config, engine_factory)

@@ -20,9 +20,11 @@ embedding), so existing configs keep working with no manual edit.
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -88,7 +90,8 @@ class DashboardConfig:
     source_lane_k_source: int = 30                # 500K 扫描选定（k/预算耦合）
     source_lane_chunk_byte_budget: int = 32000
     # 自动清理（spec §9、§18，第 6 期）：可回收世界每个分组保留最新的份数、可回收世界与不可回收世界回滚归档的保留天数、
-    # 每轮间隔（秒，0 关掉）。规则与取值校验全在 C++（_core.world_cleanup_*，不合法报 invalid_settings），这里只存原值。
+    # 每轮间隔（秒，0 关掉）。三个规则数值的校验全在 C++（_core.world_cleanup_*，不合法报 invalid_settings），这里只存原值；
+    # 间隔只有 Python 的调度线程用，加载时由 check_cleanup_interval 校验（裁定 R105 F2）。
     cleanup_keep_per_group: int = 200
     cleanup_max_age_days: int = 14
     cleanup_archive_max_age_days: int = 14
@@ -154,6 +157,7 @@ class DashboardConfig:
                     setattr(cfg, k, data[k])
             _migrate_legacy_model_config(cfg, data)
         _env_overlay(cfg)
+        check_cleanup_interval(cfg.cleanup_interval_s)   # 在生成并写回 token 之前：配置不合法就起不来
         cfg.db_path = str(Path(cfg.db_path).expanduser())
         if cfg.ingest_spool_path:
             cfg.ingest_spool_path = str(Path(cfg.ingest_spool_path).expanduser())
@@ -180,6 +184,7 @@ class DashboardConfig:
                 if key not in _SERVICE_IGNORED and key in data and data[key] is not None:
                     setattr(cfg, key, data[key])
             _migrate_legacy_model_config(cfg, data)
+        check_cleanup_interval(cfg.cleanup_interval_s)
         _seed_openai_extraction(cfg)
         cfg.ingest_spool_path = str(root / "ingest-spool")
         cfg.vector_store_path = str(root / "vectors") if cfg.vector_backend == "zvec" else ""
@@ -295,6 +300,18 @@ class DashboardConfig:
         out["gist_thresholds"] = gist or None
         out["background"] = {"tick_interval_s": float(self.tick_interval_s)}
         return out
+
+
+def check_cleanup_interval(value, key: str = "cleanup_interval_s") -> None:
+    """自动清理的间隔（秒）必须是有限的数、>= 0（0 关掉清理线程），且不超过 threading.TIMEOUT_MAX（调度线程 stop.wait 用它，
+    更大的值在线程里抛 OverflowError）。bool 不算数。不合法时抛 RuntimeError，消息写出 key（裁定 R105 F2）：配置加载
+    （load、load_service）、create_app 与 starling-serve 的 --cleanup-interval 都经这里，在启动时报错，不等到后台线程里才出错，
+    也不静默不起线程。"""
+    ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
+          and math.isfinite(value) and 0 <= value <= threading.TIMEOUT_MAX)
+    if not ok:
+        raise RuntimeError(f"{key} must be a finite number >= 0 (seconds, 0 disables cleanup, "
+                           f"at most {threading.TIMEOUT_MAX:.0f}), got {value!r}")
 
 
 # provider dict 里与 C++ EndpointSettings 同名的非密钥字段。api_key 永不写出。

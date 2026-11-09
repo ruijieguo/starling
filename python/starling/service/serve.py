@@ -14,9 +14,10 @@
   开好之后 stdout 打印「starling-serve ready」。开的途中出错：记日志，进程退出码 1（交给进程管理器重启，不留一个永远 503
   的服务）。
 - 空闲关闭：每 --idle-close-interval 秒（默认 30，0 关掉）一轮，按 C++ 的空闲判定关掉没人用的世界（默认世界不关）。
-- 自动清理：每 --cleanup-interval 秒（默认 600，0 关掉）一轮（spec §9）。规则的三个数值（cleanup_keep_per_group、
-  cleanup_max_age_days、cleanup_archive_max_age_days）从 D/starling.json 读，与别的配置同一条路径，取值由 C++ 校验。
-  run_dashboard.py（8787）不传这个参数，间隔取 starling.json 的 cleanup_interval_s（缺省 600）。
+- 自动清理：每 --cleanup-interval 秒一轮（spec §9，0 关掉）。没传时取 D/starling.json 的 cleanup_interval_s，那里也没有
+  就是 600（裁定 R105 F1）。间隔必须是有限的数、>= 0，命令行与配置文件不合法都在启动时报错、写出键名（R105 F2）。规则的
+  三个数值（cleanup_keep_per_group、cleanup_max_age_days、cleanup_archive_max_age_days）从 D/starling.json 读，与别的配置
+  同一条路径，取值由 C++ 校验。run_dashboard.py（8787）不传这个参数，间隔取 starling.json 的 cleanup_interval_s（缺省 600）。
 - SIGTERM / SIGINT：停止接受新连接 → 等在途请求结束（上限 --drain-timeout，默认 30 秒）→ lifespan 的关停：各世界进
   DRAINING、停后台线程、逐个关闭世界（合并 WAL、写统计缓存）→ 释放数据目录锁 → 退出码 0。
 
@@ -40,7 +41,7 @@ from pathlib import Path
 import uvicorn
 
 from starling.dashboard.app import create_app
-from starling.dashboard.config import DashboardConfig
+from starling.dashboard.config import DashboardConfig, check_cleanup_interval
 
 __all__ = ["DataDirInUse", "lock_data_dir", "main", "run"]
 
@@ -48,7 +49,6 @@ TOKEN_ENV = "STARLING_SERVICE_TOKEN"
 LOCK_NAME = ".lock"
 DEFAULT_DRAIN_TIMEOUT_S = 30.0
 DEFAULT_IDLE_CLOSE_INTERVAL_S = 30.0
-DEFAULT_CLEANUP_INTERVAL_S = 600.0
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
@@ -220,8 +220,10 @@ def _parser() -> argparse.ArgumentParser:
                     help="seconds to wait for in-flight requests after SIGTERM (default 30)")
     ap.add_argument("--idle-close-interval", type=float, default=DEFAULT_IDLE_CLOSE_INTERVAL_S,
                     help="seconds between idle-close rounds; 0 disables idle close (default 30)")
-    ap.add_argument("--cleanup-interval", type=float, default=DEFAULT_CLEANUP_INTERVAL_S,
-                    help="seconds between automatic cleanup rounds; 0 disables cleanup (default 600)")
+    # 缺省 None：没传时用 D/starling.json 的 cleanup_interval_s（再没有就是 600），不让命令行的缺省值盖掉配置文件（裁定 R105 F1）。
+    ap.add_argument("--cleanup-interval", type=float, default=None,
+                    help="seconds between automatic cleanup rounds; 0 disables cleanup "
+                         "(default: cleanup_interval_s in D/starling.json, else 600)")
     return ap
 
 
@@ -238,8 +240,11 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--drain-timeout must be >= 0")
     if args.idle_close_interval < 0:
         ap.error("--idle-close-interval must be >= 0")
-    if args.cleanup_interval < 0:
-        ap.error("--cleanup-interval must be >= 0")
+    if args.cleanup_interval is not None:
+        try:
+            check_cleanup_interval(args.cleanup_interval, "--cleanup-interval")
+        except RuntimeError as exc:
+            ap.error(str(exc))
     data_dir = os.path.abspath(os.path.expanduser(args.data_dir))
     return run(data_dir, token=token, host=args.host, port=args.port,
                drain_timeout_s=args.drain_timeout, idle_close_interval_s=args.idle_close_interval,

@@ -1137,7 +1137,7 @@ class WorldPool:
             return
         while True:
             try:
-                self.cleanup_round()
+                self.cleanup_round(stop=stop)         # 裁定 R105 F3：stop_background 能在两个候选之间打断这一轮
             except Exception:  # noqa: BLE001 — 保活：单轮出错不终结调度
                 logger.exception("cleanup round failed")
             if stop.wait(poll_s):
@@ -1145,15 +1145,21 @@ class WorldPool:
 
     # ───────────────────────── 自动清理（第 6 期，spec §9） ─────────────────────────
 
-    def cleanup_round(self, now: str | None = None) -> dict:
+    def cleanup_round(self, now: str | None = None, stop: threading.Event | None = None) -> dict:
         """一轮自动清理（见模块文档「自动清理」）。返回 {"removed": [世界名], "skipped": [世界名], "archives_removed": n}，
         供日志与测试用：removed 是 C++ 真正删掉的世界；skipped 是这一轮池没交给 C++ 删的候选（开着，或世界锁被别的操作占着）。
         now 缺省取池注入的墙钟（YYYY-MM-DDTHH:MM:SSZ）。没有注册表时什么都不做。配置不合法时 C++ 抛 invalid_settings。
+
+        stop（裁定 R105 F3，清理线程传它自己的 stop）：开头与每两个候选之间查一次，已置位就返回到此为止的结果，剩下的候选、
+        跳过记录与归档这一轮都不做，留到下一轮由 plan 重新选出。正在 C++ 里删的那一个候选删完才查；归档在
+        C++ 里一次处理完，不拆开。
 
         要删谁、记什么由 C++ 判：默认世界、种子、不可回收的世界 plan 本来就不选，这里不另判。"""
         empty = {"removed": [], "skipped": [], "archives_removed": 0}
         reg = self._registry
         if reg is None:
+            return empty
+        if stop is not None and stop.is_set():
             return empty
         now = self._clock() if now is None else now
         cfg = dict(self._cleanup_config)
@@ -1167,6 +1173,8 @@ class WorldPool:
         plan = _core.world_cleanup_plan(reg, now, self._cleanup_open_worlds(), **cfg)
         out = {"removed": [], "skipped": [], "archives_removed": 0}
         for candidate in plan["remove"]:
+            if stop is not None and stop.is_set():
+                return out
             try:
                 verdict = self._cleanup_one(reg, candidate, now, cfg)
             except Exception:  # noqa: BLE001 — 后台路径：一个世界出错不挡别的世界
@@ -1176,6 +1184,8 @@ class WorldPool:
                 out["removed"].append(candidate["world"])
             elif verdict in ("open", "busy"):
                 out["skipped"].append(candidate["world"])
+        if stop is not None and stop.is_set():
+            return out
         # plan 自己判出的跳过（held 快照、开着）：只记录，C++ 在注册表锁内重新核对再写（裁定 R79）。
         if plan["skip"]:
             _core.world_cleanup_execute(reg, {"remove": [], "skip": plan["skip"], "archives": []}, now, **cfg)

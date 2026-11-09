@@ -530,9 +530,9 @@ def test_cleanup_thread_starts_runs_and_stops(setup, monkeypatch):
     rounds: list[float] = []
     real_round = pool.cleanup_round
 
-    def counting(now=None):
+    def counting(now=None, stop=None):
         rounds.append(time.monotonic())
-        return real_round(now)
+        return real_round(now, stop)
     monkeypatch.setattr(pool, "cleanup_round", counting)
     before = set(_cleanup_threads())
     pool.start_background(stats_interval_s=3600.0, scheduler_first_delay_s=3600.0,
@@ -547,10 +547,56 @@ def test_cleanup_thread_starts_runs_and_stops(setup, monkeypatch):
     assert not started[0].is_alive()
 
 
+def test_stop_background_interrupts_a_round_between_candidates(setup, monkeypatch):
+    """裁定 R105 F3：一轮删到一半时 stop_background，剩下的候选这一轮不再删，清理线程在超时之内退出。第一个候选的 execute
+    卡在 C++ 里（替身等一个事件），stop 置位之后才放它删完；之后的候选不再交给 C++。"""
+    pool, reg, _table, _wall, _mono = setup
+    recs = {name: _rollout(pool, name, STALE) for name in ("a", "b", "c")}
+    in_execute, proceed = threading.Event(), threading.Event()
+    removing: list[str] = []
+    real_execute = _core.world_cleanup_execute
+
+    def slow_execute(reg_, plan, now, **cfg):
+        if plan["remove"]:
+            removing.append(plan["remove"][0]["world"])
+            in_execute.set()
+            assert proceed.wait(10)
+        return real_execute(reg_, plan, now, **cfg)
+    monkeypatch.setattr(_core, "world_cleanup_execute", slow_execute)
+    pool.start_background(stats_interval_s=3600.0, scheduler_first_delay_s=3600.0,
+                          idle_close_interval_s=0, cleanup_interval_s=0.05)
+    thread, stop = pool._threads["starling-cleanup"]
+    assert in_execute.wait(10)
+    stopper = threading.Thread(target=pool.stop_background, kwargs={"timeout_s": 5.0}, daemon=True)
+    started = time.monotonic()
+    stopper.start()
+    assert stop.wait(5)                                   # stop_background 已置位，正在 join 清理线程
+    proceed.set()
+    stopper.join(10)
+    assert not stopper.is_alive() and not thread.is_alive()
+    assert time.monotonic() - started < 5.0
+    assert len(removing) == 1                             # 只有卡住的那一个被交给 C++
+    first = removing[0]
+    assert _gone(pool, first) and not os.path.exists(_home(reg, recs[first]["dir_id"]))
+    for name in sorted(set(recs) - {first}):
+        assert pool.record(name)["dir_id"] == recs[name]["dir_id"], name
+        assert os.path.isdir(_home(reg, recs[name]["dir_id"])), name
+
+
+def test_cleanup_round_returns_early_when_stop_is_already_set(setup):
+    pool, reg, _table, _wall, _mono = setup
+    _rollout(pool, "a", STALE)
+    stop = threading.Event()
+    stop.set()
+    assert pool.cleanup_round(stop=stop) == {"removed": [], "skipped": [], "archives_removed": 0}
+    assert pool.record("a")["name"] == "a"
+    assert pool.cleanup_round()["removed"] == ["a"]
+
+
 def test_cleanup_thread_first_round_waits_one_interval(setup, monkeypatch):
     pool, _reg, _table, _wall, _mono = setup
     rounds: list[int] = []
-    monkeypatch.setattr(pool, "cleanup_round", lambda now=None: rounds.append(1))
+    monkeypatch.setattr(pool, "cleanup_round", lambda now=None, stop=None: rounds.append(1))
     pool.start_background(stats_interval_s=3600.0, scheduler_first_delay_s=3600.0,
                           idle_close_interval_s=0, cleanup_interval_s=3600.0)
     time.sleep(0.2)
@@ -563,7 +609,7 @@ def test_cleanup_thread_survives_a_failing_round(setup, monkeypatch, caplog):
     pool, _reg, _table, _wall, _mono = setup
     calls = {"n": 0}
 
-    def boom(now=None):
+    def boom(now=None, stop=None):
         calls["n"] += 1
         raise RuntimeError("boom")
     monkeypatch.setattr(pool, "cleanup_round", boom)
@@ -651,13 +697,13 @@ def test_invalid_config_value_reaches_cpp_as_invalid_settings(tmp_path):
 def test_serve_cleanup_interval_option(tmp_path, monkeypatch, capsys):
     from starling.service import serve
     args = serve._parser().parse_args(["--data-dir", "/x", "--port", "0"])
-    assert args.cleanup_interval == 600.0
+    assert args.cleanup_interval is None                  # 没传时取 D/starling.json（裁定 R105 F1）
     args = serve._parser().parse_args(["--data-dir", "/x", "--port", "0", "--cleanup-interval", "0"])
     assert args.cleanup_interval == 0.0
     monkeypatch.setenv(serve.TOKEN_ENV, "tok")
     with pytest.raises(SystemExit):
         serve.main(["--data-dir", str(tmp_path), "--port", "0", "--cleanup-interval", "-1"])
-    assert "--cleanup-interval must be >= 0" in capsys.readouterr().err
+    assert "--cleanup-interval must be a finite number >= 0" in capsys.readouterr().err
     seen: dict = {}
 
     def fake_serve(cfg, *_args):
@@ -666,6 +712,123 @@ def test_serve_cleanup_interval_option(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(serve, "_serve", fake_serve)
     assert serve.main(["--data-dir", str(tmp_path), "--port", "0", "--cleanup-interval", "30"]) == 0
     assert seen["interval"] == 30.0
+
+
+def _serve_main_capture(monkeypatch, data_dir, argv_extra=()):
+    """跑 starling-serve 的 main，_serve 换成在 TestClient 里起 app（不绑端口）：返回 (生效的间隔, 起没起清理线程)。"""
+    from fastapi.testclient import TestClient
+
+    from starling.dashboard import create_app
+    from starling.service import serve
+    seen: dict = {}
+
+    def fake_serve(cfg, _drain, idle_close_interval_s, engine_factory):
+        before = set(_cleanup_threads())
+        seen["interval"] = cfg.cleanup_interval_s
+        with TestClient(create_app(cfg, engine_factory=engine_factory,
+                                   idle_close_interval_s=idle_close_interval_s)):
+            seen["thread"] = bool([t for t in _cleanup_threads() if t not in before])
+        return 0
+    monkeypatch.setenv(serve.TOKEN_ENV, "tok")
+    for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(serve, "_serve", fake_serve)
+    assert serve.main(["--data-dir", str(data_dir), "--port", "0", "--idle-close-interval", "0",
+                       *argv_extra]) == 0
+    return seen["interval"], seen["thread"]
+
+
+def _write_service_config(data_dir, **keys) -> None:
+    import json
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "starling.json").write_text(json.dumps(
+        {"tick_interval_s": 0, "source_lane_enabled": False, **keys}), encoding="utf-8")
+
+
+def test_serve_takes_cleanup_interval_from_starling_json(tmp_path, monkeypatch):
+    """裁定 R105 F1：不传 --cleanup-interval 时用 D/starling.json 的 cleanup_interval_s；写 0 就不起清理线程。"""
+    data_dir = tmp_path / "D"
+    _write_service_config(data_dir, cleanup_interval_s=0)
+    assert _serve_main_capture(monkeypatch, data_dir) == (0, False)
+
+
+def test_serve_command_line_interval_wins_over_starling_json(tmp_path, monkeypatch):
+    data_dir = tmp_path / "D"
+    _write_service_config(data_dir, cleanup_interval_s=0)
+    interval, thread = _serve_main_capture(monkeypatch, data_dir, ["--cleanup-interval", "3600"])
+    assert (interval, thread) == (3600.0, True)
+
+
+def test_serve_interval_defaults_to_600_without_flag_or_config_key(tmp_path, monkeypatch):
+    data_dir = tmp_path / "D"
+    _write_service_config(data_dir)
+    interval, thread = _serve_main_capture(monkeypatch, data_dir)
+    assert (interval, thread) == (600.0, True)
+
+
+_BAD_INTERVALS = [pytest.param("600", id="string"), pytest.param(float("nan"), id="nan"),
+                  pytest.param(-1, id="negative"), pytest.param(float("inf"), id="inf"),
+                  pytest.param(True, id="bool")]
+
+
+@pytest.mark.parametrize("bad", _BAD_INTERVALS)
+def test_invalid_cleanup_interval_in_starling_json_fails_at_load(tmp_path, bad):
+    """裁定 R105 F2：加载配置时就报错，消息里写出键名（starling-serve 的 load_service 与 8787 的 load 都一样），不等到
+    start_background 里才抛 TypeError，也不静默不起线程。json 写得出 NaN / Infinity，Python 也读得回来。"""
+    data_dir = tmp_path / "D"
+    _write_service_config(data_dir, cleanup_interval_s=bad)
+    with pytest.raises(RuntimeError, match="cleanup_interval_s must be a finite number >= 0"):
+        DashboardConfig.load_service(str(data_dir), "tok")
+    with pytest.raises(RuntimeError, match="cleanup_interval_s must be a finite number >= 0"):
+        DashboardConfig.load(str(data_dir / "starling.json"))
+
+
+@pytest.mark.parametrize("bad", _BAD_INTERVALS)
+def test_create_app_refuses_an_invalid_cleanup_interval(tmp_path, bad):
+    """直接构造的配置（不经 load）与显式参数同样在 create_app 里拒绝，不开池、不起线程。"""
+    from starling.dashboard import create_app
+    with pytest.raises(RuntimeError, match="cleanup_interval_s must be a finite number >= 0"):
+        create_app(_cfg(tmp_path / "a", cleanup_interval_s=bad), idle_close_interval_s=0)
+    with pytest.raises(RuntimeError, match="cleanup_interval_s must be a finite number >= 0"):
+        create_app(_cfg(tmp_path / "b"), idle_close_interval_s=0, cleanup_interval_s=bad)
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "-1"])
+def test_serve_rejects_an_invalid_cleanup_interval_flag(tmp_path, monkeypatch, capsys, bad):
+    from starling.service import serve
+    monkeypatch.setenv(serve.TOKEN_ENV, "tok")
+
+    def must_not_start(*_args, **_kwargs):
+        raise AssertionError("an invalid --cleanup-interval must be refused before the service starts")
+    monkeypatch.setattr(serve, "run", must_not_start)          # 不拒绝时也不会真的起服务、挂在监听上
+    with pytest.raises(SystemExit) as exit_info:
+        serve.main(["--data-dir", str(tmp_path), "--port", "0", f"--cleanup-interval={bad}"])
+    assert exit_info.value.code == 2
+    assert "--cleanup-interval" in capsys.readouterr().err
+
+
+def test_invalid_cleanup_interval_stops_the_8787_entry_with_the_key_in_the_log(tmp_path):
+    """8787 的入口（scripts/run_dashboard.py）：配置不合法就起不来（退出码非 0），stderr 里写明键名。HOME 指到 tmp、去掉
+    STARLING_* / OPENAI_*，库与端口都在 tmp 下（端口 0），读不到也碰不到本机的真实配置。"""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    home = tmp_path / "home"
+    data_dir = home / ".starling"
+    data_dir.mkdir(parents=True)
+    config = data_dir / "starling.json"
+    config.write_text(json.dumps({"db_path": str(data_dir / "dashboard.db"), "port": 0, "token": "tok",
+                                  "tick_interval_s": 0, "source_lane_enabled": False,
+                                  "cleanup_interval_s": "600"}), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "STARLING_"))}
+    env["HOME"] = str(home)
+    proc = subprocess.run([sys.executable, str(root / "scripts" / "run_dashboard.py"), "--config", str(config),
+                           "--no-build"], env=env, cwd=str(tmp_path), capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0
+    # 报错写明键名与规则（不只是回溯里碰巧出现这个变量名）。
+    assert "cleanup_interval_s must be a finite number >= 0" in proc.stderr, proc.stderr[-2000:]
 
 
 def test_start_pool_passes_cleanup_interval_on_both_paths(tmp_path, monkeypatch):
