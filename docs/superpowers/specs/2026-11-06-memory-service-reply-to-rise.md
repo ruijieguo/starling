@@ -189,7 +189,7 @@ mem = client.open(world, holder=holder, settings=settings)   # 原来是 starlin
 **2. 句柄模型、旧库不导入、种子落后拒绝分叉、rise 拍的快照不参与修剪、保留 200 份 / 14 天。**
 - 句柄模型：`clients/python/starling_client/client.py`（`open(world, holder=...)`）；测试 `tests/python/test_client_routes.py` 的 `test_round_trip_open_remember_recall_close`。
 - 旧库不导入：这是「不做」的决定，没有对应代码，也没有专门的钉测。未找到。
-- 种子落后拒绝分叉：`src/governance/world_store.cpp`（`schema_version_on`，返回 `world_schema_behind`）；测试 `tests/cpp/test_world_fork.cpp` 的 `ForkRefusesSchemaBehindSource`，`tests/python/test_dashboard_world_fork.py` 的 `test_fork_of_schema_behind_source_is_409`。
+- 种子落后拒绝分叉：`src/governance/world_store.cpp`（`require_current_schema`，返回 `world_schema_behind`）；测试 `tests/cpp/test_world_fork.cpp` 的 `ForkRefusesSchemaBehindSource`，`tests/python/test_dashboard_world_fork.py` 的 `test_fork_of_schema_behind_source_is_409`。
 - rise 的快照不参与修剪：`src/governance/world_store.cpp`（`held` 类快照）；测试 `tests/cpp/test_world_store.cpp` 的 `HeldSnapshotsSurviveRetention`。
 - 200 份 / 14 天：`src/governance/cleanup.cpp`、`python/starling/dashboard/config.py`（`cleanup_keep_per_group`、`cleanup_max_age_days`）；测试 `tests/cpp/test_cleanup.cpp` 的 `KeepsNewest200PerGroup`、`DropsOlderThan14Days`，`tests/python/test_cleanup_scheduler.py` 的 `test_config_defaults_and_pool_reads_them`。
 
@@ -213,8 +213,7 @@ mem = client.open(world, holder=holder, settings=settings)   # 原来是 starlin
 
 **7. 端点配置：不给就继承默认世界的配置（建时复制）；给了密钥取 `OPENAI_API_KEY`；继承的地址被改过报 `endpoint_changed`。**
 - 实现：`python/starling/dashboard/engine.py`（`_require_endpoint_key`，读 `OPENAI_API_KEY`）；`python/starling/dashboard/routes/client.py`（`_public_default_settings`）。
-- 测试：`tests/python/test_dashboard_engine.py` 的 `test_explicit_endpoint_uses_the_service_env_key`、`test_inherited_endpoint_change_refuses_every_call_that_uses_it`；`tests/python/test_client_routes.py` 的 `test_open_with_settings_seen_by_the_client_matches_an_inherited_endpoint`、`test_explicit_endpoint_without_the_service_key_is_endpoint_key_missing`。
-- 「建时复制」本身没有单独命名的测试，只在 `test_info_default_settings_round_trip_through_open_unchanged` 里间接覆盖。
+- 测试：`tests/cpp/test_registry_db.cpp` 的 `WorldSettingsCompose.NewWorldCopiesDefaultSettingsThenOverrides`（建时复制）；`tests/python/test_dashboard_engine.py` 的 `test_explicit_endpoint_uses_the_service_env_key`、`test_inherited_endpoint_change_refuses_every_call_that_uses_it`；`tests/python/test_client_routes.py` 的 `test_open_with_settings_seen_by_the_client_matches_an_inherited_endpoint`、`test_explicit_endpoint_without_the_service_key_is_endpoint_key_missing`、`test_info_default_settings_round_trip_through_open_unchanged`。
 
 **8. 客户端的安装方式与导入名（§13.3）；适配器换成 `client.open(world, holder=...)`。**
 - 实现：`clients/python/pyproject.toml`（包名 `starling-client`，只依赖 `httpx`）；`clients/python/starling_client/client.py`（`open`）；服务入口是 `pyproject.toml` 的 `starling-serve`。

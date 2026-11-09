@@ -121,13 +121,15 @@ rise 同时把对应关系改成「一个模拟世界一个 Starling 世界，�
 
 **降级到第 6 期之前（第 1–5 期）的版本：先把注册表改回 1 版（裁定 R45）。** 第 6 期把注册表的 `schema_version` 从 1 升到 2（加了 `cleanup_log` 表，§9）。旧版本只认 1，打开 2 版注册表会报 `registry_corrupt "unsupported registry schema_version '2'"`，整个服务起不来。步骤：
 
-1. 停服务（注册表此时不能有别的连接）。
-2. 对 `registry.db` 执行：
+1. 停服务（注册表此时不能有别的连接）。先把 `registry.db` 复制一份备份。
+2. 在 `registry.db` 原来的位置上直接执行下面的 SQL，不要把它复制到别处改完再拷回：
    ```sql
    DROP TABLE cleanup_log; UPDATE meta SET value='1' WHERE key='schema_version';
    ```
    之后注册表与第 6 期之前建出来的逐表相同，其余数据（世界、标签、快照条目）不变。清理记录随表一起丢掉。
 3. 用旧版本启动。再升级回第 6 期时，打开会自动重建空的 `cleanup_log` 并改回 2。
+
+要恢复第 1 步的备份，也要放回原来的路径。注册表里存的世界库、快照目录都是绝对路径，换个位置演练或恢复，记录会指向原来的目录。
 
 `cleanup_log` 里还记着「注册项已摘、目录待删」的世界（清理删到一半时停了服务，下一轮清理本会补删）：表删掉之后没人再去删这些 `worlds/<dir_id>/` 目录。它们不在注册表里，旧版本不会打开或复用，只占磁盘，没有危害；要回收空间就手工删。降级前想找出它们，可以先执行 `SELECT world, dir_id FROM cleanup_log WHERE pending_dir = 1;`。
 

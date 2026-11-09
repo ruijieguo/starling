@@ -1,10 +1,11 @@
 """第 6 期验收（spec §16 第 4a、5 条；需求 §7 第 4a、5 条）。时间一律注入，不读墙钟。
 
 4a：超过份数或天数的可回收世界被删；部署世界、种子、带 held 快照的世界、开着的世界不被删。
-5：关掉后台任务的世界静置，推进注入时钟、跑若干轮清理与调度，摘要不变。
+5：关掉后台任务的世界开着静置，推进注入时钟、让调度线程跑若干轮清理与调度，摘要不变。
 """
 import gc
 import os
+from pathlib import Path
 
 from starling import _core
 from starling.dashboard.config import DashboardConfig
@@ -88,8 +89,11 @@ def test_4a_cleanup_respects_count_age_and_protections(tmp_path):
     try:
         # 部署世界：不可回收，19 天前建的，不论多老都不删。
         deploy = _at(pool, wall, STALE, pool.create_world, "deploy", "")
-        # 种子：分叉成种子，即使超龄也不删。
-        seed = _at(pool, wall, STALE, pool.fork_world, "deploy", "seed-1", seed=True)["world"]
+        # 种子：标成可回收、放进 run1 组、超龄（裁定 R105 F5）。不是种子的话它按天数、按份数都该删；种子规则让它不删，
+        # 也不占 run1 的份数名额（c0–c3 的结果与没有它时相同）。
+        seed = _at(pool, wall, STALE, pool.fork_world, "deploy", "seed-1", seed=True, reclaimable=True,
+                   retention_group="run1")["world"]
+        assert (seed["seed"], seed["reclaimable"], seed["retention_group"]) == (True, True, "run1")
 
         def rollout(name: str, stamp: str, group: str = "run1") -> dict:
             return _at(pool, wall, stamp, pool.fork_world, "deploy", name, reclaimable=True,
@@ -145,7 +149,29 @@ def test_4a_cleanup_respects_count_age_and_protections(tmp_path):
         gc.collect()
 
 
-def test_5_background_off_world_digest_stable(tmp_path):
+def _counting(pool, monkeypatch, name: str) -> list[int]:
+    """把池的一轮调度函数换成计数的包装（后台线程调 self.<name>，实例属性生效）。"""
+    calls: list[int] = []
+    real = getattr(pool, name)
+
+    def wrapped(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(pool, name, wrapped)
+    return calls
+
+
+# 让调度线程至少跑这么久：盖过摄入线程的首轮轮询（engine.start_ingest_worker 缺省 2 秒）。后台被打开时（变异），
+# 探针 job 在这段时间里会被摄入，摘要随之改变。
+_SETTLE_S = 3.0
+
+
+def test_5_background_off_world_digest_stable(tmp_path, monkeypatch):
+    """世界开着、设置为后台关闭（裁定 R105 F4）：先断言实际生效的 tick、摄入都是关的，再让调度线程（清理、按时间的快照、
+    统计刷新，间隔都 > 0）在推进的注入时钟下跑若干轮，摘要不变。世界的摄入分区里放一份待摄入的 job 作探针：后台若开着，
+    摄入线程会把它吃进库里。"""
+    import json
+    import time
     wall = _Wall(STALE)
     pool, reg, _table, _mono = _pool(tmp_path, wall)
     try:
@@ -155,29 +181,62 @@ def test_5_background_off_world_digest_stable(tmp_path):
         with pool.lease("quiet") as engine:
             engine.remember("Bob owns auth")
             engine = None
-        pool.close_world("quiet")
-        before = pool.world_digest("quiet")
-        assert before
-        rec = pool.record("quiet")
-        stat_before = os.stat(rec["db_path"])
+        ctx = pool.context("quiet")
+        spool = Path(ctx.ingest_spool_dir)
+        spool.mkdir(parents=True, exist_ok=True)
+        transcript = tmp_path / "probe.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "message": {"role": "user",
+                                                                      "content": "Carol owns billing"}}),
+                              encoding="utf-8")
+        (spool / "probe.json").write_text(json.dumps({"session_id": "probe", "transcript_path": str(transcript),
+                                                      "cwd": "/proj/probe", "tenant": ctx.tenant}),
+                                          encoding="utf-8")
 
-        pool.start_background(stats_interval_s=3600.0, scheduler_first_delay_s=3600.0,
-                              idle_close_interval_s=0, cleanup_interval_s=0)
+        lease = pool.lease("quiet")                               # 世界开着，整段都不关
         try:
-            for day in range(1, 41, 3):                          # 推进注入时钟 40 天，每 3 天一轮
-                wall.now = f"2026-{11 + (day // 30):02d}-{(day % 30) + 1:02d}T00:00:00Z"
-                pool.cleanup_round()
-                pool.auto_snapshot_round()
-                pool.refresh_stats()
-                assert pool.world_digest("quiet") == before, wall.now
-        finally:
-            pool.stop_background()
+            engine = lease.engine
+            assert engine is not None and "quiet" in pool.open_worlds()
+            effective = pool._effective_settings(pool.record("quiet"))["background"]
+            assert (effective["tick_interval_s"], effective["ingest"]) == (0, False)
+            assert (engine._settings["background"]["tick_interval_s"],
+                    engine._settings["background"]["ingest"]) == (0, False)
+            before = pool.world_digest("quiet")
+            assert before
+            rec = pool.record("quiet")
+            stat_before = os.stat(rec["db_path"])
 
-        assert pool.world_digest("quiet") == before
+            rounds = {name: _counting(pool, monkeypatch, name)
+                      for name in ("cleanup_round", "auto_snapshot_round", "refresh_stats")}
+            pool.start_background(stats_interval_s=0.02, scheduler_poll_s=0.02, scheduler_first_delay_s=0.02,
+                                  idle_close_interval_s=0, cleanup_interval_s=0.02)
+            try:
+                assert engine._tick_thread is None and engine._ingest_thread is None
+                started = time.monotonic()
+                day = 0
+                while day < 40 or time.monotonic() - started < _SETTLE_S:     # 注入时钟推进 40 天以上
+                    day += 3
+                    seen = {name: len(calls) for name, calls in rounds.items()}
+                    wall.now = f"2026-{11 + (day // 30):02d}-{(day % 30) + 1:02d}T00:00:00Z" if day < 60 \
+                        else "2027-01-15T00:00:00Z"
+                    deadline = time.monotonic() + 10
+                    while any(len(calls) <= seen[name] for name, calls in rounds.items()) \
+                            and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    assert all(len(calls) > seen[name] for name, calls in rounds.items()), wall.now
+                    assert pool.world_digest("quiet") == before, wall.now
+            finally:
+                pool.stop_background()
+            assert all(len(calls) >= 10 for calls in rounds.values()), {k: len(v) for k, v in rounds.items()}
+            assert engine.ingest_status()["pending"] == 1             # 探针 job 没被摄入
+            assert pool.world_digest("quiet") == before
+            engine = None
+        finally:
+            lease.release()
+
         assert pool.snapshots("quiet") == []                       # 调度没给它拍快照
         stat_after = os.stat(rec["db_path"])
         assert (stat_after.st_size, stat_after.st_mtime_ns) == (stat_before.st_size, stat_before.st_mtime_ns)
-        assert "quiet" not in pool.open_worlds()
+        assert _exists(pool, "quiet")
     finally:
         pool.close_all()
         gc.collect()
