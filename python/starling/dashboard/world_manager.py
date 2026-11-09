@@ -110,7 +110,8 @@ world_read_only。分叉（fork_world）按来源选路、持锁（裁定 R5）�
 自动清理（第 6 期，spec §9，裁定 R44、R64、R74、R103）
 ------------------------------------------------------
 规则、删除、清理记录全在 C++（world_cleanup_plan / world_cleanup_execute / world_cleanup_log）。后台线程 starling-cleanup 每
-cleanup_interval_s（缺省 600 秒，0 关掉；首轮推迟一个间隔）一轮 cleanup_round：plan 只读地选出候选；对每个候选取它的世界锁（非阻塞，
+cleanup_interval_s（缺省 600 秒，0 关掉；首轮推迟一个间隔）一轮 cleanup_round：先无条件调一次空 plan 的 execute，补删上一轮
+留下的待删目录（裁定 R106 I1，每轮都跑）；再由 plan 只读地选出候选；对每个候选取它的世界锁（非阻塞，
 取不到就留到下一轮）、进关闭窗口，在窗口里确认此刻没开着（表上没有引擎、会话表 forget_world 通过：有活句柄或在途调用时它抛
 world_in_use），确认之后仍持着世界锁调 execute，plan 里只放这一个候选。确认与删除之间世界锁一直在手里，窗口里新租约、新句柄一律
 world_busy，所以不会有线程在两者之间把它打开；删完之后再来的 open 是 world_not_found。开着的候选不删，作为 plan 的 skip 项（原因
@@ -1156,6 +1157,13 @@ class WorldPool:
             return empty
         now = self._clock() if now is None else now
         cfg = dict(self._cleanup_config)
+        # 裁定 R106 I1：补删（C++ execute 开头的 finish_pending_dirs）每轮都跑一次，不论这一轮有没有候选。崩溃或删不掉留下的
+        # 待删目录靠它在下一轮删完；只在有活的那一轮才调 execute 的话，没有新候选时它一直留在盘上。出错与单个候选出错一样：
+        # 记日志，这一轮照常往下跑。配置不合法时这里也会抛（记日志），紧接着的 plan 照样抛 invalid_settings 给调用方。
+        try:
+            _core.world_cleanup_execute(reg, {"remove": [], "skip": [], "archives": []}, now, **cfg)
+        except Exception:  # noqa: BLE001 — 后台路径：补删出错不挡这一轮
+            logger.exception("pending directory sweep failed")
         plan = _core.world_cleanup_plan(reg, now, self._cleanup_open_worlds(), **cfg)
         out = {"removed": [], "skipped": [], "archives_removed": 0}
         for candidate in plan["remove"]:

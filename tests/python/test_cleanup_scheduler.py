@@ -128,6 +128,76 @@ def test_cleanup_round_removes_over_count_and_over_age_and_logs(setup):
     assert len(_log(reg)) == 2
 
 
+def _crash_after_unregister(reg_path, world: str, dir_id: str) -> None:
+    """造出「注册项已摘、目录还在、cleanup_log 带待删标记」（execute_cleanup 摘完注册项、删目录之前被杀）。与 C++ 测试
+    NextRunFinishesADirectoryLeftPendingByACrash 的 simulate_crash_after_unregister 同一组语句。调用时注册表不能有别的连接。"""
+    import sqlite3
+    con = sqlite3.connect(str(reg_path), isolation_level=None)
+    try:
+        con.executescript(
+            "BEGIN;"
+            "INSERT INTO cleanup_log (at, world, retention_group, action, reason, dir_id, pending_dir) "
+            f"VALUES ('2026-11-19T00:00:00Z', '{world}', 'run1', 'removed', 'over_age', '{dir_id}', 1);"
+            f"DELETE FROM world_labels WHERE name = '{world}';"
+            f"DELETE FROM snapshots WHERE world = '{world}';"
+            f"DELETE FROM worlds WHERE name = '{world}';"
+            "COMMIT;")
+    finally:
+        con.close()
+
+
+def _pending_marks(reg_path) -> int:
+    import sqlite3
+    con = sqlite3.connect(f"file:{reg_path}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM cleanup_log WHERE pending_dir = 1").fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_round_with_nothing_due_finishes_a_directory_left_pending(tmp_path):
+    """裁定 R106 I1：补删（C++ finish_pending_dirs）每轮都跑，不只在这一轮有候选、跳过项或归档时才跑。崩溃留下的待删目录
+    在下一轮（哪怕什么都不该删）被删掉，标记清掉；补删不另记一条。"""
+    pool, reg, _table, _wall, _mono = _pool(tmp_path)
+    rec = _rollout(pool, "half-done", FRESH)
+    home = _home(reg, rec["dir_id"])
+    with open(os.path.join(home, "world.db.leftover"), "w", encoding="utf-8") as fh:
+        fh.write("x")
+    reg_path = os.path.join(str(reg.data_dir), "registry.db")
+    pool.close_all()
+    del pool, reg, _table
+    gc.collect()
+    _crash_after_unregister(reg_path, "half-done", rec["dir_id"])
+
+    pool, reg, _table, _wall, _mono = _pool(tmp_path)        # 重启之后的第一轮
+    try:
+        assert os.path.isdir(home) and _pending_marks(reg_path) == 1
+        plan = _core.world_cleanup_plan(reg, NOW, pool._cleanup_open_worlds(), **pool._cleanup_config)
+        assert plan == {"remove": [], "skip": [], "archives": []}      # 这一轮没有任何活
+        assert pool.cleanup_round() == {"removed": [], "skipped": [], "archives_removed": 0}
+        assert not os.path.exists(home)
+        assert _pending_marks(reg_path) == 0
+        assert _log(reg) == [("half-done", "removed", "over_age")]   # 补删不另记
+    finally:
+        pool.close_all()
+        gc.collect()
+
+
+def test_pending_sweep_failure_is_logged_and_the_round_goes_on(setup, monkeypatch, caplog):
+    """开头那次补删抛异常：记日志，这一轮照常往下跑（与单个候选出错一样）。"""
+    pool, _reg, _table, _wall, _mono = setup
+    _rollout(pool, "old", STALE)
+    real_execute = _core.world_cleanup_execute
+
+    def flaky(reg_, plan, now, **cfg):
+        if not plan["remove"] and not plan["skip"] and not plan["archives"]:
+            raise RuntimeError("sweep boom")
+        return real_execute(reg_, plan, now, **cfg)
+    monkeypatch.setattr(_core, "world_cleanup_execute", flaky)
+    assert pool.cleanup_round()["removed"] == ["old"]
+    assert "pending directory sweep failed" in caplog.text
+
+
 def test_cleanup_round_uses_the_injected_clock(setup):
     """now 缺省取池注入的墙钟：时钟没推进时不超龄，推进 14 天以上才删。"""
     pool, _reg, _table, wall, _mono = setup
