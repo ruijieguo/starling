@@ -107,6 +107,15 @@ world_read_only。分叉（fork_world）按来源选路、持锁（裁定 R5）�
 只按 C++ may_close_world 的判定关（裁定 R63）。池打开引擎时与每次取租约时调 touch_world，看板查看算作活动（裁定 R50）。世界
 另外在 close_world、delete_world 或关停（close_all）时关，默认世界只在关停时关。
 
+自动清理（第 6 期，spec §9，裁定 R44、R64、R74、R103）
+------------------------------------------------------
+规则、删除、清理记录全在 C++（world_cleanup_plan / world_cleanup_execute / world_cleanup_log）。后台线程 starling-cleanup 每
+cleanup_interval_s（缺省 600 秒，0 关掉；首轮推迟一个间隔）一轮 cleanup_round：plan 只读地选出候选；对每个候选取它的世界锁（非阻塞，
+取不到就留到下一轮）、进关闭窗口，在窗口里确认此刻没开着（表上没有引擎、会话表 forget_world 通过：有活句柄或在途调用时它抛
+world_in_use），确认之后仍持着世界锁调 execute，plan 里只放这一个候选。确认与删除之间世界锁一直在手里，窗口里新租约、新句柄一律
+world_busy，所以不会有线程在两者之间把它打开；删完之后再来的 open 是 world_not_found。开着的候选不删，作为 plan 的 skip 项（原因
+open）交给 C++ 记录。不可回收世界的到期归档同样逐个世界在它的世界锁内删（与看板清理归档同一把锁）。plan 与 execute 收同一份配置。
+
 客户端会话与写占用（第 4 期，spec §6.4、§11）
 ---------------------------------------------
 会话、句柄、写占用、在途调用的状态机全在 C++（_core.SessionTable，app 在 lifespan 里建好后 attach_sessions 注入）。池只做两件
@@ -175,6 +184,11 @@ _SCHEDULER_THREAD = "starling-auto-snapshot"
 # 空闲关闭的轮询（spec §10.3、§11，裁定 R50、R63）：每隔这么久问一次 C++ may_close_world。服务配置项 --idle-close-interval。
 _IDLE_CLOSE_POLL_S = 30.0
 _IDLE_CLOSE_THREAD = "starling-idle-close"
+# 自动清理（spec §9：每 10 分钟一轮；服务配置项 cleanup_interval_s / --cleanup-interval，0 关掉）。首轮推迟一个间隔。
+_CLEANUP_INTERVAL_S = 600.0
+_CLEANUP_THREAD = "starling-cleanup"
+# 清理删一个世界之前等它的在途租约（只读检视持的 build=False 租约）归零的上限。后台路径不久等：等不到这一轮就不删，下一轮再来。
+_CLEANUP_DRAIN_S = 5.0
 # 默认世界在没有注册表（:memory: 等）时的名字。
 _DEFAULT_NAME = "default"
 # 注册表 list 的分页上限（RegistryDb::list 的 limit 1–500）。
@@ -330,6 +344,8 @@ class WorldPool:
         self._workers_lost: set[str] = set()
         # 每个世界在途的看板写入数（dashboard_write，裁定 R82）：客户端的可写 admit 在同一把 _lock 下看到它大于 0 就 world_busy。
         self._dashboard_writes: dict[str, int] = {}
+        # 清理规则的配置（spec §9、§18）：plan 与 execute 收同一份（裁定 R74）。取值由 C++ 校验。
+        self._cleanup_config = config.cleanup_config()
 
     # ───────────────────────── 注册表与上下文 ─────────────────────────
 
@@ -1035,10 +1051,12 @@ class WorldPool:
     def start_background(self, *, stats_interval_s: float = _STATS_REFRESH_S,
                          scheduler_poll_s: float = _SCHEDULER_POLL_S,
                          scheduler_first_delay_s: float = _SCHEDULER_FIRST_DELAY_S,
-                         idle_close_interval_s: float = _IDLE_CLOSE_POLL_S) -> None:
+                         idle_close_interval_s: float = _IDLE_CLOSE_POLL_S,
+                         cleanup_interval_s: float = _CLEANUP_INTERVAL_S) -> None:
         """每个开着的世界按自己的 settings.background 起 tick / 摄入；此后新建的引擎也起。起按时间的
-        自动快照调度线程与 30 秒统计刷新线程（有注册表时），以及空闲关闭线程（注入了会话表时，每 idle_close_interval_s
-        一轮 idle_close_round）。已开着时是 no-op。"""
+        自动快照调度线程与 30 秒统计刷新线程（有注册表时），空闲关闭线程（注入了会话表时，每 idle_close_interval_s
+        一轮 idle_close_round），以及自动清理线程（有注册表且 cleanup_interval_s > 0 时，每 cleanup_interval_s 一轮
+        cleanup_round，首轮推迟一个间隔）。已开着时是 no-op。"""
         with self._lock:
             if self._background or self._shut:
                 return
@@ -1058,6 +1076,8 @@ class WorldPool:
         if self._sessions is not None and idle_close_interval_s > 0:
             self._start_thread(_IDLE_CLOSE_THREAD, self._idle_close_loop, idle_close_interval_s,
                                idle_close_interval_s)
+        if self._registry is not None and cleanup_interval_s > 0:
+            self._start_thread(_CLEANUP_THREAD, self._cleanup_loop, cleanup_interval_s, cleanup_interval_s)
 
     def idle_close_round(self, *, drain_timeout_s: float | None = None) -> list[str]:
         """空闲关闭的一轮（spec §10.3，裁定 R50、R63）：对每个开着的世界问 C++ may_close_world(world, is_default, now)（没有活
@@ -1110,6 +1130,165 @@ class WorldPool:
                 logger.exception("idle close round failed")
             if stop.wait(poll_s):
                 return
+
+    def _cleanup_loop(self, stop: threading.Event, poll_s: float, first_delay_s: float) -> None:
+        if stop.wait(first_delay_s):
+            return
+        while True:
+            try:
+                self.cleanup_round()
+            except Exception:  # noqa: BLE001 — 保活：单轮出错不终结调度
+                logger.exception("cleanup round failed")
+            if stop.wait(poll_s):
+                return
+
+    # ───────────────────────── 自动清理（第 6 期，spec §9） ─────────────────────────
+
+    def cleanup_round(self, now: str | None = None) -> dict:
+        """一轮自动清理（见模块文档「自动清理」）。返回 {"removed": [世界名], "skipped": [世界名], "archives_removed": n}，
+        供日志与测试用：removed 是 C++ 真正删掉的世界；skipped 是这一轮池没交给 C++ 删的候选（开着，或世界锁被别的操作占着）。
+        now 缺省取池注入的墙钟（YYYY-MM-DDTHH:MM:SSZ）。没有注册表时什么都不做。配置不合法时 C++ 抛 invalid_settings。
+
+        要删谁、记什么由 C++ 判：默认世界、种子、不可回收的世界 plan 本来就不选，这里不另判。"""
+        empty = {"removed": [], "skipped": [], "archives_removed": 0}
+        reg = self._registry
+        if reg is None:
+            return empty
+        now = self._clock() if now is None else now
+        cfg = dict(self._cleanup_config)
+        plan = _core.world_cleanup_plan(reg, now, self._cleanup_open_worlds(), **cfg)
+        out = {"removed": [], "skipped": [], "archives_removed": 0}
+        for candidate in plan["remove"]:
+            try:
+                verdict = self._cleanup_one(reg, candidate, now, cfg)
+            except Exception:  # noqa: BLE001 — 后台路径：一个世界出错不挡别的世界
+                logger.exception("cleanup of world %s failed", candidate["world"])
+                continue
+            if verdict == "removed":
+                out["removed"].append(candidate["world"])
+            elif verdict in ("open", "busy"):
+                out["skipped"].append(candidate["world"])
+        # plan 自己判出的跳过（held 快照、开着）：只记录，C++ 在注册表锁内重新核对再写（裁定 R79）。
+        if plan["skip"]:
+            _core.world_cleanup_execute(reg, {"remove": [], "skip": plan["skip"], "archives": []}, now, **cfg)
+            out["skipped"].extend(item["world"] for item in plan["skip"])
+        out["archives_removed"] = self._cleanup_archives(reg, plan["archives"], now, cfg)
+        return out
+
+    def _cleanup_open_worlds(self) -> list[str]:
+        """plan 用的「此刻开着」：表上有引擎的世界，加上会话表里有活句柄的世界（world_has_live_handles）。只是 plan 的提示：
+        真正挡住删除的是 _cleanup_one 在世界锁内的确认。"""
+        with self._lock:
+            names = set(self._engines)
+        sessions = self._sessions
+        if sessions is not None:
+            now_ms = self.now_ms()
+            for rec in self._all_records():
+                if sessions.world_has_live_handles(rec["name"], now_ms):
+                    names.add(rec["name"])
+        return sorted(names)
+
+    def _all_records(self) -> list[dict]:
+        reg = self._require_registry()
+        out: list[dict] = []
+        offset = 0
+        while True:
+            page = reg.list(offset=offset, limit=_LIST_PAGE)
+            out.extend(page["worlds"])
+            offset += _LIST_PAGE
+            if not page["worlds"] or offset >= page["total"]:
+                return out
+
+    def _cleanup_one(self, reg, candidate: dict, now: str, cfg: dict) -> str:
+        """删一个候选（裁定 R64、R103）。返回 "removed" | "open" | "busy" | "kept"（C++ 重新核对后没删：world_changed、
+        no_longer_due 等，已由 C++ 记录）。
+
+        非阻塞取它的世界锁（快照、恢复、删除正持着就 busy，这一轮不等，下一轮再来），进关闭窗口（此后新租约、新句柄一律
+        world_busy），在窗口里确认此刻没开着：
+          - 表上有引擎 → open；
+          - 会话表 forget_world 抛 world_in_use（有活句柄或在途调用）→ open；通过时它已清掉这个世界的最后活动与墓碑。
+        开着的不删，作为 skip 项（open）交给 C++ 记录。确认之后与 delete_world 一样等在途租约归零（只读检视持的租约，上限
+        _CLEANUP_DRAIN_S，等不到就 busy）。之前的关闭留下的旧 Runtime 还开着这个库时 busy。然后仍持着世界锁调 execute，plan
+        里只有这一个候选，所以确认与删除之间没有别的线程能打开它。busy 的候选这一轮不删也不记。
+
+        forget_world 通过、C++ 却没删（重新核对不过）时，会话表里这个世界的记录已经清掉：空闲关闭按「没有记录」处理，下一次
+        看板请求或客户端开句柄会重新记上（与 delete_world 相同，裁定 R60）。"""
+        world = candidate["world"]
+        lock = self._world_lock(world)
+        if not lock.acquire(blocking=False):
+            return "busy"
+        try:
+            with _ClosingWindow(self, world):
+                with self._lock:
+                    has_engine = world in self._engines
+                if has_engine or not self._forget_for_cleanup(world):
+                    _core.world_cleanup_execute(
+                        reg, {"remove": [], "skip": [{"world": world, "reason": "open",
+                                                      "group": candidate["group"]}],
+                              "archives": []}, now, **cfg)
+                    return "open"
+                try:
+                    # 与 delete_world 同一条路：等在途租约（只读检视也在读这个库）归零；表上没有引擎，所以不动引擎。
+                    if not self._close_engine(world, _CLEANUP_DRAIN_S):
+                        return "busy"
+                    self._refuse_leaked(self._record(world)["db_path"])
+                except WorldSwitchError as exc:
+                    if exc.code == "world_not_found":
+                        return "kept"
+                    return "busy"
+                removed = _core.world_cleanup_execute(
+                    reg, {"remove": [candidate], "skip": [], "archives": []}, now, **cfg)
+            if removed:
+                self._cancel_debounce(world)
+                with self._lock:
+                    self._workers_lost.discard(world)
+                return "removed"
+            return "kept"
+        finally:
+            lock.release()
+
+    def _forget_for_cleanup(self, world: str) -> bool:
+        """会话表的删除前检查（裁定 R54、R60）：没有活句柄与在途调用时清掉这个世界的记录、返回 True；有则 False。没有会话表时
+        True（测试里直接建的池没有客户端）。"""
+        sessions = self._sessions
+        if sessions is None:
+            return True
+        try:
+            sessions.forget_world(world, self.now_ms())
+        except _core.WorldStoreError as exc:
+            if _store_code(exc) == "world_in_use":
+                return False
+            raise
+        return True
+
+    def _cleanup_archives(self, reg, archives: list[dict], now: str, cfg: dict) -> int:
+        """不可回收世界的到期归档：按世界分组，逐个世界在它的世界锁内交给 C++（与看板 purge_archives 同一把锁）；取不到锁的
+        世界留到下一轮。remove 为空。返回这一轮删掉的份数：交给 C++ 的归档里，之前列得出、之后列不出的（只读检视，判定在 C++）。"""
+        by_world: dict[str, list[dict]] = {}
+        for item in archives:
+            by_world.setdefault(item["world"], []).append(item)
+        removed = 0
+        for world, items in by_world.items():
+            lock = self._world_lock(world)
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                before = self._archive_names(reg, world)
+                _core.world_cleanup_execute(reg, {"remove": [], "skip": [], "archives": items}, now, **cfg)
+                after = self._archive_names(reg, world)
+                removed += sum(1 for item in items if item["name"] in before and item["name"] not in after)
+            except Exception:  # noqa: BLE001 — 后台路径：一个世界出错不挡别的世界
+                logger.exception("archive cleanup of world %s failed", world)
+            finally:
+                lock.release()
+        return removed
+
+    @staticmethod
+    def _archive_names(reg, world: str) -> set[str]:
+        try:
+            return {entry["name"] for entry in _core.world_list_archives(reg, world)}
+        except _core.WorldStoreError:
+            return set()
 
     def stop_background(self, timeout_s: float = 5.0) -> None:
         """停调度与统计线程（任何锁之外 join），再停每个开着的世界的 tick / 摄入线程。此后新建的引擎

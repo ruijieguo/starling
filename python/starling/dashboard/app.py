@@ -25,6 +25,9 @@ from starling.dashboard.world_manager import EngineFactory, WorldPool, WorldSwit
 
 logger = logging.getLogger(__name__)
 
+# 自动清理的缺省间隔（spec §9：每 10 分钟一轮），与 WorldPool.start_background 的缺省相同。
+_DEFAULT_CLEANUP_INTERVAL_S = 600.0
+
 
 def _ws_origin_allowed(origin: str, cors_origins: list[str]) -> bool:
     """CSWSH guard. Browsers always send Origin on WS; non-browser clients omit it.
@@ -108,21 +111,27 @@ class _NotReadyGate:
                            status_code=status_for("worlds_unavailable"))(scope, receive, send)
 
 
-def _start_pool(pool: WorldPool, mgr, loop, idle_close_interval_s: float | None = None) -> None:
+def _start_pool(pool: WorldPool, mgr, loop, idle_close_interval_s: float | None = None,
+                cleanup_interval_s: float | None = None) -> None:
     """池起来之后、服务请求之前的那一段（工作线程里调用）。池的线程（后台 tick、统计去抖计时器）→ 事件循环的桥：tick 的
     消息形状与手动 /api/tick 一致，前端无需区分自动/手动；world_changed 每个世界每秒至多一条（池里去抖）。
 
     默认世界的引擎在此即建，不论 tick_interval_s（裁定 R33，与改之前的生产启动一致）：库与 schema 从启动起就在（检视路由
     只读打开库），摄入从启动起就在收本机 hook 投递的会话。只取一下租约，不留引擎的引用。然后每个开着的世界按自己的
     settings.background 起线程（tick 只在 tick_interval_s > 0 时起，摄入按 background.ingest），此后新打开的世界也起；
-    再起按时间的自动快照调度与 30 秒统计刷新（有注册表时）。"""
+    再起按时间的自动快照调度与 30 秒统计刷新（有注册表时），以及自动清理（有注册表时，spec §9 每 10 分钟一轮）。
+
+    两条开池路径（lifespan 内、deferred_open 的工作线程）都经这里，所以 8787（run_dashboard）与 starling-serve 一样跑清理。
+    cleanup_interval_s 为 None 时取池的缺省（600 秒）；0 关掉。"""
     pool.on_tick = mgr.bridge(loop, "tick")
     pool.on_world_changed = mgr.bridge(loop, "world_changed")
     pool.lease(pool.default_world()).release()
-    if idle_close_interval_s is None:
-        pool.start_background()
-    else:
-        pool.start_background(idle_close_interval_s=idle_close_interval_s)
+    options: dict = {}
+    if idle_close_interval_s is not None:
+        options["idle_close_interval_s"] = idle_close_interval_s
+    options["cleanup_interval_s"] = (_DEFAULT_CLEANUP_INTERVAL_S if cleanup_interval_s is None
+                                     else cleanup_interval_s)
+    pool.start_background(**options)
 
 
 def _attach_sessions(app: FastAPI, pool: WorldPool) -> None:
@@ -148,7 +157,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
                engine_factory: EngineFactory | None = None, deferred_open: bool = False,
                on_ready: Callable[[], None] | None = None,
                on_open_failed: Callable[[BaseException], None] | None = None,
-               idle_close_interval_s: float | None = None) -> FastAPI:
+               idle_close_interval_s: float | None = None,
+               cleanup_interval_s: float | None = None) -> FastAPI:
     """Build the dashboard app.
 
     世界由引擎池（app.state.pool，WorldPool）按需打开，每个世界一个引擎；没有「活动世界」。检视与命令
@@ -163,12 +173,15 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
     /health）回 503 worlds_unavailable（_NotReadyGate）。开好之后调 on_ready()；开的途中出错调 on_open_failed(exc)（之后照旧
     一律 503）。不能与 engine 同用。缺省 False：与之前一样在这里开池，app.state.ready 从一开始就是 True。
     `idle_close_interval_s`：空闲关闭的轮询间隔（秒，spec §10.3）；None 取池的缺省 30 秒，0 不起空闲关闭线程。
+    `cleanup_interval_s`：自动清理的间隔（秒，spec §9）；None 取 config.cleanup_interval_s（缺省 600），0 不起清理线程。
     """
     config.validate_bind()
     # 左脑 lane 的开关一致性在启动时就拒绝，而不是等到第一次摄入才发现。
     config.validate_source_lane()
     if deferred_open and engine is not None:
         raise ValueError("deferred_open cannot take an injected engine")
+    if cleanup_interval_s is None:
+        cleanup_interval_s = config.cleanup_interval_s
     pool = None
     if not deferred_open:
         pool = _open_pool(config, engine_factory)
@@ -182,7 +195,7 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         opened = _open_pool(config, engine_factory)
         try:
             _attach_sessions(app, opened)
-            _start_pool(opened, app.state.ws_manager, loop, idle_close_interval_s)
+            _start_pool(opened, app.state.ws_manager, loop, idle_close_interval_s, cleanup_interval_s)
         except BaseException:
             _stop_pool(opened)
             raise
@@ -197,7 +210,7 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         if not deferred_open:
             _attach_sessions(app, pool)
             await to_thread.run_sync(_start_pool, pool, app.state.ws_manager, loop,
-                                     idle_close_interval_s)
+                                     idle_close_interval_s, cleanup_interval_s)
             yield
             _stop_pool(pool)
             return

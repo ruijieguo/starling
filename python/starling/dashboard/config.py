@@ -42,6 +42,8 @@ _SERIALIZABLE = (
     "source_lane_enabled", "source_lane_render_time", "source_lane_tau_source",
     "source_lane_model", "source_lane_dim", "source_lane_k_source",
     "source_lane_chunk_byte_budget",
+    "cleanup_keep_per_group", "cleanup_max_age_days", "cleanup_archive_max_age_days",
+    "cleanup_interval_s",
 )
 # starling-serve 不从 D/starling.json 取的键（load_service）：路径都在 D 之下，token 与监听地址来自命令行。
 _SERVICE_IGNORED = frozenset({"db_path", "ingest_spool_path", "vector_store_path", "token", "host",
@@ -85,6 +87,12 @@ class DashboardConfig:
     source_lane_dim: int = 1024
     source_lane_k_source: int = 30                # 500K 扫描选定（k/预算耦合）
     source_lane_chunk_byte_budget: int = 32000
+    # 自动清理（spec §9、§18，第 6 期）：可回收世界每个分组保留最新的份数、可回收世界与不可回收世界回滚归档的保留天数、
+    # 每轮间隔（秒，0 关掉）。规则与取值校验全在 C++（_core.world_cleanup_*，不合法报 invalid_settings），这里只存原值。
+    cleanup_keep_per_group: int = 200
+    cleanup_max_age_days: int = 14
+    cleanup_archive_max_age_days: int = 14
+    cleanup_interval_s: float = 600.0
     config_path: str = ""  # not serialized; where load()/save() persist
     # 以下两项不序列化，只由 load_service 设（starling-serve，spec §10.1）：data_root 非空时就是数据目录 D
     # （data_dir 不再看 STARLING_DATA_DIR）；persist_token 为 False 时 save() 不写 token。
@@ -247,6 +255,13 @@ class DashboardConfig:
         if env:
             return str(Path(env).expanduser())
         return os.path.dirname(os.path.abspath(db_path))
+
+    def cleanup_config(self) -> dict:
+        """清理规则的三个数值，原样交给 C++ world_cleanup_plan / world_cleanup_execute 的同名关键字参数（两次同一份，裁定 R74）。
+        不做类型转换、不判范围：0、负数、非整数都由 C++ 报 invalid_settings。"""
+        return {"keep_per_group": self.cleanup_keep_per_group,
+                "max_age_days": self.cleanup_max_age_days,
+                "archive_max_age_days": self.cleanup_archive_max_age_days}
 
     def world_settings(self) -> dict:
         """把当前 provider / roles / lane / gist / tick 转成世界设置的部分 dict（字段见 C++
