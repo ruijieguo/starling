@@ -31,10 +31,12 @@ const purgeArchives = vi.fn();
 const setAutoSnapshot = vi.fn();
 const listSessions = vi.fn();
 const reconfirm = vi.fn();
+const fetchCleanupLog = vi.fn();
 vi.mock('$lib/worlds', async (orig) => {
 	const real = await orig<typeof import('$lib/worlds')>();
 	return {
 		...real,
+		fetchCleanupLog: (...a: unknown[]) => fetchCleanupLog(...a),
 		worldsApi: {
 			list: (...a: unknown[]) => list(...a),
 			create: (...a: unknown[]) => create(...a),
@@ -83,9 +85,10 @@ const DEFAULT_DETAIL = {
 	settings: { background: { auto_snapshot: { on_session: true, interval_hours: 0 } } }
 };
 
-// 每个用例都先把默认世界的详情接好（新建表单挂载时就会取它）。
+// 每个用例都先把默认世界的详情接好（新建表单挂载时就会取它）；清理记录缺省为空。
 beforeEach(() => {
 	detail.mockReset().mockResolvedValue(DEFAULT_DETAIL);
+	fetchCleanupLog.mockReset().mockResolvedValue({ entries: [] });
 	noteDefaultWorld('default');
 });
 
@@ -1294,5 +1297,61 @@ describe('/worlds 重新确认端点（裁定 R53）', () => {
 		await fireEvent.click(inBody('确认')!);
 		await settle();
 		expect(toastError).toHaveBeenCalledWith('世界不存在');
+	});
+});
+
+describe('/worlds 最近清理', () => {
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(DATA);
+		fetchCleanupLog.mockReset();
+	});
+
+	it('经 $lib/worlds 的 fetchCleanupLog 取最近 50 条，渲染成表：时间、世界、分组、动作、原因、详情', async () => {
+		fetchCleanupLog.mockResolvedValue({
+			entries: [
+				{ id: 3, at: '2026-11-20T00:10:00Z', world: 'deploy', group: '', action: 'archive_removed',
+				  reason: 'over_age', detail: 'world.db.pre-rollback-20261101T000000Z-abcd' },
+				{ id: 2, at: '2026-11-20T00:00:00Z', world: 'rollout-2', group: 'run1', action: 'skipped',
+				  reason: 'held_snapshot', detail: '' },
+				{ id: 1, at: '2026-11-20T00:00:00Z', world: 'rollout-1', group: 'run1', action: 'removed',
+				  reason: 'over_count', detail: '' }
+			]
+		});
+		const { container } = render(Worlds);
+		await settle();
+		expect(fetchCleanupLog).toHaveBeenCalledWith(50);
+		const table = [...container.querySelectorAll('table')].find((t) =>
+			t.querySelector('caption')?.textContent?.includes('最近清理')
+		) as HTMLTableElement;
+		expect(table).toBeTruthy();
+		const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent?.trim());
+		expect(heads).toEqual(['时间', '世界', '分组', '动作', '原因', '详情']);
+		const rows = [...table.querySelectorAll('tbody tr')].map((tr) =>
+			[...tr.querySelectorAll('th, td')].map((c) => c.textContent?.trim())
+		);
+		expect(rows).toEqual([
+			['2026-11-20T00:10:00Z', 'deploy', '—', '删除归档', '超出天数',
+			 'world.db.pre-rollback-20261101T000000Z-abcd'],
+			['2026-11-20T00:00:00Z', 'rollout-2', 'run1', '跳过', '有持有的快照', '—'],
+			['2026-11-20T00:00:00Z', 'rollout-1', 'run1', '删除世界', '超出份数', '—']
+		]);
+		expect(container.textContent).not.toContain('暂无清理记录');
+	});
+
+	it('没有记录时显示「暂无清理记录」，不渲染表', async () => {
+		fetchCleanupLog.mockResolvedValue({ entries: [] });
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent).toContain('暂无清理记录');
+		const captions = [...container.querySelectorAll('caption')].map((c) => c.textContent);
+		expect(captions).not.toContain('最近清理');
+	});
+
+	it('取不到时只在这张卡里提示，世界列表照常', async () => {
+		fetchCleanupLog.mockRejectedValue(new ApiError(503, '/api/worlds/cleanup_log', '503 worlds_unavailable'));
+		const { container } = render(Worlds);
+		await settle();
+		expect(container.textContent).toContain('清理记录加载失败');
+		expect(container.textContent).toContain('sim-1');
 	});
 });

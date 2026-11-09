@@ -3,7 +3,8 @@ import * as tok from './token';
 import { ApiError } from './api';
 import {
 	worldsApi, isValidWorldName, formatBytes, worldErrorMessage, apiDetail,
-	parseIntervalHours, describeError, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels
+	parseIntervalHours, describeError, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels,
+	fetchCleanupLog, cleanupActionLabel, cleanupReasonLabel
 } from './worlds';
 
 let calls: Array<[string, RequestInit]> = [];
@@ -352,5 +353,26 @@ describe('describeError 与 worlds_unavailable', () => {
 		expect(worldErrorMessage('endpoint_changed')).toContain('重新确认端点');
 		expect(describeError(new Error('plain'))).toBe('plain');
 		expect(describeError('str')).toBe('str');
+	});
+});
+
+describe('fetchCleanupLog（spec §9 的清理记录）', () => {
+	it('GET /api/worlds/cleanup_log?limit=N，默认 50', async () => {
+		await fetchCleanupLog();
+		await fetchCleanupLog(7);
+		expect(calls.map(([p, i]) => `${i.method ?? 'GET'} ${p}`)).toEqual([
+			'GET /api/worlds/cleanup_log?limit=50',
+			'GET /api/worlds/cleanup_log?limit=7'
+		]);
+		expect(calls[0][1].body).toBeUndefined();
+	});
+
+	it('动作与原因转中文，未知值原样（不走原型链）', () => {
+		expect(cleanupActionLabel('removed')).toBe('删除世界');
+		expect(cleanupActionLabel('archive_removed')).toBe('删除归档');
+		expect(cleanupReasonLabel('over_age')).toBe('超出天数');
+		expect(cleanupReasonLabel('held_snapshot')).toBe('有持有的快照');
+		expect(cleanupReasonLabel('mystery')).toBe('mystery');
+		expect(cleanupActionLabel('constructor')).toBe('constructor');
 	});
 });

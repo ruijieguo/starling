@@ -130,6 +130,23 @@ export type WorldsData = {
 	worlds: WorldRow[];
 };
 
+/**
+ * 自动清理的一条记录(GET /api/worlds/cleanup_log,spec §9)。最新在前。
+ * action:removed(删了一个世界)| skipped(跳过)| archive_removed(删了一份回滚归档,detail 是归档名)。
+ * reason:removed 是 over_count / over_age;skipped 是 held_snapshot / open / not_reclaimable / world_changed /
+ * no_longer_due / failed。类型放宽到 string,未知值原样显示而不是崩。
+ */
+export type CleanupLogEntry = {
+	id: number;
+	at: string;
+	world: string;
+	/** 世界的分组(retention_group);可空。 */
+	group: string;
+	action: string;
+	reason: string;
+	detail: string;
+};
+
 /** 与后端同一规则:首字符字母或数字,其后 [A-Za-z0-9._-],长度 1–128,区分大小写。 */
 export const WORLD_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -204,6 +221,40 @@ export function snapshotReasonLabel(reason: string): string {
 /** session_id 等长 id 的前 n 位(界面上省地方,全文放 title)。 */
 export function shortId(id: string, n: number): string {
 	return id.slice(0, n);
+}
+
+const CLEANUP_ACTION_LABELS: Record<string, string> = {
+	removed: '删除世界',
+	skipped: '跳过',
+	archive_removed: '删除归档'
+};
+
+const CLEANUP_REASON_LABELS: Record<string, string> = {
+	over_count: '超出份数',
+	over_age: '超出天数',
+	held_snapshot: '有持有的快照',
+	open: '开着',
+	not_reclaimable: '不可回收',
+	world_changed: '世界已重建',
+	no_longer_due: '不再到期',
+	failed: '失败'
+};
+
+/** 清理记录的 action → 中文;未知值原样返回(用 hasOwn 防原型链键,同 snapshotReasonLabel)。 */
+export function cleanupActionLabel(action: string): string {
+	return Object.hasOwn(CLEANUP_ACTION_LABELS, action) ? CLEANUP_ACTION_LABELS[action] : action;
+}
+
+/** 清理记录的 reason → 中文;未知值原样返回。 */
+export function cleanupReasonLabel(reason: string): string {
+	return Object.hasOwn(CLEANUP_REASON_LABELS, reason) ? CLEANUP_REASON_LABELS[reason] : reason;
+}
+
+/** GET /api/worlds/cleanup_log?limit=N(契约 limit 1–500,后端校验)。只读,走默认超时。 */
+export function fetchCleanupLog(limit = 50): Promise<{ entries: CleanupLogEntry[] }> {
+	return api.get<{ entries: CleanupLogEntry[] }>(
+		`/api/worlds/cleanup_log?limit=${encodeURIComponent(String(limit))}`
+	);
 }
 
 export type ListOpts = { labels?: Record<string, string>; offset?: number; limit?: number };
