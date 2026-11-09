@@ -6,9 +6,11 @@
 #include "starling/governance/cleanup.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace starling::governance::internal {
@@ -34,6 +36,11 @@ void require_cleanup_config(const CleanupConfig& cfg);
 // 返回 worlds/<dir_id>（未解析符号链接）。
 [[nodiscard]] std::filesystem::path checked_cleanup_home(const std::filesystem::path& data_dir,
                                                          const std::string& dir_id, const std::string& label);
+
+// 锁外删世界目录之前，按 lstat（fs::symlink_status）的结果判断目录此刻在不在（裁定 R71、R79）：not_found 是不在；别的错
+// （EACCES 等）是不知道，调用方留着待删标记、下一轮再试，不能当成不在把标记清掉；其余是在。
+enum class HomePresence : std::uint8_t { kAbsent, kPresent, kUnknown };
+[[nodiscard]] HomePresence home_presence(const std::filesystem::file_status& status, const std::error_code& err);
 
 // reserve_home 生成的 dir_id 形状：16 位小写十六进制（裁定 R72 M2，补删只认这种）。
 [[nodiscard]] bool is_generated_dir_id(std::string_view dir_id);

@@ -101,14 +101,16 @@ struct CleanupLogEntry {
 // 锁内读到、重算出来的。
 //
 // 0. 先补删上一轮留下的待删目录（见下面的删除顺序）：只删 worlds/<dir_id>，而且这个 dir_id 必须在 cleanup_log 里
-//    标成待删、在 worlds 表里已经没有（裁定 R56 补充 1）。dir_id 形状不对（空、"."、".."、含 '/' 或 '\\'）、
-//    解析后不是 worlds/<dir_id> 本身（符号链接外链）的记录不删，只记 stderr。删完（或目录本来就不在）清掉标记；
-//    删不掉的留着标记，下一轮再试。worlds/ 下别的东西一概不碰。
+//    标成待删、在 worlds 表里已经没有（裁定 R56 补充 1），并且是 reserve_home 生成的形状：16 位小写十六进制（裁定 R72 M2）。
+//    不是这个形状（导入的旧目录名、大写、长度不对、空、"."、".."、含 '/' 或 '\\'）、或解析后不是 worlds/<dir_id> 本身
+//    （符号链接外链）的记录不删，标记留着，只记 stderr。删完（或目录本来就不在，lstat 报 not_found）清掉标记；lstat 报别的
+//    错（EACCES 等）或删不掉的留着标记，下一轮再试（裁定 R71）。worlds/ 下别的东西一概不碰。
 // 1. 对 plan.remove 的每个世界，在注册表锁内重新读它的记录与快照列表再判定（Review Focus 第 5 条）：
 //      世界已不在 → 什么都不记；dir_id 与 plan 时不同 → skip world_changed；不再满足 cleanup_eligible
 //      → skip not_reclaimable；有 held 快照 → skip held_snapshot；按 cfg、now_iso 重算规则（天数看 created_at，
-//      份数用与 plan_cleanup 同一个排名函数对该分组此刻的全部世界重排）不再到期 → skip no_longer_due；布局校验不过
-//      （dir_id 形状、worlds/ 外链、世界目录解析后不是 worlds/<dir_id>）→ skip failed（detail 写原因）。
+//      份数用与 plan_cleanup 同一个排名函数对该分组此刻的全部世界重排）不再到期 → skip no_longer_due；dir_id 不是生成的
+//      16 位小写十六进制 → skip failed（第 0 步只补删生成的形状，摘了注册项、目录又删不掉就成了孤儿，裁定 R79）；布局校验
+//      不过（dir_id 形状、worlds/ 外链、世界目录解析后不是 worlds/<dir_id>）→ skip failed（detail 写原因）。
 //      这些读与写在同一次注册表持锁、同一个 BEGIN IMMEDIATE 里。
 //    「此刻开着」的判定由调用方负责：Task 6.2 在世界锁下确认引擎已关、再把这个世界放进 plan 调用（open_worlds 在
 //    plan_cleanup 时传入）；6.1 只保证上面这些在注册表锁内重新读取。
@@ -116,14 +118,17 @@ struct CleanupLogEntry {
 //      a. 注册表锁内、一个事务：写 removed 记录（dir_id、pending_dir=1），摘掉 worlds 行、标签、快照条目；
 //      b. 锁外：remove_within(worlds/, worlds/<dir_id>) 删掉整个世界目录（库、快照、归档一起），dir_id 用锁内读到的；
 //      c. 删完清掉这条记录的待删标记。b 失败（权限等）只记 stderr，标记留着，世界仍算删掉（注册项已摘）。
-// 2. plan.skip 的每一项：世界还在、仍 cleanup_eligible、原因是 held_snapshot 或 open 时写 skipped 记录（别的原因文本
-//    不写）；group、dir_id 取锁内读到的。
+// 2. plan.skip 的每一项：原因只认 held_snapshot 与 open（别的原因文本不写）。在注册表锁内重新读：世界还在、仍
+//    cleanup_eligible、按 cfg 与 now_iso 重算此刻仍到期，才写 skipped 记录；原因按锁内读到的定（裁定 R79）：此刻有 held
+//    快照记 held_snapshot（与 plan_cleanup 同序，held 在 open 之前）；否则提名是 open 才记 open（只有调用方知道开没开着）；
+//    提名 held_snapshot 而 held 已经没了的不记。group、dir_id 取锁内读到的。
 // 3. 对 plan.archives 的每一份：世界还在、dir_id 相同、仍不 cleanup_eligible、这份归档仍出现在
 //    list_rollback_archives 里；再按名字里的时刻与 cfg.archive_max_age_days 重算天数，不到期记 skipped
 //    no_longer_due（detail 是归档名），到期才经 remove_within(archive/, …) 删掉并写 archive_removed 记录。前几项
 //    不满足或删不掉的跳过（不记）。调用方在该世界的世界锁下调用（与看板清理归档同一把锁）。
 // skipped 记录带 dir_id，去重：这个世界最新一条记录的 (dir_id, action, reason, detail) 与这次相同时不再写（裁定 R72 M1），
-// 所以每 10 分钟一轮不会刷屏，同名重建的新世界、failed 的原因变了都另记。
+// 所以每 10 分钟一轮不会刷屏，同名重建的新世界、failed 的原因变了都另记。归档的 no_longer_due 按每份归档去重：只与这个
+// 世界里 detail 是同一个归档名的最新一条比（裁定 R79），几份不到期的归档交替出现也不会每轮重记。
 // 一个世界失败不影响别的世界。
 std::vector<CleanupCandidate> execute_cleanup(RegistryDb& reg, const CleanupPlan& plan,
                                               const CleanupConfig& cfg, std::string_view now_iso);

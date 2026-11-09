@@ -198,11 +198,13 @@ public:
     };
     CleanupDecision unregister_for_cleanup(const std::string& world, const std::string& planned_dir_id,
                                            const CleanupConfig& cfg, std::string_view now_iso);
-    // plan.skip 的一项（held_snapshot / open）：持锁重新读这个世界，世界不在、或不在 cleanup.hpp 认的跳过原因里时不写；
-    // 写的 group、dir_id 取锁内读到的值。去重见 cleanup.hpp。
+    // plan.skip 的一项（held_snapshot / open）：持锁重新读这个世界与它的分组，按 cleanup.hpp 第 2 步重新核对原因（裁定 R79）：
+    // 世界不在、不再 cleanup_eligible、此刻不再到期、或重读后两种原因都不成立时不写；写的 group、dir_id 取锁内读到的值。
+    // 去重见 cleanup.hpp。
     void record_cleanup_skip(const std::string& world, const std::string& reason, const CleanupConfig& cfg,
                              std::string_view now_iso);
-    // 归档的记录：删掉一份（archive_removed）或重算后不到期（skipped no_longer_due），detail 都是归档名。
+    // 归档的记录：删掉一份（archive_removed）或重算后不到期（skipped no_longer_due），detail 都是归档名。skipped 按每份归档
+    // 去重（裁定 R79，见 cleanup.hpp）。
     void append_archive_removed(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
     void record_archive_skip(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
     // 待删目录：cleanup_log 里 pending_dir=1、且 worlds 表里没有这个 dir_id 的不同 dir_id（裁定 R56 补充 1）。

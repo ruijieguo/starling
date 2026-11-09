@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -852,10 +854,7 @@ std::vector<CleanupCensusRow> census_rows(sqlite3* dbh, const std::string& dflt,
         " ORDER BY w.rowid ASC";
     pst::Stmt stmt(dbh, sql.c_str());
     if (where != nullptr) { stmt.bind(bind_text); }
-    int held_col = -1;
-    for (int col = 0; col < sqlite3_column_count(stmt.raw()); ++col) {
-        if (std::string_view(sqlite3_column_name(stmt.raw(), col)) == "has_held") { held_col = col; }
-    }
+    const int held_col = internal::require_column(stmt.raw(), "has_held");   // 列不在抛 registry_corrupt（裁定 R79）
     std::vector<CleanupCensusRow> out;
     while (stmt.step_row()) {
         CleanupCensusRow row;
@@ -893,6 +892,40 @@ void insert_skip_deduped(sqlite3* dbh, std::string_view now_iso, const WorldReco
         }
     }
     insert_cleanup_row(dbh, now_iso, rec.name, rec.retention_group, "skipped", reason, detail, rec.dir_id, false);
+}
+
+// 调用方已持锁、在事务里。归档的 skipped no_longer_due（裁定 R79）：按这一份归档去重，只比这个世界里 detail 是同一个归档名的
+// 最新一条。按世界的最新一条比的话，两份不到期的归档交替出现时每轮都各记一条。
+void insert_archive_skip_deduped(sqlite3* dbh, std::string_view now_iso, const WorldRecord& rec,
+                                 const std::string& archive_name) {
+    {
+        pst::Stmt stmt(dbh,
+                       "SELECT dir_id, action, reason FROM cleanup_log WHERE world = ? AND detail = ? "
+                       "ORDER BY id DESC LIMIT 1");
+        stmt.bind(rec.name, archive_name);
+        if (stmt.step_row() && text_col(stmt.raw(), 0) == rec.dir_id && text_col(stmt.raw(), 1) == "skipped" &&
+            text_col(stmt.raw(), 2) == "no_longer_due") {
+            return;
+        }
+    }
+    insert_cleanup_row(dbh, now_iso, rec.name, rec.retention_group, "skipped", "no_longer_due", archive_name,
+                       rec.dir_id, false);
+}
+
+// 调用方已持锁、在事务里。own 是这个世界的一行（census_rows 读的）。按 cfg、now 重算它此刻是否到期（裁定 R70，与 plan_cleanup
+// 同一份规则代码）："" | "over_age" | "over_count"。份数要看整个分组（含被保护的成员），所以取该分组的全部世界；空分组只看
+// 自己（只有天数规则）。
+std::string due_reason_in_lock(sqlite3* dbh, const std::string& dflt, const std::vector<CleanupCensusRow>& own,
+                               const CleanupConfig& cfg, std::chrono::sys_seconds now) {
+    const WorldRecord& rec = own.front().record;
+    const auto members = rec.retention_group.empty()
+                             ? own
+                             : census_rows(dbh, dflt, "w.retention_group = ?", rec.retention_group);
+    const auto reasons = internal::cleanup_due_reasons(members, cfg, now);
+    const auto pos = std::ranges::find_if(members, [&rec](const CleanupCensusRow& member) {
+        return member.record.name == rec.name;
+    });
+    return pos == members.end() ? std::string() : reasons.at(static_cast<std::size_t>(pos - members.begin()));
 }
 
 }  // namespace
@@ -942,19 +975,13 @@ RegistryDb::CleanupDecision RegistryDb::unregister_for_cleanup(const std::string
     } else if (row.has_held) {
         decision.reason = "held_snapshot";
     } else {
-        // 裁定 R70：按规则重算。份数要看整个分组（含被保护的成员），所以取该分组的全部世界；空分组只看自己（只有天数规则）。
-        const auto members = rec.retention_group.empty()
-                                 ? own
-                                 : census_rows(impl_->db(), dflt, "w.retention_group = ?", rec.retention_group);
-        const auto reasons = internal::cleanup_due_reasons(members, cfg, now);
-        const auto pos = std::ranges::find_if(members, [&rec](const CleanupCensusRow& member) {
-            return member.record.name == rec.name;
-        });
-        const std::string due = pos == members.end()
-                                    ? std::string()
-                                    : reasons.at(static_cast<std::size_t>(pos - members.begin()));
+        const std::string due = due_reason_in_lock(impl_->db(), dflt, own, cfg, now);   // 裁定 R70：按规则重算
         if (!internal::is_cleanup_due(due)) {
             decision.reason = "no_longer_due";
+        } else if (!internal::is_generated_dir_id(rec.dir_id)) {
+            // 裁定 R79（R72 M2 的对称面）：补删只删生成的 dir_id，第 b 步删不掉时这个目录就没人再删了。所以只摘生成的。
+            decision.reason = "failed";
+            detail = "dir_id '" + rec.dir_id + "' of '" + rec.name + "' is not a generated id; not removed";
         } else {
             try {
                 (void)internal::checked_cleanup_home(impl_->data_dir, rec.dir_id, rec.name);
@@ -988,14 +1015,26 @@ RegistryDb::CleanupDecision RegistryDb::unregister_for_cleanup(const std::string
 void RegistryDb::record_cleanup_skip(const std::string& world, const std::string& reason,
                                      const CleanupConfig& cfg, std::string_view now_iso) {
     internal::require_cleanup_config(cfg);
-    (void)internal::require_cleanup_now(now_iso);
     // 入参只是提名（裁定 R70）：plan 只会给这两种跳过原因，别的文本不写进记录。
     if (reason != "held_snapshot" && reason != "open") { return; }
+    const auto now = internal::require_cleanup_now(now_iso);
     const std::scoped_lock lock(impl_->mutex);
     pst::TransactionGuard guard(*impl_->conn);
-    const auto own = census_rows(impl_->db(), impl_->default_name(), "w.name = ?", world);
+    const std::string dflt = impl_->default_name();
+    const auto own = census_rows(impl_->db(), dflt, "w.name = ?", world);
     if (own.empty() || !cleanup_eligible(own.front().record, own.front().is_default)) { return; }
-    insert_skip_deduped(impl_->db(), now_iso, own.front().record, reason, "");
+    // 裁定 R79：原因按锁内重读的结果重新核对，与 plan_cleanup 同序（held 在 open 之前）。此刻不到期的世界不受保护也不会被删，
+    // 不记；提名 held_snapshot 而 held 已经没了的不记（下一轮就删）。open 只有调用方知道，照它说的记。
+    std::string recorded;
+    if (own.front().has_held) {
+        recorded = "held_snapshot";
+    } else if (reason == "open") {
+        recorded = "open";
+    } else {
+        return;
+    }
+    if (!internal::is_cleanup_due(due_reason_in_lock(impl_->db(), dflt, own, cfg, now))) { return; }
+    insert_skip_deduped(impl_->db(), now_iso, own.front().record, recorded, "");
     guard.commit();
 }
 
@@ -1012,7 +1051,7 @@ void RegistryDb::record_archive_skip(const WorldRecord& rec, const std::string& 
                                      std::string_view now_iso) {
     const std::scoped_lock lock(impl_->mutex);
     pst::TransactionGuard guard(*impl_->conn);
-    insert_skip_deduped(impl_->db(), now_iso, rec, "no_longer_due", archive_name);
+    insert_archive_skip_deduped(impl_->db(), now_iso, rec, archive_name);
     guard.commit();
 }
 
@@ -1047,6 +1086,14 @@ int RegistryDb::synchronous_for_test() const {
 }
 
 namespace internal {
+
+int require_column(sqlite3_stmt* stmt, std::string_view name) {
+    for (int col = 0; col < sqlite3_column_count(stmt); ++col) {
+        if (std::string_view(sqlite3_column_name(stmt, col)) == name) { return col; }
+    }
+    // 裁定 R79：取不到就抛，失败时关闭。拿 -1 去读列会读成 0，把「有 held 快照」悄悄当成「没有」。
+    registry_corrupt("result column '" + std::string(name) + "' missing");
+}
 
 void write_fresh_registry(const fs::path& file, const std::string& default_world,
                           int snapshot_retention, const std::vector<ImportedWorld>& worlds) {

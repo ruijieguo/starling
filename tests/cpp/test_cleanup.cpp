@@ -4,6 +4,10 @@
 #include "starling/governance/registry_db.hpp"
 #include "starling/persistence/connection.hpp"
 
+// 内部助手的纯函数测试（裁定 R79）：不属于公开 API，按相对路径包含。
+#include "../../src/governance/cleanup_internal.hpp"
+#include "../../src/governance/registry_db_internal.hpp"
+
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -18,6 +22,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -1203,4 +1208,101 @@ TEST(Cleanup, RegistryConnectionIsSynchronousFull) {
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);   // 世界库：NORMAL，不受影响
     sqlite3_finalize(stmt);
+}
+
+// ---- 裁定 R79：6.1 修复轮复审留下的 Minor ----
+
+// held 列按列名取；列不在（改了 SQL 却漏了列名）时抛 registry_corrupt，不能悄悄当成「没有 held」把带 held 快照的世界删掉。
+TEST(Cleanup, MissingResultColumnFailsClosed) {
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &raw), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(raw, "SELECT 1 AS name, 0 AS has_held", -1, &stmt, nullptr), SQLITE_OK);
+    EXPECT_EQ(internal::require_column(stmt, "has_held"), 1);
+    EXPECT_EQ(internal::require_column(stmt, "name"), 0);
+    EXPECT_EQ(code_of([&] { (void)internal::require_column(stmt, "missing"); }), "registry_corrupt");
+    sqlite3_finalize(stmt);
+    ASSERT_EQ(sqlite3_prepare_v2(raw, "SELECT 1 AS name", -1, &stmt, nullptr), SQLITE_OK);
+    EXPECT_EQ(code_of([&] { (void)internal::require_column(stmt, "has_held"); }), "registry_corrupt");
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+}
+
+// 裁定 R71 的纯函数：lstat 出错（EACCES 等，不是 not_found）是「不知道」，不是「不在」；只有 not_found 才算不在。
+TEST(Cleanup, HomePresenceTreatsStatErrorsAsUnknown) {
+    using internal::HomePresence;
+    const std::error_code none;
+    const auto denied = std::make_error_code(std::errc::permission_denied);
+    const auto missing = std::make_error_code(std::errc::no_such_file_or_directory);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::directory), none), HomePresence::kPresent);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::symlink), none), HomePresence::kPresent);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::not_found), none), HomePresence::kAbsent);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::not_found), missing), HomePresence::kAbsent);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::none), denied), HomePresence::kUnknown);
+    EXPECT_EQ(internal::home_presence(fs::file_status(fs::file_type::unknown), denied), HomePresence::kUnknown);
+}
+
+// 归档的 no_longer_due 按每份归档去重：两份不到期的归档交替出现时，同一份归档不会每轮都再记一条。
+TEST(Cleanup, ArchiveSkipsDedupPerArchive) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reg.create("deploy", "", {}, "{}", kStale);
+    const std::string dir_id = reg.get("deploy").dir_id;
+    CleanupPlan forged;
+    for (const char* stamp : {"20261118T000000Z", "20261119T000000Z"}) {
+        const fs::path file = put_archive(reg, "deploy", stamp);
+        forged.archives.push_back(CleanupArchive{.world = "deploy", .dir_id = dir_id,
+                                                 .name = file.filename().string()});
+    }
+    for (int round = 0; round < 3; ++round) {
+        EXPECT_TRUE(execute_cleanup(reg, forged, CleanupConfig{}, kNow).empty());
+    }
+    EXPECT_EQ(log_count(tmp, "world = 'deploy' AND reason = 'no_longer_due'"), "2");
+    EXPECT_EQ(log_count(tmp, "world = 'deploy' AND detail = '" + forged.archives.at(0).name + "'"), "1");
+    EXPECT_EQ(log_count(tmp, "world = 'deploy' AND detail = '" + forged.archives.at(1).name + "'"), "1");
+}
+
+// plan.skip 的原因按锁内重读的结果重新核对：此刻有 held 记 held_snapshot（held 在 open 之前判，与 plan_cleanup 同序）；
+// 提名 held_snapshot 但 held 已被删掉的不记（它不再受保护，下一轮就删）；不再到期的不记。open 只能由调用方断言。
+TEST(Cleanup, SkipReasonsAreRecheckedUnderTheLock) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reclaimable(reg, "open-then-held", "g", kStale);
+    reclaimable(reg, "held-then-dropped", "g", kStale);
+    reclaimable(reg, "fresh", "h", kFresh);
+    reclaimable(reg, "still-open", "g", kStale);
+    put_held(reg, "held-then-dropped", "20261119T000000Z-aaaa");
+    auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {"open-then-held", "still-open"});
+    ASSERT_EQ(skip_names(plan.skip),
+              (std::vector<std::string>{"open-then-held", "held-then-dropped", "still-open"}));
+    put_held(reg, "open-then-held", "20261119T000000Z-bbbb");
+    reg.drop_snapshot("held-then-dropped", "20261119T000000Z-aaaa");
+    plan.remove.clear();
+    plan.skip.push_back(CleanupSkip{.world = "fresh", .reason = "open", .group = "h"});
+
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
+    EXPECT_EQ(log_count(tmp, "world = 'open-then-held'"), "1");
+    EXPECT_EQ(log_count(tmp, "world = 'open-then-held' AND reason = 'held_snapshot'"), "1");
+    EXPECT_EQ(log_count(tmp, "world = 'held-then-dropped'"), "0");
+    EXPECT_EQ(log_count(tmp, "world = 'fresh'"), "0");
+    EXPECT_EQ(log_count(tmp, "world = 'still-open' AND reason = 'open'"), "1");
+}
+
+// 裁定 R72 M2 的对称面：补删只删生成的 dir_id，所以第 b 步也只删生成的。可回收世界的 dir_id 不是生成的形状（手改过的
+// 注册表）时，锁内核对就跳过、记 failed，注册项与目录都不动；否则摘了注册项、目录删不掉也补删不了，成了永久孤儿。
+TEST(Cleanup, NonGeneratedDirIdIsSkippedNotOrphaned) {
+    const TempDir tmp;
+    auto reg = open_db(tmp);
+    reg.set_dir_id_source_for_test(fixed_dir_ids({"legacy-1"}));
+    reclaimable(reg, "legacy", "g", kStale);
+    reg.set_dir_id_source_for_test({});
+    ASSERT_EQ(reg.get("legacy").dir_id, "legacy-1");
+    const auto plan = plan_cleanup(reg, CleanupConfig{}, kNow, {});
+    ASSERT_EQ(names_of(plan.remove), std::vector<std::string>{"legacy"});
+
+    EXPECT_TRUE(execute_cleanup(reg, plan, CleanupConfig{}, kNow).empty());
+    EXPECT_NO_THROW((void)reg.get("legacy"));
+    EXPECT_TRUE(fs::exists(home_of(tmp, "legacy-1")));
+    EXPECT_EQ(log_count(tmp, "world = 'legacy' AND action = 'skipped' AND reason = 'failed'"), "1");
+    EXPECT_EQ(log_count(tmp, "pending_dir = 1"), "0");
 }

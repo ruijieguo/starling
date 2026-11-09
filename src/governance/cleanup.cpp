@@ -138,6 +138,12 @@ bool is_generated_dir_id(std::string_view dir_id) {
            });
 }
 
+HomePresence home_presence(const fs::file_status& status, const std::error_code& err) {
+    if (status.type() == fs::file_type::not_found) { return HomePresence::kAbsent; }
+    if (err) { return HomePresence::kUnknown; }   // EACCES 等：不知道在不在，不能当成不在（裁定 R71）
+    return HomePresence::kPresent;
+}
+
 bool cleanup_archive_due(std::string_view name, const CleanupConfig& cfg, Seconds now) {
     const auto stamp = archive_stamp(name);
     return stamp && older_than(*stamp, now, cfg.archive_max_age_days);
@@ -213,12 +219,13 @@ bool remove_world_home(const fs::path& data_dir, const std::string& dir_id, cons
         const fs::path home = internal::checked_cleanup_home(data_dir, dir_id, label);
         std::error_code err;
         const fs::file_status status = fs::symlink_status(home, err);
-        if (err && status.type() != fs::file_type::not_found) {
+        const internal::HomePresence presence = internal::home_presence(status, err);
+        if (presence == internal::HomePresence::kUnknown) {
             std::cerr << "[cleanup] cannot stat " << home.string() << ": " << err.message()
                       << "; kept pending\n";
             return false;
         }
-        if (status.type() == fs::file_type::not_found) { return true; }
+        if (presence == internal::HomePresence::kAbsent) { return true; }
         const fs::path worlds_root = home.parent_path();
         if (!internal::remove_within(worlds_root, home)) {
             std::cerr << "[cleanup] " << home.string() << " resolves outside " << worlds_root.string()
