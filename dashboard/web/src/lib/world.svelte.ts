@@ -11,6 +11,7 @@ import { goto } from '$app/navigation';
 import { untrack } from 'svelte';
 import { shouldRefetch } from './feed';
 import type { WsEvent } from './ws';
+import type { WorldStatusFlags } from './worlds'; // 只取类型:运行时仍不依赖 worlds.ts / api.ts
 
 const PARAM = 'world';
 
@@ -24,6 +25,48 @@ export function noteDefaultWorld(name: string): void {
 
 export function defaultWorld(): string {
 	return defaultName;
+}
+
+// 当前世界的状态标记(第 5 期,spec §14)。壳层的 WorldStatusBanner 取当前世界的详情后登记在这里,
+// 各页的写入按钮读它置灰(lib/worlds.ts 的 currentWriteBlockedReason),不各自再取一次。只存一份,
+// 并记着它属于哪个世界:换世界后、新详情回来之前,worldStatusOf(新世界) 为 null(按未知处理,不置灰)。
+let worldStatus = $state<{ world: string; flags: WorldStatusFlags } | null>(null);
+
+/** 登记 world 的状态标记;flags 为 null 时清掉(只清属于 world 的那份)。 */
+export function noteWorldStatus(world: string, flags: WorldStatusFlags | null): void {
+	if (flags) {
+		const { seed, read_only, reclaimable, open_mode, schema_behind, held_by_client } = flags;
+		worldStatus = {
+			world,
+			flags: { seed, read_only, reclaimable, open_mode, schema_behind, held_by_client }
+		};
+	} else if (worldStatus?.world === world) {
+		worldStatus = null;
+	}
+}
+
+/** world 已登记的状态标记;没登记、或登记的是别的世界时为 null。 */
+export function worldStatusOf(world: string): WorldStatusFlags | null {
+	return worldStatus && worldStatus.world === world ? worldStatus.flags : null;
+}
+
+// 写入被后端拒绝的次数(裁定 R113 I-1)。客户端开、关句柄不发 WS 事件(裁定 R109-1),横幅可能还停在「可写」;
+// 这时写入被拒(world_held / world_read_only)就说明状态旧了。横幅读这个计数,变了就重取当前世界的详情,
+// 不另开轮询。计数只增不减,读到的具体值没有意义。
+const REJECTION_CODES = new Set(['world_held', 'world_read_only']);
+let writeRejections = $state(0);
+
+/**
+ * 写入的错误码是 world_held / world_read_only 就登记一次,横幅随之重取;其他码不登记。
+ * api.ts 的 req 对 POST/PUT/DELETE 的错误响应调它,/ws/converse 的 error 帧由对话页调它。
+ */
+export function noteWriteRejected(code: string): void {
+	if (REJECTION_CODES.has(code)) writeRejections++;
+}
+
+/** 写入被拒的累计次数(横幅的取数 effect 读它)。 */
+export function writeRejectionCount(): number {
+	return writeRejections;
 }
 
 /** URL 里显式写的 ?world=;没写为 null。 */

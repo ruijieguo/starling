@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { api, type CascadePreview, worldPath } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
@@ -74,8 +74,11 @@
 	let confirmOpen = $state(false);
 	let confirmCfg = $state<{ title: string; desc: string; run: () => Promise<void> } | null>(null);
 	let confirmForId = $state(''); // guards the background cascade-preview against a stale dialog
+	// 第 5 期(spec §14,裁定 R109):只读或被客户端占着的世界,写入按钮置灰并在 title 写明原因(横幅的同一句)。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 
 	async function act(verb: string, fn: () => Promise<unknown>) {
+		if (writeBlocked) return;
 		busy = true;
 		try {
 			await fn();
@@ -93,6 +96,7 @@
 		act('请求再固化', () => api.post(worldPath('/api/reconsolidate'), { stmt_id: id }));
 
 	function askForget(id: string) {
+		if (writeBlocked) return;
 		const base = '逻辑删除(→ forgotten,移出检索与回放池)。不可逆。';
 		confirmForId = id;
 		confirmCfg = {
@@ -206,13 +210,19 @@
 				<div class="mt-1 break-all font-mono text-xs text-subtle">{detail.src_id}</div>
 				<div class="mt-2 flex gap-2">
 					{#if detail.src_state === 'consolidated'}
-						<Button variant="soft" disabled={busy} onclick={() => reconsolidate(detail!.src_id)}>
+						<Button
+							variant="soft"
+							disabled={busy || !!writeBlocked}
+							title={writeBlocked ?? undefined}
+							onclick={() => reconsolidate(detail!.src_id)}
+						>
 							再固化
 						</Button>
 					{/if}
 					<Button
 						variant="ghost"
-						disabled={busy || missing(detail.src_subject, detail.src_predicate, detail.src_object)}
+						disabled={busy || !!writeBlocked || missing(detail.src_subject, detail.src_predicate, detail.src_object)}
+						title={writeBlocked ?? undefined}
 						onclick={() => askForget(detail!.src_id)}
 					>
 						遗忘
@@ -227,13 +237,19 @@
 				<div class="mt-1 break-all font-mono text-xs text-subtle">{detail.dst_id}</div>
 				<div class="mt-2 flex gap-2">
 					{#if detail.dst_state === 'consolidated'}
-						<Button variant="soft" disabled={busy} onclick={() => reconsolidate(detail!.dst_id)}>
+						<Button
+							variant="soft"
+							disabled={busy || !!writeBlocked}
+							title={writeBlocked ?? undefined}
+							onclick={() => reconsolidate(detail!.dst_id)}
+						>
 							再固化
 						</Button>
 					{/if}
 					<Button
 						variant="ghost"
-						disabled={busy || missing(detail.dst_subject, detail.dst_predicate, detail.dst_object)}
+						disabled={busy || !!writeBlocked || missing(detail.dst_subject, detail.dst_predicate, detail.dst_object)}
+						title={writeBlocked ?? undefined}
 						onclick={() => askForget(detail!.dst_id)}
 					>
 						遗忘

@@ -1355,3 +1355,69 @@ describe('/worlds 最近清理', () => {
 		expect(container.textContent).toContain('sim-1');
 	});
 });
+
+// ── 第 5 期 Task 5.1：分叉来源与状态两列（spec §14，裁定 R108） ─────────────────────
+describe('/worlds 分叉来源与状态', () => {
+	const flags = {
+		seed: false, read_only: false, reclaimable: false, retention_group: null,
+		fork_of_world: null, fork_of_snapshot: null, open_mode: 'rw', schema_behind: null,
+		held_by_client: false
+	};
+	const base = (name: string, over: Record<string, unknown>) => ({
+		...DATA.worlds[1], name, tenant: name, labels: {}, ...flags, ...over
+	});
+	const FORKS = {
+		...DATA, total: 5,
+		worlds: [
+			{ ...DATA.worlds[0], ...flags, schema_behind: false },
+			base('rollout-1', { fork_of_world: 'w1', fork_of_snapshot: '20261105T101500Z-ab12',
+				reclaimable: true, open_mode: 'ro', retention_group: 'grp-a', held_by_client: true }),
+			base('seed-1', { fork_of_world: 'w1', seed: true, read_only: true, open_mode: 'ro' }),
+			base('old-1', { open: true, schema_behind: true }),
+			base('plain', {})
+		]
+	};
+	// 每张卡上一组 <dt>/<dd>：aria-label「<世界> 的分叉来源」「<世界> 的状态」。
+	const field = (c: HTMLElement, name: string, what: string) => {
+		const el = c.querySelector(`[aria-label="${name} 的${what}"]`);
+		return {
+			term: el?.querySelector('dt')?.textContent?.trim(),
+			value: el?.querySelector('dd')?.textContent?.trim(),
+			tags: [...(el?.querySelectorAll('dd span') ?? [])].map((e) => e.textContent?.trim())
+		};
+	};
+
+	beforeEach(() => {
+		list.mockReset().mockResolvedValue(FORKS);
+	});
+
+	it('分叉来源：world@snapshot、只有世界名、都没有时「—」', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		expect(field(container, 'rollout-1', '分叉来源')).toMatchObject({
+			term: '分叉来源', value: 'w1@20261105T101500Z-ab12'
+		});
+		expect(field(container, 'seed-1', '分叉来源').value).toBe('w1');
+		expect(field(container, 'plain', '分叉来源').value).toBe('—');
+	});
+
+	it('状态：种子、只读、可回收、被占用、库版本落后的标签组合；都没有时「—」', async () => {
+		const { container } = render(Worlds);
+		await settle();
+		expect(field(container, 'rollout-1', '状态')).toMatchObject({
+			term: '状态', tags: ['只读', '可回收', '被占用']
+		});
+		expect(field(container, 'seed-1', '状态').tags).toEqual(['种子', '只读']);
+		expect(field(container, 'old-1', '状态').tags).toEqual(['库版本落后']);
+		expect(field(container, 'default', '状态').tags).toEqual([]);
+		expect(field(container, 'plain', '状态')).toMatchObject({ tags: [], value: '—' });
+	});
+
+	it('第 5 期之前的后端(行上没有这些字段)：两列都给「—」，不崩', async () => {
+		list.mockReset().mockResolvedValue(DATA);
+		const { container } = render(Worlds);
+		await settle();
+		expect(field(container, 'sim-1', '分叉来源').value).toBe('—');
+		expect(field(container, 'sim-1', '状态')).toMatchObject({ tags: [], value: '—' });
+	});
+});

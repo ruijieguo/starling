@@ -1,5 +1,5 @@
 import { getToken } from './token';
-import { explicitWorld, defaultWorld } from './world.svelte';
+import { explicitWorld, defaultWorld, noteWriteRejected } from './world.svelte';
 
 export class ApiError extends Error {
 	constructor(
@@ -46,6 +46,9 @@ async function req<T>(path: string, init: ReqInit = {}): Promise<T> {
 			} catch {
 				/* 非 JSON body,保留 statusText */
 			}
+			// 写入被后端拒绝(world_held / world_read_only):横幅的状态旧了,登记一次让它重取(裁定 R113 I-1)。
+			// 放在这里而不是各页的 catch:写入入口有 8 个页面、十几个调用点,在这一处登记不会漏。读请求不登记。
+			if ((rest.method ?? 'GET') !== 'GET') noteWriteRejected(detail);
 			throw new ApiError(res.status, path, `${res.status} ${detail}`);
 		}
 		return (await res.json()) as T;

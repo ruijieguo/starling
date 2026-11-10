@@ -3,9 +3,11 @@ import * as tok from './token';
 import { ApiError } from './api';
 import {
 	worldsApi, isValidWorldName, formatBytes, worldErrorMessage, apiDetail,
-	parseIntervalHours, describeError, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels,
-	fetchCleanupLog, cleanupActionLabel, cleanupReasonLabel
+	parseIntervalHours, describeError, worldCodeMessage, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels,
+	fetchCleanupLog, cleanupActionLabel, cleanupReasonLabel,
+	writeBlockedReason, worldStatusNotices, worldStatusTags, forkSourceLabel, WORLD_STATUS_TEXT
 } from './worlds';
+import { WRITABLE_FLAGS } from '$lib/test/world-status';
 
 let calls: Array<[string, RequestInit]> = [];
 beforeEach(() => {
@@ -354,6 +356,16 @@ describe('describeError 与 worlds_unavailable', () => {
 		expect(describeError(new Error('plain'))).toBe('plain');
 		expect(describeError('str')).toBe('str');
 	});
+
+	// 裁定 R113 I-1：后端拒绝写入(409 world_held / world_read_only)时，提示与横幅同一句，不是裸码。
+	it.each([
+		['world_held', '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['world_read_only', '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：describeError、worldCodeMessage、worldErrorMessage 都给横幅那句', (code, text) => {
+		expect(describeError(new ApiError(409, '/api/w/w1/remember', `409 ${code}`))).toBe(text);
+		expect(worldCodeMessage(code)).toBe(text);
+		expect(worldErrorMessage(code)).toBe(text);
+	});
 });
 
 describe('fetchCleanupLog（spec §9 的清理记录）', () => {
@@ -374,5 +386,63 @@ describe('fetchCleanupLog（spec §9 的清理记录）', () => {
 		expect(cleanupReasonLabel('held_snapshot')).toBe('有持有的快照');
 		expect(cleanupReasonLabel('mystery')).toBe('mystery');
 		expect(cleanupActionLabel('constructor')).toBe('constructor');
+	});
+});
+
+// ── 第 5 期 Task 5.1：世界状态（spec §14，裁定 R108） ─────────────────────────────
+// 文案逐字照计划；故意写字面量，常量被改了这里要红。
+const RO_TEXT = '只读世界（种子或复盘副本）：可以检视和召回，不能写入';
+const HELD_TEXT = '这个世界正被客户端写入：写入已置灰，召回可用';
+const SCHEMA_TEXT = '这个世界的库版本落后于当前 Starling，部分检视页可能报错';
+
+describe('世界状态文案与判定（第 5 期）', () => {
+	it('横幅文案逐字', () => {
+		expect(WORLD_STATUS_TEXT).toEqual({
+			read_only: RO_TEXT, held: HELD_TEXT, schema_behind: SCHEMA_TEXT
+		});
+	});
+
+	it('writeBlockedReason：可写为 null；只读三种来源各给只读文案；被占用给占用文案', () => {
+		expect(writeBlockedReason(WRITABLE_FLAGS)).toBeNull();
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, open_mode: 'ro', reclaimable: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, read_only: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, seed: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, held_by_client: true })).toBe(HELD_TEXT);
+	});
+
+	it('writeBlockedReason：既只读又被占用时给占用（与 C++ require_writable 同序，先判占用）；schema 落后不挡写入；没有状态为 null', () => {
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, open_mode: 'ro', held_by_client: true })).toBe(HELD_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, schema_behind: true })).toBeNull();
+		expect(writeBlockedReason(null)).toBeNull();
+		expect(writeBlockedReason(undefined)).toBeNull();
+	});
+
+	it('worldStatusNotices：按只读、被占用、schema 落后的顺序各一条；schema_behind 为 null 不算', () => {
+		expect(worldStatusNotices(WRITABLE_FLAGS)).toEqual([]);
+		expect(worldStatusNotices(null)).toEqual([]);
+		expect(worldStatusNotices({ ...WRITABLE_FLAGS, schema_behind: null })).toEqual([]);
+		expect(
+			worldStatusNotices({ ...WRITABLE_FLAGS, seed: true, held_by_client: true, schema_behind: true })
+		).toEqual(['read_only', 'held', 'schema_behind']);
+	});
+
+	it('worldStatusTags：种子、只读、可回收、被占用、库版本落后', () => {
+		const labels = (f: Parameters<typeof worldStatusTags>[0]) => worldStatusTags(f).map((t) => t.label);
+		expect(labels(WRITABLE_FLAGS)).toEqual([]);
+		expect(labels({ ...WRITABLE_FLAGS, seed: true, read_only: true, open_mode: 'ro' })).toEqual(['种子', '只读']);
+		expect(labels({ ...WRITABLE_FLAGS, reclaimable: true, open_mode: 'ro' })).toEqual(['只读', '可回收']);
+		expect(labels({ ...WRITABLE_FLAGS, held_by_client: true, schema_behind: true })).toEqual([
+			'被占用', '库版本落后'
+		]);
+		expect(labels({ ...WRITABLE_FLAGS, schema_behind: null })).toEqual([]);
+		expect(worldStatusTags({ ...WRITABLE_FLAGS, held_by_client: true })[0].tone).toBe('warn');
+	});
+
+	it('forkSourceLabel：world@snapshot、只有世界名、都没有为「—」', () => {
+		expect(forkSourceLabel({ fork_of_world: 'w1', fork_of_snapshot: '20261105T101500Z-ab12' })).toBe(
+			'w1@20261105T101500Z-ab12'
+		);
+		expect(forkSourceLabel({ fork_of_world: 'w1', fork_of_snapshot: null })).toBe('w1');
+		expect(forkSourceLabel({ fork_of_world: null, fork_of_snapshot: null })).toBe('—');
 	});
 });

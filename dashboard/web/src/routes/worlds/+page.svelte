@@ -25,6 +25,7 @@
 		cleanupActionLabel,
 		cleanupReasonLabel,
 		fetchCleanupLog,
+		forkSourceLabel,
 		formatBytes,
 		isValidWorldName,
 		parseIntervalHours,
@@ -32,6 +33,7 @@
 		shortId,
 		snapshotReasonLabel,
 		worldErrorMessage,
+		worldStatusTags,
 		worldsApi,
 		type AutoSnapshotConfig,
 		type CleanupLogEntry,
@@ -505,6 +507,23 @@
 					</p>
 				{/if}
 				<p class="text-xs tabular-nums text-muted">{statsLine(w)}</p>
+				<!-- 第 5 期(spec §14):分叉来源与状态。第 5 期之前的后端行上没有这些字段,两项都给「—」。 -->
+				<dl class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+					<div class="flex min-w-0 items-center gap-1.5" aria-label={`${w.name} 的分叉来源`}>
+						<dt class="text-subtle">分叉来源</dt>
+						<dd class="break-all font-mono text-fg">{forkSourceLabel(w)}</dd>
+					</div>
+					<div class="flex items-center gap-1.5" aria-label={`${w.name} 的状态`}>
+						<dt class="text-subtle">状态</dt>
+						<dd class="flex flex-wrap gap-1">
+							{#each worldStatusTags(w) as t (t.label)}
+								<Badge tone={t.tone}>{t.label}</Badge>
+							{:else}
+								—
+							{/each}
+						</dd>
+					</div>
+				</dl>
 				{#if w.archives > 0}
 					<p class="mt-1 text-xs tabular-nums text-muted">
 						归档 {w.archives} 份 · {formatBytes(w.archive_bytes)}

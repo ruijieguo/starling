@@ -13,11 +13,16 @@ vi.mock('$lib/api', async (orig) => {
 		api: { get: (...a: unknown[]) => get(...a), post: (...a: unknown[]) => post(...a), del: vi.fn() }
 	};
 });
+const toastError = vi.fn();
+vi.mock('$lib/ui/toast', () => ({
+	toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), warning: vi.fn(), info: vi.fn() }
+}));
 
 import Settings from './+page.svelte';
 import { ApiError as RealApiError } from '$lib/api';
 import { page } from '$app/state';
-import { noteDefaultWorld } from '$lib/world.svelte';
+import { noteDefaultWorld, noteWorldStatus } from '$lib/world.svelte';
+import { WRITABLE_FLAGS, flagsWith } from '$lib/test/world-status';
 
 const byText = (c: HTMLElement | HTMLBodyElement, t: string) =>
 	[...c.querySelectorAll('button')].find((b) => b.textContent?.trim() === t) as
@@ -254,5 +259,70 @@ describe('设置页:清空记忆随所选世界走', () => {
 		if (ok) await fireEvent.click(ok);
 		await settle();
 		expect(post).not.toHaveBeenCalled();
+	});
+});
+
+// ── 第 5 期 Task 5.1：清空记忆随世界状态置灰（spec §14，裁定 R108） ─────────────────
+describe('设置页:清空记忆在只读或被占用时置灰', () => {
+	const clearBtn = (c: HTMLElement) =>
+		[...c.querySelectorAll('button')].find((b) => b.textContent?.includes('清空世界「')) as
+			| HTMLButtonElement
+			| undefined;
+	const confirmInput = (c: HTMLElement) => c.querySelector('#clear-confirm') as HTMLInputElement;
+
+	beforeEach(() => {
+		get.mockReset().mockImplementation(async (path: string) =>
+			path === '/api/config' ? CONFIG : { name: 'w1', tenant: 'w1-tenant' }
+		);
+		post.mockReset();
+		noteDefaultWorld('main');
+		(page as { url: URL }).url = new URL('http://localhost/settings?world=w1');
+		noteWorldStatus('w1', null);
+	});
+
+	it.each([
+		['被占用', { held_by_client: true }, '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['只读', { seed: true, read_only: true, open_mode: 'ro' }, '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：输对租户名也 disabled，title 写明原因', async (_n, over, reason) => {
+		noteWorldStatus('w1', flagsWith(over));
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		const btn = clearBtn(container)!;
+		expect(btn.disabled).toBe(true);
+		expect(btn.getAttribute('title')).toBe(reason);
+	});
+
+	it('可写：输对租户名即可点，不带 title', async () => {
+		noteWorldStatus('w1', WRITABLE_FLAGS);
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		expect(clearBtn(container)!.disabled).toBe(false);
+		expect(clearBtn(container)!.hasAttribute('title')).toBe(false);
+	});
+
+	// 裁定 R113 I-1：状态旧了(横幅还说可写)、后端拒绝清空时，提示是横幅那句，不是裸的「409 world_held」。
+	it.each([
+		['world_held', '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['world_read_only', '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('清空被 409 %s 拒绝：toast 给中文原因', async (code, text) => {
+		noteWorldStatus('w1', WRITABLE_FLAGS);
+		toastError.mockReset();
+		post.mockRejectedValue(new RealApiError(409, '/api/w/w1/clear_memory', `409 ${code}`));
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		await fireEvent.click(clearBtn(container)!);
+		await settle();
+		// 确认框(bits-ui)打开时排了一个 1 ms 定时器,让它在框还在时跑完,免得卸载后才跑、打出 derived_inert。
+		await new Promise<void>((r) => setTimeout(r, 5));
+		await fireEvent.click(byText(document.body, '确认清空')!);
+		await settle();
+		expect(post).toHaveBeenCalledTimes(1);
+		expect(toastError).toHaveBeenCalledWith(text);
 	});
 });

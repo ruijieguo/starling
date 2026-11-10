@@ -559,3 +559,59 @@ def test_schema_behind_world_opens_and_is_flagged(client, monkeypatch):
     assert _rows(client)["src"]["schema_behind"] is False
     pool.close_world("old-1")
     assert _sha256(db) == sha
+
+
+# ───────────────────────── 第 5 期 Task 5.1：held_by_client（裁定 R108） ─────────────────────────
+
+def _held(client, name: str) -> tuple[bool, bool]:
+    """(列表行, 详情) 的 held_by_client。"""
+    return (_rows(client)[name]["held_by_client"],
+            client.get(f"/api/worlds/{name}").json()["held_by_client"])
+
+
+def test_held_by_client_follows_a_real_writable_handle(client):
+    """held_by_client 取 C++ SessionTable.world_write_held（经池的 write_held）：没有句柄为假，客户端可写句柄登记后为真，
+    关掉之后回到假；只读句柄不算占用。会话表、句柄都是真的（app 的 lifespan 建的 SessionTable，admit_client_handle 开句柄）。"""
+    pool = _pool(client)
+    pool.create_world("plain", "")
+    sessions = pool.sessions
+    assert sessions is not None
+    assert _held(client, "plain") == (False, False)
+    assert _rows(client)["default"]["held_by_client"] is False
+
+    sid = sessions.connect(pool.now_ms())
+    reader = pool.admit_client_handle("plain", sid, "rise", True, pool.now_ms())
+    assert _held(client, "plain") == (False, False)          # 只读句柄不占写入
+    pool.close_client_handle(reader, 5.0)
+
+    writer = pool.admit_client_handle("plain", sid, "rise", False, pool.now_ms())
+    assert pool.write_held("plain") is True
+    assert _held(client, "plain") == (True, True)
+    assert _rows(client)["default"]["held_by_client"] is False   # 别的世界不受影响
+
+    pool.close_client_handle(writer, 5.0)
+    assert pool.write_held("plain") is False
+    assert _held(client, "plain") == (False, False)
+    sessions.disconnect(sid)
+
+
+def test_held_by_client_is_false_without_a_session_table(tmp_path):
+    """看板单独运行、测试里直接建的池没有会话表：write_held 一律 False，列表行 held_by_client 为假。"""
+    from starling.dashboard.routes.worlds import _list_worlds
+    from starling.dashboard.world_manager import WorldPool
+
+    cfg = DashboardConfig(db_path=str(tmp_path / "dashboard.db"), token="",
+                          tick_interval_s=600.0, source_lane_enabled=False,
+                          ingest_spool_path=str(tmp_path / "spool"))
+    reg = _core.WorldRegistry.open(cfg.data_dir, cfg.db_path, cfg.tenant)
+    pool = WorldPool(reg, cfg)
+    try:
+        pool.sync_default_settings()
+        pool.create_world("plain", "")
+        assert pool.sessions is None
+        assert pool.write_held("plain") is False
+        rows = {row["name"]: row for row in _list_worlds(pool, {}, 0, 50)["worlds"]}
+        assert rows["plain"]["held_by_client"] is False
+        assert rows["default"]["held_by_client"] is False
+    finally:
+        pool.close_all()

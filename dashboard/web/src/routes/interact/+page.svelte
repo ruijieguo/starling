@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { withWorld } from '$lib/world.svelte';
 	import { api, type PlannedRecallResponse, worldPath } from '$lib/api';
 	import { toast } from '$lib/ui/toast';
@@ -26,6 +26,8 @@
 	// 且错误优先于上一次的结果 —— 否则失败后旧结果仍在,像是本次的答案。
 	let rememberErr = $state('');
 	let recallErr = $state('');
+	// 第 5 期(spec §14):只读或被客户端占着的世界,「记住」置灰并在 title 写明原因;召回照常。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 
 	// Per-turn model selection (#35): pick a registry provider for remember's
 	// extraction, or '' to use the bound extraction role. (Recall uses the embedder,
@@ -62,6 +64,7 @@
 	);
 
 	async function remember() {
+		if (writeBlocked) return;
 		busyR = true;
 		try {
 			const body: Record<string, unknown> = { text };
@@ -128,14 +131,26 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-3">
-				<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>记住</Button>
+				<Button
+					variant="soft"
+					loading={busyR}
+					disabled={!text.trim() || !!writeBlocked}
+					title={writeBlocked ?? undefined}
+					onclick={remember}>记住</Button
+				>
 				{#if !rememberErr && (remembered.length || outcome)}
 					<span class="text-xs text-muted">{outcome} · {remembered.length} statements</span>
 				{/if}
 			</div>
 			{#if rememberErr}
 				<EmptyState title="写入失败" description={rememberErr}>
-					<Button variant="soft" loading={busyR} disabled={!text.trim()} onclick={remember}>
+					<Button
+						variant="soft"
+						loading={busyR}
+						disabled={!text.trim() || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={remember}
+					>
 						重试
 					</Button>
 				</EmptyState>

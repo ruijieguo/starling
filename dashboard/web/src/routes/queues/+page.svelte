@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { api, worldPath } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
@@ -29,9 +29,12 @@
 	});
 
 	let ticking = $state(false);
+	// 第 5 期(spec §14):只读或被客户端占着的世界,手动 Tick 置灰并在 title 写明原因。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 	const EMBED_SKIPPED_HINT = '嵌入端点失效，本轮跳过嵌入；到「世界」页重新确认端点';
 
 	async function tick() {
+		if (writeBlocked) return;
 		ticking = true;
 		try {
 			// tick 批量嵌入积压语句(逐条走网络),按积压量放宽。
@@ -62,7 +65,13 @@
 
 <PageHeader title="队列 / 运维" subtitle="队列健康:outbox 派发、嵌入积压与向量状态。">
 	{#snippet actions()}
-		<Button variant="soft" loading={ticking} onclick={tick}>手动 Tick</Button>
+		<Button
+			variant="soft"
+			loading={ticking}
+			disabled={!!writeBlocked}
+			title={writeBlocked ?? undefined}
+			onclick={tick}>手动 Tick</Button
+		>
 	{/snippet}
 </PageHeader>
 

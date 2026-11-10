@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { api, type ConverseResponse } from '$lib/api';
-	import { explicitWorld, withWorld } from '$lib/world.svelte';
+	import { explicitWorld, noteWriteRejected, withWorld } from '$lib/world.svelte';
 	import { streamConverse } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
-	import { worldCodeMessage } from '$lib/worlds';
+	import { currentWriteBlockedReason, worldCodeMessage } from '$lib/worlds';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { Button, Textarea, Badge, Chip, EmptyState, StatusDot, Select } from '$lib/components/ui';
 
@@ -18,6 +18,9 @@
 	let turns = $state<Turn[]>([]);
 	let input = $state('');
 	let busy = $state(false);
+	// 第 5 期(spec §14,裁定 R109):一轮对话在回合末写入记忆(/ws/converse 走 pool.dashboard_write),
+	// 只读或被客户端占着的世界「发送」置灰并在 title 写明原因(横幅的同一句)。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 
 	// Per-turn model selection (#35): pick a registry provider for the chat reply,
 	// or '' to use the bound chat role. Names come from the same provider registry
@@ -41,7 +44,7 @@
 	// 即便中途断开也跑完落库)。
 	function send() {
 		const msg = input.trim();
-		if (!msg) return;
+		if (!msg || writeBlocked) return;
 		turns = [...turns, { role: 'user', text: msg }];
 		input = '';
 		busy = true;
@@ -71,6 +74,8 @@
 				},
 				onError: (code) => {
 					// 世界码(world_busy、endpoint_changed 等)与读页面、remember / recall 同一份中文提示(裁定 R59)。
+					// error 帧不经 api.ts 的 req:world_held / world_read_only 在这里登记,横幅随之重取(裁定 R113 I-1)。
+					noteWriteRejected(code);
 					const worldText = worldCodeMessage(code);
 					if (code === 'llm_not_configured')
 						toast.error('未配置 LLM:去「模型」页绑定 extraction / chat 角色');
@@ -160,7 +165,12 @@
 			<div class="flex-1">
 				<Textarea bind:value={input} rows={2} placeholder="说点什么…" />
 			</div>
-			<Button loading={busy} disabled={!input.trim()} onclick={send}>发送</Button>
+			<Button
+				loading={busy}
+				disabled={!input.trim() || !!writeBlocked}
+				title={writeBlocked ?? undefined}
+				onclick={send}>发送</Button
+			>
 		</div>
 	</div>
 </div>

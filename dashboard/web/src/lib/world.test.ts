@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { page } from '$app/state';
 import { goto } from '$app/navigation';
 import {
-	currentWorld, setWorld, defaultWorld, noteDefaultWorld, withWorld, refetchOnEvent
+	currentWorld, setWorld, defaultWorld, noteDefaultWorld, withWorld, refetchOnEvent,
+	noteWriteRejected, writeRejectionCount
 } from './world.svelte';
 
 const at = (u: string) => {
@@ -63,5 +64,18 @@ describe('refetchOnEvent(页面 ws 增量刷新判据)', () => {
 		at('/');
 		expect(refetchOnEvent({ type: 'world_changed', world: 'main', payload: {} })).toBe(true);
 		expect(refetchOnEvent({ type: 'world_changed', world: 'a', payload: {} })).toBe(false);
+	});
+});
+
+describe('noteWriteRejected(写入被后端拒绝后让横幅重取,裁定 R113 I-1)', () => {
+	it('只认 world_held 与 world_read_only,各计一次;其他码不计', () => {
+		const n = writeRejectionCount();
+		noteWriteRejected('world_held');
+		expect(writeRejectionCount()).toBe(n + 1);
+		noteWriteRejected('world_read_only');
+		expect(writeRejectionCount()).toBe(n + 2);
+		for (const code of ['not_active', 'world_busy', 'world_not_found', 'endpoint_changed', ''])
+			noteWriteRejected(code);
+		expect(writeRejectionCount()).toBe(n + 2);
 	});
 });

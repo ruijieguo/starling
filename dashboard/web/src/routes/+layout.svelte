@@ -14,6 +14,7 @@
 	import { ALL_NAV_ITEMS, NAV_GROUPS, matchesHref, activeNavItem } from '$lib/nav';
 	import { density, applyDensity, type Density } from '$lib/ui/density';
 	import NavIcon from '$lib/components/NavIcon.svelte';
+	import WorldStatusBanner from '$lib/components/WorldStatusBanner.svelte';
 	import { StatusDot, IconButton, Toaster, ThemeToggle } from '$lib/components/ui';
 
 	const ALL_ITEMS = ALL_NAV_ITEMS;
@@ -386,6 +387,9 @@
 				</div>
 			</div>
 		</header>
+
+		<!-- 第 5 期(spec §14):当前世界的状态提示,只读 / 被客户端占用 / schema 落后各一条,都不成立时不渲染。 -->
+		<WorldStatusBanner />
 
 		<main class="flex-1 px-6 py-5">{@render children()}</main>
 	</div>
