@@ -1,5 +1,10 @@
 """第 5 期验收（spec §16 第 4 条）：客户端写一个世界的同时，看板 API 按世界读到新语句、能召回、收到 world_changed；
-世界关掉之后按标签找到，看板只读打开它，不迁移（库文件 sha256 不变、没有新的 -wal/-shm）。
+世界关掉之后按标签找到，看板只读打开它，不迁移。
+
+「不迁移」怎么证明（裁定 R113 I-2）：关掉之后删掉最新一条 schema_migrations，把库变成旧版本写出的样子；看板重开读取，
+再把世界关掉。之后：库文件 sha256 不变、目录里没有新增文件（尤其是 -wal/-shm），详情的 schema_behind 为真（引擎打开时记下的
+观测值）。读写打开会补跑迁移：引擎开着时迁移留在 WAL 里、主文件字节不变，关掉时 checkpoint 才合进主文件，所以 sha256 要在
+关掉之后比。open_mode == "ro" 只是注册表标记算出的契约值，不能单独证明打开方式。
 
 真的 `starling-serve` 子进程（同一个进程提供客户端 API 与看板 API），数据目录与 HOME 在 tmp 下，环境里没有 OPENAI_*；
 抽取与嵌入走本机假端点。配置与假端点夹具复用 test_acceptance_service。所有等待都有上限，子进程在夹具的 finally 里杀掉。
@@ -28,6 +33,7 @@ from test_acceptance_service import DIM, HOLDER, NOW, _remember_ok, _text, _writ
 _LIVE_S = 5.0
 _POLL_S = 0.1
 _WS_S = 10.0
+_READY_PROBE = "acc4 ws readiness probe"
 _UTTERANCES = ["Alice deploys the auth service", "Bruno tunes the billing cache",
                "Chen rotates the infra key"]
 
@@ -103,11 +109,33 @@ def _recall_texts(http, world: str, query: str) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-async def _ws_collect(url: str, token: str, world: str, ready: asyncio.Event,
+async def _ws_collect(url: str, token: str, world: str, http, probe_world: str, ready: asyncio.Event,
                       stop: asyncio.Event) -> dict | None:
-    """连 /ws，第一帧发 token；订阅好之后置 ready，直到收到这个世界的 world_changed 或 stop 为止。"""
+    """连 /ws，第一帧发 token；确认服务端已经登记了这条连接之后置 ready，直到收到 world 的 world_changed 或 stop 为止。
+
+    服务端收到 token 帧之后才登记（app.py 的 ws_manager.register），发完 token 并不等于登记好了。看板召回（POST
+    /api/w/<世界>/recall）一定会向所有已登记的连接广播一帧 recall，所以每 0.2 s 对 probe_world 发一次召回，直到收到
+    probe_world 的 recall 帧；收到就说明已经登记好了。召回只读，不改库，也不会触发 world_changed。总共等 _WS_S 秒。
+    探测打在 probe_world（源世界）上：被测世界在客户端可写打开之前不让看板先建引擎，走的路径与原先一样。"""
     async with websockets.connect(url.replace("http://", "ws://") + "/ws", proxy=None) as ws:
         await ws.send(token)
+        deadline = time.monotonic() + _WS_S
+        registered = False
+        while not registered:
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"no recall broadcast for {probe_world} within {_WS_S}s: "
+                                     "/ws not registered")
+            resp = await asyncio.to_thread(http.post, f"/api/w/{probe_world}/recall",
+                                           json={"query": _READY_PROBE, "k": 1, "holder": HOLDER})
+            assert resp.status_code == 200, resp.text
+            frame_deadline = min(deadline, time.monotonic() + 0.2)
+            while not registered and time.monotonic() < frame_deadline:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=frame_deadline - time.monotonic())
+                except asyncio.TimeoutError:
+                    break
+                msg = json.loads(raw)
+                registered = msg.get("type") == "recall" and msg.get("world") == probe_world
         ready.set()
         while not stop.is_set():
             try:
@@ -118,6 +146,19 @@ async def _ws_collect(url: str, token: str, world: str, ready: asyncio.Event,
             if msg.get("type") == "world_changed" and msg.get("world") == world:
                 return msg
     return None
+
+
+def _mark_schema_behind(db_path: str) -> int:
+    """模拟旧版 Starling 写出的库（同 test_dashboard_world_fork.test_schema_behind_world_opens_and_is_flagged）：
+    删掉最新一条 schema_migrations。返回删掉的版本号。连接用完即关，之后目录里不能留 -wal/-shm。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        with conn:
+            conn.execute("DELETE FROM schema_migrations WHERE version = ?", (version,))
+    finally:
+        conn.close()
+    return version
 
 
 def test_4_dashboard_sees_client_writes_and_reopens_closed_world_read_only(service, fake_openai):
@@ -135,9 +176,16 @@ def test_4_dashboard_sees_client_writes_and_reopens_closed_world_read_only(servi
         # 3 的实时推送：先订阅，再写。
         async def live_and_write():
             ready, stop = asyncio.Event(), asyncio.Event()
-            task = asyncio.create_task(_ws_collect(service.url, service.token, world, ready, stop))
-            await asyncio.wait_for(ready.wait(), _WS_S)
-            await asyncio.sleep(0.3)                      # token 帧到达并登记
+            task = asyncio.create_task(_ws_collect(service.url, service.token, world, http, "acc4-src",
+                                                   ready, stop))
+            ready_wait = asyncio.create_task(ready.wait())
+            done, _ = await asyncio.wait({task, ready_wait}, timeout=_WS_S + 1.0,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if ready_wait not in done:                    # 收帧任务先结束（登记确认失败）就把它的异常抛出来
+                ready_wait.cancel()
+                if task in done:
+                    task.result()
+                raise AssertionError("/ws registration not confirmed")
             # 2. 客户端可写打开，写入若干条事件（同步调用放进线程，事件循环继续收帧）。
             mem = client.open(world, holder=HOLDER)
 
@@ -177,23 +225,32 @@ def test_4_dashboard_sees_client_writes_and_reopens_closed_world_read_only(servi
         assert [w["name"] for w in found["worlds"]] == [world], found
         assert found["total"] == 1
 
+        # 6. 把库变成旧版本写出的样子：删掉最新一条迁移记录。之后记 sha256 与文件集合。
         db_path = _registry_db_path(service.data_dir, world)
+        _mark_schema_behind(db_path)
         sha, files = _sha256(db_path), _dir_files(db_path)
         assert not any(name.endswith(("-wal", "-shm")) for name in files), files   # 关掉后目录里没有 WAL 残留
 
-        # 看板只读打开：语句与句柄开着时读到的一致，能召回，open_mode 为 ro。
+        # 7. 看板重开读取：语句与句柄开着时读到的一致，能召回。
         closed_objects = _objects(http, world)
         assert closed_objects == live_objects
         assert _UTTERANCES[0].lower() in _recall_texts(http, world, _UTTERANCES[0])
         detail = http.get(f"/api/worlds/{world}").json()
-        assert detail["open_mode"] == "ro"
-        assert detail["held_by_client"] is False
+        while_open = _dir_files(db_path)
 
-        # 不迁移：库字节不变，目录里没有新增文件（尤其是 -wal/-shm）。
+        # 8. 再关掉：读写打开时留在 WAL 里的迁移，会在关闭的 checkpoint 时合进主文件。
+        client.close_world(world)
+
+        # 不迁移：库字节不变；开着与关掉之后，目录里都没有新增文件（尤其是 -wal/-shm）；引擎打开时看到的库版本仍落后。
         assert _sha256(db_path) == sha
+        assert while_open == files, while_open ^ files
         after = _dir_files(db_path)
         assert after == files, after ^ files
         assert not any(name.endswith(("-wal", "-shm")) for name in after), after
+        assert detail["open"] is True                     # schema_behind 取自看板引擎打开时的记录
+        assert detail["schema_behind"] is True
+        assert detail["held_by_client"] is False
+        assert detail["open_mode"] == "ro"                # 契约值（注册表标记算出），不单独证明打开方式
     finally:
         with contextlib.suppress(Exception):
             client.close()
