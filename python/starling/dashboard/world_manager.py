@@ -377,6 +377,10 @@ class WorldPool:
         sessions = self._sessions
         return bool(sessions is not None and sessions.world_write_held(world, self.now_ms()))
 
+    def write_held(self, world: str) -> bool:
+        """_write_held 的公开入口，给世界列表与详情的 held_by_client（第 5 期 Task 5.1，裁定 R108）。规则同上，以 C++ 为准。"""
+        return self._write_held(world)
+
     def _require_registry(self):
         if self._registry is None:
             raise WorldSwitchError("worlds_unavailable")

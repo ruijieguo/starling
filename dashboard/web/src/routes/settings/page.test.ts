@@ -17,7 +17,7 @@ vi.mock('$lib/api', async (orig) => {
 import Settings from './+page.svelte';
 import { ApiError as RealApiError } from '$lib/api';
 import { page } from '$app/state';
-import { noteDefaultWorld } from '$lib/world.svelte';
+import { noteDefaultWorld, noteWorldStatus } from '$lib/world.svelte';
 
 const byText = (c: HTMLElement | HTMLBodyElement, t: string) =>
 	[...c.querySelectorAll('button')].find((b) => b.textContent?.trim() === t) as
@@ -254,5 +254,52 @@ describe('设置页:清空记忆随所选世界走', () => {
 		if (ok) await fireEvent.click(ok);
 		await settle();
 		expect(post).not.toHaveBeenCalled();
+	});
+});
+
+// ── 第 5 期 Task 5.1：清空记忆随世界状态置灰（spec §14，裁定 R108） ─────────────────
+describe('设置页:清空记忆在只读或被占用时置灰', () => {
+	const FLAGS = {
+		seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
+		schema_behind: false, held_by_client: false
+	};
+	const clearBtn = (c: HTMLElement) =>
+		[...c.querySelectorAll('button')].find((b) => b.textContent?.includes('清空世界「')) as
+			| HTMLButtonElement
+			| undefined;
+	const confirmInput = (c: HTMLElement) => c.querySelector('#clear-confirm') as HTMLInputElement;
+
+	beforeEach(() => {
+		get.mockReset().mockImplementation(async (path: string) =>
+			path === '/api/config' ? CONFIG : { name: 'w1', tenant: 'w1-tenant' }
+		);
+		post.mockReset();
+		noteDefaultWorld('main');
+		(page as { url: URL }).url = new URL('http://localhost/settings?world=w1');
+		noteWorldStatus('w1', null);
+	});
+
+	it.each([
+		['被占用', { held_by_client: true }, '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['只读', { seed: true, read_only: true, open_mode: 'ro' }, '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：输对租户名也 disabled，title 写明原因', async (_n, over, reason) => {
+		noteWorldStatus('w1', { ...FLAGS, ...over } as typeof FLAGS);
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		const btn = clearBtn(container)!;
+		expect(btn.disabled).toBe(true);
+		expect(btn.getAttribute('title')).toBe(reason);
+	});
+
+	it('可写：输对租户名即可点，不带 title', async () => {
+		noteWorldStatus('w1', FLAGS);
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		expect(clearBtn(container)!.disabled).toBe(false);
+		expect(clearBtn(container)!.hasAttribute('title')).toBe(false);
 	});
 });

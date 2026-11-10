@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api, worldPath } from '$lib/api';
 	import { currentWorld } from '$lib/world.svelte';
-	import { apiDetail, worldErrorMessage, worldsApi } from '$lib/worlds';
+	import { apiDetail, currentWriteBlockedReason, worldErrorMessage, worldsApi } from '$lib/worlds';
 	import { llmConfigured, embedderConfigured } from '$lib/health';
 	import { getToken, setToken } from '$lib/token';
 	import { toast } from '$lib/ui/toast';
@@ -71,7 +71,9 @@
 	let clearConfirm = $state('');
 	let clearOpen = $state(false);
 	let clearing = $state(false);
-	let canClear = $derived(!!tenant && clearConfirm === tenant && !clearing);
+	// 第 5 期(spec §14):只读或被客户端占着的世界不能清空,按钮置灰并在 title 写明原因(横幅的同一句)。
+	let clearBlocked = $derived(currentWriteBlockedReason());
+	let canClear = $derived(!!tenant && clearConfirm === tenant && !clearing && !clearBlocked);
 
 	// New-provider draft
 	let draftName = $state('');
@@ -266,7 +268,7 @@
 
 	async function doClear() {
 		// 确认框打开期间输入框仍可改:提交前按当前值再校验一次。
-		if (!tenant || clearConfirm !== tenant) return;
+		if (!tenant || clearConfirm !== tenant || clearBlocked) return;
 		clearing = true;
 		try {
 			const r = await api.post<{ tenant: string; total: number; spool_discarded: number }>(
@@ -471,8 +473,12 @@
 					class="max-w-64"
 				/>
 			</Field>
-			<Button variant="danger" loading={clearing} disabled={!canClear} onclick={() => (clearOpen = true)}
-				>清空世界「{clearWorld}」</Button
+			<Button
+				variant="danger"
+				loading={clearing}
+				disabled={!canClear}
+				title={clearBlocked ?? undefined}
+				onclick={() => (clearOpen = true)}>清空世界「{clearWorld}」</Button
 			>
 		</div>
 	</Card>

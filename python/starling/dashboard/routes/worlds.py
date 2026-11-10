@@ -189,7 +189,10 @@ def _world_row(pool, rec: dict, open_worlds: set[str]) -> dict:
     第 3 期（spec §6）：seed、read_only、reclaimable、retention_group、fork_of_* 是注册表的原始标记（read_only
     只在只读世界与种子上为真，裁定 R18）；open_mode 是看板实际怎么打开它（C++ world_decide_open_mode：可回收
     世界 read_only 为假、open_mode 却是 "ro"）。schema_behind 只给开着的世界（引擎打开时记下的），关着的为
-    null：列表不打开库（裁定 R17），详情另算。"""
+    null：列表不打开库（裁定 R17），详情另算。
+
+    第 5 期（spec §14，裁定 R108）：held_by_client 是此刻有没有客户端会话占着这个世界的写入（池的 write_held，即 C++
+    SessionTable.world_write_held）；没有会话表时为假。open_mode 仍按没人占着算，占用由这一列单独给出。"""
     name = rec["name"]
     is_open = name in open_worlds
     counts = {"holders": rec["holders"], "statements": rec["statements"],
@@ -213,7 +216,8 @@ def _world_row(pool, rec: dict, open_worlds: set[str]) -> dict:
             "fork_of_world": _text_flag(rec["fork_of_world"]),
             "fork_of_snapshot": _text_flag(rec["fork_of_snapshot"]),
             "open_mode": _core.world_decide_open_mode(rec),
-            "schema_behind": pool.schema_behind(name, open_only=True) if is_open else None}
+            "schema_behind": pool.schema_behind(name, open_only=True) if is_open else None,
+            "held_by_client": pool.write_held(name)}
 
 
 def _snapshot_row(snap: dict) -> dict:

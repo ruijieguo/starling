@@ -278,7 +278,7 @@ def test_routes_list_rows_do_not_open_any_database(tmp_path, monkeypatch):
     keys = {"name", "label", "labels", "tenant", "created_at", "open", "holders", "statements",
             "last_write_at", "snapshots", "snapshot_bytes", "archives", "archive_bytes",
             "auto_snapshot", "seed", "read_only", "reclaimable", "retention_group",
-            "fork_of_world", "fork_of_snapshot", "open_mode", "schema_behind"}
+            "fork_of_world", "fork_of_snapshot", "open_mode", "schema_behind", "held_by_client"}
     assert set(rows["sim-1"]) == keys and set(rows["default"]) == keys
     pool.close_all()
 

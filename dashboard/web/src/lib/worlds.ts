@@ -8,6 +8,7 @@
 // 但快照 id 等路径段不受此约束,统一编码比逐个判断更不易漏。
 
 import { api, ApiError } from './api';
+import { currentWorld, worldStatusOf } from './world.svelte';
 
 /**
  * W4 每个世界各自的自动快照配置。两种触发互不排斥:
@@ -54,7 +55,89 @@ export type WorldRow = {
 	settings?: WorldSettings;
 	/** W4:该世界的自动快照配置。 */
 	auto_snapshot: AutoSnapshotConfig;
+	/** 第 3 期(spec §6):注册表的原始标记。read_only 只在只读世界与种子上为真(裁定 R18),可回收世界的 read_only 为假。 */
+	seed: boolean;
+	read_only: boolean;
+	reclaimable: boolean;
+	/** 可回收世界的分组;没有为 null。 */
+	retention_group: string | null;
+	/** 分叉来源的世界与快照;不是分叉出来的为 null,从世界当前内容分叉的 fork_of_snapshot 为 null。 */
+	fork_of_world: string | null;
+	fork_of_snapshot: string | null;
+	/** 看板实际怎么打开它(C++ world_decide_open_mode,按没人占着算):可回收世界 read_only 为假、open_mode 却是 "ro"。 */
+	open_mode: 'ro' | 'rw';
+	/** 库版本落后于当前 Starling。列表只给开着的世界,关着的为 null;详情对关着的世界也算,读不出时为 null。 */
+	schema_behind: boolean | null;
+	/** 第 5 期:此刻有客户端会话占着这个世界的写入(C++ SessionTable.world_write_held)。 */
+	held_by_client: boolean;
 };
+
+/** 世界状态提示与写入置灰用到的那几个标记(列表行、详情都有)。 */
+export type WorldStatusFlags = Pick<
+	WorldRow,
+	'seed' | 'read_only' | 'reclaimable' | 'open_mode' | 'schema_behind' | 'held_by_client'
+>;
+
+/** 顶栏下的世界状态横幅文案(spec §14;逐字照计划 Task 5.1)。写入按钮置灰的 title 用同一句。 */
+export const WORLD_STATUS_TEXT = {
+	read_only: '只读世界（种子或复盘副本）：可以检视和召回，不能写入',
+	held: '这个世界正被客户端写入：写入已置灰，召回可用',
+	schema_behind: '这个世界的库版本落后于当前 Starling，部分检视页可能报错'
+} as const;
+export type WorldNotice = keyof typeof WORLD_STATUS_TEXT;
+
+/** 看板这边是只读的:按 C++ 的打开方式(open_mode 为 ro),或注册表标记 read_only / seed 为真。 */
+const isReadOnlyWorld = (f: WorldStatusFlags): boolean =>
+	f.open_mode === 'ro' || !!f.read_only || !!f.seed;
+
+/** 横幅要显示哪几条,顺序固定为只读、被占用、schema 落后;状态未知(null)时一条也没有。 */
+export function worldStatusNotices(f: WorldStatusFlags | null | undefined): WorldNotice[] {
+	if (!f) return [];
+	const out: WorldNotice[] = [];
+	if (isReadOnlyWorld(f)) out.push('read_only');
+	if (f.held_by_client) out.push('held');
+	if (f.schema_behind === true) out.push('schema_behind');
+	return out;
+}
+
+/**
+ * 写入类按钮(记住、tick、清空记忆)该不该置灰:该置灰时返回原因(横幅的同一句文案),否则 null。
+ * 被占用与只读同时成立时给占用,与后端准入 C++ require_writable 的判定顺序一致(先 world_held 后 world_read_only)。
+ * schema 落后不挡写入;状态未知(还没取到)时不置灰,后端照样会拒绝。
+ */
+export function writeBlockedReason(f: WorldStatusFlags | null | undefined): string | null {
+	if (!f) return null;
+	if (f.held_by_client) return WORLD_STATUS_TEXT.held;
+	if (isReadOnlyWorld(f)) return WORLD_STATUS_TEXT.read_only;
+	return null;
+}
+
+/**
+ * 当前世界(顶栏选中的)的写入置灰原因:状态取自壳层横幅登记的那份(worldStatusOf),不另外取数。
+ * 页面在 $derived 里调它,当前世界或它的状态变了就跟着变。
+ */
+export function currentWriteBlockedReason(): string | null {
+	return writeBlockedReason(worldStatusOf(currentWorld()));
+}
+
+export type WorldStatusTag = { label: string; tone: 'neutral' | 'info' | 'warn' };
+
+/** 世界列表「状态」列的标签:种子、只读、可回收、被占用、库版本落后(按此顺序,只列成立的)。 */
+export function worldStatusTags(f: WorldStatusFlags): WorldStatusTag[] {
+	const out: WorldStatusTag[] = [];
+	if (f.seed) out.push({ label: '种子', tone: 'info' });
+	if (isReadOnlyWorld(f)) out.push({ label: '只读', tone: 'neutral' });
+	if (f.reclaimable) out.push({ label: '可回收', tone: 'neutral' });
+	if (f.held_by_client) out.push({ label: '被占用', tone: 'warn' });
+	if (f.schema_behind === true) out.push({ label: '库版本落后', tone: 'warn' });
+	return out;
+}
+
+/** 世界列表「分叉来源」列:world@snapshot;只有世界时只给世界名;都没有为「—」。 */
+export function forkSourceLabel(f: Pick<WorldRow, 'fork_of_world' | 'fork_of_snapshot'>): string {
+	if (!f.fork_of_world) return '—';
+	return f.fork_of_snapshot ? `${f.fork_of_world}@${f.fork_of_snapshot}` : f.fork_of_world;
+}
 
 /** 世界设置(GET /api/worlds/{name} 的 settings)。形状由后端定义,前端只读 background.auto_snapshot。 */
 export type WorldSettings = {
