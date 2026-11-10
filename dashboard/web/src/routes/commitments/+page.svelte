@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { api, ApiError, worldPath } from '$lib/api';
 	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
@@ -100,8 +100,11 @@
 	let busy = $state(false);
 	let confirmOpen = $state(false);
 	let confirmCfg = $state<{ title: string; desc: string; run: () => Promise<void> } | null>(null);
+	// 第 5 期(spec §14,裁定 R109):只读或被客户端占着的世界,写入按钮置灰并在 title 写明原因(横幅的同一句)。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 
 	async function transition(stmtId: string, kind: 'fulfill' | 'withdraw') {
+		if (writeBlocked) return;
 		busy = true;
 		try {
 			await api.post(worldPath(`/api/commitment/${kind}`), { stmt_id: stmtId });
@@ -123,6 +126,7 @@
 	}
 
 	function askWithdraw(stmtId: string) {
+		if (writeBlocked) return;
 		confirmCfg = {
 			title: '撤回此承诺?',
 			desc: '承诺 → WITHDRAWN 并释放保护:它保护的记忆此后按正常衰减、可能被遗忘。仅对 ACTIVE 有效,不可逆。',
@@ -241,10 +245,20 @@
 		{/key}
 		{#if detail.state === 'ACTIVE'}
 			<div class="mt-4 flex gap-2 border-t border-border pt-4">
-				<Button variant="soft" disabled={busy} onclick={() => transition(detail!.stmt_id, 'fulfill')}>
+				<Button
+					variant="soft"
+					disabled={busy || !!writeBlocked}
+					title={writeBlocked ?? undefined}
+					onclick={() => transition(detail!.stmt_id, 'fulfill')}
+				>
 					标记完成
 				</Button>
-				<Button variant="danger" disabled={busy} onclick={() => askWithdraw(detail!.stmt_id)}>
+				<Button
+					variant="danger"
+					disabled={busy || !!writeBlocked}
+					title={writeBlocked ?? undefined}
+					onclick={() => askWithdraw(detail!.stmt_id)}
+				>
 					撤回
 				</Button>
 			</div>

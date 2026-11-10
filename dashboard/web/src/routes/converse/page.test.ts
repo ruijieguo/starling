@@ -61,3 +61,53 @@ describe('/converse onError 走世界码的中文提示（裁定 R59 I-2）', ()
 		expect(toastError).toHaveBeenCalledWith('对话出错:converse_failed');
 	});
 });
+
+// ── 第 5 期 Task 5.1 补充轮：其余写入入口置灰（spec §14，裁定 R109） ─────────────────
+// 对话的一轮在回合末写入记忆(app.py 的 /ws/converse 走 pool.dashboard_write),所以「发送」是写入入口。
+describe('/converse「发送」随世界状态置灰', () => {
+	const FLAGS = {
+		seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
+		schema_behind: false, held_by_client: false
+	};
+	const sendBtn = (c: HTMLElement) =>
+		[...c.querySelectorAll('button')].find((b) => b.textContent?.trim() === '发送') as HTMLButtonElement;
+	const type = async (c: HTMLElement) => {
+		await fireEvent.input(c.querySelector('textarea')!, { target: { value: 'hi' } });
+		await settle();
+	};
+
+	beforeEach(async () => {
+		const { page } = await import('$app/state');
+		const { noteDefaultWorld, noteWorldStatus } = await import('$lib/world.svelte');
+		(page as { url: URL }).url = new URL('http://localhost/converse?world=w1');
+		noteDefaultWorld('default');
+		noteWorldStatus('w1', null);
+		streamConverse.mockReset();
+	});
+
+	it.each([
+		['被占用', { held_by_client: true }, '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['只读', { seed: true, read_only: true, open_mode: 'ro' }, '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：「发送」disabled 带 title，点了不开 /ws/converse', async (_n, over, reason) => {
+		const { noteWorldStatus } = await import('$lib/world.svelte');
+		noteWorldStatus('w1', { ...FLAGS, ...over } as typeof FLAGS);
+		const { container } = render(Converse);
+		await settle();
+		await type(container);
+		expect(sendBtn(container).disabled).toBe(true);
+		expect(sendBtn(container).getAttribute('title')).toBe(reason);
+		await fireEvent.click(sendBtn(container));
+		await settle();
+		expect(streamConverse).not.toHaveBeenCalled();
+	});
+
+	it('可写：「发送」可点、不带 title', async () => {
+		const { noteWorldStatus } = await import('$lib/world.svelte');
+		noteWorldStatus('w1', FLAGS);
+		const { container } = render(Converse);
+		await settle();
+		await type(container);
+		expect(sendBtn(container).disabled).toBe(false);
+		expect(sendBtn(container).hasAttribute('title')).toBe(false);
+	});
+});

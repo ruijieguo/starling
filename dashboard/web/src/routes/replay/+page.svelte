@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { api, worldPath } from '$lib/api';
 	import { createQuery } from '$lib/query.svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
@@ -21,7 +21,10 @@
 
 	// 片 6:手动触发回放(写动作,持写锁整段 → 放宽超时)。
 	let triggering = $state(false);
+	// 第 5 期(spec §14,裁定 R109):只读或被客户端占着的世界,写入按钮置灰并在 title 写明原因(横幅的同一句)。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 	async function trigger(mode: 'sleep' | 'idle') {
+		if (writeBlocked) return;
 		triggering = true;
 		try {
 			const r = await api.post<{ mode: string; sampled: number; compressed: number }>(
@@ -76,10 +79,22 @@
 			<div class="mb-2 flex flex-wrap items-center justify-between gap-3">
 				<h2 class="text-sm font-semibold text-muted">梦境日志(回放批次)</h2>
 				<div class="flex gap-2">
-					<Button variant="soft" loading={triggering} disabled={triggering} onclick={() => trigger('sleep')}>
+					<Button
+						variant="soft"
+						loading={triggering}
+						disabled={triggering || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={() => trigger('sleep')}
+					>
 						触发睡眠回放
 					</Button>
-					<Button variant="ghost" loading={triggering} disabled={triggering} onclick={() => trigger('idle')}>
+					<Button
+						variant="ghost"
+						loading={triggering}
+						disabled={triggering || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={() => trigger('idle')}
+					>
 						空闲回放
 					</Button>
 				</div>

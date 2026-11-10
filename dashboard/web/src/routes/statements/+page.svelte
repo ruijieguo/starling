@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { describeError } from '$lib/worlds';
+	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, type CascadePreview, worldPath } from '$lib/api';
@@ -192,8 +192,11 @@
 	let confirmOpen = $state(false);
 	let confirmCfg = $state<{ title: string; desc: string; run: () => Promise<void> } | null>(null);
 	let confirmForId = $state(''); // guards the background cascade-preview against a stale dialog
+	// 第 5 期(spec §14,裁定 R109):只读或被客户端占着的世界,写入按钮置灰并在 title 写明原因(横幅的同一句)。
+	let writeBlocked = $derived(currentWriteBlockedReason());
 
 	async function act(label: string, fn: () => Promise<unknown>) {
+		if (writeBlocked) return;
 		busy = true;
 		try {
 			await fn();
@@ -213,6 +216,7 @@
 	// 后代」折进提示。预览只读、best-effort——慢/失败都不挡操作;若用户已切到别的语句
 	// (confirmForId 变了)或框已关,陈旧结果丢弃。遗忘仍只逻辑删除本条,不级联删后代。
 	function askForget(id: string, reject: boolean) {
+		if (writeBlocked) return;
 		const base = '逻辑删除(→ forgotten,移出检索与回放池)。不可逆。';
 		confirmForId = id;
 		confirmCfg = {
@@ -340,13 +344,33 @@
 					透视来源 →
 				</Button>
 				{#if rs === 'review_requested'}
-					<Button variant="soft" disabled={busy} onclick={() => approve(sid)}>批准</Button>
-					<Button variant="danger" disabled={busy} onclick={() => askForget(sid, true)}>拒绝</Button>
+					<Button
+						variant="soft"
+						disabled={busy || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={() => approve(sid)}>批准</Button
+					>
+					<Button
+						variant="danger"
+						disabled={busy || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={() => askForget(sid, true)}>拒绝</Button
+					>
 				{/if}
 				{#if cs === 'consolidated'}
-					<Button variant="soft" disabled={busy} onclick={() => reconsolidate(sid)}>请求再固化</Button>
+					<Button
+						variant="soft"
+						disabled={busy || !!writeBlocked}
+						title={writeBlocked ?? undefined}
+						onclick={() => reconsolidate(sid)}>请求再固化</Button
+					>
 				{/if}
-				<Button variant="ghost" disabled={busy} onclick={() => askForget(sid, false)}>遗忘</Button>
+				<Button
+					variant="ghost"
+					disabled={busy || !!writeBlocked}
+					title={writeBlocked ?? undefined}
+					onclick={() => askForget(sid, false)}>遗忘</Button
+				>
 			</div>
 		{/if}
 		<div class="space-y-3">
