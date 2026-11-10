@@ -2,6 +2,7 @@
 
 #include "starling/governance/registry_db.hpp"
 
+#include "cleanup_internal.hpp"
 #include "registry_db_internal.hpp"
 #include "world_store_internal.hpp"
 
@@ -15,6 +16,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -32,7 +35,8 @@ namespace pst = starling::persistence;
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+// 2：第 6 期加 cleanup_log 表。旧二进制（认 1）打开 2 版注册表会报 registry_corrupt，降级步骤见 spec §5.4（裁定 R45）。
+constexpr int kSchemaVersion = 2;
 constexpr int kDefaultRetention = 5;
 constexpr std::int64_t kMaxPageLimit = 500;
 
@@ -87,6 +91,37 @@ CREATE TABLE IF NOT EXISTS snapshots (
     PRIMARY KEY (world, id)
 );
 )sql";
+
+// 注册表 schema 2（第 6 期）：自动清理的记录（cleanup.hpp CleanupLogEntry）。在 RegistryDb::open 的 BEGIN IMMEDIATE
+// 之内、版本检查之后建（新库、v1 升级、v2 都执行，IF NOT EXISTS 幂等），所以版本不认识时它不会被建出来。
+// 不在 kSchemaSql 里：v1 的建表语句保持逐字不变，spec §5.4 的降级 SQL（DROP TABLE cleanup_log + schema_version
+// 改回 1）之后，库的形状与第 6 期之前完全相同（测试 RegistryV2DowngradesToV1WithTheDocumentedSql）。
+// id 是 INTEGER PRIMARY KEY（rowid），不用 AUTOINCREMENT：那会多出 sqlite_sequence 表，降级 SQL 删不掉。记录从不
+// 删除，id 不会被复用。dir_id + pending_dir=1：世界的注册项已摘、目录还没删完（execute_cleanup 的删除顺序）；
+// 删完目录后清成 0。
+constexpr const char* kCleanupLogSql = R"sql(
+CREATE TABLE IF NOT EXISTS cleanup_log (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    world TEXT NOT NULL,
+    retention_group TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    dir_id TEXT NOT NULL DEFAULT '',
+    pending_dir INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cleanup_log_world ON cleanup_log (world, id);
+CREATE INDEX IF NOT EXISTS idx_cleanup_log_pending ON cleanup_log (dir_id) WHERE pending_dir = 1;
+)sql";
+
+// 注册表连接一律 synchronous=FULL（裁定 R72 M3）。Connection::open 给的是 NORMAL（世界库要写入吞吐，不改）：WAL 下
+// NORMAL 的提交在下一次 checkpoint 之前断电可能丢，而清理在提交（摘注册项）之后紧接着在锁外删世界目录，目录删了回不来，
+// 丢掉的提交会让注册项指向一个已经没了的目录。注册表写得少，FULL 的代价可以忽略。
+constexpr const char* kRegistrySynchronous = "PRAGMA synchronous = FULL";
+
+// 第 6 期之前的注册表版本：打开时就地升到 kSchemaVersion（建 cleanup_log、改 meta，同一个事务）。
+constexpr std::string_view kRegistryV1 = "1";
 
 // 第 3 期给 snapshots 加了 digest 列，schema_version 仍是 1：之前建的注册表（含用户 8787 的
 // ~/.starling/registry.db）在 CREATE TABLE IF NOT EXISTS 之后还是旧形状，打开时就地补列。只加一列、
@@ -213,6 +248,8 @@ struct RegistryDb::Impl {
     fs::path data_dir;
     mutable std::mutex mutex;
     mutable std::unique_ptr<pst::Connection> conn;
+    // 仅测试用（裁定 R58，set_dir_id_source_for_test）：为空时 reserve_home 用 internal::random_hex。持锁读写。
+    std::function<std::string()> dir_id_source;
 
     [[nodiscard]] sqlite3* db() const { return conn->raw(); }
 
@@ -250,6 +287,18 @@ struct RegistryDb::Impl {
         return stmt.step_row();
     }
 
+    // 裁定 R58：清理摘掉注册项、还没删完目录的 dir_id（cleanup_log 待删标记）不能分给新世界，否则下一轮补删会删掉新世界。
+    // 目录已经不在、标记还没清的那一刻，光看 fs::exists 挡不住。
+    [[nodiscard]] bool dir_id_pending(const std::string& dir_id) const {
+        pst::Stmt stmt(db(), "SELECT 1 FROM cleanup_log WHERE dir_id = ? AND pending_dir = 1");
+        stmt.bind(dir_id);
+        return stmt.step_row();
+    }
+
+    [[nodiscard]] std::string next_dir_id() const {
+        return dir_id_source ? dir_id_source() : internal::random_hex();
+    }
+
     // 调用方已持锁。
     [[nodiscard]] std::string default_name() const {
         pst::Stmt stmt(db(), "SELECT value FROM meta WHERE key = 'default_world'");
@@ -267,14 +316,15 @@ struct RegistryDb::Impl {
     }
 
     // 调用方已持锁，且 name 已过 is_valid_world_name。名字已被占用抛 world_exists；否则选一个注册表与
-    // 磁盘上都没有的 dir_id，建 worlds/<dir_id>/ 与 snapshots/，返回世界目录（还没有注册项）。
+    // 磁盘上都没有、也不在 cleanup_log 待删标记里的 dir_id（裁定 R58），建 worlds/<dir_id>/ 与 snapshots/，
+    // 返回世界目录（还没有注册项）。
     [[nodiscard]] fs::path reserve_home(const std::string& name) const {
         if (find(name)) { throw WorldStoreError("world_exists", "world '" + name + "' exists"); }
         const fs::path worlds_root = data_dir / "worlds";
         internal::require_worlds_root_inside(data_dir, worlds_root);
-        std::string dir_id = internal::random_hex();
-        while (dir_id_taken(dir_id) || fs::exists(worlds_root / dir_id)) {
-            dir_id = internal::random_hex();
+        std::string dir_id = next_dir_id();
+        while (dir_id_taken(dir_id) || dir_id_pending(dir_id) || fs::exists(worlds_root / dir_id)) {
+            dir_id = next_dir_id();
         }
         const fs::path home = worlds_root / dir_id;
         std::error_code mkdir_err;
@@ -389,6 +439,7 @@ RegistryDb RegistryDb::open(const fs::path& data_dir, const fs::path& default_db
         std::error_code mkdir_err;
         fs::create_directories(impl->data_dir, mkdir_err);
         impl->conn = std::make_unique<pst::Connection>(pst::Connection::open(file));
+        impl->conn->exec(kRegistrySynchronous);
         impl->conn->exec(kSchemaSql);
         pst::TransactionGuard guard(*impl->conn);
         // 在 BEGIN IMMEDIATE 之内查列、补列：两个进程同时第一次打开旧注册表时，后到的一个等前一个提交，
@@ -418,10 +469,17 @@ RegistryDb RegistryDb::open(const fs::path& data_dir, const fs::path& default_db
             world.bind(default_tenant, fs::absolute(default_db_path).string(),
                        (home / "snapshots").string(), "主世界", now);
             world.step_done();
+        } else if (*version == kRegistryV1) {
+            // v1 → v2（第 6 期）：与下面建 cleanup_log 同在这个 BEGIN IMMEDIATE 里，要么都成、要么都不成；两个进程
+            // 同时第一次打开时，后到的一个看见的已是 2。
+            pst::Stmt bump(impl->db(), "UPDATE meta SET value = ? WHERE key = 'schema_version'");
+            bump.bind(std::to_string(kSchemaVersion));
+            bump.step_done();
         } else if (*version != std::to_string(kSchemaVersion)) {
             registry_corrupt("unsupported registry schema_version '" + *version + "' in " +
                              file.string());
         }
+        impl->conn->exec(kCleanupLogSql);   // 版本已确认是 2（或刚升到 2）；IF NOT EXISTS，幂等
         guard.commit();
         // 默认世界必须在册（手改过库的话在此暴露）。
         if (!impl->find("default")) { registry_corrupt("default world missing in " + file.string()); }
@@ -781,13 +839,269 @@ int RegistryDb::snapshot_retention() const {
 
 const fs::path& RegistryDb::data_dir() const { return impl_->data_dir; }
 
+// ---- 自动清理（第 6 期，cleanup.hpp） ----
+
+namespace {
+
+// 调用方已持锁。全部世界（不带标签）与 held / 默认标记，按登记顺序（rowid）；where 非空时只取满足它的行（参数绑 bind_text）。
+// held 列按名字取（裁定 R72 M5：不写死列号）。
+std::vector<CleanupCensusRow> census_rows(sqlite3* dbh, const std::string& dflt, const char* where = nullptr,
+                                          const std::string& bind_text = {}) {
+    const std::string sql =
+        std::string("SELECT ") + kWorldColumns +
+        ", EXISTS (SELECT 1 FROM snapshots s WHERE s.world = w.name AND s.kind = 'held') AS has_held "
+        "FROM worlds w" + (where == nullptr ? std::string() : std::string(" WHERE ") + where) +
+        " ORDER BY w.rowid ASC";
+    pst::Stmt stmt(dbh, sql.c_str());
+    if (where != nullptr) { stmt.bind(bind_text); }
+    const int held_col = internal::require_column(stmt.raw(), "has_held");   // 列不在抛 registry_corrupt（裁定 R79）
+    std::vector<CleanupCensusRow> out;
+    while (stmt.step_row()) {
+        CleanupCensusRow row;
+        row.record = read_world(stmt.raw());
+        row.has_held = sqlite3_column_int(stmt.raw(), held_col) != 0;
+        row.is_default = row.record.name == dflt;
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
+// 调用方已持锁、在事务里。写一条清理记录。
+void insert_cleanup_row(sqlite3* dbh, std::string_view now_iso, const std::string& world, const std::string& group,
+                        const char* action, const std::string& reason, const std::string& detail,
+                        const std::string& dir_id, bool pending) {
+    pst::Stmt stmt(dbh,
+                   "INSERT INTO cleanup_log (at, world, retention_group, action, reason, detail, dir_id, "
+                   "pending_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(now_iso, world, group, action, reason, detail, dir_id, static_cast<int>(pending));
+    stmt.step_done();
+}
+
+// 调用方已持锁、在事务里。写一条 skipped 记录，除非这个世界（这一次的 dir_id）最新一条记录已是同样的
+// (dir_id, action, reason, detail)（裁定 R72 M1：按 dir_id，同名重建之后是另一个世界；detail 也比，failed 的原因变了另记）。
+void insert_skip_deduped(sqlite3* dbh, std::string_view now_iso, const WorldRecord& rec, const std::string& reason,
+                         const std::string& detail) {
+    {
+        pst::Stmt stmt(dbh,
+                       "SELECT dir_id, action, reason, detail FROM cleanup_log WHERE world = ? "
+                       "ORDER BY id DESC LIMIT 1");
+        stmt.bind(rec.name);
+        if (stmt.step_row() && text_col(stmt.raw(), 0) == rec.dir_id && text_col(stmt.raw(), 1) == "skipped" &&
+            text_col(stmt.raw(), 2) == reason && text_col(stmt.raw(), 3) == detail) {
+            return;
+        }
+    }
+    insert_cleanup_row(dbh, now_iso, rec.name, rec.retention_group, "skipped", reason, detail, rec.dir_id, false);
+}
+
+// 调用方已持锁、在事务里。归档的 skipped no_longer_due（裁定 R79）：按这一份归档去重，只比这个世界里 detail 是同一个归档名的
+// 最新一条。按世界的最新一条比的话，两份不到期的归档交替出现时每轮都各记一条。
+void insert_archive_skip_deduped(sqlite3* dbh, std::string_view now_iso, const WorldRecord& rec,
+                                 const std::string& archive_name) {
+    {
+        pst::Stmt stmt(dbh,
+                       "SELECT dir_id, action, reason FROM cleanup_log WHERE world = ? AND detail = ? "
+                       "ORDER BY id DESC LIMIT 1");
+        stmt.bind(rec.name, archive_name);
+        if (stmt.step_row() && text_col(stmt.raw(), 0) == rec.dir_id && text_col(stmt.raw(), 1) == "skipped" &&
+            text_col(stmt.raw(), 2) == "no_longer_due") {
+            return;
+        }
+    }
+    insert_cleanup_row(dbh, now_iso, rec.name, rec.retention_group, "skipped", "no_longer_due", archive_name,
+                       rec.dir_id, false);
+}
+
+// 调用方已持锁、在事务里。own 是这个世界的一行（census_rows 读的）。按 cfg、now 重算它此刻是否到期（裁定 R70，与 plan_cleanup
+// 同一份规则代码）："" | "over_age" | "over_count"。份数要看整个分组（含被保护的成员），所以取该分组的全部世界；空分组只看
+// 自己（只有天数规则）。
+std::string due_reason_in_lock(sqlite3* dbh, const std::string& dflt, const std::vector<CleanupCensusRow>& own,
+                               const CleanupConfig& cfg, std::chrono::sys_seconds now) {
+    const WorldRecord& rec = own.front().record;
+    const auto members = rec.retention_group.empty()
+                             ? own
+                             : census_rows(dbh, dflt, "w.retention_group = ?", rec.retention_group);
+    const auto reasons = internal::cleanup_due_reasons(members, cfg, now);
+    const auto pos = std::ranges::find_if(members, [&rec](const CleanupCensusRow& member) {
+        return member.record.name == rec.name;
+    });
+    return pos == members.end() ? std::string() : reasons.at(static_cast<std::size_t>(pos - members.begin()));
+}
+
+}  // namespace
+
+std::vector<CleanupCensusRow> RegistryDb::cleanup_census() const {
+    const std::scoped_lock lock(impl_->mutex);
+    return census_rows(impl_->db(), impl_->default_name());
+}
+
+std::vector<CleanupLogEntry> RegistryDb::read_cleanup_log(std::int64_t limit) const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(),
+                   "SELECT id, at, world, retention_group, action, reason, detail FROM cleanup_log "
+                   "ORDER BY id DESC LIMIT ?");
+    sqlite3_bind_int64(stmt.raw(), 1, limit);
+    std::vector<CleanupLogEntry> out;
+    while (stmt.step_row()) {
+        sqlite3_stmt* raw = stmt.raw();
+        out.push_back(CleanupLogEntry{.id = sqlite3_column_int64(raw, 0), .at = text_col(raw, 1),
+                                      .world = text_col(raw, 2), .group = text_col(raw, 3),
+                                      .action = text_col(raw, 4), .reason = text_col(raw, 5),
+                                      .detail = text_col(raw, 6),});
+    }
+    return out;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RegistryDb::CleanupDecision RegistryDb::unregister_for_cleanup(const std::string& world,
+                                                              const std::string& planned_dir_id,
+                                                              const CleanupConfig& cfg, std::string_view now_iso) {
+    internal::require_cleanup_config(cfg);
+    const auto now = internal::require_cleanup_now(now_iso);
+    const std::scoped_lock lock(impl_->mutex);
+    // 裁定 R72 M4：BEGIN IMMEDIATE 先于一切核对，读到的与写下的是同一个快照（别的进程插不进中间）。
+    pst::TransactionGuard guard(*impl_->conn);
+    const std::string dflt = impl_->default_name();
+    const auto own = census_rows(impl_->db(), dflt, "w.name = ?", world);
+    if (own.empty()) { return {}; }   // 世界已不在：什么都不记
+    const CleanupCensusRow& row = own.front();
+    const WorldRecord& rec = row.record;
+    CleanupDecision decision{.removed = false, .reason = {}, .group = rec.retention_group, .dir_id = rec.dir_id};
+    std::string detail;
+    if (rec.dir_id != planned_dir_id) {
+        decision.reason = "world_changed";
+    } else if (!cleanup_eligible(rec, row.is_default)) {
+        decision.reason = "not_reclaimable";
+    } else if (row.has_held) {
+        decision.reason = "held_snapshot";
+    } else {
+        const std::string due = due_reason_in_lock(impl_->db(), dflt, own, cfg, now);   // 裁定 R70：按规则重算
+        if (!internal::is_cleanup_due(due)) {
+            decision.reason = "no_longer_due";
+        } else if (!internal::is_generated_dir_id(rec.dir_id)) {
+            // 裁定 R79（R72 M2 的对称面）：补删只删生成的 dir_id，第 b 步删不掉时这个目录就没人再删了。所以只摘生成的。
+            decision.reason = "failed";
+            detail = "dir_id '" + rec.dir_id + "' of '" + rec.name + "' is not a generated id; not removed";
+        } else {
+            try {
+                (void)internal::checked_cleanup_home(impl_->data_dir, rec.dir_id, rec.name);
+                decision.reason = due;
+                decision.removed = true;
+            } catch (const WorldStoreError& err) {
+                decision.reason = "failed";
+                detail = err.what();
+            }
+        }
+    }
+    if (!decision.removed) {
+        insert_skip_deduped(impl_->db(), now_iso, rec, decision.reason, detail);
+        guard.commit();
+        return decision;
+    }
+    // 先记录（带待删标记）、再摘注册项，同一个事务：提交之后注册项一定不在、记录一定在。
+    insert_cleanup_row(impl_->db(), now_iso, rec.name, rec.retention_group, "removed", decision.reason, "",
+                       rec.dir_id, true);
+    for (const char* sql : {"DELETE FROM world_labels WHERE name = ?",
+                            "DELETE FROM snapshots WHERE world = ?",
+                            "DELETE FROM worlds WHERE name = ?",}) {
+        pst::Stmt stmt(impl_->db(), sql);
+        stmt.bind(rec.name);
+        stmt.step_done();
+    }
+    guard.commit();
+    return decision;
+}
+
+void RegistryDb::record_cleanup_skip(const std::string& world, const std::string& reason,
+                                     const CleanupConfig& cfg, std::string_view now_iso) {
+    internal::require_cleanup_config(cfg);
+    // 入参只是提名（裁定 R70）：plan 只会给这两种跳过原因，别的文本不写进记录。
+    if (reason != "held_snapshot" && reason != "open") { return; }
+    const auto now = internal::require_cleanup_now(now_iso);
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    const std::string dflt = impl_->default_name();
+    const auto own = census_rows(impl_->db(), dflt, "w.name = ?", world);
+    if (own.empty() || !cleanup_eligible(own.front().record, own.front().is_default)) { return; }
+    // 裁定 R79：原因按锁内重读的结果重新核对，与 plan_cleanup 同序（held 在 open 之前）。此刻不到期的世界不受保护也不会被删，
+    // 不记；提名 held_snapshot 而 held 已经没了的不记（下一轮就删）。open 只有调用方知道，照它说的记。
+    std::string recorded;
+    if (own.front().has_held) {
+        recorded = "held_snapshot";
+    } else if (reason == "open") {
+        recorded = "open";
+    } else {
+        return;
+    }
+    if (!internal::is_cleanup_due(due_reason_in_lock(impl_->db(), dflt, own, cfg, now))) { return; }
+    insert_skip_deduped(impl_->db(), now_iso, own.front().record, recorded, "");
+    guard.commit();
+}
+
+void RegistryDb::append_archive_removed(const WorldRecord& rec, const std::string& archive_name,
+                                        std::string_view now_iso) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    insert_cleanup_row(impl_->db(), now_iso, rec.name, rec.retention_group, "archive_removed", "over_age",
+                       archive_name, rec.dir_id, false);
+    guard.commit();
+}
+
+void RegistryDb::record_archive_skip(const WorldRecord& rec, const std::string& archive_name,
+                                     std::string_view now_iso) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    insert_archive_skip_deduped(impl_->db(), now_iso, rec, archive_name);
+    guard.commit();
+}
+
+std::vector<std::string> RegistryDb::pending_cleanup_dirs() const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(),
+                   "SELECT DISTINCT c.dir_id FROM cleanup_log c WHERE c.pending_dir = 1 AND c.dir_id <> '' "
+                   "AND NOT EXISTS (SELECT 1 FROM worlds w WHERE w.dir_id = c.dir_id) ORDER BY c.dir_id");
+    std::vector<std::string> out;
+    while (stmt.step_row()) { out.push_back(text_col(stmt.raw(), 0)); }
+    return out;
+}
+
+void RegistryDb::clear_cleanup_pending(const std::string& dir_id) {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::TransactionGuard guard(*impl_->conn);
+    pst::Stmt stmt(impl_->db(), "UPDATE cleanup_log SET pending_dir = 0 WHERE dir_id = ? AND pending_dir = 1");
+    stmt.bind(dir_id);
+    stmt.step_done();
+    guard.commit();
+}
+
+void RegistryDb::set_dir_id_source_for_test(std::function<std::string()> source) {
+    const std::scoped_lock lock(impl_->mutex);
+    impl_->dir_id_source = std::move(source);
+}
+
+int RegistryDb::synchronous_for_test() const {
+    const std::scoped_lock lock(impl_->mutex);
+    pst::Stmt stmt(impl_->db(), "PRAGMA synchronous");
+    return stmt.step_row() ? sqlite3_column_int(stmt.raw(), 0) : -1;
+}
+
 namespace internal {
+
+int require_column(sqlite3_stmt* stmt, std::string_view name) {
+    for (int col = 0; col < sqlite3_column_count(stmt); ++col) {
+        if (std::string_view(sqlite3_column_name(stmt, col)) == name) { return col; }
+    }
+    // 裁定 R79：取不到就抛，失败时关闭。拿 -1 去读列会读成 0，把「有 held 快照」悄悄当成「没有」。
+    registry_corrupt("result column '" + std::string(name) + "' missing");
+}
 
 void write_fresh_registry(const fs::path& file, const std::string& default_world,
                           int snapshot_retention, const std::vector<ImportedWorld>& worlds) {
     try {
         auto conn = pst::Connection::open(file);
+        conn.exec(kRegistrySynchronous);
         conn.exec(kSchemaSql);
+        conn.exec(kCleanupLogSql);   // 新建的注册表直接是 kSchemaVersion（2）的形状
         {
             pst::TransactionGuard guard(conn);
             sqlite3* dbh = conn.raw();

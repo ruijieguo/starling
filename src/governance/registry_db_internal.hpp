@@ -5,8 +5,11 @@
 
 #include "starling/governance/registry_db.hpp"
 
+#include <sqlite3.h>
+
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace starling::governance::internal {
@@ -24,5 +27,8 @@ struct ImportedWorld {
 // 失败时删掉 file 与它的旁车。
 void write_fresh_registry(const std::filesystem::path& file, const std::string& default_world,
                           int snapshot_retention, const std::vector<ImportedWorld>& worlds);
+
+// 按列名取 stmt 的结果列号。没有这一列抛 registry_corrupt（裁定 R79：失败时关闭，不能拿 -1 去读，读出来是 0）。
+[[nodiscard]] int require_column(sqlite3_stmt* stmt, std::string_view name);
 
 }  // namespace starling::governance::internal

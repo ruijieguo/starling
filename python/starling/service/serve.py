@@ -1,7 +1,7 @@
 """`starling-serve`：记忆服务进程的入口（spec §10.1 启动、§10.2 停止，记忆服务第 4 期 Task 4.3）。
 
     starling-serve --data-dir D --host 127.0.0.1 --port P [--token-file F] [--drain-timeout S]
-                   [--idle-close-interval S]
+                   [--idle-close-interval S] [--cleanup-interval S]
 
 - 所有路径都在 D 之下：D/starling.json（可以没有；没有抽取 provider 时从 OPENAI_* 补一个）、D/dashboard.db（默认世界）、
   D/registry.db、D/worlds/、D/ingest-spool/。不读 ~/.starling，也不看环境变量里的路径（DashboardConfig.load_service）。
@@ -14,6 +14,10 @@
   开好之后 stdout 打印「starling-serve ready」。开的途中出错：记日志，进程退出码 1（交给进程管理器重启，不留一个永远 503
   的服务）。
 - 空闲关闭：每 --idle-close-interval 秒（默认 30，0 关掉）一轮，按 C++ 的空闲判定关掉没人用的世界（默认世界不关）。
+- 自动清理：每 --cleanup-interval 秒一轮（spec §9，0 关掉）。没传时取 D/starling.json 的 cleanup_interval_s，那里也没有
+  就是 600（裁定 R105 F1）。间隔必须是有限的数、>= 0，命令行与配置文件不合法都在启动时报错、写出键名（R105 F2）。规则的
+  三个数值（cleanup_keep_per_group、cleanup_max_age_days、cleanup_archive_max_age_days）从 D/starling.json 读，与别的配置
+  同一条路径，取值由 C++ 校验。run_dashboard.py（8787）不传这个参数，间隔取 starling.json 的 cleanup_interval_s（缺省 600）。
 - SIGTERM / SIGINT：停止接受新连接 → 等在途请求结束（上限 --drain-timeout，默认 30 秒）→ lifespan 的关停：各世界进
   DRAINING、停后台线程、逐个关闭世界（合并 WAL、写统计缓存）→ 释放数据目录锁 → 退出码 0。
 
@@ -37,7 +41,7 @@ from pathlib import Path
 import uvicorn
 
 from starling.dashboard.app import create_app
-from starling.dashboard.config import DashboardConfig
+from starling.dashboard.config import DashboardConfig, check_cleanup_interval
 
 __all__ = ["DataDirInUse", "lock_data_dir", "main", "run"]
 
@@ -96,12 +100,13 @@ def run(data_dir: str | os.PathLike, *, token_from_config: bool = False,
         config: DashboardConfig | None = None, token: str | None = None,
         host: str | None = None, port: int | None = None,
         drain_timeout_s: float = DEFAULT_DRAIN_TIMEOUT_S,
-        idle_close_interval_s: float = DEFAULT_IDLE_CLOSE_INTERVAL_S, engine_factory=None) -> int:
+        idle_close_interval_s: float = DEFAULT_IDLE_CLOSE_INTERVAL_S,
+        cleanup_interval_s: float | None = None, engine_factory=None) -> int:
     """跑一个服务进程直到被 SIGTERM / SIGINT 停下，返回退出码（0 正常停止，1 启动失败，3 data_dir_in_use）。
 
     token_from_config=False（starling-serve）：配置是 DashboardConfig.load_service(data_dir, token)，token 必须给。
     token_from_config=True（run_dashboard.py）：配置是调用方给的 config（缺省 DashboardConfig.load()），token、库、注册表位置
-    都按它，与之前一样。host / port 缺省取配置。"""
+    都按它，与之前一样。host / port 缺省取配置。cleanup_interval_s 为 None 时取配置的 cleanup_interval_s（缺省 600）。"""
     if token_from_config:
         cfg = config if config is not None else DashboardConfig.load()
     else:
@@ -112,6 +117,8 @@ def run(data_dir: str | os.PathLike, *, token_from_config: bool = False,
         cfg.host = host
     if port is not None:
         cfg.port = port
+    if cleanup_interval_s is not None:
+        cfg.cleanup_interval_s = cleanup_interval_s
     try:
         lock_fd = lock_data_dir(data_dir)
     except DataDirInUse:
@@ -213,6 +220,10 @@ def _parser() -> argparse.ArgumentParser:
                     help="seconds to wait for in-flight requests after SIGTERM (default 30)")
     ap.add_argument("--idle-close-interval", type=float, default=DEFAULT_IDLE_CLOSE_INTERVAL_S,
                     help="seconds between idle-close rounds; 0 disables idle close (default 30)")
+    # 缺省 None：没传时用 D/starling.json 的 cleanup_interval_s（再没有就是 600），不让命令行的缺省值盖掉配置文件（裁定 R105 F1）。
+    ap.add_argument("--cleanup-interval", type=float, default=None,
+                    help="seconds between automatic cleanup rounds; 0 disables cleanup "
+                         "(default: cleanup_interval_s in D/starling.json, else 600)")
     return ap
 
 
@@ -229,9 +240,15 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--drain-timeout must be >= 0")
     if args.idle_close_interval < 0:
         ap.error("--idle-close-interval must be >= 0")
+    if args.cleanup_interval is not None:
+        try:
+            check_cleanup_interval(args.cleanup_interval, "--cleanup-interval")
+        except RuntimeError as exc:
+            ap.error(str(exc))
     data_dir = os.path.abspath(os.path.expanduser(args.data_dir))
     return run(data_dir, token=token, host=args.host, port=args.port,
-               drain_timeout_s=args.drain_timeout, idle_close_interval_s=args.idle_close_interval)
+               drain_timeout_s=args.drain_timeout, idle_close_interval_s=args.idle_close_interval,
+               cleanup_interval_s=args.cleanup_interval)
 
 
 if __name__ == "__main__":

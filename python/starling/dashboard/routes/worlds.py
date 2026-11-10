@@ -1,5 +1,5 @@
 """/api/worlds：世界注册表（列表、详情、建、删、设置、关闭）、快照（W1/W2）、回滚与归档（W3）、
-自动快照与会话（W4）。记忆服务第 1 期 Task 6 起全部经引擎池（app.state.pool，WorldPool）。
+自动快照与会话（W4）、自动清理的记录（第 6 期，GET /api/worlds/cleanup_log）。记忆服务第 1 期 Task 6 起全部经引擎池（app.state.pool，WorldPool）。
 
 没有「活动世界」：任何世界都可以同时开着，激活路由已删除。列表只读注册表（标签过滤、分页都在 C++
 RegistryDb::list），不逐个打开库：开着的世界的计数由池现读（live_stats），关着的取注册表缓存列
@@ -369,6 +369,15 @@ async def _broadcast(request: Request, kind: str, world: str, payload: dict) -> 
         await ws_manager.broadcast_world(kind, world, payload)
 
 
+def _cleanup_log(pool, limit: int) -> dict:
+    """最近的清理记录（C++ world_cleanup_log：最新在前，limit 1–500，越界 invalid_world_query）。没有注册表（:memory: 等，
+    裁定 R6）时没有清理，也就没有记录：空列表。"""
+    reg = pool.registry
+    if reg is None:
+        return {"entries": []}
+    return {"entries": _core.world_cleanup_log(reg, limit)}
+
+
 def build_worlds_router(require_token) -> APIRouter:
     router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -378,6 +387,12 @@ def build_worlds_router(require_token) -> APIRouter:
         pool = _pool(request)
         _require_registry(pool)
         return await _run(_list_worlds, pool, _label_filter(request), offset, limit)
+
+    # 自动清理的记录（spec §9、§14，第 6 期）。注册在 /worlds/{name} 之前：cleanup_log 也是合法的世界名，不能被详情路由截走。
+    @router.get("/worlds/cleanup_log")
+    async def cleanup_log(request: Request, limit: int = 50):
+        # limit 的范围由 C++ 校验（invalid_world_query → 400）。
+        return await _run(_cleanup_log, _pool(request), limit)
 
     @router.post("/worlds")
     async def create_world(request: Request, body: CreateWorldBody):

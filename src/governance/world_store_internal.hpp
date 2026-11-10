@@ -6,13 +6,18 @@
 
 #include "starling/governance/world_store.hpp"
 
+#include <chrono>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace starling::governance::internal {
 
 // 16 位随机小写十六进制。
 [[nodiscard]] std::string random_hex();
+// 严格解析 YYYY-MM-DDTHH:MM:SSZ（日期必须真实存在），别的写法返回 nullopt。快照、自动快照、分叉与清理共用。
+[[nodiscard]] std::optional<std::chrono::sys_seconds> parse_utc_seconds(std::string_view text);
 // 2026-10-25T01:12:00Z
 [[nodiscard]] std::string iso_now();
 // 20261025T011200Z

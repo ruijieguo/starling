@@ -187,6 +187,7 @@ target_sources(starling_core PRIVATE
     src/governance/restart_guard.cpp
     src/governance/health_sampler.cpp
     src/governance/metrics_gatherer.cpp
+    src/governance/cleanup.cpp
     src/governance/world_store.cpp
     src/governance/registry_db.cpp
     src/governance/registry_import.cpp

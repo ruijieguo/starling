@@ -13,6 +13,7 @@
 // （原 WorldManager 的管理锁，见 world_store.hpp 文件头）。
 // 错误一律抛 WorldStoreError（code 见 world_store.hpp）。
 
+#include "starling/governance/cleanup.hpp"
 #include "starling/governance/world_settings.hpp"
 #include "starling/governance/world_store.hpp"
 #include "starling/persistence/connection.hpp"
@@ -80,6 +81,8 @@ public:
     // 文件打不开或不是合法的注册表：registry_corrupt。
     // snapshots 表没有 digest 列（第 3 期之前建的注册表，schema_version 仍是 1）时就地
     // ALTER TABLE ... ADD COLUMN digest TEXT NOT NULL DEFAULT ''：旧条目的 digest 为空串。幂等。
+    // 注册表 schema 2（第 6 期）：schema_version 为 "1" 时在同一个 BEGIN IMMEDIATE 里建 cleanup_log 表并改成 "2"，
+    // 幂等；其余不认识的版本照旧 registry_corrupt，什么都不改。降级回 1 版见 spec §5.4（裁定 R45）。
     static RegistryDb open(const std::filesystem::path& data_dir,
                            const std::filesystem::path& default_db_path,
                            const std::string& default_tenant);
@@ -176,6 +179,42 @@ public:
     void drop_snapshot(const std::string& world, const std::string& snapshot_id);
     [[nodiscard]] int snapshot_retention() const;                   // 默认 5
     [[nodiscard]] const std::filesystem::path& data_dir() const;
+
+    // ---- 自动清理（第 6 期，cleanup.hpp） ----
+    // 全部世界（不带标签）与各自「有没有 held 快照」「是不是默认世界」，一次持锁读出，按登记顺序（rowid）。
+    // plan_cleanup 用它，规则不在这里。
+    [[nodiscard]] std::vector<CleanupCensusRow> cleanup_census() const;
+    // cleanup_log 表最新的 limit 条（调用方已校验 limit），最新在前。
+    [[nodiscard]] std::vector<CleanupLogEntry> read_cleanup_log(std::int64_t limit) const;
+    // execute_cleanup 第 1 步的 a（见 cleanup.hpp）。持锁、在一个 BEGIN IMMEDIATE 里重新读记录、快照与该世界所在分组的全部
+    // 世界，按 cleanup.hpp 的顺序判定，并按 cfg、now_iso 重算「是否仍到期」（裁定 R70，与 plan_cleanup 同一份规则代码）。
+    // 通过时写 removed 记录（pending_dir=1，reason 是重算出来的）并摘掉注册项；不通过时写 skipped 记录（去重同
+    // record_cleanup_skip）；世界已不在时什么都不写。不删文件。
+    struct CleanupDecision {
+        bool removed = false;
+        std::string reason;    // removed：重算出来的 over_age / over_count；否则跳过的原因（世界不在时为空）
+        std::string group;     // 锁内读到的 retention_group
+        std::string dir_id;    // 锁内读到的 dir_id（removed 时就是要删的目录名）
+    };
+    CleanupDecision unregister_for_cleanup(const std::string& world, const std::string& planned_dir_id,
+                                           const CleanupConfig& cfg, std::string_view now_iso);
+    // plan.skip 的一项（held_snapshot / open）：持锁重新读这个世界与它的分组，按 cleanup.hpp 第 2 步重新核对原因（裁定 R79）：
+    // 世界不在、不再 cleanup_eligible、此刻不再到期、或重读后两种原因都不成立时不写；写的 group、dir_id 取锁内读到的值。
+    // 去重见 cleanup.hpp。
+    void record_cleanup_skip(const std::string& world, const std::string& reason, const CleanupConfig& cfg,
+                             std::string_view now_iso);
+    // 归档的记录：删掉一份（archive_removed）或重算后不到期（skipped no_longer_due），detail 都是归档名。skipped 按每份归档
+    // 去重（裁定 R79，见 cleanup.hpp）。
+    void append_archive_removed(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
+    void record_archive_skip(const WorldRecord& rec, const std::string& archive_name, std::string_view now_iso);
+    // 待删目录：cleanup_log 里 pending_dir=1、且 worlds 表里没有这个 dir_id 的不同 dir_id（裁定 R56 补充 1）。
+    [[nodiscard]] std::vector<std::string> pending_cleanup_dirs() const;
+    // 清掉某个 dir_id 的全部待删标记（目录已删完或本来就不在）。
+    void clear_cleanup_pending(const std::string& dir_id);
+    // 仅测试用（裁定 R58）：替换 reserve_home 抽 dir_id 的随机源；空函数恢复真随机。生产不调用。
+    void set_dir_id_source_for_test(std::function<std::string()> source);
+    // 仅测试用（裁定 R72 M3）：注册表连接此刻的 PRAGMA synchronous（0 OFF、1 NORMAL、2 FULL、3 EXTRA）。
+    [[nodiscard]] int synchronous_for_test() const;
 
 private:
     struct Impl;

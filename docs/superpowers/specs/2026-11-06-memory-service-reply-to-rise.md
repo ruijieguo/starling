@@ -151,4 +151,70 @@ mem = client.open(world, holder=holder, settings=settings)   # 原来是 starlin
 - 空 key 照常接受，与进程内 `Memory` 一致（裁定 R95）；rise 的 key 都是提案或轮次 id，不会是空串。
 - 空闲关闭时限（10 分钟）、会话租约（30 s）、心跳间隔（10 s）这几项暂不可配置，留到第 5 期。
 
-（第 5、6 期的答复在各期合并时补充。）
+## 第 6 期（自动清理）
+
+第 5 期（看板按世界查看）对 rise 没有接口变化，合并时再补。这一期给服务加了后台清理线程，rollout 世界不用 rise 自己删了。
+
+**清理规则。** 只清 `reclaimable=true` 的世界。每个分组（`retention_group`）只保留最近 200 份，并且只保留 14 天，两条哪条先到按哪条删。份数规则按分组算，没有分组键的世界不套份数规则，只套天数规则。默认值在服务配置（`starling.json`）里可改：
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `cleanup_keep_per_group` | 200 | 每组保留份数 |
+| `cleanup_max_age_days` | 14 | 世界保留天数，按创建时间 |
+| `cleanup_archive_max_age_days` | 14 | 恢复前旧库归档的保留天数 |
+| `cleanup_interval_s` | 600 | 两轮清理的间隔（秒）；`0` 关掉清理线程 |
+
+**rise 要做的事。** 分叉 rollout 世界和验证分叉时，传 `reclaimable=True` 和分组键：`client.fork(source, name, reclaimable=True, retention_group=run_id)`，rollout 的分组键用 `run_id`。部署世界、种子、默认世界永远不会被清，种子即使被标了 `reclaimable` 也一样。
+
+**带 held 快照的可回收世界不会被清。** `client.snapshot(world)` 拍的是 `held` 快照，归 rise 持有。世界上还有 held 快照时，清理跳过它并在记录里写 `held_snapshot`；rise 用 `delete_snapshot` 删掉快照之后，下一轮才会清。要让 rollout 世界被回收，别忘了删它的快照。
+
+**正开着的世界不删。** 世界有引擎，或者有活句柄，都算开着，清理跳过并记 `open`，下一轮再看。清理正在删一个世界时，去打开它会先收到瞬态的 `world_busy`，重试之后会得到 `world_not_found`（世界已经没了）。
+
+**清理期间的 `list_worlds`。** 清理期间调 `list_worlds(with_digest=True)`，可能整页返回瞬态的 `world_busy`，重试即可。
+
+**归档。** 不可回收的世界（部署世界、种子、默认世界）的「恢复前旧库归档」超过 14 天（`cleanup_archive_max_age_days`）也会被删。
+
+**怎么查清理记录。** 看板「世界」页上有「最近清理」表；HTTP 是 `GET /api/worlds/cleanup_log?limit=50`（`limit` 取 1–500，默认 50，最新在前，要带服务 token）。每条有 `id`、`at`、`world`、`group`、`action`（`removed`、`skipped`、`archive_removed`）、`reason`（`over_count`、`over_age`、`held_snapshot`、`open` 等）和 `detail`。`starling_client` 没有封装这个接口，rise 需要的话自己带 token 调 HTTP。
+
+**降级。** 第 6 期把注册表升到了 schema 2（加了 `cleanup_log` 表）。旧版本打开会报 `registry_corrupt`，服务起不来。降级步骤见设计源 [§5.4](2026-11-03-memory-service-design.md)，要先把注册表改回 1 版。
+
+## 对照设计源 §19
+
+下面逐条对照 [设计源](2026-11-03-memory-service-design.md) §19「需要回告 rise 的」。路径相对仓库根目录；测试名都用 `git grep` 核对过存在。
+
+**1. 种子：普通世界加只读标记；建空世界或从部署世界分叉时 `seed=true`；升级种子用 `upgrade_seed`，得到新名字的新种子。**
+- 实现：`src/governance/world_store.cpp`（`upgrade_seed`；`seed` 蕴含 `read_only`）；`clients/python/starling_client/client.py`（`create_world(seed=)`、`fork(seed=)`、`upgrade_seed`）；`python/starling/dashboard/routes/client.py`（`_admin_upgrade_seed`）。
+- 测试：`tests/cpp/test_world_fork.cpp` 的 `SeedImpliesReadOnly`、`UpgradeSeedMigratesCopyAndKeepsOld`、`UpgradeSeedRequiresASeed`；`tests/python/test_acceptance_2_3_fork_restore.py` 的 `test_2_seed_forks_share_digest_and_seed_bytes_unchanged`。
+
+**2. 句柄模型、旧库不导入、种子落后拒绝分叉、rise 拍的快照不参与修剪、保留 200 份 / 14 天。**
+- 句柄模型：`clients/python/starling_client/client.py`（`open(world, holder=...)`）；测试 `tests/python/test_client_routes.py` 的 `test_round_trip_open_remember_recall_close`。
+- 旧库不导入：这是「不做」的决定，没有对应代码，也没有专门的钉测。未找到。
+- 种子落后拒绝分叉：`src/governance/world_store.cpp`（`require_current_schema`，返回 `world_schema_behind`）；测试 `tests/cpp/test_world_fork.cpp` 的 `ForkRefusesSchemaBehindSource`，`tests/python/test_dashboard_world_fork.py` 的 `test_fork_of_schema_behind_source_is_409`。
+- rise 的快照不参与修剪：`src/governance/world_store.cpp`（`held` 类快照）；测试 `tests/cpp/test_world_store.cpp` 的 `HeldSnapshotsSurviveRetention`。
+- 200 份 / 14 天：`src/governance/cleanup.cpp`、`python/starling/dashboard/config.py`（`cleanup_keep_per_group`、`cleanup_max_age_days`）；测试 `tests/cpp/test_cleanup.cpp` 的 `KeepsNewest200PerGroup`、`DropsOlderThan14Days`，`tests/python/test_cleanup_scheduler.py` 的 `test_config_defaults_and_pool_reads_them`。
+
+**3. 带有 rise 快照的可回收世界不会被自动清理。**
+- 实现：`src/governance/cleanup.cpp`（`plan_cleanup` 里的 `held_snapshot` 跳过）。
+- 测试：`tests/cpp/test_cleanup.cpp` 的 `PlanSkipsWorldWithHeldSnapshot`、`SkipsWorldWithHeldSnapshotAndLogsReason`；`tests/python/test_acceptance_4a_5_cleanup.py` 的 `test_4a_cleanup_respects_count_age_and_protections`。
+
+**4. 世界名：首字符字母或数字，其余 `[A-Za-z0-9._-]`，长度 1–128，区分大小写。**
+- 实现：`src/governance/world_store.cpp`（`is_valid_world_name`）；错误码 `invalid_world_name` 在 `src/governance/error_catalog.cpp`。
+- 测试：`tests/cpp/test_registry_db.cpp` 的 `WorldNameRules`；`tests/python/test_world_registry_bindings.py` 的 `test_error_codes`；`tests/python/test_dashboard_worlds.py` 的 `test_routes_list_create_delete`（非法名回 400）。
+
+**5. `pending_events()` 每项多一个 `holder`，rise 用对应 holder 的句柄去 `abandon_event`。**
+- 实现：`python/starling/memory.py`（`pending_events`）、`src/memory/memory_events.cpp`、`clients/python/starling_client/client.py`（`pending_events(world)`）、`python/starling/dashboard/routes/client.py`（`_abandon_event`）。
+- 测试：`tests/python/test_memory_remember_event.py` 的 `test_pending_events_lists_every_holder_with_its_holder`；`tests/python/test_acceptance_1a_two_holders.py` 的 `test_1a_pending_events_list_both_holders_with_holder`。
+
+**6. 召回不等抽取；召回和 `embed_pending` 在嵌入请求期间持引擎锁，同世界其他调用排队；同 key 重放可能拿到先提交那次的语句。**
+- 召回不等抽取：`python/starling/dashboard/engine.py`（`remember_event` 的抽取在锁外）；测试 `tests/python/test_client_routes.py` 的 `test_same_world_recall_is_not_blocked_by_remember_event_extraction`。
+- 召回、`embed_pending` 持引擎锁：`python/starling/dashboard/engine.py`（`recall`、`embed_pending` 都在 `with self._lock` 内）。同世界其他调用确实排队的专门测试未找到。
+- 不同世界互不影响：`tests/python/test_acceptance_service.py` 的 `test_cross_world_gil`。
+- 同 key 重放：`tests/python/test_client_routes.py` 的 `test_concurrent_replay_of_one_key_converges_without_orphans`。
+
+**7. 端点配置：不给就继承默认世界的配置（建时复制）；给了密钥取 `OPENAI_API_KEY`；继承的地址被改过报 `endpoint_changed`。**
+- 实现：`python/starling/dashboard/engine.py`（`_require_endpoint_key`，读 `OPENAI_API_KEY`）；`python/starling/dashboard/routes/client.py`（`_public_default_settings`）。
+- 测试：`tests/cpp/test_registry_db.cpp` 的 `WorldSettingsCompose.NewWorldCopiesDefaultSettingsThenOverrides`（建时复制）；`tests/python/test_dashboard_engine.py` 的 `test_explicit_endpoint_uses_the_service_env_key`、`test_inherited_endpoint_change_refuses_every_call_that_uses_it`；`tests/python/test_client_routes.py` 的 `test_open_with_settings_seen_by_the_client_matches_an_inherited_endpoint`、`test_explicit_endpoint_without_the_service_key_is_endpoint_key_missing`、`test_info_default_settings_round_trip_through_open_unchanged`。
+
+**8. 客户端的安装方式与导入名（§13.3）；适配器换成 `client.open(world, holder=...)`。**
+- 实现：`clients/python/pyproject.toml`（包名 `starling-client`，只依赖 `httpx`）；`clients/python/starling_client/client.py`（`open`）；服务入口是 `pyproject.toml` 的 `starling-serve`。
+- 测试：`clients/python/tests/test_transport.py` 的 `test_client_has_no_starling_core_import`；`clients/python/tests/test_remote_memory.py` 的 `test_open_and_call_shapes`；`tests/python/test_acceptance_service.py` 的 `test_8_info_commit_equals_install_commit`。

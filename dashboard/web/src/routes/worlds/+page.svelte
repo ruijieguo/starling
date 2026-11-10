@@ -22,6 +22,9 @@
 	import {
 		apiDetail,
 		autoSnapshotLabel,
+		cleanupActionLabel,
+		cleanupReasonLabel,
+		fetchCleanupLog,
 		formatBytes,
 		isValidWorldName,
 		parseIntervalHours,
@@ -31,6 +34,7 @@
 		worldErrorMessage,
 		worldsApi,
 		type AutoSnapshotConfig,
+		type CleanupLogEntry,
 		type SnapshotRow,
 		type WorldRow
 	} from '$lib/worlds';
@@ -59,6 +63,14 @@
 			if (snapOpen && snapWorld) void loadSnaps(snapWorld);
 		});
 	});
+
+	// 最近清理(spec §9):自动清理每 10 分钟一轮,删了什么、为什么跳过都记在 cleanup_log 里。数据经 $lib/worlds 取。
+	const CLEANUP_LOG_LIMIT = 50;
+	const cleanupQ = createQuery(() => fetchCleanupLog(CLEANUP_LOG_LIMIT));
+	$effect(() => {
+		cleanupQ.refetch();
+	});
+	let cleanupEntries = $derived<CleanupLogEntry[]>(cleanupQ.data?.entries ?? []);
 
 	let worlds = $derived(q.data?.worlds ?? []);
 	let defaultName = $derived(q.data?.default ?? '');
@@ -639,6 +651,44 @@
 					>新建世界</Button
 				>
 			</form>
+		</Card>
+
+		<Card
+			title="最近清理"
+			description="自动清理每 10 分钟一轮：可回收世界超出份数或天数就删；开着的、带持有快照的跳过。不可回收世界的旧回滚归档按天数删。"
+		>
+			{#if cleanupQ.error && !cleanupQ.data}
+				<p class="text-xs text-danger">清理记录加载失败：{cleanupQ.error.message}</p>
+			{:else if !cleanupQ.data}
+				<Skeleton class="h-10 w-full" />
+			{:else if cleanupEntries.length === 0}
+				<p class="text-xs text-subtle">暂无清理记录</p>
+			{:else}
+				<div class="overflow-x-auto rounded-card border border-border">
+					<table class="w-full text-sm">
+						<caption class="sr-only">最近清理</caption>
+						<thead class="bg-surface text-left">
+							<tr>
+								{#each ['时间', '世界', '分组', '动作', '原因', '详情'] as h}
+									<th scope="col" class="px-3 py-2 font-medium whitespace-nowrap text-muted">{h}</th>
+								{/each}
+							</tr>
+						</thead>
+						<tbody>
+							{#each cleanupEntries as e (e.id)}
+								<tr class="border-t border-border/60 align-top">
+									<td class="px-3 py-2 tabular-nums whitespace-nowrap text-muted">{e.at}</td>
+									<th scope="row" class="px-3 py-2 text-left font-normal break-all text-fg">{e.world}</th>
+									<td class="px-3 py-2 break-all text-muted">{e.group || '—'}</td>
+									<td class="px-3 py-2 whitespace-nowrap text-fg">{cleanupActionLabel(e.action)}</td>
+									<td class="px-3 py-2 whitespace-nowrap text-fg">{cleanupReasonLabel(e.reason)}</td>
+									<td class="px-3 py-2 text-xs break-all text-subtle">{e.detail || '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 		</Card>
 	</div>
 {/if}

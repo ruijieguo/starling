@@ -1,0 +1,328 @@
+// cleanup.cpp — 见 include/starling/governance/cleanup.hpp。
+
+#include "starling/governance/cleanup.hpp"
+
+#include "cleanup_internal.hpp"
+#include "world_store_internal.hpp"
+
+#include "starling/governance/registry_db.hpp"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <system_error>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace starling::governance {
+
+namespace {
+
+namespace fs = std::filesystem;
+using Seconds = std::chrono::sys_seconds;
+
+constexpr std::int64_t kSecondsPerDay = 86'400;
+constexpr std::string_view kPreRollback = ".pre-rollback-";
+constexpr std::size_t kCompactStampLength = 16;   // 20261101T000000Z
+constexpr std::int64_t kMaxLogLimit = 500;
+
+[[noreturn]] void invalid(const std::string& detail) {
+    throw WorldStoreError("invalid_settings", detail);
+}
+
+
+// now - stamp 严格大于 days 天。stamp 晚于 now（时钟回拨）不算。不溢出：只做除法。
+bool older_than(Seconds stamp, Seconds now, std::int64_t days) {
+    const std::int64_t age = (now - stamp).count();
+    return age > 0 && (age - 1) / kSecondsPerDay >= days;
+}
+
+// "<库文件名>.pre-rollback-20261101T000000Z-abcd" 里的时刻。形状或日期不对（20261399T…）返回 nullopt。
+std::optional<Seconds> archive_stamp(std::string_view name) {
+    const auto pos = name.rfind(kPreRollback);
+    if (pos == std::string_view::npos) { return std::nullopt; }
+    const std::string_view compact = name.substr(pos + kPreRollback.size(), kCompactStampLength);
+    if (compact.size() != kCompactStampLength) { return std::nullopt; }
+    // 20261101T000000Z → 2026-11-01T00:00:00Z，交给同一个严格解析函数（日期必须真实存在）。
+    std::string iso;
+    iso.append(compact.substr(0, 4)).append("-").append(compact.substr(4, 2)).append("-");
+    iso.append(compact.substr(6, 2)).append("T").append(compact.substr(9, 2)).append(":");
+    iso.append(compact.substr(11, 2)).append(":").append(compact.substr(13, 2)).append("Z");
+    if (compact.at(8) != 'T' || compact.at(15) != 'Z') { return std::nullopt; }
+    return internal::parse_utc_seconds(iso);
+}
+
+// 分组里排名用：最新在前。created_at 解析不了的排最前（按最新算、占名额、从不选中）；相同时刻后登记的在前。
+struct Ranked {
+    std::size_t pos = 0;                // 在 census 里的位置（登记顺序）
+    std::optional<Seconds> created;
+};
+
+bool newer_first(const Ranked& lhs, const Ranked& rhs) {
+    if (lhs.created.has_value() != rhs.created.has_value()) { return !lhs.created.has_value(); }
+    if (lhs.created && *lhs.created != *rhs.created) { return *lhs.created > *rhs.created; }
+    return lhs.pos > rhs.pos;
+}
+
+}  // namespace
+
+namespace internal {
+
+void require_cleanup_config(const CleanupConfig& cfg) {
+    const std::array<std::pair<const char*, std::int64_t>, 3> fields{{
+        {"keep_per_group", cfg.keep_per_group},
+        {"max_age_days", cfg.max_age_days},
+        {"archive_max_age_days", cfg.archive_max_age_days},
+    },};
+    for (const auto& [field, value] : fields) {
+        if (value < 1) { invalid(std::string("cleanup ") + field + " must be >= 1"); }
+    }
+}
+
+Seconds require_cleanup_now(std::string_view now_iso) {
+    const auto now = parse_utc_seconds(now_iso);
+    if (!now) { invalid("now is not YYYY-MM-DDTHH:MM:SSZ: '" + std::string(now_iso) + "'"); }
+    return *now;
+}
+
+std::vector<std::string> cleanup_due_reasons(const std::vector<CleanupCensusRow>& rows,
+                                             const CleanupConfig& cfg, Seconds now) {
+    std::vector<std::string> reason(rows.size());
+    std::map<std::string, std::vector<Ranked>> groups;
+    for (std::size_t pos = 0; pos < rows.size(); ++pos) {
+        const CleanupCensusRow& row = rows.at(pos);
+        if (!cleanup_eligible(row.record, row.is_default)) { continue; }
+        const auto created = parse_utc_seconds(row.record.created_at);
+        if (created && older_than(*created, now, cfg.max_age_days)) { reason.at(pos) = "over_age"; }
+        if (!row.record.retention_group.empty()) {
+            groups[row.record.retention_group].push_back(Ranked{.pos = pos, .created = created});
+        }
+    }
+    const auto keep = static_cast<std::uint64_t>(cfg.keep_per_group);
+    for (auto& [group, members] : groups) {
+        std::ranges::sort(members, newer_first);
+        for (std::size_t rank = keep; rank < members.size(); ++rank) {
+            const Ranked& member = members.at(rank);
+            if (!member.created) { continue; }   // 解析不了：占名额，不选
+            std::string& why = reason.at(member.pos);
+            if (why.empty()) { why = "over_count"; }
+        }
+    }
+    return reason;
+}
+
+fs::path checked_cleanup_home(const fs::path& data_dir, const std::string& dir_id, const std::string& label) {
+    require_plain_dir_id(dir_id, label, "snapshot_failed");
+    const fs::path worlds_root = data_dir / "worlds";
+    try {
+        require_worlds_root_inside(data_dir, worlds_root);
+    } catch (const WorldStoreError& err) {
+        throw WorldStoreError("snapshot_failed", err.what());
+    }
+    require_resolved_home(worlds_root, dir_id, "snapshot_failed", label);
+    return worlds_root / dir_id;
+}
+
+bool is_generated_dir_id(std::string_view dir_id) {
+    constexpr std::size_t kGeneratedLength = 16;   // random_hex() 的长度
+    return dir_id.size() == kGeneratedLength && std::ranges::all_of(dir_id, [](char chr) {
+               return (chr >= '0' && chr <= '9') || (chr >= 'a' && chr <= 'f');
+           });
+}
+
+HomePresence home_presence(const fs::file_status& status, const std::error_code& err) {
+    if (status.type() == fs::file_type::not_found) { return HomePresence::kAbsent; }
+    if (err) { return HomePresence::kUnknown; }   // EACCES 等：不知道在不在，不能当成不在（裁定 R71）
+    return HomePresence::kPresent;
+}
+
+bool cleanup_archive_due(std::string_view name, const CleanupConfig& cfg, Seconds now) {
+    const auto stamp = archive_stamp(name);
+    return stamp && older_than(*stamp, now, cfg.archive_max_age_days);
+}
+
+}  // namespace internal
+
+std::vector<CleanupLogEntry> cleanup_log(const RegistryDb& reg, std::int64_t limit) {
+    if (limit < 1 || limit > kMaxLogLimit) {
+        throw WorldStoreError("invalid_world_query",
+                              "cleanup_log limit must be 1-500 (got " + std::to_string(limit) + ")");
+    }
+    return reg.read_cleanup_log(limit);
+}
+
+bool cleanup_eligible(const WorldRecord& rec, bool is_default) {
+    return rec.reclaimable && !rec.seed && !is_default;
+}
+
+CleanupPlan plan_cleanup(const RegistryDb& reg, const CleanupConfig& cfg, std::string_view now_iso,
+                         const std::set<std::string>& open_worlds) {
+    internal::require_cleanup_config(cfg);
+    const Seconds now = internal::require_cleanup_now(now_iso);
+    const std::vector<CleanupCensusRow> census = reg.cleanup_census();
+    // 每个世界选中的原因（空 = 不选）。execute_cleanup 在注册表锁内用同一个函数重算（裁定 R70）。
+    const std::vector<std::string> reason = internal::cleanup_due_reasons(census, cfg, now);
+
+    CleanupPlan plan;
+    for (std::size_t pos = 0; pos < census.size(); ++pos) {
+        const std::string& why = reason.at(pos);
+        if (why.empty()) { continue; }
+        const WorldRecord& rec = census.at(pos).record;
+        if (census.at(pos).has_held) {
+            plan.skip.push_back(CleanupSkip{.world = rec.name, .reason = "held_snapshot",
+                                            .group = rec.retention_group,});
+        } else if (open_worlds.contains(rec.name)) {
+            plan.skip.push_back(CleanupSkip{.world = rec.name, .reason = "open",
+                                            .group = rec.retention_group,});
+        } else {
+            plan.remove.push_back(CleanupCandidate{.world = rec.name, .group = rec.retention_group,
+                                                   .reason = why, .dir_id = rec.dir_id,});
+        }
+    }
+
+    // 归档：清理不会删的世界（不可回收、种子、默认世界），名字里的时刻超过 archive_max_age_days 天。
+    for (const CleanupCensusRow& row : census) {
+        if (cleanup_eligible(row.record, row.is_default)) { continue; }   // 随世界一起删
+        std::vector<ArchiveEntry> listed;
+        try {
+            listed = list_rollback_archives(reg, row.record.name);
+        } catch (const std::exception& err) {
+            std::cerr << "[cleanup] cannot list archives of '" << row.record.name
+                      << "': " << err.what() << "\n";
+            continue;
+        }
+        for (const ArchiveEntry& item : listed) {
+            if (!internal::cleanup_archive_due(item.name, cfg, now)) { continue; }
+            plan.archives.push_back(CleanupArchive{.world = row.record.name,
+                                                   .dir_id = row.record.dir_id,
+                                                   .name = item.name,});
+        }
+    }
+    return plan;
+}
+
+namespace {
+
+// 删掉 worlds/<dir_id>（经 remove_within，不出 worlds/）。返回删完没有（目录本来就不在算删完）；失败只记 stderr，
+// 调用方据此留着待删标记。布局检查与注册表锁内的核对是同一个助手（裁定 R72 M8）。
+// 裁定 R71：lstat 出错（EACCES 等，不是 not_found）不当成「目录不在」，返回 false，标记留着。
+bool remove_world_home(const fs::path& data_dir, const std::string& dir_id, const std::string& label) {
+    try {
+        const fs::path home = internal::checked_cleanup_home(data_dir, dir_id, label);
+        std::error_code err;
+        const fs::file_status status = fs::symlink_status(home, err);
+        const internal::HomePresence presence = internal::home_presence(status, err);
+        if (presence == internal::HomePresence::kUnknown) {
+            std::cerr << "[cleanup] cannot stat " << home.string() << ": " << err.message()
+                      << "; kept pending\n";
+            return false;
+        }
+        if (presence == internal::HomePresence::kAbsent) { return true; }
+        const fs::path worlds_root = home.parent_path();
+        if (!internal::remove_within(worlds_root, home)) {
+            std::cerr << "[cleanup] " << home.string() << " resolves outside " << worlds_root.string()
+                      << "; not removed\n";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& err) {
+        std::cerr << "[cleanup] cannot remove world directory of '" << label << "': " << err.what() << "\n";
+        return false;
+    }
+}
+
+// 第 0 步：补删上一轮留下的待删目录（裁定 R56 补充 1）。只删 cleanup_log 标成待删、worlds 表里已经没有的 dir_id，
+// 而且 dir_id 必须是 reserve_home 生成的形状（裁定 R72 M2）：清理只删过生成的 dir_id，别的形状（导入的旧目录名、被篡改
+// 的记录）不删，标记留着，记 stderr。
+void finish_pending_dirs(RegistryDb& reg) {
+    for (const std::string& dir_id : reg.pending_cleanup_dirs()) {
+        if (!internal::is_generated_dir_id(dir_id)) {
+            std::cerr << "[cleanup] pending dir_id '" << dir_id << "' is not a generated id; not removed\n";
+            continue;
+        }
+        if (remove_world_home(reg.data_dir(), dir_id, dir_id)) { reg.clear_cleanup_pending(dir_id); }
+    }
+}
+
+// 第 3 步的重新核对（天数另算）：世界还在、dir_id 相同、仍不归清理管、这份归档仍被 list_rollback_archives 列出。
+bool archive_still_listed(const RegistryDb& reg, const CleanupArchive& item, WorldRecord& rec) {
+    try {
+        rec = reg.get(item.world);
+    } catch (const WorldStoreError&) {
+        return false;
+    }
+    if (rec.dir_id != item.dir_id) { return false; }
+    if (cleanup_eligible(rec, rec.name == reg.default_world())) { return false; }
+    const auto listed = list_rollback_archives(reg, item.world);
+    return std::ranges::any_of(listed, [&item](const ArchiveEntry& entry) { return entry.name == item.name; });
+}
+
+void remove_archive(RegistryDb& reg, const CleanupArchive& item, const CleanupConfig& cfg, Seconds now,
+                    std::string_view now_iso) {
+    try {
+        WorldRecord rec;
+        if (!archive_still_listed(reg, item, rec)) { return; }
+        // 裁定 R70：天数按名字里的时刻与本次的 cfg、now 重算，不信入参。
+        if (!internal::cleanup_archive_due(item.name, cfg, now)) {
+            reg.record_archive_skip(rec, item.name, now_iso);
+            return;
+        }
+        const fs::path dir = reg.data_dir() / "worlds" / rec.dir_id / "archive";
+        if (!internal::remove_within(dir, dir / item.name)) {
+            std::cerr << "[cleanup] archive " << item.name << " of '" << item.world
+                      << "' resolves outside its archive directory; not removed\n";
+            return;
+        }
+        reg.append_archive_removed(rec, item.name, now_iso);
+    } catch (const std::exception& err) {
+        std::cerr << "[cleanup] cannot remove archive " << item.name << " of '" << item.world
+                  << "': " << err.what() << "\n";
+    }
+}
+
+}  // namespace
+
+std::vector<CleanupCandidate> execute_cleanup(RegistryDb& reg, const CleanupPlan& plan,
+                                              const CleanupConfig& cfg, std::string_view now_iso) {
+    internal::require_cleanup_config(cfg);   // 任何改动之前
+    const Seconds now = internal::require_cleanup_now(now_iso);
+    finish_pending_dirs(reg);
+
+    std::vector<CleanupCandidate> removed;
+    for (const CleanupCandidate& nominee : plan.remove) {
+        RegistryDb::CleanupDecision decision;
+        try {
+            decision = reg.unregister_for_cleanup(nominee.world, nominee.dir_id, cfg, now_iso);
+        } catch (const std::exception& err) {
+            std::cerr << "[cleanup] cannot unregister '" << nominee.world << "': " << err.what() << "\n";
+            continue;
+        }
+        if (!decision.removed) { continue; }
+        // 返回与记录的都是锁内读到、重算出来的值（裁定 R70、R72 M6），不是入参。
+        removed.push_back(CleanupCandidate{.world = nominee.world, .group = decision.group,
+                                           .reason = decision.reason, .dir_id = decision.dir_id,});
+        // 注册项已摘、记录已带待删标记：目录删不掉时留着标记，下一轮第 0 步再删。
+        if (remove_world_home(reg.data_dir(), decision.dir_id, nominee.world)) {
+            reg.clear_cleanup_pending(decision.dir_id);
+        }
+    }
+    for (const CleanupSkip& skip : plan.skip) {
+        try {
+            reg.record_cleanup_skip(skip.world, skip.reason, cfg, now_iso);
+        } catch (const std::exception& err) {
+            std::cerr << "[cleanup] cannot record skip of '" << skip.world << "': " << err.what() << "\n";
+        }
+    }
+    for (const CleanupArchive& item : plan.archives) { remove_archive(reg, item, cfg, now, now_iso); }
+    return removed;
+}
+
+}  // namespace starling::governance
