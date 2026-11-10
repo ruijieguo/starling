@@ -450,7 +450,10 @@ const ERROR_MESSAGES: Record<string, string> = {
 	snapshot_corrupt: '快照文件损坏或缺失，未做任何改动',
 	rollback_mode_unsupported: '不支持的回滚方式',
 	invalid_auto_snapshot: '自动快照设置无效（间隔须为 0–8760 小时）',
-	internal_error: '服务器内部错误'
+	internal_error: '服务器内部错误',
+	// 第 5 期(裁定 R113 I-1):看板写入被后端拒绝。文案就是横幅那句,引用常量,不另抄一份。
+	world_held: WORLD_STATUS_TEXT.held,
+	world_read_only: WORLD_STATUS_TEXT.read_only
 };
 
 /**
@@ -483,13 +486,16 @@ export function apiDetail(err: unknown): string {
 /**
  * 读页面与命令(remember / recall / 对话)遇到这些码时显示中文提示,而不是裸的 "404 world_not_found"。
  * endpoint_changed(裁定 R59):继承的供应商地址或种类改了,提示去「世界」页重新确认端点。
+ * world_held / world_read_only(裁定 R113 I-1):写入被拒,前端以为可写而后端判了占用或只读,给横幅那句。
  */
 export const WORLD_CODES = [
 	'world_not_found',
 	'world_busy',
 	'world_not_initialized',
 	'worlds_unavailable',
-	'endpoint_changed'
+	'endpoint_changed',
+	'world_held',
+	'world_read_only'
 ];
 
 /** 一个裸错误码(如对话 WS 的 error 帧)是已知世界码就给中文提示,否则 null。 */

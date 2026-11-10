@@ -61,6 +61,18 @@ describe('/converse onError 走世界码的中文提示（裁定 R59 I-2）', ()
 		await sendAndFail('converse_failed');
 		expect(toastError).toHaveBeenCalledWith('对话出错:converse_failed');
 	});
+
+	// 裁定 R113 I-1：/ws/converse 一进入就走 dashboard_write，被拒时 error 帧带 world_held / world_read_only。
+	it.each([
+		['world_held', '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['world_read_only', '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：toast 给横幅那句，并登记一次让横幅重取', async (code, text) => {
+		const { writeRejectionCount } = await import('$lib/world.svelte');
+		const n = writeRejectionCount();
+		await sendAndFail(code);
+		expect(toastError).toHaveBeenCalledWith(text);
+		expect(writeRejectionCount()).toBe(n + 1);
+	});
 });
 
 // ── 第 5 期 Task 5.1 补充轮：其余写入入口置灰（spec §14，裁定 R109） ─────────────────

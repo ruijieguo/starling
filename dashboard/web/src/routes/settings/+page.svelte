@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { api, worldPath } from '$lib/api';
 	import { currentWorld } from '$lib/world.svelte';
-	import { apiDetail, currentWriteBlockedReason, worldErrorMessage, worldsApi } from '$lib/worlds';
+	import {
+		apiDetail, currentWriteBlockedReason, describeError, worldErrorMessage, worldsApi
+	} from '$lib/worlds';
 	import { llmConfigured, embedderConfigured } from '$lib/health';
 	import { getToken, setToken } from '$lib/token';
 	import { toast } from '$lib/ui/toast';
@@ -283,7 +285,8 @@
 					: `已清空世界「${clearWorld}」${r.total} 行`
 			);
 		} catch (e) {
-			toast.error(e instanceof Error ? e.message : String(e));
+			// 清空是写入:world_held / world_read_only 等世界码给中文原因(裁定 R113 I-1)。
+			toast.error(describeError(e));
 		} finally {
 			clearing = false;
 		}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api, type ConverseResponse } from '$lib/api';
-	import { explicitWorld, withWorld } from '$lib/world.svelte';
+	import { explicitWorld, noteWriteRejected, withWorld } from '$lib/world.svelte';
 	import { streamConverse } from '$lib/ws';
 	import { toast } from '$lib/ui/toast';
 	import { currentWriteBlockedReason, worldCodeMessage } from '$lib/worlds';
@@ -74,6 +74,8 @@
 				},
 				onError: (code) => {
 					// 世界码(world_busy、endpoint_changed 等)与读页面、remember / recall 同一份中文提示(裁定 R59)。
+					// error 帧不经 api.ts 的 req:world_held / world_read_only 在这里登记,横幅随之重取(裁定 R113 I-1)。
+					noteWriteRejected(code);
 					const worldText = worldCodeMessage(code);
 					if (code === 'llm_not_configured')
 						toast.error('未配置 LLM:去「模型」页绑定 extraction / chat 角色');

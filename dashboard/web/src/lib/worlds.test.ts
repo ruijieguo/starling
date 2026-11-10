@@ -3,7 +3,7 @@ import * as tok from './token';
 import { ApiError } from './api';
 import {
 	worldsApi, isValidWorldName, formatBytes, worldErrorMessage, apiDetail,
-	parseIntervalHours, describeError, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels,
+	parseIntervalHours, describeError, worldCodeMessage, autoSnapshotLabel, snapshotReasonLabel, shortId, parseLabels,
 	fetchCleanupLog, cleanupActionLabel, cleanupReasonLabel,
 	writeBlockedReason, worldStatusNotices, worldStatusTags, forkSourceLabel, WORLD_STATUS_TEXT
 } from './worlds';
@@ -355,6 +355,16 @@ describe('describeError 与 worlds_unavailable', () => {
 		expect(worldErrorMessage('endpoint_changed')).toContain('重新确认端点');
 		expect(describeError(new Error('plain'))).toBe('plain');
 		expect(describeError('str')).toBe('str');
+	});
+
+	// 裁定 R113 I-1：后端拒绝写入(409 world_held / world_read_only)时，提示与横幅同一句，不是裸码。
+	it.each([
+		['world_held', '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['world_read_only', '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('%s：describeError、worldCodeMessage、worldErrorMessage 都给横幅那句', (code, text) => {
+		expect(describeError(new ApiError(409, '/api/w/w1/remember', `409 ${code}`))).toBe(text);
+		expect(worldCodeMessage(code)).toBe(text);
+		expect(worldErrorMessage(code)).toBe(text);
 	});
 });
 

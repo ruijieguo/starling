@@ -13,6 +13,10 @@ vi.mock('$lib/api', async (orig) => {
 		api: { get: (...a: unknown[]) => get(...a), post: (...a: unknown[]) => post(...a), del: vi.fn() }
 	};
 });
+const toastError = vi.fn();
+vi.mock('$lib/ui/toast', () => ({
+	toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), warning: vi.fn(), info: vi.fn() }
+}));
 
 import Settings from './+page.svelte';
 import { ApiError as RealApiError } from '$lib/api';
@@ -298,5 +302,27 @@ describe('设置页:清空记忆在只读或被占用时置灰', () => {
 		await tick();
 		expect(clearBtn(container)!.disabled).toBe(false);
 		expect(clearBtn(container)!.hasAttribute('title')).toBe(false);
+	});
+
+	// 裁定 R113 I-1：状态旧了(横幅还说可写)、后端拒绝清空时，提示是横幅那句，不是裸的「409 world_held」。
+	it.each([
+		['world_held', '这个世界正被客户端写入：写入已置灰，召回可用'],
+		['world_read_only', '只读世界（种子或复盘副本）：可以检视和召回，不能写入']
+	])('清空被 409 %s 拒绝：toast 给中文原因', async (code, text) => {
+		noteWorldStatus('w1', WRITABLE_FLAGS);
+		toastError.mockReset();
+		post.mockRejectedValue(new RealApiError(409, '/api/w/w1/clear_memory', `409 ${code}`));
+		const { container } = render(Settings);
+		await settle();
+		await fireEvent.input(confirmInput(container), { target: { value: 'w1-tenant' } });
+		await tick();
+		await fireEvent.click(clearBtn(container)!);
+		await settle();
+		// 确认框(bits-ui)打开时排了一个 1 ms 定时器,让它在框还在时跑完,免得卸载后才跑、打出 derived_inert。
+		await new Promise<void>((r) => setTimeout(r, 5));
+		await fireEvent.click(byText(document.body, '确认清空')!);
+		await settle();
+		expect(post).toHaveBeenCalledTimes(1);
+		expect(toastError).toHaveBeenCalledWith(text);
 	});
 });

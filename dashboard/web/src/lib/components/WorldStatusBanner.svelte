@@ -3,13 +3,17 @@
 	// 取数沿用设置页的做法:当前世界(URL ?world=)的详情 worldsApi.detail,不另开轮询。重取的时机:
 	//   · 换世界;
 	//   · 换页(路径变了)——客户端开关句柄不发 WS 事件,换页时顺带刷新一次占用状态;
-	//   · 当前世界改变可见状态的 WS 事件(与各页同一判据 refetchOnEvent,纯读的 recall 不算)。
+	//   · 当前世界改变可见状态的 WS 事件(与各页同一判据 refetchOnEvent,纯读的 recall 不算);
+	//   · 写入被后端拒绝(world_held / world_read_only,noteWriteRejected 计数变了):前端以为可写,状态旧了(裁定 R113 I-1);
+	//   · WS 断开后重连:服务重启会断开所有客户端会话,占用随之解除(裁定 R113 M1)。首次连上不算,挂载时刚取过。
 	// 取到的标记登记给 world.svelte(noteWorldStatus),各页写入按钮的置灰读同一份(currentWriteBlockedReason)。
 	// 取不到时保留上一次的结果(属于别的世界的不算),没有结果就什么都不渲染。
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { lastWsEvent } from '$lib/health';
-	import { currentWorld, noteWorldStatus, refetchOnEvent, worldStatusOf } from '$lib/world.svelte';
+	import { lastWsEvent, wsConn } from '$lib/health';
+	import {
+		currentWorld, noteWorldStatus, refetchOnEvent, worldStatusOf, writeRejectionCount
+	} from '$lib/world.svelte';
 	import { WORLD_STATUS_TEXT, worldStatusNotices, worldsApi, type WorldNotice } from '$lib/worlds';
 
 	let world = $derived(currentWorld());
@@ -34,6 +38,22 @@
 	});
 	$effect(() => {
 		if (refetchOnEvent($lastWsEvent)) untrack(() => void load(world));
+	});
+	let seenRejections = untrack(writeRejectionCount);
+	$effect(() => {
+		const n = writeRejectionCount();
+		if (n === seenRejections) return;
+		seenRejections = n;
+		untrack(() => void load(world));
+	});
+	let seenOpen = false; // 连上过一次之后,再变成 open 才是重连
+	$effect(() => {
+		if ($wsConn !== 'open') return;
+		if (!seenOpen) {
+			seenOpen = true;
+			return;
+		}
+		untrack(() => void load(world));
 	});
 
 	const TONE: Record<WorldNotice, string> = {

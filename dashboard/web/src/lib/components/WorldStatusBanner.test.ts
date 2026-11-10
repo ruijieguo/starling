@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tick } from 'svelte';
 import { render } from '@testing-library/svelte';
 import { page } from '$app/state';
-import { lastWsEvent } from '$lib/health';
-import { noteDefaultWorld, noteWorldStatus, worldStatusOf } from '$lib/world.svelte';
+import { lastWsEvent, wsConn } from '$lib/health';
+import {
+	noteDefaultWorld, noteWorldStatus, noteWriteRejected, worldStatusOf
+} from '$lib/world.svelte';
 
 // 横幅只有一个外部依赖：当前世界的详情(worldsApi.detail)。
 const detail = vi.fn();
@@ -46,6 +48,7 @@ beforeEach(() => {
 	noteDefaultWorld('default');
 	at('/statements?world=w1');
 	lastWsEvent.set(null);
+	wsConn.set('closed');
 	noteWorldStatus('w1', null);
 	detail.mockReset();
 });
@@ -164,6 +167,58 @@ describe('WorldStatusBanner', () => {
 		await settle();
 		expect(detail.mock.calls.length).toBe(calls + 1);
 		expect(notices(container)).toEqual([HELD]);
+	});
+
+	it('写入被后端拒绝(world_held / world_read_only)就重取一次，置灰随之生效；别的码不重取（裁定 R113 I-1）', async () => {
+		const { currentWriteBlockedReason } = await import('$lib/worlds');
+		detail.mockResolvedValue(row('w1'));
+		const { container } = render(WorldStatusBanner);
+		await settle();
+		expect(notices(container)).toEqual([]);
+		expect(currentWriteBlockedReason()).toBeNull();
+		const calls = detail.mock.calls.length;
+
+		noteWriteRejected('not_active');
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls);
+
+		detail.mockResolvedValue(row('w1', { held_by_client: true }));
+		noteWriteRejected('world_held');
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls + 1);
+		expect(detail).toHaveBeenLastCalledWith('w1');
+		expect(notices(container)).toEqual([HELD]);
+		expect(currentWriteBlockedReason()).toBe(HELD);
+
+		detail.mockResolvedValue(row('w1', { read_only: true, open_mode: 'ro' }));
+		noteWriteRejected('world_read_only');
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls + 2);
+		expect(notices(container)).toEqual([READ_ONLY]);
+	});
+
+	it('WS 断开后重连就重取一次；首次连上与断开本身不重取（裁定 R113 M1）', async () => {
+		detail.mockResolvedValue(row('w1', { held_by_client: true }));
+		const { container } = render(WorldStatusBanner);
+		await settle();
+		expect(notices(container)).toEqual([HELD]);
+		const calls = detail.mock.calls.length;
+
+		wsConn.set('connecting');
+		wsConn.set('open');                               // 首次连上：挂载时刚取过
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls);
+
+		detail.mockResolvedValue(row('w1'));              // 服务重启：会话断开，占用解除
+		wsConn.set('closed');
+		await settle();
+		wsConn.set('connecting');
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls);
+		wsConn.set('open');
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls + 1);
+		expect(notices(container)).toEqual([]);
 	});
 
 	it('换页(路径变了)也重取一次：客户端关掉句柄不发事件', async () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { currentWriteBlockedReason, describeError } from '$lib/worlds';
-	import { api, ApiError, worldPath } from '$lib/api';
+	import { apiDetail, currentWriteBlockedReason, describeError } from '$lib/worlds';
+	import { api, worldPath } from '$lib/api';
 	import { byDeadline, deriveFired, triggersFor, triggerKindLabel, describeTrigger } from '$lib/commitments';
 	import { createQuery } from '$lib/query.svelte';
 	import { lastWsEvent } from '$lib/health';
@@ -112,8 +112,9 @@
 			detailOpen = false;
 			await q.refetch();
 		} catch (e) {
-			if (e instanceof ApiError && e.status === 409) {
-				// 409 同时覆盖「已非 ACTIVE(后台 tick 改了状态)」与「该承诺不存在」两种 no-op。
+			// 路由的 409 not_active 同时覆盖「已非 ACTIVE(后台 tick 改了状态)」与「该承诺不存在」两种 no-op。
+			// 其他 409(world_held / world_read_only,裁定 R113 I-1)是世界不让写,承诺本身没变:按原因提示,抽屉不关。
+			if (apiDetail(e) === 'not_active') {
 				toast.error('无法流转:该承诺已非 ACTIVE 或不存在(可能已被后台 tick 改变);已刷新');
 				detailOpen = false;
 				await q.refetch();

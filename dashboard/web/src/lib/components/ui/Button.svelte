@@ -20,13 +20,16 @@
 		ghost: 'enabled:hover:bg-surface text-fg',
 		danger: 'bg-danger text-white enabled:hover:opacity-90'
 	};
+	let cursor = $derived(disabled ? 'disabled:cursor-not-allowed' : loading ? 'cursor-progress' : '');
 </script>
 
 <!-- 置灰不用 pointer-events-none:那样悬停不出 title(写入置灰的原因就写在 title 里,裁定 R110 I-1)。
-     原生 disabled 本来就不触发 click,光标改成 not-allowed。 -->
+     原生 disabled 本来就不触发 click。光标:调用方给了 disabled 才是 not-allowed;只是 loading(请求中)用 progress,
+     不像出了错(裁定 R113 M2)。两者都有时按 disabled。 -->
 <button
-	class="inline-flex items-center justify-center gap-2 rounded-control px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand {styles[variant]} {klass}"
+	class="inline-flex items-center justify-center gap-2 rounded-control px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand {cursor} {styles[variant]} {klass}"
 	disabled={disabled || loading}
+	aria-busy={loading || undefined}
 	{...rest}
 >
 	{#if loading}<span class="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true"></span>{/if}

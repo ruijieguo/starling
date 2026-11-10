@@ -56,4 +56,27 @@ describe('Button 置灰（裁定 R110 I-1）', () => {
 		await userClicks(getByRole('button'));
 		expect(onclick).not.toHaveBeenCalled();
 	});
+
+	// 裁定 R113 M2：请求中的按钮不是「不能点」，是「在忙」。not-allowed 只给真正 disabled 的按钮。
+	it('loading（没传 disabled）：没有 not-allowed 光标，用 cursor-progress，aria-busy', () => {
+		const { getByRole } = render(Button, { props: { loading: true, children: label } });
+		const btn = getByRole('button');
+		expect(classes(btn).some((c) => c.includes('cursor-not-allowed'))).toBe(false);
+		expect(classes(btn)).toContain('cursor-progress');
+		expect(btn.getAttribute('aria-busy')).toBe('true');
+	});
+
+	it('disabled 且 loading：not-allowed（置灰的原因优先于在忙）', () => {
+		const { getByRole } = render(Button, { props: { disabled: true, loading: true, children: label } });
+		const btn = getByRole('button');
+		expect(classes(btn)).toContain('disabled:cursor-not-allowed');
+		expect(classes(btn)).not.toContain('cursor-progress');
+	});
+
+	it('都没有：既没有 not-allowed 也没有 progress，不带 aria-busy', () => {
+		const { getByRole } = render(Button, { props: { children: label } });
+		const btn = getByRole('button');
+		expect(classes(btn).some((c) => c.includes('cursor-not-allowed') || c === 'cursor-progress')).toBe(false);
+		expect(btn.hasAttribute('aria-busy')).toBe(false);
+	});
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { api, ApiError, worldPath } from './api';
-import { noteDefaultWorld } from './world.svelte';
+import { noteDefaultWorld, writeRejectionCount } from './world.svelte';
 import * as tok from './token';
 
 beforeEach(() => {
@@ -49,6 +49,46 @@ describe('api', () => {
 		expect(err.isAuth).toBe(true);
 		expect(err.path).toBe('/api/overview');
 		expect(String(err.message)).toContain('nope');
+	});
+});
+
+// 裁定 R113 I-1:写入被后端拒绝(409 world_held / world_read_only)时,在出错的地方登记一次,横幅据此重取当前世界的状态。
+describe('写入被拒时登记给横幅', () => {
+	const failWith = (status: number, detail: string) => {
+		globalThis.fetch = vi.fn(
+			async () => new Response(JSON.stringify({ detail }), { status })
+		) as unknown as typeof fetch;
+	};
+
+	it.each([
+		['POST', () => api.post('/api/w/w1/remember', { text: 'x' })],
+		['PUT', () => api.put('/api/w/w1/x', {})],
+		['DELETE', () => api.del('/api/w/w1/x')]
+	])('%s 回 409 world_held / world_read_only:各计一次,照常抛 ApiError', async (_m, call) => {
+		for (const code of ['world_held', 'world_read_only']) {
+			failWith(409, code);
+			const n = writeRejectionCount();
+			const err = (await call().then(
+				() => null,
+				(e: unknown) => e
+			)) as ApiError;
+			expect(err).toBeInstanceOf(ApiError);
+			expect(err.message).toBe(`409 ${code}`);
+			expect(writeRejectionCount()).toBe(n + 1);
+		}
+	});
+
+	it('GET 回这两个码、写入回别的码、成功:都不计', async () => {
+		const n = writeRejectionCount();
+		failWith(409, 'world_held');
+		await api.get('/api/worlds/w1').catch(() => {});
+		failWith(409, 'not_active');
+		await api.post('/api/w/w1/commitment/fulfill', {}).catch(() => {});
+		failWith(404, 'world_not_found');
+		await api.post('/api/w/w1/remember', {}).catch(() => {});
+		globalThis.fetch = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+		await api.post('/api/w/w1/remember', {});
+		expect(writeRejectionCount()).toBe(n);
 	});
 });
 
