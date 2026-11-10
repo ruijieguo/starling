@@ -19,6 +19,7 @@ vi.mock('$lib/ui/toast', () => ({
 }));
 
 import Conflicts from './+page.svelte';
+import { WRITABLE_FLAGS, flagsWith } from '$lib/test/world-status';
 
 const settle = async () => {
 	await tick();
@@ -27,10 +28,6 @@ const settle = async () => {
 	await tick();
 };
 
-const FLAGS = {
-	seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
-	schema_behind: false, held_by_client: false
-};
 const HELD = '这个世界正被客户端写入：写入已置灰，召回可用';
 const READ_ONLY = '只读世界（种子或复盘副本）：可以检视和召回，不能写入';
 // 两侧都是 consolidated：抽屉里两侧各有「再固化」与「遗忘」，共四个写入按钮。
@@ -69,7 +66,7 @@ describe('/conflicts 再固化、遗忘随世界状态置灰', () => {
 		['被占用', { held_by_client: true }, HELD],
 		['只读', { reclaimable: true, open_mode: 'ro' }, READ_ONLY]
 	])('%s：两侧的「再固化」「遗忘」都 disabled 带 title，点了不发请求', async (_n, over, reason) => {
-		noteWorldStatus('w1', { ...FLAGS, ...over } as typeof FLAGS);
+		noteWorldStatus('w1', flagsWith(over));
 		const { container } = render(Conflicts);
 		await settle();
 		await openDrawer(container);
@@ -85,7 +82,7 @@ describe('/conflicts 再固化、遗忘随世界状态置灰', () => {
 	});
 
 	it('可写：四个按钮都可点、不带 title，「再固化」发 reconsolidate', async () => {
-		noteWorldStatus('w1', FLAGS);
+		noteWorldStatus('w1', WRITABLE_FLAGS);
 		const { container } = render(Conflicts);
 		await settle();
 		await openDrawer(container);

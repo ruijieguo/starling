@@ -19,6 +19,7 @@ vi.mock('$lib/ui/toast', () => ({
 }));
 
 import Interact from './+page.svelte';
+import { WRITABLE_FLAGS, flagsWith } from '$lib/test/world-status';
 
 const settle = async () => {
 	await tick();
@@ -27,10 +28,6 @@ const settle = async () => {
 	await tick();
 };
 
-const FLAGS = {
-	seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
-	schema_behind: false, held_by_client: false
-};
 const HELD = '这个世界正被客户端写入：写入已置灰，召回可用';
 const READ_ONLY = '只读世界（种子或复盘副本）：可以检视和召回，不能写入';
 
@@ -61,7 +58,7 @@ describe('/interact「记住」随世界状态置灰，召回照常', () => {
 		['被占用', { held_by_client: true }, HELD],
 		['只读', { reclaimable: true, open_mode: 'ro' }, READ_ONLY]
 	])('%s：「记住」disabled 带 title，点了不发 remember；「检索」可用', async (_n, over, reason) => {
-		noteWorldStatus('w1', { ...FLAGS, ...over } as typeof FLAGS);
+		noteWorldStatus('w1', flagsWith(over));
 		const { container } = render(Interact);
 		await settle();
 		await typeBoth(container);
@@ -80,7 +77,7 @@ describe('/interact「记住」随世界状态置灰，召回照常', () => {
 	});
 
 	it('可写：「记住」可点、不带 title', async () => {
-		noteWorldStatus('w1', FLAGS);
+		noteWorldStatus('w1', WRITABLE_FLAGS);
 		const { container } = render(Interact);
 		await settle();
 		await typeBoth(container);

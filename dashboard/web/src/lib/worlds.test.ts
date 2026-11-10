@@ -7,6 +7,7 @@ import {
 	fetchCleanupLog, cleanupActionLabel, cleanupReasonLabel,
 	writeBlockedReason, worldStatusNotices, worldStatusTags, forkSourceLabel, WORLD_STATUS_TEXT
 } from './worlds';
+import { WRITABLE_FLAGS } from '$lib/test/world-status';
 
 let calls: Array<[string, RequestInit]> = [];
 beforeEach(() => {
@@ -379,10 +380,6 @@ describe('fetchCleanupLog（spec §9 的清理记录）', () => {
 });
 
 // ── 第 5 期 Task 5.1：世界状态（spec §14，裁定 R108） ─────────────────────────────
-const FLAGS = {
-	seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
-	schema_behind: false as boolean | null, held_by_client: false
-};
 // 文案逐字照计划；故意写字面量，常量被改了这里要红。
 const RO_TEXT = '只读世界（种子或复盘副本）：可以检视和召回，不能写入';
 const HELD_TEXT = '这个世界正被客户端写入：写入已置灰，召回可用';
@@ -396,39 +393,39 @@ describe('世界状态文案与判定（第 5 期）', () => {
 	});
 
 	it('writeBlockedReason：可写为 null；只读三种来源各给只读文案；被占用给占用文案', () => {
-		expect(writeBlockedReason(FLAGS)).toBeNull();
-		expect(writeBlockedReason({ ...FLAGS, open_mode: 'ro', reclaimable: true })).toBe(RO_TEXT);
-		expect(writeBlockedReason({ ...FLAGS, read_only: true })).toBe(RO_TEXT);
-		expect(writeBlockedReason({ ...FLAGS, seed: true })).toBe(RO_TEXT);
-		expect(writeBlockedReason({ ...FLAGS, held_by_client: true })).toBe(HELD_TEXT);
+		expect(writeBlockedReason(WRITABLE_FLAGS)).toBeNull();
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, open_mode: 'ro', reclaimable: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, read_only: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, seed: true })).toBe(RO_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, held_by_client: true })).toBe(HELD_TEXT);
 	});
 
 	it('writeBlockedReason：既只读又被占用时给占用（与 C++ require_writable 同序，先判占用）；schema 落后不挡写入；没有状态为 null', () => {
-		expect(writeBlockedReason({ ...FLAGS, open_mode: 'ro', held_by_client: true })).toBe(HELD_TEXT);
-		expect(writeBlockedReason({ ...FLAGS, schema_behind: true })).toBeNull();
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, open_mode: 'ro', held_by_client: true })).toBe(HELD_TEXT);
+		expect(writeBlockedReason({ ...WRITABLE_FLAGS, schema_behind: true })).toBeNull();
 		expect(writeBlockedReason(null)).toBeNull();
 		expect(writeBlockedReason(undefined)).toBeNull();
 	});
 
 	it('worldStatusNotices：按只读、被占用、schema 落后的顺序各一条；schema_behind 为 null 不算', () => {
-		expect(worldStatusNotices(FLAGS)).toEqual([]);
+		expect(worldStatusNotices(WRITABLE_FLAGS)).toEqual([]);
 		expect(worldStatusNotices(null)).toEqual([]);
-		expect(worldStatusNotices({ ...FLAGS, schema_behind: null })).toEqual([]);
+		expect(worldStatusNotices({ ...WRITABLE_FLAGS, schema_behind: null })).toEqual([]);
 		expect(
-			worldStatusNotices({ ...FLAGS, seed: true, held_by_client: true, schema_behind: true })
+			worldStatusNotices({ ...WRITABLE_FLAGS, seed: true, held_by_client: true, schema_behind: true })
 		).toEqual(['read_only', 'held', 'schema_behind']);
 	});
 
 	it('worldStatusTags：种子、只读、可回收、被占用、库版本落后', () => {
 		const labels = (f: Parameters<typeof worldStatusTags>[0]) => worldStatusTags(f).map((t) => t.label);
-		expect(labels(FLAGS)).toEqual([]);
-		expect(labels({ ...FLAGS, seed: true, read_only: true, open_mode: 'ro' })).toEqual(['种子', '只读']);
-		expect(labels({ ...FLAGS, reclaimable: true, open_mode: 'ro' })).toEqual(['只读', '可回收']);
-		expect(labels({ ...FLAGS, held_by_client: true, schema_behind: true })).toEqual([
+		expect(labels(WRITABLE_FLAGS)).toEqual([]);
+		expect(labels({ ...WRITABLE_FLAGS, seed: true, read_only: true, open_mode: 'ro' })).toEqual(['种子', '只读']);
+		expect(labels({ ...WRITABLE_FLAGS, reclaimable: true, open_mode: 'ro' })).toEqual(['只读', '可回收']);
+		expect(labels({ ...WRITABLE_FLAGS, held_by_client: true, schema_behind: true })).toEqual([
 			'被占用', '库版本落后'
 		]);
-		expect(labels({ ...FLAGS, schema_behind: null })).toEqual([]);
-		expect(worldStatusTags({ ...FLAGS, held_by_client: true })[0].tone).toBe('warn');
+		expect(labels({ ...WRITABLE_FLAGS, schema_behind: null })).toEqual([]);
+		expect(worldStatusTags({ ...WRITABLE_FLAGS, held_by_client: true })[0].tone).toBe('warn');
 	});
 
 	it('forkSourceLabel：world@snapshot、只有世界名、都没有为「—」', () => {

@@ -19,6 +19,7 @@ vi.mock('$lib/ui/toast', () => ({
 }));
 
 import Replay from './+page.svelte';
+import { WRITABLE_FLAGS, flagsWith } from '$lib/test/world-status';
 
 const settle = async () => {
 	await tick();
@@ -27,10 +28,6 @@ const settle = async () => {
 	await tick();
 };
 
-const FLAGS = {
-	seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
-	schema_behind: false, held_by_client: false
-};
 const HELD = '这个世界正被客户端写入：写入已置灰，召回可用';
 const READ_ONLY = '只读世界（种子或复盘副本）：可以检视和召回，不能写入';
 const REPLAY = { scheduler: {}, ledger: [], windows: [] };
@@ -54,7 +51,7 @@ describe('/replay 手动回放随世界状态置灰', () => {
 		['被占用', { held_by_client: true }, HELD],
 		['只读', { seed: true, read_only: true, open_mode: 'ro' }, READ_ONLY]
 	])('%s：「触发睡眠回放」「空闲回放」disabled 带 title，点了不发请求', async (_n, over, reason) => {
-		noteWorldStatus('w1', { ...FLAGS, ...over } as typeof FLAGS);
+		noteWorldStatus('w1', flagsWith(over));
 		render(Replay);
 		await settle();
 		for (const t of ['触发睡眠回放', '空闲回放']) {
@@ -68,7 +65,7 @@ describe('/replay 手动回放随世界状态置灰', () => {
 	});
 
 	it('可写：两个按钮都可点、不带 title，点了发 replay_trigger', async () => {
-		noteWorldStatus('w1', FLAGS);
+		noteWorldStatus('w1', WRITABLE_FLAGS);
 		render(Replay);
 		await settle();
 		for (const t of ['触发睡眠回放', '空闲回放']) {

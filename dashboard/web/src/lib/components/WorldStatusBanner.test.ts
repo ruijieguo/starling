@@ -104,6 +104,30 @@ describe('WorldStatusBanner', () => {
 		expect(container.textContent?.trim()).toBe('');
 	});
 
+	it('先取到 held=true、之后重取失败：横幅与写入置灰都按上一次的结果，不清掉（裁定 R110 M3）', async () => {
+		const { currentWriteBlockedReason } = await import('$lib/worlds');
+		detail.mockResolvedValue(row('w1', { held_by_client: true }));
+		const { container } = render(WorldStatusBanner);
+		await settle();
+		expect(notices(container)).toEqual([HELD]);
+		expect(currentWriteBlockedReason()).toBe(HELD);
+
+		const calls = detail.mock.calls.length;
+		detail.mockRejectedValue(new Error('503 worlds_unavailable'));
+		lastWsEvent.set({ type: 'world_changed', world: 'w1', payload: {} });   // 触发一次重取
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls + 1);
+		expect(notices(container)).toEqual([HELD]);
+		expect(worldStatusOf('w1')?.held_by_client).toBe(true);
+		expect(currentWriteBlockedReason()).toBe(HELD);
+
+		at('/queues?world=w1');                                                 // 换页再重取，仍失败
+		await settle();
+		expect(detail.mock.calls.length).toBe(calls + 2);
+		expect(notices(container)).toEqual([HELD]);
+		expect(currentWriteBlockedReason()).toBe(HELD);
+	});
+
 	it('把取到的状态登记给页面(worldStatusOf)，只认对应的世界', async () => {
 		detail.mockResolvedValue(row('w1', { held_by_client: true }));
 		render(WorldStatusBanner);

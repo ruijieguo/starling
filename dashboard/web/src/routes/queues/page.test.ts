@@ -26,6 +26,7 @@ vi.mock('$lib/ui/toast', () => ({
 }));
 
 import Queues from './+page.svelte';
+import { WRITABLE_FLAGS, flagsWith } from '$lib/test/world-status';
 
 const settle = async () => {
 	await tick();
@@ -76,10 +77,6 @@ describe('/queues 手动 tick（裁定 R59 N-4）', () => {
 
 // ── 第 5 期 Task 5.1：写入类按钮置灰（spec §14，裁定 R108） ─────────────────────
 describe('/queues 手动 Tick 随世界状态置灰', () => {
-	const FLAGS = {
-		seed: false, read_only: false, reclaimable: false, open_mode: 'rw' as const,
-		schema_behind: false, held_by_client: false
-	};
 	beforeEach(async () => {
 		const { noteDefaultWorld, noteWorldStatus } = await import('$lib/world.svelte');
 		const { page } = await import('$app/state');
@@ -92,7 +89,7 @@ describe('/queues 手动 Tick 随世界状态置灰', () => {
 
 	it('被客户端占着：disabled，title 是横幅的占用文案；点了也不发 tick', async () => {
 		const { noteWorldStatus } = await import('$lib/world.svelte');
-		noteWorldStatus('default', { ...FLAGS, held_by_client: true });
+		noteWorldStatus('default', flagsWith({ held_by_client: true }));
 		render(Queues);
 		await settle();
 		const btn = tickButton()!;
@@ -105,7 +102,7 @@ describe('/queues 手动 Tick 随世界状态置灰', () => {
 
 	it('只读世界：disabled，title 是只读文案', async () => {
 		const { noteWorldStatus } = await import('$lib/world.svelte');
-		noteWorldStatus('default', { ...FLAGS, reclaimable: true, open_mode: 'ro' });
+		noteWorldStatus('default', flagsWith({ reclaimable: true, open_mode: 'ro' }));
 		render(Queues);
 		await settle();
 		expect(tickButton()!.disabled).toBe(true);
@@ -120,10 +117,10 @@ describe('/queues 手动 Tick 随世界状态置灰', () => {
 		await settle();
 		expect(tickButton()!.disabled).toBe(false);
 		expect(tickButton()!.hasAttribute('title')).toBe(false);
-		noteWorldStatus('other', { ...FLAGS, held_by_client: true });
+		noteWorldStatus('other', flagsWith({ held_by_client: true }));
 		await settle();
 		expect(tickButton()!.disabled).toBe(false);
-		noteWorldStatus('default', { ...FLAGS, schema_behind: true });   // schema 落后不挡写入
+		noteWorldStatus('default', flagsWith({ schema_behind: true }));   // schema 落后不挡写入
 		await settle();
 		expect(tickButton()!.disabled).toBe(false);
 	});
