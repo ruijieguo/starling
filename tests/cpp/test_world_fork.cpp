@@ -285,6 +285,8 @@ TEST(WorldFork, UpgradeSeedMigratesCopyAndKeepsOld) {
     // ALTER TABLE ADD COLUMN，不能跑两次：同时去掉 events.incarnation，库才真的是 39 版的样子，升级时补跑 0040 不报
     // duplicate column（之后新加迁移时按它的形状改这里）。
     insert_statements(old_seed.db_path, old_seed.tenant, 0, 3);
+    // 下面撤销的是 0040 的形状；最新迁移不是 40 就直接失败，免得将来造出形状与版本对不上的库（C2 审查 M2）。
+    ASSERT_EQ(schema_of(old_seed.db_path), 40);
     run_sql(old_seed.db_path, "DELETE FROM schema_migrations "
                               "WHERE version = (SELECT MAX(version) FROM schema_migrations); "
                               "ALTER TABLE events DROP COLUMN incarnation;");

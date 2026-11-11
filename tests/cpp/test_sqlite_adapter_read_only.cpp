@@ -21,6 +21,7 @@
 #include <iterator>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -97,6 +98,11 @@ void drop_newest_migration_row(Connection& conn) {
 int make_library(const fs::path& db, bool schema_behind) {
     auto writer = SqliteAdapter::open(db);
     if (schema_behind) {
+        // 下面撤销的是 0040 的形状。将来再加迁移时这里要跟着改，否则造出的库形状与记录的版本对不上，测试却照样绿
+        // （C2 审查 M2）：最新迁移不是 40 就直接失败。
+        if (max_applied_version(writer->connection()) != 40) {
+            throw std::logic_error("make_library undoes migration 0040 only; update it for the newest migration");
+        }
         drop_newest_migration_row(writer->connection());
         writer->connection().exec("ALTER TABLE events DROP COLUMN incarnation");
     }
