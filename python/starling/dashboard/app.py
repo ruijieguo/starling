@@ -19,7 +19,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from starling import _core
 from starling.dashboard.auth import make_require_token
-from starling.dashboard.config import DashboardConfig, check_cleanup_interval
+from starling.dashboard.config import (
+    DashboardConfig, check_cleanup_interval, check_seconds, check_service_timings, seconds_to_ms)
 from starling.dashboard.routes.world_scope import lease_off_loop
 from starling.dashboard.world_manager import EngineFactory, WorldPool, WorldSwitchError
 
@@ -112,7 +113,7 @@ class _NotReadyGate:
 
 
 def _start_pool(pool: WorldPool, mgr, loop, idle_close_interval_s: float | None = None,
-                cleanup_interval_s: float | None = None) -> None:
+                cleanup_interval_s: float | None = None, stats_interval_s: float | None = None) -> None:
     """池起来之后、服务请求之前的那一段（工作线程里调用）。池的线程（后台 tick、统计去抖计时器）→ 事件循环的桥：tick 的
     消息形状与手动 /api/tick 一致，前端无需区分自动/手动；world_changed 每个世界每秒至多一条（池里去抖）。
 
@@ -122,22 +123,27 @@ def _start_pool(pool: WorldPool, mgr, loop, idle_close_interval_s: float | None 
     再起按时间的自动快照调度与 30 秒统计刷新（有注册表时），以及自动清理（有注册表时，spec §9 每 10 分钟一轮）。
 
     两条开池路径（lifespan 内、deferred_open 的工作线程）都经这里，所以 8787（run_dashboard）与 starling-serve 一样跑清理。
-    cleanup_interval_s 为 None 时取池的缺省（600 秒）；0 关掉。"""
+    idle_close_interval_s、stats_interval_s（服务配置项 idle_close_interval_s、stats_refresh_s，spec §18）由 create_app 从配置取好
+    交来（None 取池的缺省 30 秒）；stats_interval_s 为 None 时取池的缺省（30 秒）。cleanup_interval_s 为 None 时取池的缺省（600 秒）；0 关掉。"""
     pool.on_tick = mgr.bridge(loop, "tick")
     pool.on_world_changed = mgr.bridge(loop, "world_changed")
     pool.lease(pool.default_world()).release()
     options: dict = {}
     if idle_close_interval_s is not None:
         options["idle_close_interval_s"] = idle_close_interval_s
+    if stats_interval_s is not None:
+        options["stats_interval_s"] = stats_interval_s
     options["cleanup_interval_s"] = (_DEFAULT_CLEANUP_INTERVAL_S if cleanup_interval_s is None
                                      else cleanup_interval_s)
     pool.start_background(**options)
 
 
-def _attach_sessions(app: FastAPI, pool: WorldPool) -> None:
+def _attach_sessions(app: FastAPI, pool: WorldPool, config: DashboardConfig) -> None:
     """建客户端会话表（C++ SessionTable，spec §11）并注入池（setter，池建好之后、服务请求之前），挂到 app.state.sessions。
-    租约与空闲时限取 C++ 的缺省值（30 秒、10 分钟）。"""
-    sessions = _core.SessionTable()
+    租约与空闲时限取服务配置项 session_lease_s、idle_close_after_s（spec §18，缺省 30 秒、10 分钟），这里只做秒 → 毫秒的换算；
+    心跳间隔由 C++ 定为租约的 1/3，判定也都在 C++。"""
+    sessions = _core.SessionTable(lease_ms=seconds_to_ms(config.session_lease_s),
+                                  idle_close_ms=seconds_to_ms(config.idle_close_after_s))
     pool.attach_sessions(sessions)
     app.state.sessions = sessions
 
@@ -172,7 +178,8 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
     lifespan 本身立刻让出，服务器随即开始接受连接；开好之前 app.state.ready 为 False、app.state.pool 为 None，所有 API（含
     /health）回 503 worlds_unavailable（_NotReadyGate）。开好之后调 on_ready()；开的途中出错调 on_open_failed(exc)（之后照旧
     一律 503）。不能与 engine 同用。缺省 False：与之前一样在这里开池，app.state.ready 从一开始就是 True。
-    `idle_close_interval_s`：空闲关闭的轮询间隔（秒，spec §10.3）；None 取池的缺省 30 秒，0 不起空闲关闭线程。
+    `idle_close_interval_s`：空闲关闭的轮询间隔（秒，spec §10.3）；None 取 config.idle_close_interval_s（缺省 30），0 不起空闲关闭线程。
+    空闲关闭时限、会话租约、统计刷新间隔取 config 的 idle_close_after_s、session_lease_s、stats_refresh_s（spec §18）。
     `cleanup_interval_s`：自动清理的间隔（秒，spec §9）；None 取 config.cleanup_interval_s（缺省 600），0 不起清理线程。
     """
     config.validate_bind()
@@ -184,6 +191,14 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         cleanup_interval_s = config.cleanup_interval_s
     # 裁定 R105 F2：间隔不合法在这里就拒绝（不开池、不起线程），不等到 start_background 里才抛。直接构造的配置不经 load。
     check_cleanup_interval(cleanup_interval_s)
+    # 裁定 R115：spec §18 的四个时限与间隔同样在这里拒绝不合法的值（直接构造的配置不经 load）。
+    check_service_timings(config)
+    if idle_close_interval_s is None:
+        idle_close_interval_s = config.idle_close_interval_s
+    else:
+        check_seconds(idle_close_interval_s, "idle_close_interval_s", allow_zero=True,
+                      zero_note="0 disables idle close")
+    stats_refresh_s = config.stats_refresh_s
     pool = None
     if not deferred_open:
         pool = _open_pool(config, engine_factory)
@@ -196,8 +211,9 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         """工作线程里：开注册表与池、建默认世界引擎、起后台线程，然后才发布池、置 ready。"""
         opened = _open_pool(config, engine_factory)
         try:
-            _attach_sessions(app, opened)
-            _start_pool(opened, app.state.ws_manager, loop, idle_close_interval_s, cleanup_interval_s)
+            _attach_sessions(app, opened, config)
+            _start_pool(opened, app.state.ws_manager, loop, idle_close_interval_s, cleanup_interval_s,
+                        stats_refresh_s)
         except BaseException:
             _stop_pool(opened)
             raise
@@ -210,9 +226,9 @@ def create_app(config: DashboardConfig, *, engine: object | None = None,
         # 会话表（app.state.sessions 为 None，池按没人占着写入处理）。建引擎（首次打开取世界锁）在工作线程里做，同 lease_off_loop。
         loop = asyncio.get_running_loop()
         if not deferred_open:
-            _attach_sessions(app, pool)
+            _attach_sessions(app, pool, config)
             await to_thread.run_sync(_start_pool, pool, app.state.ws_manager, loop,
-                                     idle_close_interval_s, cleanup_interval_s)
+                                     idle_close_interval_s, cleanup_interval_s, stats_refresh_s)
             yield
             _stop_pool(pool)
             return
