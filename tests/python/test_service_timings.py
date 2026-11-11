@@ -246,3 +246,23 @@ def test_serve_rejects_an_invalid_idle_interval_flag(tmp_path, monkeypatch, caps
         serve.main(["--data-dir", str(tmp_path), "--port", "0", f"--idle-close-interval={bad}"])
     assert exit_info.value.code == 2
     assert "--idle-close-interval" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key", KEYS + ("cleanup_interval_s",))
+def test_huge_integer_fails_with_the_key_not_overflow(tmp_path, key):
+    """starling.json 里一个超大整数字面量（如 1e400 写成整数）：math.isfinite 对它抛 OverflowError。校验要先比上限，
+    给出带键名的 RuntimeError，与其他不合法值一样在启动时报错（C1 审查 Minor 1）。"""
+    _write(tmp_path / "D" / "starling.json", **{key: 10 ** 400})
+    with pytest.raises(RuntimeError, match=key):
+        DashboardConfig.load_service(str(tmp_path / "D"), "tok")
+
+
+def test_config_defaults_match_the_pool_defaults():
+    """配置的缺省值与池里的缺省常量（池单独使用、测试直接建池时用）一致：改了一边没改另一边，8787 与直接建池的行为就会分叉
+    （C1 审查 Minor 2）。"""
+    from starling.dashboard import world_manager as wm
+    cfg = DashboardConfig()
+    assert cfg.idle_close_interval_s == wm._IDLE_CLOSE_POLL_S
+    assert cfg.stats_refresh_s == wm._STATS_REFRESH_S
+    table = _core.SessionTable()
+    assert round(cfg.session_lease_s * 1000) == table.lease_ms

@@ -315,8 +315,11 @@ def check_seconds(value, key: str, *, allow_zero: bool, zero_note: str = "") -> 
     """配置里的时长（秒）必须是有限的数，allow_zero 时 >= 0、否则 > 0，且不超过 threading.TIMEOUT_MAX（调度线程 stop.wait 用它，
     更大的值在线程里抛 OverflowError）。bool 不算数。不合法时抛 RuntimeError，消息写出 key（裁定 R105 F2、R115）。
     zero_note 是 0 的含义，写进消息（如「0 disables cleanup」）。"""
-    ok = (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-          and (value >= 0 if allow_zero else value > 0) and value <= threading.TIMEOUT_MAX)
+    # 先比上限再 isfinite：超大整数（JSON 里的长整数字面量）转 float 会抛 OverflowError，比较不会（C1 审查 Minor 1）。
+    # NaN 的比较都为假，在前面就被拒；+inf 被上限拒；isfinite 留作兜底。
+    ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
+          and (value >= 0 if allow_zero else value > 0) and value <= threading.TIMEOUT_MAX
+          and math.isfinite(value))
     if not ok:
         bound = ">= 0" if allow_zero else "> 0"
         note = f", {zero_note}" if zero_note else ""
