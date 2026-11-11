@@ -46,6 +46,7 @@ _SERIALIZABLE = (
     "source_lane_chunk_byte_budget",
     "cleanup_keep_per_group", "cleanup_max_age_days", "cleanup_archive_max_age_days",
     "cleanup_interval_s",
+    "idle_close_after_s", "session_lease_s", "idle_close_interval_s", "stats_refresh_s",
 )
 # starling-serve 不从 D/starling.json 取的键（load_service）：路径都在 D 之下，token 与监听地址来自命令行。
 _SERVICE_IGNORED = frozenset({"db_path", "ingest_spool_path", "vector_store_path", "token", "host",
@@ -96,6 +97,12 @@ class DashboardConfig:
     cleanup_max_age_days: int = 14
     cleanup_archive_max_age_days: int = 14
     cleanup_interval_s: float = 600.0
+    # 服务的时限与间隔（spec §18，裁定 R115），单位秒。缺省值与做成配置项之前写死的一样。idle_close_after_s、session_lease_s 在
+    # app 建会话表时换算成毫秒交给 C++（_core.SessionTable）；两个间隔只有 Python 的调度线程用。加载时由 check_service_timings 校验。
+    idle_close_after_s: float = 600.0     # 世界空闲多久可被关掉（>= 0）
+    session_lease_s: float = 30.0         # 客户端会话租约（> 0；心跳间隔由 C++ 定为租约的 1/3）
+    idle_close_interval_s: float = 30.0   # 空闲关闭线程的轮询间隔（>= 0，0 不起线程）
+    stats_refresh_s: float = 30.0         # 世界统计缓存刷新间隔（> 0）
     config_path: str = ""  # not serialized; where load()/save() persist
     # 以下两项不序列化，只由 load_service 设（starling-serve，spec §10.1）：data_root 非空时就是数据目录 D
     # （data_dir 不再看 STARLING_DATA_DIR）；persist_token 为 False 时 save() 不写 token。
@@ -158,6 +165,7 @@ class DashboardConfig:
             _migrate_legacy_model_config(cfg, data)
         _env_overlay(cfg)
         check_cleanup_interval(cfg.cleanup_interval_s)   # 在生成并写回 token 之前：配置不合法就起不来
+        check_service_timings(cfg)
         cfg.db_path = str(Path(cfg.db_path).expanduser())
         if cfg.ingest_spool_path:
             cfg.ingest_spool_path = str(Path(cfg.ingest_spool_path).expanduser())
@@ -185,6 +193,7 @@ class DashboardConfig:
                     setattr(cfg, key, data[key])
             _migrate_legacy_model_config(cfg, data)
         check_cleanup_interval(cfg.cleanup_interval_s)
+        check_service_timings(cfg)
         _seed_openai_extraction(cfg)
         cfg.ingest_spool_path = str(root / "ingest-spool")
         cfg.vector_store_path = str(root / "vectors") if cfg.vector_backend == "zvec" else ""
@@ -302,16 +311,43 @@ class DashboardConfig:
         return out
 
 
-def check_cleanup_interval(value, key: str = "cleanup_interval_s") -> None:
-    """自动清理的间隔（秒）必须是有限的数、>= 0（0 关掉清理线程），且不超过 threading.TIMEOUT_MAX（调度线程 stop.wait 用它，
-    更大的值在线程里抛 OverflowError）。bool 不算数。不合法时抛 RuntimeError，消息写出 key（裁定 R105 F2）：配置加载
-    （load、load_service）、create_app 与 starling-serve 的 --cleanup-interval 都经这里，在启动时报错，不等到后台线程里才出错，
-    也不静默不起线程。"""
+def check_seconds(value, key: str, *, allow_zero: bool, zero_note: str = "") -> None:
+    """配置里的时长（秒）必须是有限的数，allow_zero 时 >= 0、否则 > 0，且不超过 threading.TIMEOUT_MAX（调度线程 stop.wait 用它，
+    更大的值在线程里抛 OverflowError）。bool 不算数。不合法时抛 RuntimeError，消息写出 key（裁定 R105 F2、R115）。
+    zero_note 是 0 的含义，写进消息（如「0 disables cleanup」）。"""
+    # 先比上限再 isfinite：超大整数（JSON 里的长整数字面量）转 float 会抛 OverflowError，比较不会（C1 审查 Minor 1）。
+    # NaN 的比较都为假，在前面就被拒；+inf 被上限拒；isfinite 留作兜底。
     ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
-          and math.isfinite(value) and 0 <= value <= threading.TIMEOUT_MAX)
+          and (value >= 0 if allow_zero else value > 0) and value <= threading.TIMEOUT_MAX
+          and math.isfinite(value))
     if not ok:
-        raise RuntimeError(f"{key} must be a finite number >= 0 (seconds, 0 disables cleanup, "
+        bound = ">= 0" if allow_zero else "> 0"
+        note = f", {zero_note}" if zero_note else ""
+        raise RuntimeError(f"{key} must be a finite number {bound} (seconds{note}, "
                            f"at most {threading.TIMEOUT_MAX:.0f}), got {value!r}")
+
+
+def check_cleanup_interval(value, key: str = "cleanup_interval_s") -> None:
+    """自动清理的间隔（秒）：有限的数、>= 0（0 关掉清理线程）、不超过 threading.TIMEOUT_MAX。配置加载（load、load_service）、
+    create_app 与 starling-serve 的 --cleanup-interval 都经这里，在启动时报错，不等到后台线程里才出错，也不静默不起线程。"""
+    check_seconds(value, key, allow_zero=True, zero_note="0 disables cleanup")
+
+
+def check_service_timings(cfg: "DashboardConfig") -> None:
+    """spec §18 的四个时限与间隔（裁定 R115）：空闲关闭时限 >= 0，会话租约 > 0 且换算成毫秒后 >= 1（更小的值在 Python 一侧就报错，
+    不等 C++ 抛 invalid_argument），空闲检查间隔 >= 0（0 不起线程），统计刷新间隔 > 0。load、load_service、create_app 都经这里。"""
+    check_seconds(cfg.idle_close_after_s, "idle_close_after_s", allow_zero=True, zero_note="0 closes at once")
+    check_seconds(cfg.session_lease_s, "session_lease_s", allow_zero=False)
+    if round(cfg.session_lease_s * 1000) < 1:
+        raise RuntimeError(f"session_lease_s must be at least 0.001 seconds (1 ms), got {cfg.session_lease_s!r}")
+    check_seconds(cfg.idle_close_interval_s, "idle_close_interval_s", allow_zero=True,
+                  zero_note="0 disables idle close")
+    check_seconds(cfg.stats_refresh_s, "stats_refresh_s", allow_zero=False)
+
+
+def seconds_to_ms(value: float) -> int:
+    """配置的秒 → C++ 的毫秒（适配换算，round 到整毫秒）。"""
+    return round(value * 1000)
 
 
 # provider dict 里与 C++ EndpointSettings 同名的非密钥字段。api_key 永不写出。

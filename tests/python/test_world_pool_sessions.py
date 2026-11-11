@@ -808,10 +808,11 @@ def test_idle_close_thread_runs_on_the_configured_interval(tmp_path):
 
 
 def test_idle_close_interval_is_a_service_option(tmp_path):
-    """--idle-close-interval（秒）进 create_app → start_background；缺省 30 秒。"""
+    """--idle-close-interval（秒）进 create_app → start_background；没传时为 None，取 D/starling.json 的 idle_close_interval_s
+    （缺省 30 秒，裁定 R115；取值顺序的测试在 test_service_timings.py）。"""
     from starling.service import serve
     args = serve._parser().parse_args(["--data-dir", str(tmp_path), "--port", "0"])
-    assert args.idle_close_interval == 30.0
+    assert args.idle_close_interval is None
     args = serve._parser().parse_args(["--data-dir", str(tmp_path), "--port", "0",
                                        "--idle-close-interval", "5"])
     assert args.idle_close_interval == 5.0

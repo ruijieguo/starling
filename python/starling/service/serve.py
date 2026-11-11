@@ -13,7 +13,9 @@
   开注册表、建默认世界的引擎；开好之前 /health 与其余 API 一律 503 worlds_unavailable（create_app 的 deferred_open），
   开好之后 stdout 打印「starling-serve ready」。开的途中出错：记日志，进程退出码 1（交给进程管理器重启，不留一个永远 503
   的服务）。
-- 空闲关闭：每 --idle-close-interval 秒（默认 30，0 关掉）一轮，按 C++ 的空闲判定关掉没人用的世界（默认世界不关）。
+- 空闲关闭：每 --idle-close-interval 秒一轮（0 关掉），按 C++ 的空闲判定关掉没人用的世界（默认世界不关）。没传时取 D/starling.json 的
+  idle_close_interval_s，那里也没有就是 30（裁定 R115）。空闲时限 idle_close_after_s（600）、会话租约 session_lease_s（30）、统计刷新
+  stats_refresh_s（30）只在 D/starling.json 里配（spec §18）。
 - 自动清理：每 --cleanup-interval 秒一轮（spec §9，0 关掉）。没传时取 D/starling.json 的 cleanup_interval_s，那里也没有
   就是 600（裁定 R105 F1）。间隔必须是有限的数、>= 0，命令行与配置文件不合法都在启动时报错、写出键名（R105 F2）。规则的
   三个数值（cleanup_keep_per_group、cleanup_max_age_days、cleanup_archive_max_age_days）从 D/starling.json 读，与别的配置
@@ -41,14 +43,13 @@ from pathlib import Path
 import uvicorn
 
 from starling.dashboard.app import create_app
-from starling.dashboard.config import DashboardConfig, check_cleanup_interval
+from starling.dashboard.config import DashboardConfig, check_cleanup_interval, check_seconds
 
 __all__ = ["DataDirInUse", "lock_data_dir", "main", "run"]
 
 TOKEN_ENV = "STARLING_SERVICE_TOKEN"
 LOCK_NAME = ".lock"
 DEFAULT_DRAIN_TIMEOUT_S = 30.0
-DEFAULT_IDLE_CLOSE_INTERVAL_S = 30.0
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
@@ -100,13 +101,14 @@ def run(data_dir: str | os.PathLike, *, token_from_config: bool = False,
         config: DashboardConfig | None = None, token: str | None = None,
         host: str | None = None, port: int | None = None,
         drain_timeout_s: float = DEFAULT_DRAIN_TIMEOUT_S,
-        idle_close_interval_s: float = DEFAULT_IDLE_CLOSE_INTERVAL_S,
+        idle_close_interval_s: float | None = None,
         cleanup_interval_s: float | None = None, engine_factory=None) -> int:
     """跑一个服务进程直到被 SIGTERM / SIGINT 停下，返回退出码（0 正常停止，1 启动失败，3 data_dir_in_use）。
 
     token_from_config=False（starling-serve）：配置是 DashboardConfig.load_service(data_dir, token)，token 必须给。
     token_from_config=True（run_dashboard.py）：配置是调用方给的 config（缺省 DashboardConfig.load()），token、库、注册表位置
-    都按它，与之前一样。host / port 缺省取配置。cleanup_interval_s 为 None 时取配置的 cleanup_interval_s（缺省 600）。"""
+    都按它，与之前一样。host / port 缺省取配置。cleanup_interval_s 为 None 时取配置的 cleanup_interval_s（缺省 600），idle_close_interval_s 为 None 时取配置的
+    idle_close_interval_s（缺省 30）。"""
     if token_from_config:
         cfg = config if config is not None else DashboardConfig.load()
     else:
@@ -119,6 +121,8 @@ def run(data_dir: str | os.PathLike, *, token_from_config: bool = False,
         cfg.port = port
     if cleanup_interval_s is not None:
         cfg.cleanup_interval_s = cleanup_interval_s
+    if idle_close_interval_s is None:
+        idle_close_interval_s = cfg.idle_close_interval_s
     try:
         lock_fd = lock_data_dir(data_dir)
     except DataDirInUse:
@@ -218,8 +222,10 @@ def _parser() -> argparse.ArgumentParser:
                     help=f"file holding the bearer token (else the {TOKEN_ENV} environment variable)")
     ap.add_argument("--drain-timeout", type=float, default=DEFAULT_DRAIN_TIMEOUT_S,
                     help="seconds to wait for in-flight requests after SIGTERM (default 30)")
-    ap.add_argument("--idle-close-interval", type=float, default=DEFAULT_IDLE_CLOSE_INTERVAL_S,
-                    help="seconds between idle-close rounds; 0 disables idle close (default 30)")
+    # 缺省 None：同 --cleanup-interval，没传时用 D/starling.json 的 idle_close_interval_s（再没有就是 30，裁定 R115）。
+    ap.add_argument("--idle-close-interval", type=float, default=None,
+                    help="seconds between idle-close rounds; 0 disables idle close "
+                         "(default: idle_close_interval_s in D/starling.json, else 30)")
     # 缺省 None：没传时用 D/starling.json 的 cleanup_interval_s（再没有就是 600），不让命令行的缺省值盖掉配置文件（裁定 R105 F1）。
     ap.add_argument("--cleanup-interval", type=float, default=None,
                     help="seconds between automatic cleanup rounds; 0 disables cleanup "
@@ -238,8 +244,12 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(f"a token is required: --token-file F or the {TOKEN_ENV} environment variable")
     if args.drain_timeout < 0:
         ap.error("--drain-timeout must be >= 0")
-    if args.idle_close_interval < 0:
-        ap.error("--idle-close-interval must be >= 0")
+    if args.idle_close_interval is not None:
+        try:
+            check_seconds(args.idle_close_interval, "--idle-close-interval", allow_zero=True,
+                          zero_note="0 disables idle close")
+        except RuntimeError as exc:
+            ap.error(str(exc))
     if args.cleanup_interval is not None:
         try:
             check_cleanup_interval(args.cleanup_interval, "--cleanup-interval")

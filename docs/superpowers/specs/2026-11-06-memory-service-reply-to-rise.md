@@ -218,3 +218,15 @@ mem = client.open(world, holder=holder, settings=settings)   # 原来是 starlin
 **8. 客户端的安装方式与导入名（§13.3）；适配器换成 `client.open(world, holder=...)`。**
 - 实现：`clients/python/pyproject.toml`（包名 `starling-client`，只依赖 `httpx`）；`clients/python/starling_client/client.py`（`open`）；服务入口是 `pyproject.toml` 的 `starling-serve`。
 - 测试：`clients/python/tests/test_transport.py` 的 `test_client_has_no_starling_core_import`；`clients/python/tests/test_remote_memory.py` 的 `test_open_and_call_shapes`；`tests/python/test_acceptance_service.py` 的 `test_8_info_commit_equals_install_commit`。
+
+## 服务配置项（§18）
+
+spec §18 的时限与间隔都在服务的 `starling.json`（`starling-serve` 读 `D/starling.json`）里配置，单位秒。不写的键用缺省值，与之前写死的行为一样。取值不合法（字符串、布尔、NaN、无穷、负数、超过 `threading.TIMEOUT_MAX`）时服务启动失败，日志里写出键名。租约可以调：连接应答里的 `lease_ms` 就是 `session_lease_s` 换算成毫秒，`heartbeat_ms` 是它的三分之一，rise 按应答里的值发心跳，不要写死 10 秒。
+
+| 键 | 缺省 | 取值范围 | 含义 |
+|---|---|---|---|
+| `idle_close_after_s` | 600 | 有限数，>= 0 | 世界空闲多久可以被关掉（没有活句柄、没有在途调用，默认世界不关） |
+| `session_lease_s` | 30 | 有限数，> 0，换算成毫秒后 >= 1 | 客户端会话租约；超过这么久没有心跳，会话过期 |
+| `idle_close_interval_s` | 30 | 有限数，>= 0 | 空闲关闭线程每隔多久检查一轮；0 不起这个线程。命令行 `--idle-close-interval` 优先 |
+| `stats_refresh_s` | 30 | 有限数，> 0 | 世界统计缓存的刷新间隔 |
+| `cleanup_interval_s` | 600 | 有限数，>= 0 | 自动清理每隔多久一轮；0 不起清理线程。命令行 `--cleanup-interval` 优先 |
