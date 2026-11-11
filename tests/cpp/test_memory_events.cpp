@@ -1357,11 +1357,11 @@ TEST(MemoryEventsSplit, ExtractTouchesNoDatabase) {
 }
 
 
-// 最后修复波 A4（裁定 R96 M1）：begin 记下 text_sha256 与 seq；finish 重读到 committed 比 sha，重读到 pending 比 seq，任一不同
-// 都抛 EventConflict、零写入。场景：A 完成 begin；clear_tenant 把行删掉；B 用同一个 key 重建这一行。
-// 限制（裁定 R102）：clear_tenant 之后 seq 从 0 重新编号、会复用。committed 分支的 sha 比对可靠；pending 分支的 seq 比对只认得出
-// 「重建之前已经有过别的写入」的情形（下面第二个用例先垫一条无关的行，就是这种情形）。清空之后第一条写入就是重建时两边 seq 相同，
-// 比不出来；要靠删除重建后不复用的身份（nonce 列或清空代数），需要迁移，推迟。
+// 行被删后同一个 key 又被重建。场景：A 完成 begin；clear_tenant 把行删掉；B 用同一个 key 重建这一行。begin 记下行身份 incarnation
+// （迁移 0040，裁定 R102、R118）与 text_sha256、seq（最后修复波 A4，裁定 R96 M1）；finish 重读到的行身份不同就抛 EventConflict、
+// 零写入，committed 与 pending 两支都如此。新行的身份在 INSERT 时随机取，不取自 seq：清空之后 seq 从 0 重新编号、会复用，身份不会。
+// 下面前两个用例是 sha 或 seq 也不同的情形（两道判据都会抛）；FinishAfterClearAndRecreate* 两个用例是 sha 与 seq 都相同、只有身份
+// 不同的情形（R102 本身，不垫行）。
 namespace {
 
 void clear_events(persistence::SqliteAdapter& adapter) {
@@ -1408,8 +1408,9 @@ TEST(MemoryEventsSplit, FinishAfterTheKeyWasRecreatedWithAnotherSeqAndIsStillPen
     auto adapter = make_adapter();
     extractor::FakeLLMAdapter llm;
     llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
-    // 清空之后、重建这个 key 之前先有一条别的写入（垫一行无关的 key），B 重建的那一行才拿到与 A 不同的 seq。这是 seq 比对能认出的
-    // 唯一情形：不垫行时 clear 之后 next_seq 从 0 重算，B 的行与 A 同为 seq 0，比不出来（裁定 R102，见文件里这一组用例前的注释）。
+    // 清空之后、重建这个 key 之前先有一条别的写入（垫一行无关的 key），B 重建的那一行拿到与 A 不同的 seq（1）。这时行身份与 seq 两道
+    // 判据都不同，都会抛。不垫行（两边 seq 同为 0）的情形见 FinishAfterClearAndRecreateWithTheSameSeqStillPendingThrowsWithoutTouchingIt：
+    // 只靠行身份认出（裁定 R102、R118）。
     auto begun_a = remember_event_begin(*adapter, event_params(), "k1", "bob:hi", kEpoch);
     const auto extracted_a = remember_event_extract(*adapter, llm, begun_a, RememberPrompts{});
     clear_events(*adapter);
@@ -1429,8 +1430,71 @@ TEST(MemoryEventsSplit, FinishAfterTheKeyWasRecreatedWithAnotherSeqAndIsStillPen
     EXPECT_EQ(library_of(*adapter), before);
 }
 
+// 裁定 R102 本身:A 完成 begin;clear_tenant 清空租户;B 用同一个 key、同一段文本重建这一行,清空之后第一条写入就是它(不垫行),
+// 两边 seq 都是 0、text_sha256 也相同。A 的 finish 必须认出这已不是 begin 时那一行:抛 EventConflict、零写入,B 的行(state、
+// failure_category、seq)原样不动。
+TEST(MemoryEventsSplit, FinishAfterClearAndRecreateWithTheSameSeqStillPendingThrowsWithoutTouchingIt) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto begun_a = remember_event_begin(*adapter, event_params(), "k1", "bob:hi", kEpoch);
+    ASSERT_TRUE(begun_a.needs_extraction());
+    ASSERT_EQ(begun_a.seq, 0);
+    const auto extracted_a = remember_event_extract(*adapter, llm, begun_a, RememberPrompts{});
+    (void)clear_tenant(*adapter, "default");
+    AlwaysFailingLLMAdapter failing;
+    const auto parked = remember_event(*adapter, failing, event_params(), RememberPrompts{}, "k1", "bob:hi",
+                                       kEpoch);                    // B 同文本、停在 pending
+    ASSERT_TRUE(parked.extraction_failed);
+    ASSERT_EQ(event_state(conn, "k1"), "pending");
+    ASSERT_EQ(text_query(conn, "SELECT seq FROM events WHERE key='k1'"), "0");   // 与 A 同为 seq 0
+    const std::string receipt = receipt_of(conn, "k1");
+    const std::string before = library_of(*adapter);
+    const auto changes = sqlite3_total_changes64(conn.raw());
+    try {
+        (void)remember_event_finish(*adapter, llm, begun_a, extracted_a);
+        ADD_FAILURE() << "no EventConflict";
+    } catch (const EventConflict& err) {
+        EXPECT_NE(std::string(err.what()).find("recreated"), std::string::npos) << err.what();
+    }
+    EXPECT_EQ(receipt_of(conn, "k1"), receipt);                    // failure_category 没被改写,仍是 pending
+    EXPECT_EQ(sqlite3_total_changes64(conn.raw()), changes);       // 零写入
+    EXPECT_EQ(library_of(*adapter), before);
+}
+
+// 同一时序的 committed 分支:B 重建时写的是同一段文本并已提交,sha 与 seq 都与 A 相同。那一行不是 A begin 时的那一行,A 的
+// finish 不把它的收据当成自己的结果返回:抛 EventConflict、零写入,B 的收据与语句不变。
+TEST(MemoryEventsSplit, FinishAfterClearAndRecreateWithTheSameTextCommittedThrowsWithoutWriting) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto begun_a = remember_event_begin(*adapter, event_params(), "k1", "bob:hi", kEpoch);
+    ASSERT_TRUE(begun_a.needs_extraction());
+    ASSERT_EQ(begun_a.seq, 0);
+    const auto extracted_a = remember_event_extract(*adapter, llm, begun_a, RememberPrompts{});
+    (void)clear_tenant(*adapter, "default");
+    const auto winner = remember_event(*adapter, llm, event_params(), RememberPrompts{}, "k1", "bob:hi", kEpoch);
+    ASSERT_FALSE(winner.statement_ids.empty());
+    ASSERT_EQ(event_state(conn, "k1"), "committed");
+    ASSERT_EQ(text_query(conn, "SELECT seq FROM events WHERE key='k1'"), "0");
+    const std::string receipt = receipt_of(conn, "k1");
+    const std::string before = library_of(*adapter);
+    const auto changes = sqlite3_total_changes64(conn.raw());
+    try {
+        (void)remember_event_finish(*adapter, llm, begun_a, extracted_a);
+        ADD_FAILURE() << "no EventConflict";
+    } catch (const EventConflict& err) {
+        EXPECT_NE(std::string(err.what()).find("recreated"), std::string::npos) << err.what();
+    }
+    EXPECT_EQ(receipt_of(conn, "k1"), receipt);
+    EXPECT_EQ(sqlite3_total_changes64(conn.raw()), changes);       // 零写入
+    EXPECT_EQ(library_of(*adapter), before);
+}
+
 TEST(MemoryEventsSplit, FinishOnTheSameRowItBeganStillCommits) {
-    // 对照：没被删、没被重建（sha 与 seq 都对得上）时照常提交。
+    // 对照：没被删、没被重建（行身份、sha 与 seq 都对得上）时照常提交。
     auto adapter = make_adapter();
     extractor::FakeLLMAdapter llm;
     llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
@@ -1440,6 +1504,137 @@ TEST(MemoryEventsSplit, FinishOnTheSameRowItBeganStillCommits) {
     const auto out = remember_event_finish(*adapter, llm, begun, extracted);
     EXPECT_EQ(out.outcome, "accepted");
     EXPECT_EQ(event_state(adapter->connection(), "k1"), "committed");
+}
+
+
+// ── 迁移 0040:events 行的身份 incarnation(裁定 R102、R118) ──
+
+namespace {
+
+std::string incarnation_of(persistence::Connection& conn, std::string_view key) {
+    return text_query(conn, "SELECT incarnation FROM events WHERE tenant_id='default' AND key='" +
+                                std::string(key) + "'");
+}
+
+// UUID v4 的样子:8-4-4-4-12 小写十六进制,第 15 个字符是版本 4,第 20 个字符是变体 8/9/a/b。
+bool looks_like_uuid_v4(const std::string& text) {
+    if (text.size() != 36) {
+        return false;
+    }
+    for (std::size_t pos = 0; pos < text.size(); ++pos) {
+        const char chr = text.at(pos);
+        const bool dash_slot = pos == 8 || pos == 13 || pos == 18 || pos == 23;
+        if (dash_slot != (chr == '-')) {
+            return false;
+        }
+        if (!dash_slot && std::string_view("0123456789abcdef").find(chr) == std::string_view::npos) {
+            return false;
+        }
+    }
+    return text.at(14) == '4' && std::string_view("89ab").find(text.at(19)) != std::string_view::npos;
+}
+
+}  // namespace
+
+TEST(MemoryEvents0040, NewRowsGetANonEmptyDistinctIncarnation) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    AlwaysFailingLLMAdapter failing;
+    (void)remember_event(*adapter, llm, event_params(), RememberPrompts{}, "k1", "bob:hi", kEpoch);
+    (void)remember_event(*adapter, failing, event_params(), RememberPrompts{}, "k2", "bob:bye", kEpoch);
+    const std::string first = incarnation_of(conn, "k1");
+    const std::string second = incarnation_of(conn, "k2");
+    EXPECT_TRUE(looks_like_uuid_v4(first)) << first;
+    EXPECT_TRUE(looks_like_uuid_v4(second)) << second;
+    EXPECT_NE(first, second);
+    // begin 交给 finish 的就是行里的那个值。
+    const auto begun = remember_event_begin(*adapter, event_params(), "k3", "bob:three", kEpoch);
+    EXPECT_EQ(begun.incarnation, incarnation_of(conn, "k3"));
+    // 重试 pending 行(同一行)不换身份。
+    (void)remember_event(*adapter, failing, event_params(), RememberPrompts{}, "k2", "bob:bye", kEpoch);
+    EXPECT_EQ(incarnation_of(conn, "k2"), second);
+    // 删掉再建:同一个 key、同一段文本、同一个 seq,身份不同。
+    (void)clear_tenant(*adapter, "default");
+    (void)remember_event(*adapter, failing, event_params(), RememberPrompts{}, "k2", "bob:bye", kEpoch);
+    EXPECT_EQ(text_query(conn, "SELECT seq FROM events WHERE key='k2'"), "0");
+    EXPECT_TRUE(looks_like_uuid_v4(incarnation_of(conn, "k2")));
+    EXPECT_NE(incarnation_of(conn, "k2"), second);
+}
+
+// 0040 之前写下的 pending 行(incarnation=''):begin 在第 1 段补一个身份,之后按新值处理,finish 照常收尾。
+TEST(MemoryEvents0040, LegacyPendingRowGetsAnIncarnationAtBeginAndFinishes) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    insert_text_event(conn, kHolder, "k1", "bob:hi", 0, "pending");   // 不写 incarnation → 列缺省 ''
+    ASSERT_EQ(incarnation_of(conn, "k1"), "");
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto begun = remember_event_begin(*adapter, event_params(), "k1", "bob:hi", kEpoch);
+    ASSERT_TRUE(begun.needs_extraction());
+    const std::string filled = incarnation_of(conn, "k1");
+    EXPECT_TRUE(looks_like_uuid_v4(filled)) << filled;
+    EXPECT_EQ(begun.incarnation, filled);
+    const auto extracted = remember_event_extract(*adapter, llm, begun, RememberPrompts{});
+    const auto out = remember_event_finish(*adapter, llm, begun, extracted);
+    EXPECT_EQ(out.outcome, "accepted");
+    EXPECT_FALSE(out.statement_ids.empty());
+    EXPECT_EQ(event_state(conn, "k1"), "committed");
+    EXPECT_EQ(incarnation_of(conn, "k1"), filled);                  // 收尾不改身份
+    EXPECT_EQ(text_query(conn, "SELECT seq FROM events WHERE key='k1'"), "0");
+}
+
+// 只补交给 finish 的行:begin 直接返回的 committed 旧行、抛出的冲突(换文本)都不补,冲突随事务回滚。
+TEST(MemoryEvents0040, BeginDoesNotFillLegacyRowsItDoesNotHandToFinish) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    insert_text_event(conn, kHolder, "k-done", "bob:hi", 0, "committed");
+    insert_text_event(conn, kHolder, "k-pending", "bob:hi", 1, "pending");
+    insert_text_event(conn, kHolder, "k-untouched", "bob:hi", 2, "pending");
+    const auto done = remember_event_begin(*adapter, event_params(), "k-done", "bob:hi", kEpoch);
+    ASSERT_TRUE(done.done.has_value());
+    EXPECT_EQ(incarnation_of(conn, "k-done"), "");
+    EXPECT_THROW((void)remember_event_begin(*adapter, event_params(), "k-pending", "bob:other", kEpoch),
+                 EventConflict);
+    EXPECT_EQ(incarnation_of(conn, "k-pending"), "");
+    EXPECT_EQ(incarnation_of(conn, "k-untouched"), "");             // 不批量回填
+}
+
+// 旧二进制(0040 之前)在 begin 之后重建了这一行:它不写 incarnation,行里是 ''。begin 记下的值不为 '',不等,照样认出。
+TEST(MemoryEvents0040, RowRecreatedByAnOldBinaryIsStillRecognised) {
+    auto adapter = make_adapter();
+    auto& conn = adapter->connection();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    auto begun_a = remember_event_begin(*adapter, event_params(), "k1", "bob:hi", kEpoch);
+    ASSERT_FALSE(begun_a.incarnation.empty());
+    const auto extracted_a = remember_event_extract(*adapter, llm, begun_a, RememberPrompts{});
+    clear_events(*adapter);
+    insert_text_event(conn, kHolder, "k1", "bob:hi", 0, "pending");   // 旧二进制的 INSERT:同文本、同 seq、身份 ''
+    const std::string receipt = receipt_of(conn, "k1");
+    const auto changes = sqlite3_total_changes64(conn.raw());
+    EXPECT_THROW((void)remember_event_finish(*adapter, llm, begun_a, extracted_a), EventConflict);
+    EXPECT_EQ(receipt_of(conn, "k1"), receipt);
+    EXPECT_EQ(incarnation_of(conn, "k1"), "");
+    EXPECT_EQ(sqlite3_total_changes64(conn.raw()), changes);
+}
+
+// 两个库经同一条写路径写入相同的事件(一条提交、一条停在 pending),行身份各不相同,摘要相同:incarnation 与 id 同类,
+// 在 memory_digest.cpp 的 excluded_columns 里。拿掉那条排除,这条用例变红。
+TEST(MemoryEvents0040, TwoLibrariesWritingTheSameEventsHaveTheSameDigest) {
+    auto first = make_adapter();
+    auto second = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response(extractor::LLMResponse{.raw_xml = kCannedJson, .ok = true});
+    AlwaysFailingLLMAdapter failing;
+    for (auto* adapter : {first.get(), second.get()}) {
+        (void)remember_event(*adapter, llm, event_params(), RememberPrompts{}, "k1", "bob:hi", kEpoch);
+        (void)remember_event(*adapter, failing, event_params(), RememberPrompts{}, "k2", "bob:bye", kEpoch);
+    }
+    ASSERT_NE(incarnation_of(first->connection(), "k1"), incarnation_of(second->connection(), "k1"));
+    ASSERT_NE(incarnation_of(first->connection(), "k2"), incarnation_of(second->connection(), "k2"));
+    EXPECT_EQ(library_of(*first), library_of(*second));
 }
 
 }  // namespace starling::memoryops

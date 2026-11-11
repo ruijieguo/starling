@@ -92,9 +92,14 @@ void drop_newest_migration_row(Connection& conn) {
 
 // 经正常写路径建一个迁移到最新的库;schema_behind 时删掉 schema_migrations 的最后一行,
 // 模拟旧版 Starling 写出的库。关闭写连接后返回库里记的最高版本。
+// 最新的迁移 0040 是 ALTER TABLE ADD COLUMN,不能跑两次:只删迁移记录、留着列,写路径再打开时补跑 0040 会报
+// duplicate column。所以同时去掉这一列,库才真的是 39 版的样子(之后新加迁移时按它的形状改这里)。
 int make_library(const fs::path& db, bool schema_behind) {
     auto writer = SqliteAdapter::open(db);
-    if (schema_behind) { drop_newest_migration_row(writer->connection()); }
+    if (schema_behind) {
+        drop_newest_migration_row(writer->connection());
+        writer->connection().exec("ALTER TABLE events DROP COLUMN incarnation");
+    }
     const int version = max_applied_version(writer->connection());
     writer->close();
     return version;

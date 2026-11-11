@@ -230,3 +230,7 @@ spec §18 的时限与间隔都在服务的 `starling.json`（`starling-serve` �
 | `idle_close_interval_s` | 30 | 有限数，>= 0 | 空闲关闭线程每隔多久检查一轮；0 不起这个线程。命令行 `--idle-close-interval` 优先 |
 | `stats_refresh_s` | 30 | 有限数，> 0 | 世界统计缓存的刷新间隔 |
 | `cleanup_interval_s` | 600 | 有限数，>= 0 | 自动清理每隔多久一轮；0 不起清理线程。命令行 `--cleanup-interval` 优先 |
+
+## 迁移 0040（events.incarnation）
+
+events 新增一列 `incarnation`（行身份），摘要排除这一列，同一个库迁移前后摘要不变；4cb00c5 及以前的二进制算摘要时不排除它，两个版本算出的摘要不要互相比较（spec §5.4）。
