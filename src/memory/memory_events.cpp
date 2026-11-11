@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "starling/crypto/sha256.hpp"
+#include "starling/evidence/uuid_v4.hpp"
 #include "starling/governance/write_gate.hpp"
 #include "starling/persistence/stmt.hpp"
 
@@ -35,13 +36,14 @@ struct EventRow {
     std::string statement_ids_json = "[]";
     std::int64_t seq = 0;
     std::string interlocutor;            // 首次写入时的说话对象;重试以它为准
+    std::string incarnation;             // 行身份(迁移 0040):INSERT 时写随机值,删掉再建一定不同;旧行为 ''
 };
 
 EventRow read_event(persistence::Connection& conn, std::string_view tenant,
                     std::string_view holder, std::string_view key) {
     persistence::Stmt stmt(conn.raw(),
                            "SELECT state, text, text_sha256, COALESCE(engram_ref,''), "
-                           "statement_ids_json, seq, interlocutor "
+                           "statement_ids_json, seq, interlocutor, incarnation "
                            "FROM events WHERE tenant_id=?1 AND holder_id=?2 AND key=?3");
     stmt.bind(tenant, holder, key);
     EventRow row;
@@ -56,6 +58,7 @@ EventRow read_event(persistence::Connection& conn, std::string_view tenant,
     row.statement_ids_json = column_string(stmt.raw(), 4);
     row.seq                = sqlite3_column_int64(stmt.raw(), 5);
     row.interlocutor       = column_string(stmt.raw(), 6);
+    row.incarnation        = column_string(stmt.raw(), 7);
     return row;
 }
 
@@ -314,6 +317,17 @@ RememberEventBegun remember_event_begin(persistence::SqliteAdapter& adapter,
                     "(key=" + std::string(key) + ", stored=\"" + row.interlocutor +
                     "\", given=\"" + base.interlocutor + "\")");
             }
+            // 迁移 0040 之前写下的行(或旧二进制在 0040 之后写下的行)incarnation 是 '':在这个事务里就地补一个随机值,之后
+            // 按新值处理,finish 就能认出这一行是不是被删掉重建过。只补交给 finish 的这一行(pending 重试);committed 直接返回、
+            // 抛出的各支随事务回滚,都不会走到 finish,不补。WHERE 带 incarnation='',不覆写已有的身份。
+            if (row.incarnation.empty()) {
+                row.incarnation = evidence::generate_uuid_v4();
+                persistence::Stmt fill(conn.raw(),
+                                       "UPDATE events SET incarnation=?1 "
+                                       "WHERE tenant_id=?2 AND holder_id=?3 AND key=?4 AND incarnation=''");
+                fill.bind(row.incarnation, base.tenant_id, base.holder_id, key);
+                fill.step_done();
+            }
             retrying_pending = true;
         } else {
             row.found        = true;
@@ -322,12 +336,13 @@ RememberEventBegun remember_event_begin(persistence::SqliteAdapter& adapter,
             row.interlocutor = base.interlocutor;
             row.text_sha256  = text_sha;
             row.seq          = next_seq(conn, base.tenant_id);
+            row.incarnation  = evidence::generate_uuid_v4();   // 行身份(迁移 0040,裁定 R118)
             persistence::Stmt ins(
                 conn.raw(),
                 "INSERT INTO events(tenant_id,holder_id,key,text,interlocutor,text_sha256,"
-                "seq,state) VALUES(?1,?2,?3,?4,?5,?6,?7,'pending')");
+                "seq,state,incarnation) VALUES(?1,?2,?3,?4,?5,?6,?7,'pending',?8)");
             ins.bind(base.tenant_id, base.holder_id, key, row.text, row.interlocutor, text_sha,
-                     row.seq);
+                     row.seq, row.incarnation);
             ins.step_done();
         }
         txn.commit();
@@ -387,8 +402,9 @@ RememberEventBegun remember_event_begin(persistence::SqliteAdapter& adapter,
         begun.prepared = remember_prepare(adapter, params);
     }
     begun.params = std::move(params);
-    begun.text_sha256 = row.text_sha256;   // 第 1 段读到或写下的那一行(裁定 R96 M1:finish 据此认出同一行)
+    begun.text_sha256 = row.text_sha256;   // 第 1 段读到或写下的那一行(裁定 R96 M1、R118:finish 据此认出同一行)
     begun.seq = row.seq;
+    begun.incarnation = row.incarnation;   // 新行写下的、或旧行刚补上的,不会是 ''
     return begun;
 }
 
@@ -430,10 +446,15 @@ RememberOutcome remember_event_finish(persistence::SqliteAdapter& adapter,
             "remember_event: key was abandoned or removed while the write was in flight; "
             "nothing was written (key=" + std::string(key) + ")");
     }
-    // 裁定 R96 M1:认出行不是 begin 时那一行(clear_tenant 删掉之后同一个 key 又被重建)就不收尾,零写入,抛 EventConflict。
-    // committed 时比文本摘要(重建的那次写的是别的文本,不能把它的语句当成本次的结果),这项比对可靠;pending 时比 seq,只在
-    // 重建的行拿到了别的序号时认得出:清空之后 seq 从 0 重新编号,重建是清空后第一条写入时两边 seq 相同,比不出来(裁定 R102,
-    // 见 RememberEventBegun 的注释)。
+    // 认出行不是 begin 时那一行(clear_tenant 删掉之后同一个 key 又被重建)就不收尾,零写入,抛 EventConflict。
+    // 主判据是行身份 incarnation(迁移 0040,裁定 R102、R118):begin 记下的值与重读到的不同,这一行就是删掉后重建的。committed
+    // 与 pending 两支都比;重建的行若是旧二进制写的(incarnation=''),begin 记下的值不会是 '',同样不等。
+    if (row.incarnation != begun.incarnation) {
+        throw EventConflict(
+            "remember_event: key was removed and recreated while the write was in flight "
+            "(the row's incarnation changed); nothing was written (key=" + std::string(key) + ")");
+    }
+    // 原有的两项比对保留作双保险(裁定 R96 M1):committed 时比文本摘要,pending 时比 seq。
     if ((row.state == "committed" && row.text_sha256 != begun.text_sha256) ||
         (row.state == "pending" && row.seq != begun.seq)) {
         throw EventConflict(

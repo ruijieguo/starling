@@ -34,11 +34,13 @@ using NameSet = std::set<std::string, std::less<>>;
 // 摘要就绑在 tenant 的名字上,同一段内容换个 tenant 名就成了另一个摘要。
 // 排除是白名单的反面:这里没列到的列一律进摘要,包括将来新加的列。漏算一列会让
 // 两个不同的库共用一个 config_hash;多算一列只会多判一次「不是同一个实验」。
+// incarnation(events,迁移 0040)是行身份,与 id 同类:INSERT 时取随机值,两个库写入相同内容时这一列必然不同;
+// 0040 之前的行是 '',排除它也让迁移前后同一个库的摘要不变。
 const NameSet& excluded_columns() {
     static const NameSet columns = {
         "id", "stmt_id", "created_at", "updated_at", "last_accessed", "access_count",
         "last_replayed", "replay_count", "last_replay_batch_id", "retry_count",
-        "last_attempt_at", "embedded_at", "inferred_at", "tenant_id",
+        "last_attempt_at", "embedded_at", "inferred_at", "tenant_id", "incarnation",
     };
     return columns;
 }

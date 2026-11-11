@@ -281,10 +281,15 @@ TEST(WorldFork, UpgradeSeedMigratesCopyAndKeepsOld) {
     auto reg = open_registry(tmp);
     const WorldRecord old_seed =
         reg.create("seed-v1", "情境一", {{"scenario", "s1"}}, "{}", kNow, WorldFlags{.seed = true});
-    // 旧版 Starling 写出的种子：有内容（3 条语句），schema_migrations 少了最后一条（落后于当前代码）。
+    // 旧版 Starling 写出的种子：有内容（3 条语句），schema_migrations 少了最后一条（落后于当前代码）。最新的迁移 0040 是
+    // ALTER TABLE ADD COLUMN，不能跑两次：同时去掉 events.incarnation，库才真的是 39 版的样子，升级时补跑 0040 不报
+    // duplicate column（之后新加迁移时按它的形状改这里）。
     insert_statements(old_seed.db_path, old_seed.tenant, 0, 3);
+    // 下面撤销的是 0040 的形状；最新迁移不是 40 就直接失败，免得将来造出形状与版本对不上的库（C2 审查 M2）。
+    ASSERT_EQ(schema_of(old_seed.db_path), 40);
     run_sql(old_seed.db_path, "DELETE FROM schema_migrations "
-                              "WHERE version = (SELECT MAX(version) FROM schema_migrations)");
+                              "WHERE version = (SELECT MAX(version) FROM schema_migrations); "
+                              "ALTER TABLE events DROP COLUMN incarnation;");
     ASSERT_LT(schema_of(old_seed.db_path), persistence::MigrationRunner::latest_embedded_version());
     const std::string old_sha = file_sha256(old_seed.db_path);
 

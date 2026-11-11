@@ -92,6 +92,7 @@ target_sources(starling_core PRIVATE
     src/evidence/ingest_policy_resolver.cpp
     src/evidence/evidence_validator.cpp
     src/evidence/engram_store.cpp
+    src/evidence/uuid_v4.cpp
     src/bus/bus.cpp
     src/net/http_post_json.cpp
     src/extractor/extraction_span_key.cpp

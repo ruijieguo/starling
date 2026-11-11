@@ -16,9 +16,9 @@
 //
 // 排除清单(设计源 4.5 节):id、stmt_id、created_at、updated_at、last_accessed、
 // access_count、last_replayed、replay_count、last_replay_batch_id、retry_count、
-// last_attempt_at、embedded_at、inferred_at。列名从 PRAGMA table_info 取,新加的列
-// 默认进摘要——漏掉只会让摘要过敏感(多判一次「不是同一个实验」),静默少算一列却会
-// 让两个不同的库共用一个 config_hash。
+// last_attempt_at、embedded_at、inferred_at;另加 events.incarnation(迁移 0040 的行身份,
+// 与 id 同类)。列名从 PRAGMA table_info 取,新加的列默认进摘要——漏掉只会让摘要过敏感
+// (多判一次「不是同一个实验」),静默少算一列却会让两个不同的库共用一个 config_hash。
 //
 // 另外两条排除是探针逼出来的,设计源 4.5 节没写:
 //   - confidence_history_json 每项的墙钟 ts(src/bus/bus.cpp 与

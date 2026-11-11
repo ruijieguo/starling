@@ -118,10 +118,11 @@ RememberOutcome remember_event(persistence::SqliteAdapter& adapter,
 //   begin   第 1 段的短事务(读行、认领、占位;冲突在这里抛)+ 补齐分支(只读库,不调 LLM)+ remember_prepare(写 engram)。
 //           committed 的行直接给出 done(idempotent),之后两段都不用调。
 //   extract 只调 LLM(remember_extract_all),不碰库。needs_extraction() 为 false 时什么都不做,返回空 bundle。
-//   finish  一个事务:先重读收据行(见上面的 ③)。committed 且 text_sha256 与 begin 时相同 → idempotent、零写入;
-//           abandoned 或不在 → EventConflict、零写入;pending 且 seq 与 begin 时相同 → remember_commit_all(要抽取时)与
-//           收据 UPDATE 一起提交。committed 而 sha 不同、pending 而 seq 不同 → EventConflict、零写入(裁定 R96 M1)。
-//           这两项比对认不全「行被删后同一个 key 又被重建」,见 RememberEventBegun 里 text_sha256 / seq 的注释(裁定 R102)。
+//   finish  一个事务:先重读收据行(见上面的 ③)。abandoned 或不在 → EventConflict、零写入;行身份 incarnation 与 begin 时
+//           不同(行被删后同一个 key 又被重建,迁移 0040,裁定 R102、R118)→ EventConflict、零写入,committed 与 pending 都比;
+//           committed 而 sha 不同、pending 而 seq 不同 → 同样 EventConflict、零写入(裁定 R96 M1,保留作双保险)。都对得上时:
+//           committed → idempotent、零写入;pending → remember_commit_all(要抽取时)与收据 UPDATE 一起提交。
+//           保证与边界见 RememberEventBegun 里 incarnation 的注释。
 //
 // RememberEventBegun 在三段之间原样传递,调用方不解构。begin 与 finish 必须在同一个 adapter 上调。
 struct RememberEventBegun {
@@ -130,14 +131,20 @@ struct RememberEventBegun {
     std::string key;
     RememberPrepared prepared;                 // remember_prepare 的结果(补齐时为空)
     std::optional<RememberOutcome> completed;  // 补齐分支找回的结果(有值时不抽取,finish 只写收据)
-    // begin 读到 / 写下的那一行的 text_sha256 与 seq(最后修复波 A4,裁定 R96 M1):finish 重读时拿它们比,认出一部分「行被删后
-    // 同一个 key 又被重建」的情形。限制(裁定 R102):
-    //   - clear_tenant 删掉本租户全部 events 行,next_seq 是 MAX(seq)+1,所以清空之后 seq 从 0 重新编号,会复用;
-    //   - committed 分支比 sha 是可靠的:重建那次写的是别的文本,sha 一定不同,抛;写的是同一段文本时 finish 返回重建那次的
-    //     收据(idempotent),与同 key 重放的语义一致,不写任何东西;
-    //   - pending 分支比 seq 只能认出「清空之后、重建这个 key 之前已经有过别的写入」的情形(重建的行因此拿到别的 seq)。清空之后
-    //     第一条写入就是重建这个 key 时,两边 seq 相同(多半都是 0),比不出来:finish 照常收尾,可能改写重建行的 failure_category。
-    //   真正的修法要给行一个删除重建后不复用的身份(nonce 列或清空代数),要做迁移,推迟(裁定 R102)。
+    // begin 读到 / 写下的那一行的身份 incarnation(迁移 0040,裁定 R102、R118),以及 text_sha256 与 seq(最后修复波 A4,
+    // 裁定 R96 M1)。finish 在事务里重读这一行,拿它们比。
+    // 保证:begin 与 finish 之间这一行被删掉(clear_tenant)、又被任何一次调用用同一个 key 重建,finish 一定抛 EventConflict、
+    // 零写入,committed 与 pending 两支都如此,重建时写的文本、拿到的 seq 是否与原来相同都不影响。原因是新行的 incarnation 在
+    // INSERT 时取一个新的 UUID v4(不取自 seq;清空之后 seq 从 0 重新编号,会复用),begin 交给 finish 的值从不为 ''。
+    // 边界:
+    //   - 0040 之前写下的行 incarnation 是 ''(迁移只加列,不回填)。begin 走到 pending 重试时在第 1 段的事务里就地补一个随机值,
+    //     之后按新值处理;begin 直接返回 committed 行、或抛 EventConflict 时不补(这两种都不调 finish)。begin 没碰过的旧行一直是 ''。
+    //   - 旧二进制(0040 之前)打开 schema 40 的库仍能写,它写下的新行 incarnation 是 ''(列的缺省值)。这样的行若是在 begin 之后
+    //     重建出来的,与 begin 记下的非空值不等,同样认得出;它在下一次 begin 时补上身份。
+    //   - 随机值来自 evidence::generate_uuid_v4(每线程一个以 random_device 播种的 mt19937_64):两次 INSERT 取到同一个值的概率可以
+    //     忽略,但它不是密码学意义上的保证。
+    //   - 只认行,不认 key:同一个 key、同一行上的另一次调用(客户端超时后的重放)不改 incarnation,finish 照旧返回 idempotent。
+    std::string incarnation;
     std::string text_sha256;
     std::int64_t seq = 0;
     [[nodiscard]] bool needs_extraction() const {

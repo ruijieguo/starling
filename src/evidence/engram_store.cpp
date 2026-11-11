@@ -3,12 +3,12 @@
 #include "starling/persistence/sqlite_helpers.hpp"
 #include "starling/crypto/null_kms.hpp"
 #include "starling/evidence/engram.hpp"
+#include "starling/evidence/uuid_v4.hpp"
 #include "starling/persistence/sqlite_handles.hpp"
 #include "starling/schema/enums.hpp"
 
 #include <iomanip>
 #include <nlohmann/json.hpp>
-#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -16,33 +16,6 @@
 namespace starling::evidence {
 
 namespace {
-
-// UUIDv4 with RFC 4122 variant bits. Sufficient for M0.3; M0.4 may switch to
-// UUIDv7 for time-ordered ids if Bus.write performance requires it.
-std::string generate_uuid_v4() {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    const std::uint64_t a = rng();
-    const std::uint64_t b = rng();
-    std::uint8_t bytes[16];
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index): loop bound 0-7 always within bytes[16]; hot path, .at() adds unneeded bounds-check overhead per byte.
-    for (int i = 0; i < 8; ++i) { bytes[i]     = static_cast<std::uint8_t>((a >> (i * 8)) & 0xff);
-}
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index): same as above.
-    for (int i = 0; i < 8; ++i) { bytes[i + 8] = static_cast<std::uint8_t>((b >> (i * 8)) & 0xff);
-}
-    bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x40);  // version 4
-    bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);  // variant 10xx
-
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out(36, '-');
-    std::size_t j = 0;
-    for (int i = 0; i < 16; ++i) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) { out[j++] = '-'; }
-        out[j++] = kHex[(bytes[i] >> 4) & 0x0f];
-        out[j++] = kHex[bytes[i] & 0x0f];
-    }
-    return out;
-}
 
 // JSON-array encode the transformation list. P1 vocabulary is ASCII identifiers
 // (validator enforces non-duplicate; adapter conformance defines the set), so
