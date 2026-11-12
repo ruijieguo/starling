@@ -8,7 +8,7 @@ never returns the token or full keys.
 
 Model config (Phase 2a) is a named-provider registry + per-job role bindings:
 
-    providers: { "<name>": {provider, model, base_url, api_key, dim?, max_tokens?, timeout_ms?, max_retries?, enable_thinking?} }
+    providers: { "<name>": {provider, model, base_url, api_key, dim?, max_tokens?, timeout_ms?, max_retries?, enable_thinking?, thinking_type?} }
     roles:     { extraction|embedding|chat|consolidation: "<provider name>" }
 
 `extraction` and `embedding` have live consumers today; `chat` gains one with
