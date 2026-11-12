@@ -222,6 +222,10 @@ def _build_chat_adapter(llm_cfg: dict):
             cfg.max_retries = int(llm_cfg["max_retries"])
         if llm_cfg.get("enable_thinking") is not None:
             cfg.enable_thinking = bool(llm_cfg["enable_thinking"])
+        # 有的 OpenAI 兼容网关不认 enable_thinking=false,只认 DeepSeek 式的 thinking.type(如 "disabled"):
+        # 设了就照传,C++ 写进请求体的 thinking 字段。空串与未设置一样,不发。
+        if llm_cfg.get("thinking_type"):
+            cfg.thinking_type = str(llm_cfg["thinking_type"])
         return _core.OpenAIAdapter(cfg)
 
 

@@ -41,6 +41,8 @@ class ProviderFields(BaseModel):
     timeout_ms: int | None = None
     max_retries: int | None = None
     enable_thinking: bool | None = None
+    # DeepSeek 式推理开关 thinking.type(如 "disabled");空串清除。不认 enable_thinking 的网关用它。
+    thinking_type: str | None = None
 
 
 class ConfigBody(BaseModel):
@@ -63,7 +65,7 @@ def _mask(d: dict) -> dict:
            "key_set": bool(d.get("api_key"))}
     if "dim" in d:
         out["dim"] = d["dim"]
-    for k in ("max_tokens", "timeout_ms", "max_retries", "enable_thinking"):
+    for k in ("max_tokens", "timeout_ms", "max_retries", "enable_thinking", "thinking_type"):
         if k in d:
             out[k] = d[k]
     return out
@@ -97,6 +99,11 @@ def _merge_provider(dst: dict, body: ProviderFields) -> None:
         dst["max_retries"] = body.max_retries
     if body.enable_thinking is not None:
         dst["enable_thinking"] = body.enable_thinking
+    if body.thinking_type is not None:
+        if body.thinking_type:
+            dst["thinking_type"] = body.thinking_type
+        else:
+            dst.pop("thinking_type", None)     # 空串清除,回到不发 thinking 字段
 
 
 # 这些路由改动的 config 字段：校验失败时按这份清单恢复。

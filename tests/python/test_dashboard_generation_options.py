@@ -72,6 +72,18 @@ def test_unset_options_keep_cpp_defaults(llm_server):
     assert adapter.extract("p", "h").ok
     assert seen[0]["max_tokens"] == 4096
     assert "enable_thinking" not in seen[0]
+    assert "thinking" not in seen[0]
+
+
+def test_thinking_type_is_forwarded_as_the_thinking_field(llm_server):
+    """有的 OpenAI 兼容网关不认 enable_thinking=false、只认 thinking.type(实测 2026-11-13:前者 44 秒全是推理、
+    content 为空,后者 1.4 秒正常结束)。provider 设了 thinking_type 就要写进请求体;空串与未设置一样不发。"""
+    server, seen, _ = llm_server
+    assert _build_chat_adapter(_provider(server, thinking_type="disabled", enable_thinking=False)).extract("p", "h").ok
+    assert seen[0]["thinking"] == {"type": "disabled"}
+    assert seen[0]["enable_thinking"] is False
+    assert _build_chat_adapter(_provider(server, thinking_type="")).extract("p", "h").ok
+    assert "thinking" not in seen[1]
 
 
 def test_timeout_and_retries_are_forwarded(llm_server):
@@ -117,3 +129,21 @@ def test_generation_options_roundtrip_through_config_route(ctx, monkeypatch):
     client.post("/api/config", json={"providers": {"default": {"max_retries": 0}}})
     assert json.loads(cfgfile.read_text())["providers"]["default"]["max_retries"] == 0
     assert "sk-x" not in json.dumps(client.get("/api/config").json())
+
+
+def test_thinking_type_roundtrips_through_config_route_and_clears_on_empty(ctx, monkeypatch):
+    client, cfgfile = ctx
+    monkeypatch.setattr(engmod, "_build_chat_adapter", lambda c: _core.FakeLLMAdapter())
+    reply = client.post("/api/config", json={
+        "providers": {"default": {"provider": "openai", "model": "m", "api_key": "sk-x", "thinking_type": "disabled"}},
+        "roles": {"extraction": "default"}})
+    assert reply.status_code == 200
+    assert client.get("/api/config").json()["providers"]["default"]["thinking_type"] == "disabled"
+    assert json.loads(cfgfile.read_text())["providers"]["default"]["thinking_type"] == "disabled"
+
+    # 不带 thinking_type 的编辑保留它;空串清除。
+    client.post("/api/config", json={"providers": {"default": {"model": "m2"}}})
+    assert json.loads(cfgfile.read_text())["providers"]["default"]["thinking_type"] == "disabled"
+    client.post("/api/config", json={"providers": {"default": {"thinking_type": ""}}})
+    assert "thinking_type" not in json.loads(cfgfile.read_text())["providers"]["default"]
+    assert "thinking_type" not in client.get("/api/config").json()["providers"]["default"]

@@ -16,6 +16,9 @@ export type Prov = {
 	timeout_ms?: number;
 	max_retries?: number;
 	enable_thinking?: boolean;
+	// DeepSeek-style reasoning switch sent as `thinking: {type}` (e.g. "disabled"), for gateways
+	// that ignore enable_thinking. Empty string on POST clears it.
+	thinking_type?: string;
 };
 
 export type Config = {
