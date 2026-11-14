@@ -336,13 +336,23 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     auto fetch_by_id = [&](const std::string& id, const SemanticScored* semantic_row=nullptr) {
         sqlite3_stmt* raw = nullptr;
         const std::string sql = std::string(kSelectCols) +
-            "WHERE id = ?1 AND tenant_id = ?2" + kStableTail;
+            "WHERE id = ?1 AND tenant_id = ?2" +
+            (q.intent == QueryIntent::HISTORY
+                ? " AND holder_id = ?3"
+                  " AND consolidation_state IN ('consolidated','archived')"
+                  " AND review_status NOT IN ('rejected','pending_review')"
+                  " AND (valid_from IS NULL OR valid_from = '' OR valid_from <= ?9) "
+                : kStableTail);
         if (sqlite3_prepare_v2(db, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK) {
             return;
 }
         StmtHandle h(raw);
         bind_sv(h.get(), 1, id);
         bind_sv(h.get(), 2, q.tenant_id);
+        if (q.intent == QueryIntent::HISTORY) {
+            // Both HISTORY scope steps use the querier's holder, like statement_main.
+            bind_sv(h.get(), 3, q.querier);
+        }
         bind_sv(h.get(), 9, q.as_of_iso8601);
         if (sqlite3_step(h.get()) == SQLITE_ROW) {
             auto f=read_row(h.get());
@@ -379,7 +389,10 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         std::unordered_set<std::string> have;
         for (const auto& f : fetched) have.insert(f.row.id);
         std::vector<std::string> seeds(have.begin(), have.end());
-        for (const auto& id : seeds) {
+        // Worklist traversal: newly materialized rows may have older ancestors.
+        // have also prevents cycles and duplicate fetches.
+        for (std::size_t next = 0; next < seeds.size(); ++next) {
+            const std::string seed_id = seeds[next];
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(db,
                 "SELECT dst_id FROM statement_edges WHERE src_id=?1 AND "
@@ -388,7 +401,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                 "tenant_id=?2 AND edge_kind='supersedes'",
                 -1, &raw, nullptr) != SQLITE_OK) continue;
             StmtHandle h(raw);
-            bind_sv(h.get(), 1, id); bind_sv(h.get(), 2, q.tenant_id);
+            bind_sv(h.get(), 1, seed_id); bind_sv(h.get(), 2, q.tenant_id);
             std::vector<std::string> others;
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
                 const auto* p = sqlite3_column_text(h.get(), 0);
@@ -396,9 +409,11 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
                 if (p != nullptr) { others.emplace_back(reinterpret_cast<const char*>(p)); }
             }
             for (const auto& other : others) {
-                if (!have.contains(other)) { continue; }
-                fetch_by_id(other);
+                if (have.contains(other)) { continue; }
                 have.insert(other);
+                const auto before = fetched.size();
+                fetch_by_id(other);
+                if (fetched.size() > before) { seeds.push_back(other); }
             }
         }
     };
@@ -675,7 +690,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         sqlite3_stmt* raw = nullptr;
         if (sqlite3_prepare_v2(db,
             "SELECT src_id, dst_id FROM statement_edges WHERE tenant_id=?1 AND "
-            "edge_kind='CONFLICTS_WITH'", -1, &raw, nullptr) == SQLITE_OK) {
+            "edge_kind='conflicts_with'", -1, &raw, nullptr) == SQLITE_OK) {
             StmtHandle h(raw);
             bind_sv(h.get(), 1, q.tenant_id);
             while (sqlite3_step(h.get()) == SQLITE_ROW) {
@@ -810,7 +825,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
     if(temporal_view) { out.context_pack+="\n"+render_temporal_evidence(*temporal_view);
 }
     rc.candidate_counts.returned = static_cast<std::int64_t>(out.entries.size());
-    rc.sufficiency_status = out.entries.empty() ? Sufficiency::MISSING_INFO
+    rc.sufficiency_status = (out.entries.empty() && out.source_entries.empty()) ? Sufficiency::MISSING_INFO
                                                 : Sufficiency::SUFFICIENT;
     if(temporal_view && !temporal_view->sufficient) { rc.sufficiency_status=Sufficiency::MISSING_INFO;
 }

@@ -141,6 +141,7 @@ Aggregated aggregate_evidence(persistence::Connection& conn, std::string_view st
     const char* sql =
         "SELECT weight FROM reconsolidation_pending_evidence "
         "WHERE window_stmt_id=? AND window_tenant_id=? "
+        "AND event_type <> 'statement.recalled' "
         "ORDER BY weight DESC LIMIT 50";
 
     sqlite3_stmt* raw = nullptr;
@@ -201,8 +202,10 @@ void apply_supports(persistence::Connection& conn, std::string_view stmt_id,
     (void)now_iso;  // available for future updated_at extension
 
     // UPDATE confidence + consolidation_state —— P3.b1 phase 2:写收编进 StatementStore。
-    store::SqliteStatementStore(conn).set_confidence_consolidated(
-        stmt_id, tenant_id, new_conf);
+    if (store::SqliteStatementStore(conn).set_confidence_consolidated(
+            stmt_id, tenant_id, new_conf) == 0) {
+        return;
+    }
 
     // Emit statement.consolidated
     {
