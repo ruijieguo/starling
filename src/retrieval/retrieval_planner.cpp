@@ -392,7 +392,7 @@ PlannerResult RetrievalPlanner::run(const PlannerQuery& q) {
         // Worklist traversal: newly materialized rows may have older ancestors.
         // have also prevents cycles and duplicate fetches.
         for (std::size_t next = 0; next < seeds.size(); ++next) {
-            const std::string seed_id = seeds[next];
+            const std::string seed_id = seeds.at(next);
             sqlite3_stmt* raw = nullptr;
             if (sqlite3_prepare_v2(db,
                 "SELECT dst_id FROM statement_edges WHERE src_id=?1 AND "
