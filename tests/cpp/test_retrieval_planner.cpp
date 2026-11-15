@@ -136,7 +136,10 @@ TEST(RetrievalPlanner, HistoryFollowsSupersedesChain) {
     q.subject_id = "Bob"; q.predicate = "responsible_for"; q.k = 10;
     const auto r = rig.planner.run(q);
     ASSERT_FALSE(r.abstained);
-    EXPECT_EQ(r.entries.size(), 2u);   // 主路时间线 + supersedes 链补全
+    EXPECT_EQ(r.entries.size(), 2u);
+    // This fixture is not a graph regression: statement_main already returns both rows.
+    q.intent = QueryIntent::FACT_LOOKUP;
+    EXPECT_EQ(rig.planner.run(q).entries.size(), 2u);
 }
 
 TEST(RetrievalPlanner, CommitmentDueReturnsTodoLabel) {
@@ -272,6 +275,76 @@ TEST(RetrievalPlanner, RejectsScopeFilterMix) {
     EXPECT_TRUE(r.abstained);
     EXPECT_EQ(r.receipt.abstention_reason, "invalid_scope_filter_mix");
     EXPECT_TRUE(r.entries.empty());
+}
+
+
+TEST(RetrievalPlanner, Pr1aHistoryCompletesThreeGenerationsFromOneMainRow) {
+    Rig rig; auto& conn = rig.a->connection();
+    insert_statement(conn, "generation-1", "cog-self", "Bob", "responsible_for", "auth", "archived");
+    insert_statement(conn, "generation-2", "cog-self", "Bob", "responsible_for", "deploy", "archived");
+    insert_statement(conn, "generation-3", "cog-self", "Bob", "responsible_for", "review");
+    conn.exec("UPDATE statements SET valid_to='2026-06-11T00:00:00Z' WHERE id IN ('generation-1','generation-2')");
+    conn.exec("INSERT INTO statement_edges(id,tenant_id,src_id,dst_id,edge_kind,weight,created_at) VALUES"
+              "('g32','default','generation-3','generation-2','supersedes',1.0,'2026-06-10T00:00:00Z'),"
+              "('g21','default','generation-2','generation-1','supersedes',1.0,'2026-06-10T00:00:00Z')");
+    auto q = rig.q(QueryIntent::FACT_LOOKUP);
+    q.subject_id = "Bob"; q.predicate = "responsible_for"; q.k = 10;
+    const auto main = rig.planner.run(q);
+    ASSERT_EQ(main.entries.size(), 1U); ASSERT_EQ(main.entries[0].row.id, "generation-3");
+    q.intent = QueryIntent::HISTORY;
+    const auto history = rig.planner.run(q);
+    ASSERT_FALSE(history.abstained);
+    std::set<std::string> ids;
+    for (const auto& entry : history.entries) ids.insert(entry.row.id);
+    EXPECT_EQ(ids, (std::set<std::string>{"generation-1", "generation-2", "generation-3"}));
+    EXPECT_EQ(history.entries.size(), 3U);
+}
+
+TEST(RetrievalPlanner, HistoryDoesNotCompleteOtherHoldersStatements) {
+    for (const auto* holder : {"cog-self", "alice"}) {
+        Rig rig;
+        auto& conn = rig.a->connection();
+        insert_statement(conn, "local", holder, "Bob", "responsible_for", "auth");
+        insert_statement(conn, "foreign", "mallory", "Bob", "responsible_for",
+                         "deploy", "archived");
+        conn.exec("UPDATE statements SET valid_to='2026-06-11T00:00:00Z' WHERE id='foreign'");
+        conn.exec("INSERT INTO statement_edges(id,tenant_id,src_id,dst_id,edge_kind,weight,created_at) "
+                  "VALUES('cross-holder','default','local','foreign','supersedes',1.0,'2026-06-10T00:00:00Z')");
+        auto q = rig.q(QueryIntent::HISTORY);
+        q.querier = holder;
+        q.global_holder_filter = holder;
+        q.subject_id = "Bob";
+        q.predicate = "responsible_for";
+        q.k = 10;
+        const auto history = rig.planner.run(q);
+        ASSERT_FALSE(history.abstained);
+        ASSERT_EQ(history.entries.size(), 1U);
+        EXPECT_EQ(history.entries[0].row.id, "local");
+        EXPECT_EQ(history.entries[0].row.holder_id, holder);
+        EXPECT_EQ(history.receipt.candidate_counts.fetched, 1);
+    }
+}
+
+TEST(RetrievalPlanner, HistoryCycleTerminatesWithoutDuplicateRows) {
+    Rig rig;
+    auto& conn = rig.a->connection();
+    insert_statement(conn, "cycle-a", "cog-self", "Bob", "responsible_for", "auth");
+    insert_statement(conn, "cycle-b", "cog-self", "Bob", "responsible_for", "deploy", "archived");
+    conn.exec("UPDATE statements SET valid_to='2026-06-11T00:00:00Z' WHERE id='cycle-b'");
+    conn.exec("INSERT INTO statement_edges(id,tenant_id,src_id,dst_id,edge_kind,weight,created_at) VALUES"
+              "('ab','default','cycle-a','cycle-b','supersedes',1.0,'2026-06-10T00:00:00Z'),"
+              "('ba','default','cycle-b','cycle-a','supersedes',1.0,'2026-06-10T00:00:00Z')");
+    auto q = rig.q(QueryIntent::HISTORY);
+    q.subject_id = "Bob";
+    q.predicate = "responsible_for";
+    q.k = 10;
+    const auto history = rig.planner.run(q);
+    ASSERT_FALSE(history.abstained);
+    std::set<std::string> ids;
+    for (const auto& entry : history.entries) { ids.insert(entry.row.id); }
+    EXPECT_EQ(ids, (std::set<std::string>{"cycle-a", "cycle-b"}));
+    EXPECT_EQ(history.entries.size(), 2U);
+    EXPECT_EQ(history.receipt.candidate_counts.fetched, 2);
 }
 
 }  // namespace starling::retrieval
