@@ -1,6 +1,7 @@
 #pragma once
 #include "starling/persistence/connection.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,7 +19,7 @@ enum class PipelineStatus { Started, Finished, PartialSuccess, Failed };
 // — no new Statement is written, but the attempt is still ledger-recorded
 // for audit. See docs/design/subsystems_design/05_bus.md § extraction_attempt.
 // Empty: the model returned a parseable result with zero statements (`[]`).
-enum class ExtractionStatus { Success, PartialSuccess, Failed, Noop, Empty };
+enum class ExtractionStatus : std::uint8_t { Success, PartialSuccess, Failed, Noop, Empty };
 
 // Per-attempt LLM cost, persisted on the extraction_attempt row (migration
 // 0027). Mirrors the usage fields LLMResponse captures in the adapter (the
