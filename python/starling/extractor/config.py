@@ -41,6 +41,9 @@ class ExtractionConfig:
     semantic_claim_contract: bool = False
     claim_allow_code_fence: bool = False
     claim_protocol_retry_budget: int = 0
+    # Legacy path: re-ask up to N extra times when the model returns `[]`
+    # (0..2, enforced natively). 0 = accept the first empty result.
+    empty_result_retry_budget: int = 2
     claim_batch_size: int = 0
     claim_batch_target_units: bool = False
     # Structured claim requests use the native C++ output mode.  ``legacy``
@@ -64,6 +67,7 @@ class ExtractionConfig:
         policy.semantic_claim_contract = self.semantic_claim_contract
         policy.claim_allow_code_fence = self.claim_allow_code_fence
         policy.claim_protocol_retry_budget = self.claim_protocol_retry_budget
+        policy.empty_result_retry_budget = self.empty_result_retry_budget
         policy.claim_batch_size = self.claim_batch_size
         policy.claim_batch_target_units = self.claim_batch_target_units
         output_modes = {

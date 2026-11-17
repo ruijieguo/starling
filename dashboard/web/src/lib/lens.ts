@@ -3,12 +3,13 @@
 
 export type Tone = 'neutral' | 'brand' | 'success' | 'warn' | 'danger' | 'info';
 
-// extraction_attempt.status:success | partial_success | failed | noop(DB 无 CHECK → 未知兜底原值)。
+// extraction_attempt.status:success | partial_success | failed | noop | empty(DB 无 CHECK → 未知兜底原值)。
 const STATUS: Record<string, { label: string; tone: Tone }> = {
 	success: { label: '成功', tone: 'success' },
 	partial_success: { label: '部分成功', tone: 'warn' },
 	failed: { label: '失败', tone: 'danger' },
-	noop: { label: '无操作', tone: 'neutral' }
+	noop: { label: '无操作', tone: 'neutral' },
+	empty: { label: '空结果', tone: 'neutral' }
 };
 
 export function statusLabel(s: string | null | undefined): { label: string; tone: Tone } {

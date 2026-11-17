@@ -197,7 +197,9 @@ TEST(RememberPhases, CoreExpandsAllRememberPromptsBeforeLlmCalls) {
         .general_fact = "GENERAL::{self}::{self}::{convo}",
     };
 
-    (void)remember_extract_all(*adapter, llm, rp("hi"), prompts);
+    extractor::ValidationPolicy one_call_per_channel;   // 本测只看提示词展开，不看空结果重试
+    one_call_per_channel.empty_result_retry_budget = 0;
+    (void)remember_extract_all(*adapter, llm, rp("hi"), prompts, one_call_per_channel);
 
     ASSERT_EQ(llm.prompts.size(), 3u);
     EXPECT_EQ(llm.prompts[0], "BELIEF::hi");

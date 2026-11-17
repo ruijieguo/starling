@@ -4,9 +4,11 @@
 #include "starling/persistence/sqlite_adapter.hpp"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace starling::extractor {
 
@@ -458,6 +460,88 @@ TEST(ExtractorOrchestrator, OldPathObservedAtKeepsParserValueWhenEngramMissing) 
     ASSERT_EQ(r.accepted_statement_ids.size(), 1u);
     EXPECT_EQ(row_count(conn, "statements", "observed_at IS NOT NULL AND length(observed_at)=20 AND observed_at LIKE '____-__-__T__:__:__Z'"), 1);
     EXPECT_EQ(row_count(conn, "statements", "observed_at='2026-05-23T10:00:00Z'"), 0);
+}
+
+// 部分抽取端点对同一输入随机回 `[]`。旧路径把空结果当作「没东西可抽」前先重问:
+// 按队列回放响应的假适配器,记下调用次数。
+class QueuedLLMAdapter final : public LLMAdapter {
+public:
+    explicit QueuedLLMAdapter(std::vector<std::string> outputs) : outputs_(std::move(outputs)) {}
+    LLMResponse extract(std::string_view /*prompt*/, std::string_view /*hash*/) override {
+        const std::size_t index = std::min(calls_, outputs_.size() - 1);
+        ++calls_;
+        return LLMResponse{.raw_xml = outputs_[index], .ok = true,
+                           .prompt_tokens = 10, .completion_tokens = 1, .total_tokens = 11};
+    }
+    [[nodiscard]] std::size_t calls() const { return calls_; }
+private:
+    std::vector<std::string> outputs_;
+    std::size_t calls_ = 0;
+};
+
+TEST(ExtractorOrchestrator, EmptyArrayIsRetriedUntilStatementsArrive) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    QueuedLLMAdapter llm({"[]", kSuccessJson});
+    Extractor ex(conn, llm);
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(llm.calls(), 2u);
+    EXPECT_EQ(r.accepted_statement_ids.size(), 1u);
+    EXPECT_EQ(row_count(conn, "statements"), 1);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='empty' AND attempt_number=1"), 1);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='success' AND attempt_number=2"), 1);
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.retry_scheduled'"), 1);
+    EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
+}
+
+TEST(ExtractorOrchestrator, PersistentEmptyArrayStopsAfterBudgetAndIsNotAFailure) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    QueuedLLMAdapter llm({"[]"});
+    Extractor ex(conn, llm);
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);   // 空结果不是失败
+    EXPECT_EQ(llm.calls(), 3u);                                  // 1 + 默认预算 2
+    EXPECT_EQ(row_count(conn, "statements"), 0);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='empty'"), 3);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='failed'"), 0);
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.retry_scheduled'"), 2);
+    EXPECT_EQ(row_count(conn, "pipeline_run", "status='finished'"), 1);
+    // 每次调用的成本各记一次:3 次调用 → SUM = 3 × 11
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "total_tokens=11"), 3);
+}
+
+TEST(ExtractorOrchestrator, ZeroEmptyRetryBudgetKeepsFirstEmptyTerminal) {
+    auto a = make_adapter();
+    auto& conn = a->connection();
+    seed_engram(conn, "engram-1");
+
+    QueuedLLMAdapter llm({"[]", kSuccessJson});
+    ValidationPolicy policy;
+    policy.empty_result_retry_budget = 0;
+    Extractor ex(conn, llm, /*prompt_template=*/"", policy);
+
+    auto r = ex.run("engram-1", {1,2,3}, "cog-self", "default", {});
+    EXPECT_EQ(r.status, ExtractionRunResult::Status::SUCCESS);
+    EXPECT_EQ(llm.calls(), 1u);
+    EXPECT_EQ(row_count(conn, "statements"), 0);
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='empty'"), 1);
+    EXPECT_EQ(row_count(conn, "bus_events", "event_type='extraction.retry_scheduled'"), 0);
+}
+
+TEST(ExtractorOrchestrator, EmptyRetryBudgetOutOfRangeIsRejected) {
+    ValidationPolicy policy;
+    policy.empty_result_retry_budget = 3;
+    EXPECT_THROW(policy.validate(), std::invalid_argument);
+    policy.empty_result_retry_budget = -1;
+    EXPECT_THROW(policy.validate(), std::invalid_argument);
 }
 
 }  // namespace starling::extractor

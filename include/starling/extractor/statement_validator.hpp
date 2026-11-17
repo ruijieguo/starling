@@ -55,6 +55,12 @@ struct ValidationPolicy {
     int claim_batch_size = 0;
     // Opt-in target-only evidence index; the complete payload remains context.
     bool claim_batch_target_units = false;
+    // Legacy (non-claim) path only: a parsed empty array is re-asked up to this
+    // many extra times before it is accepted as "nothing to extract". Some
+    // extraction endpoints return `[]` at random for the same input; without a
+    // retry one such reply silently drops a whole chunk. 0 restores the old
+    // behaviour (first `[]` is terminal). Bounded by Extractor::kMaxRetries.
+    int empty_result_retry_budget = 2;
 
     // Single native policy authority, also exposed through Python bindings.
     void validate() const;
