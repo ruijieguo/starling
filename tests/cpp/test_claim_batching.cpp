@@ -192,10 +192,11 @@ TEST(ClaimBatching, GeneralFactAndEpisodicPoliciesStayIndependent) {
     llm.responses={empty(),empty(),empty(),response("[]"),response(R"({"events":[]})")};
     memoryops::RememberPrompts prompts;
     auto input=params(); auto prepared=memoryops::remember_prepare(*db,input);
-    auto bundle=memoryops::remember_extract_all(*db,llm,input,prompts,policy());
+    auto pol=policy(); pol.empty_result_retry_budget=0;   // 本测只看通道策略独立，不看空结果重试
+    auto bundle=memoryops::remember_extract_all(*db,llm,input,prompts,pol);
     EXPECT_FALSE(bundle.general_fact.semantic_claim_contract);
     EXPECT_EQ(llm.prompts.size(),5u);
-    EXPECT_NO_THROW(memoryops::remember_commit_all(*db,llm,input,prepared,bundle,policy()));
+    EXPECT_NO_THROW(memoryops::remember_commit_all(*db,llm,input,prepared,bundle,pol));
 }
 
 TEST(ClaimBatching, LaterSemanticRejectionIsReportedAcrossCompleteBatches) {

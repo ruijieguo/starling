@@ -663,6 +663,10 @@ ExtractionLlmResult Extractor::extract_llm(
 
     // 重试循环只做 LLM + parse(零 DB)。retry 决策与单体 run 完全一致:
     // !resp.ok 或 parse 有错 → 收录并 continue;parse 成功 → terminal 并 break。
+    // 例外:parse 成功但一条语句也没有(模型回 `[]`)时，在 empty_result_retry_budget
+    // 内再问一次——部分端点对同一输入随机回 `[]`,一次就当终态会整段丢记忆。
+    // 预算用完或到 kMaxRetries,最后一个空结果才是终态。
+    int empty_retries = 0;
     for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
         ExtractionLlmAttempt rec;
         rec.attempt = attempt;
@@ -679,6 +683,12 @@ ExtractionLlmResult Extractor::extract_llm(
         rec.parsed = true;
         if (!rec.parse.errors.empty()) {
             out.attempts.push_back(std::move(rec));
+            continue;
+        }
+        if (rec.parse.statements.empty() && attempt < kMaxRetries
+            && empty_retries < policy_.empty_result_retry_budget) {
+            ++empty_retries;
+            out.attempts.push_back(std::move(rec));   // parsed, not terminal → persist 记 empty 并重试
             continue;
         }
         rec.terminal = true;
@@ -870,6 +880,23 @@ ExtractionRunResult Extractor::persist(
                                       run_started_event_id, attempt_suffix);
             }
             continue;
+        }
+
+        // 旧路径上 parse 成功但没有语句(模型回 `[]`):单独记 status=empty,便于统计
+        // 空输出率。非终态的那几次排了重试;终态那次即「确实没东西可抽」。都不算失败。
+        if (!batch_boundary && !policy_.semantic_claim_contract && rec.parse.statements.empty()) {
+            ledger.record_attempt(run_id, chunk_span_key, attempt,
+                                  ExtractionStatus::Empty,
+                                  rec.resp.raw_xml, /*error=*/{},
+                                  take_cost());
+            all_failed = false;
+            if (!rec.terminal) {
+                emit_extraction_event(conn_, "extraction.retry_scheduled",
+                                      holder_tenant_id, run_id, chunk_span_key,
+                                      run_started_event_id, attempt_suffix);
+                continue;
+            }
+            break;
         }
 
         // Parse 成功。逐语句校验 + 写(移自原 run:283-421,parsed 用本 attempt 的拷贝)。

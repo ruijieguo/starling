@@ -273,6 +273,7 @@ void bind_06_extractor(pybind11::module_& m) {
         .def_readwrite("claim_batch_size", &starling::extractor::ValidationPolicy::claim_batch_size)
         .def_readwrite("claim_batch_target_units", &starling::extractor::ValidationPolicy::claim_batch_target_units)
         .def_readwrite("claim_protocol_retry_budget", &starling::extractor::ValidationPolicy::claim_protocol_retry_budget)
+        .def_readwrite("empty_result_retry_budget", &starling::extractor::ValidationPolicy::empty_result_retry_budget)
         .def_readwrite("claim_output_mode", &starling::extractor::ValidationPolicy::claim_output_mode);
 
     m.def("claim_extraction_batch_plan", &starling::extractor::claim_extraction_batch_plan,

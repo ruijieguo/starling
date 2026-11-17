@@ -47,6 +47,7 @@ const char* extraction_status_string(ExtractionStatus s) {
         case ExtractionStatus::PartialSuccess: return "partial_success";
         case ExtractionStatus::Failed:         return "failed";
         case ExtractionStatus::Noop:           return "noop";
+        case ExtractionStatus::Empty:          return "empty";
     }
     return "unknown";
 }

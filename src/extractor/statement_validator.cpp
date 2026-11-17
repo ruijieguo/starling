@@ -37,6 +37,9 @@ void ValidationPolicy::validate() const {
     if (claim_protocol_retry_budget < 0 || claim_protocol_retry_budget > 1) {
         throw std::invalid_argument("claim_protocol_retry_budget must be 0 or 1");
     }
+    if (empty_result_retry_budget < 0 || empty_result_retry_budget > 2) {
+        throw std::invalid_argument("empty_result_retry_budget must be between 0 and 2");
+    }
     if (claim_batch_size < 0 || claim_batch_size > 32) {
         throw std::invalid_argument("claim_batch_size must be between 0 and 32");
     }

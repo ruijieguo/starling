@@ -46,7 +46,8 @@ struct ExtractionLlmAttempt {
     std::vector<ClaimSemanticRejection> semantic_rejections; // deterministic row diagnostics
     std::map<std::string, std::size_t> admission_rejected_by_predicate;
     std::vector<ClaimRowDiagnostic> row_diagnostics; // original indexes, before admission filtering
-    bool        terminal = false;  // parse 成功 → 该 attempt 结束重试循环
+    bool        terminal = false;  // parse 成功 → 该 attempt 结束重试循环(旧路径空结果在
+                                   // empty_result_retry_budget 内不算终态)
 };
 
 struct ExtractionLlmResult {
