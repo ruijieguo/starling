@@ -69,6 +69,10 @@ struct ExtractionLlmResult {
     std::string                       prompt_body;
     std::string                       prompt_input_hash;
     std::vector<ExtractionLlmAttempt> attempts;
+    // 抽取通道："belief"(默认)或 "general_fact"。两路对同一个 engram 各开一个
+    // pipeline_run;persist 用它区分 chunk 级 attempt 行的 extraction_span_key,并写进
+    // run 的 metadata_json,账本才分得清空结果/失败来自哪一路。
+    std::string                       channel = "belief";
 };
 
 // Extractor orchestrates the pipeline: open PipelineRun -> for each chunk

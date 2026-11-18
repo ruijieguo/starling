@@ -3,6 +3,7 @@
 // =false 短路不 persist;FAILED 仍写 3 attempt;门中途关 → commit 抛。零网络。
 #include "starling/memory/memory_ops.hpp"
 
+#include "starling/extractor/extraction_span_key.hpp"
 #include "starling/extractor/fake_llm_adapter.hpp"
 #include "starling/governance/write_gate.hpp"
 #include "starling/persistence/migration_runner.hpp"
@@ -11,6 +12,7 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -205,6 +207,76 @@ TEST(RememberPhases, CoreExpandsAllRememberPromptsBeforeLlmCalls) {
     EXPECT_EQ(llm.prompts[0], "BELIEF::hi");
     EXPECT_EQ(llm.prompts[1], "GENERAL::cog-self::cog-self::hi");
     EXPECT_EQ(llm.prompts[2], "EPISODIC::hi");
+}
+
+// 2026-11-18 rise 真机反馈：一般事实这一路对对话类输入回 `[]` 是正确输出，空结果重试
+// 只是白花调用；两路共用 chunk 级 span key,账本分不出空结果来自哪一路。
+TEST(RememberPhases, GeneralFactChannelDoesNotRetryEmptyAndIsAttributed) {
+    auto adapter = make_adapter();
+    RecordingLLMAdapter llm;   // 每次都回 []
+    const RememberPrompts prompts{
+        .belief = "BELIEF::{convo}",
+        .episodic = "EPISODIC::{passage}",
+        .general_fact = "GENERAL::{convo}",
+    };
+    const auto params = rp("客服对话");
+    const auto prepared = remember_prepare(*adapter, params);
+    const auto bundle = remember_extract_all(*adapter, llm, params, prompts);
+
+    std::size_t belief_calls = 0, general_calls = 0, episodic_calls = 0;
+    for (const auto& prompt : llm.prompts) {
+        if (prompt.rfind("BELIEF::", 0) == 0) ++belief_calls;
+        if (prompt.rfind("GENERAL::", 0) == 0) ++general_calls;
+        if (prompt.rfind("EPISODIC::", 0) == 0) ++episodic_calls;
+    }
+    EXPECT_EQ(belief_calls, 3u);    // 1 + 默认预算 2
+    EXPECT_EQ(general_calls, 1u);   // 一般事实不重试
+    EXPECT_EQ(episodic_calls, 1u);
+    EXPECT_EQ(bundle.belief.channel, "belief");
+    EXPECT_EQ(bundle.general_fact.channel, "general_fact");
+
+    (void)remember_commit_all(*adapter, llm, params, prepared, bundle);
+    auto& conn = adapter->connection();
+    EXPECT_EQ(row_count(conn, "extraction_attempt", "status='empty'"), 4);
+    // 两路的 empty 行落在两个不同的 chunk key 下。
+    EXPECT_EQ(row_count(conn, "(SELECT DISTINCT extraction_span_key FROM extraction_attempt "
+                              "WHERE status='empty')"), 2);
+    // run 的 metadata 记了通道，按通道统计不必再靠 prompt_tokens 猜。
+    EXPECT_EQ(row_count(conn,
+        "extraction_attempt a JOIN governance_pipeline_run p ON p.id=a.pipeline_run_id",
+        "a.status='empty' AND json_extract(p.metadata_json,'$.channel')='belief'"), 3);
+    EXPECT_EQ(row_count(conn,
+        "extraction_attempt a JOIN governance_pipeline_run p ON p.id=a.pipeline_run_id",
+        "a.status='empty' AND json_extract(p.metadata_json,'$.channel')='general_fact'"), 1);
+}
+
+TEST(RememberPhases, BeliefChunkKeyIsUnchangedForExistingRows) {
+    // belief 的 chunk key 保持 1478029 及更早的取法，旧行与新行按同一个键可比。
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response({.raw_xml = "[]", .ok = true});
+    const auto params = rp("hi");
+    const auto prepared = remember_prepare(*adapter, params);
+    extractor::ValidationPolicy no_retry;
+    no_retry.empty_result_retry_budget = 0;
+    const auto llm_result = extract_llm(*adapter, llm, "", params, no_retry);
+    (void)remember_commit(*adapter, llm, params, prepared, llm_result, no_retry);
+    const std::string expected = extractor::compute_extraction_span_key(
+        prepared.engram_ref, 0, "__chunk__", "__chunk__");
+    EXPECT_EQ(row_count(adapter->connection(), "extraction_attempt",
+                        "status='empty' AND extraction_span_key='" + expected + "'"), 1);
+}
+
+TEST(RememberPhases, UnknownChannelIsRejectedAtPersist) {
+    auto adapter = make_adapter();
+    extractor::FakeLLMAdapter llm;
+    llm.set_default_response({.raw_xml = "[]", .ok = true});
+    const auto params = rp("hi");
+    const auto prepared = remember_prepare(*adapter, params);
+    auto llm_result = extract_llm(*adapter, llm, "", params);
+    llm_result.channel = "episodic";
+    EXPECT_THROW((void)remember_commit(*adapter, llm, params, prepared, llm_result),
+                 std::invalid_argument);
 }
 
 }  // namespace starling::memoryops

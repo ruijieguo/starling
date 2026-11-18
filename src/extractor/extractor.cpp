@@ -3,6 +3,8 @@
 #include "starling/evidence/engram_store.hpp"
 #include <nlohmann/json.hpp>
 
+#include <stdexcept>
+
 #include "starling/bus/bus_event.hpp"
 #include "starling/bus/outbox_writer.hpp"
 #include "starling/bus/pipeline_ledger.hpp"
@@ -792,14 +794,23 @@ ExtractionRunResult Extractor::persist(
 }
 
     PipelineLedger ledger(conn_);
-    const std::string run_id = ledger.start_run(holder_tenant_id, engram_ref_id, "{}");
+    if (checked.channel != "belief" && checked.channel != "general_fact") {
+        throw std::invalid_argument("unknown extraction channel: " + checked.channel);
+    }
+    const std::string run_id = ledger.start_run(
+        holder_tenant_id, engram_ref_id, nlohmann::json{{"channel", checked.channel}}.dump());
     const std::string run_started_event_id = emit_pipeline_event(
         conn_, "pipeline.run_started", holder_tenant_id, run_id, std::nullopt);
     result.run_id = run_id;
 
     const std::int32_t chunk_index = 0;  // M0.4: 1 chunk per Engram
+    // chunk 级 attempt 行(empty/failed)的键。belief 保持原键，与 1478029 及更早写下的
+    // 行一致;general_fact 另取一个键，两路的空结果/失败不再落在同一个键下。
+    // 语句级 success 行按每条语句的 span key 记，不受影响。
+    const std::string chunk_marker =
+        checked.channel == "belief" ? std::string("__chunk__") : "__chunk__:" + checked.channel;
     const std::string chunk_span_key = compute_extraction_span_key(
-        engram_ref_id, chunk_index, "__chunk__", "__chunk__");
+        engram_ref_id, chunk_index, chunk_marker, chunk_marker);
 
     bool any_accepted   = false;
     bool all_failed     = true;
