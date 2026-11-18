@@ -104,6 +104,24 @@ RememberPrepared remember_prepare(persistence::SqliteAdapter& adapter,
     return prep;
 }
 
+namespace {
+
+// 一般事实这一路的策略：沿用调用方的校验阈值，关掉只属于 belief 的声明契约与分批。
+// 空结果重试也关掉：一般事实提示词规定对话里只有观点、诉求、承诺、动作时回 `[]`,
+// 对话类输入回空是正确输出，重问只是白花调用(2026-11-18 实测 27 次全空，多花 54 次调用)。
+// extract 与 commit 两段必须用同一份策略，所以只在这里构造。
+extractor::ValidationPolicy general_fact_policy(const extractor::ValidationPolicy& policy) {
+    auto general = policy;
+    general.semantic_claim_contract = false;
+    general.claim_batch_size = 0;
+    general.claim_batch_target_units = false;
+    general.claim_allow_code_fence = false;
+    general.empty_result_retry_budget = 0;
+    return general;
+}
+
+}  // namespace
+
 extractor::ExtractionLlmResult extract_llm(persistence::SqliteAdapter& adapter,
                                            extractor::LLMAdapter& llm,
                                            std::string_view prompt_template,
@@ -198,12 +216,9 @@ RememberLlmBundle remember_extract_all(
         gf_prompt.replace(pos, kSelf.size(), params.holder_id);
         pos += params.holder_id.size();
     }
-    auto general_policy = policy;
-    general_policy.semantic_claim_contract = false;
-    general_policy.claim_batch_size = 0;
-    general_policy.claim_batch_target_units = false;
-    general_policy.claim_allow_code_fence = false;
+    const auto general_policy = general_fact_policy(policy);
     out.general_fact = extract_llm(adapter, llm, gf_prompt, params, general_policy);
+    out.general_fact.channel = "general_fact";
 
     extractor::EpisodicExtractor episodic(
         adapter.connection(), llm, adapter, prompts.episodic);
@@ -268,11 +283,7 @@ RememberOutcome remember_commit_all(
         } catch (...) {}
     }
 
-    auto general_policy = policy;
-    general_policy.semantic_claim_contract = false;
-    general_policy.claim_batch_size = 0;
-    general_policy.claim_batch_target_units = false;
-    general_policy.claim_allow_code_fence = false;
+    const auto general_policy = general_fact_policy(policy);
     auto gf = remember_commit(
         adapter, llm, params, prepared, extracted.general_fact, general_policy);
     out.statement_ids.insert(out.statement_ids.end(),
